@@ -81,6 +81,11 @@ def ground(doc, link_name):
     link = doc.getObject(link_name)
     if link is None:
         raise RpcError(APP_ERROR, "no component %r" % link_name)
+    # always carry a flag so the tree/UI reflect grounding no matter which
+    # engine path succeeds below
+    if "Grounded" not in link.PropertiesList:
+        link.addProperty("App::PropertyBool", "Grounded", "Assembly")
+    link.Grounded = True
     try:
         import JointObject
         asm = get_or_make_assembly(doc)
@@ -93,10 +98,6 @@ def ground(doc, link_name):
         doc.recompute()
         return {"grounded": link_name, "via": "GroundedJoint"}
     except Exception as e:  # noqa: BLE001
-        # fallback: just remember it
-        if "Grounded" not in link.PropertiesList:
-            link.addProperty("App::PropertyBool", "Grounded", "Assembly")
-        link.Grounded = True
         return {"grounded": link_name, "via": "flag", "note": str(e)}
 
 
