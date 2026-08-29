@@ -44,8 +44,10 @@ Running checklist of user feedback from live testing. `[x]` done, `[~]` partial,
 - [x] Drawings: auto overall dims + click-to-dimension tool, title block, BOM
       table (assemblies), PDF (printToPDF) + DXF (R12) export
 - [x] Measure (length/area/distance/angle) + Section (live clipping plane)
-- [ ] Sheet metal (low priority)
-- [ ] Surface / body-split (low priority)
+- [~] Sheet metal: Base Flange (SheetMetal addon or pad fallback). Richer
+      flange/unfold features deferred (low priority)
+- [x] Body split by a plane (SURFACE > Split Body). Full surface modelling
+      deferred (low priority)
 - [x] Packaging: electron-builder config (AppImage + NSIS), FreeCAD bundled as
       extraResources, runtime path resolution, scripts/package.sh; --dir build
       verified
@@ -67,8 +69,8 @@ Running checklist of user feedback from live testing. `[x]` done, `[~]` partial,
 ## Batch 5 - offset plane / dropdowns / selection filter
 
 - [x] Offset plane "did nothing" -> new datums now auto-show
-- [ ] Offset-plane creation should filter selection to planes only (low prio -
-      the op doesn't consume selection yet)
+- [x] Offset Plane now consumes a plane/face selection (needs 'plane'); the
+      old dropdown is gone
 - [x] Create/Modify dropdowns did nothing -> fixed (were clipped by overflow)
 - [x] Selection filter tool (paint / window / face / edge / point ...)
 - [x] Move selection filter into the ribbon as a dropdown with checkboxes;
