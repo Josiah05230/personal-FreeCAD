@@ -1,6 +1,6 @@
 # Status
 
-Updated 2026-08-29. Big autonomous build pass. All roadmap milestones now have a
+Updated 2026-08-29. Batches 1-8 of live-test feedback all addressed. All roadmap milestones now have a
 working first version. `docs/FEEDBACK.md` tracks the live-test checklist.
 
 ## Working (verified: headless engine tests + app boots clean each pass)
@@ -55,6 +55,23 @@ working first version. `docs/FEEDBACK.md` tracks the live-test checklist.
 ### Packaging
 - electron-builder: AppImage + NSIS, FreeCAD bundled as extraResources, runtime
   path resolution, `scripts/package.sh`. `--dir` build verified.
+
+## Batches 7-8 additions
+
+- Import/export STEP/IGES/BREP + STL/OBJ/3MF/PLY/OFF, multi-body -> separate
+  objects, palette colours
+- In-viewport sketch-plane picking (ghost planes, no popup); Edit Sketch reopens
+  with geometry
+- Scale + Convert Units; Split Body (plane cut); Base Flange (SheetMetal addon
+  or pad fallback)
+- Model-tree rows selectable; Mirror / Offset Plane / Circular Pattern / Combine
+  driven by selection, no dropdowns
+- Timeline: features insert at the marker; rolled-back features fully suppressed
+- View cube 26 pick zones; window (box) select; busy spinner
+- Drawings rebuilt: blank ISO-A3 sheet, Add-View + drag, Auto-layout button
+- Canvas insert persists via a companion .gwtcad.json
+- Data Panel New Design / New Folder
+- ~59 sidecar RPC methods
 
 ## Known gaps / next
 
