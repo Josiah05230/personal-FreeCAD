@@ -9,6 +9,7 @@ export interface Feature {
   kind: FeatureKind
   isTip: boolean
   afterTip?: boolean
+  suppressed?: boolean
   visible: boolean
   error: boolean
 }
@@ -264,8 +265,22 @@ export const api = {
     rpc<{ bodies: BodyTree[] }>('primitive.box', { width, depth, height }),
   cylinder: (diameter: number, height: number) =>
     rpc<{ bodies: BodyTree[] }>('primitive.cylinder', { diameter, height }),
-  extrude: (sketchId: string, length: number, cut = false, midplane = false, reversed = false) =>
-    rpc<{ bodies: BodyTree[] }>('feature.extrude', { sketchId, length, cut, midplane, reversed }),
+  extrude: (
+    sketchId: string,
+    length: number,
+    cut = false,
+    midplane = false,
+    reversed = false,
+    upToFaceRef: GeomRef | null = null
+  ) =>
+    rpc<{ bodies: BodyTree[] }>('feature.extrude', {
+      sketchId,
+      length,
+      cut,
+      midplane,
+      reversed,
+      upToFaceRef
+    }),
   fillet: (edges: string[], radius: number) =>
     rpc<{ bodies: BodyTree[] }>('feature.fillet', { edges, radius }),
   chamfer: (edges: string[], size: number) =>
@@ -274,8 +289,12 @@ export const api = {
     rpc<{ bodies: BodyTree[] }>('feature.shell', { faces, thickness }),
   hole: (face: string, point: number[], diameter: number, depth: number, throughAll: boolean) =>
     rpc<{ bodies: BodyTree[] }>('feature.hole', { face, point, diameter, depth, throughAll }),
-  patternLinear: (direction: number[], count: number, spacing: number) =>
-    rpc<{ bodies: BodyTree[] }>('pattern.linear', { direction, count, spacing }),
+  patternLinear: (
+    direction: number[],
+    count: number,
+    spacing: number,
+    directionRef: GeomRef | null = null
+  ) => rpc<{ bodies: BodyTree[] }>('pattern.linear', { direction, count, spacing, directionRef }),
   mirror: (planeRef: GeomRef | null, plane = 'YZ') =>
     rpc<{ bodies: BodyTree[] }>('feature.mirror', { planeRef, plane }),
   datumPlane: (baseRef: GeomRef | null, offset: number, basePlane = 'XY') =>
@@ -311,12 +330,24 @@ export const api = {
     cut = false,
     axisRef: GeomRef | null = null
   ) => rpc<{ bodies: BodyTree[] }>('feature.revolve', { sketchId, angle, axis, cut, axisRef }),
-  sweep: (profileId: string, pathId: string, cut = false) =>
-    rpc<{ bodies: BodyTree[] }>('feature.sweep', { profileId, pathId, cut }),
+  sweep: (
+    profileId: string,
+    pathId: string | null,
+    cut = false,
+    pathRef: GeomRef | null = null
+  ) => rpc<{ bodies: BodyTree[] }>('feature.sweep', { profileId, pathId, cut, pathRef }),
   loft: (sketchIds: string[], cut = false) =>
     rpc<{ bodies: BodyTree[] }>('feature.loft', { sketchIds, cut }),
-  draft: (faces: string[], angle: number, neutral: string | null) =>
-    rpc<{ bodies: BodyTree[] }>('feature.draft', { faces, angle, neutral }),
+  draft: (
+    faces: string[],
+    angle: number,
+    neutral: string | null,
+    neutralRef: GeomRef | null = null
+  ) => rpc<{ bodies: BodyTree[] }>('feature.draft', { faces, angle, neutral, neutralRef }),
+  datumAxis: (refs: GeomRef[]) => rpc<{ bodies: BodyTree[] }>('datum.axis', { refs }),
+  datumPoint: (ref: GeomRef | null) => rpc<{ bodies: BodyTree[] }>('datum.point', { ref }),
+  featureSuppress: (id: string, suppressed: boolean) =>
+    rpc<{ bodies: BodyTree[] }>('feature.suppress', { id, suppressed }),
   combine: (op: string, baseBodyId: string | null, toolBodyIds: string[]) =>
     rpc<{ bodies: BodyTree[] }>('feature.combine', { op, baseBodyId, toolBodyIds }),
   splitBody: (bodyId: string, planeRef: GeomRef) =>

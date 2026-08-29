@@ -15,6 +15,7 @@ export interface TimelineHandlers {
   onEdit: (featureId: string) => void
   onRename: (featureId: string) => void
   onDelete: (featureId: string) => void
+  onSuppress: (featureId: string, suppressed: boolean) => void
 }
 
 const CHIP_W = 54 // keep in sync with .tl-chip min-width + gap
@@ -98,13 +99,20 @@ export function Timeline({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dragging, feats.length])
 
-  const menuItems = (id: string): MenuItem[] => [
-    { label: 'Edit Feature', onClick: () => handlers.onEdit(id) },
-    { label: 'Rename…', onClick: () => handlers.onRename(id) },
-    { label: 'Move timeline here', onClick: () => handlers.onRollTo(id) },
-    { separator: true, label: '' },
-    { label: 'Delete', danger: true, onClick: () => handlers.onDelete(id) }
-  ]
+  const menuItems = (id: string): MenuItem[] => {
+    const f = feats.find((x) => x.id === id)
+    return [
+      { label: 'Edit Feature', onClick: () => handlers.onEdit(id) },
+      { label: 'Rename…', onClick: () => handlers.onRename(id) },
+      { label: 'Move timeline here', onClick: () => handlers.onRollTo(id) },
+      {
+        label: f?.suppressed ? 'Unsuppress' : 'Suppress',
+        onClick: () => handlers.onSuppress(id, !f?.suppressed)
+      },
+      { separator: true, label: '' },
+      { label: 'Delete', danger: true, onClick: () => handlers.onDelete(id) }
+    ]
+  }
 
   const markerLeft = (markerAt + 1) * CHIP_W
 
@@ -140,7 +148,12 @@ export function Timeline({
           return (
             <div
               key={f.id}
-              className={'tl-chip' + (f.error ? ' error' : '') + (i > markerAt ? ' rolled' : '')}
+              className={
+                'tl-chip' +
+                (f.error ? ' error' : '') +
+                (i > markerAt ? ' rolled' : '') +
+                (f.suppressed ? ' suppressed' : '')
+              }
               title={`${f.label}  ·  ${f.opType}`}
               onDoubleClick={() => handlers.onEdit(f.id)}
               onContextMenu={(e) => {

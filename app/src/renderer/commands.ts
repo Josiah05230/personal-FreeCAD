@@ -69,8 +69,8 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'pat.mirror', title: 'Mirror', group: 'Pattern', tab: 'SOLID', icon: 'mirror', run: op('mirror') },
     // --- construct ---
     { id: 'con.plane', title: 'Offset Plane', group: 'Construct', tab: 'SOLID', icon: 'plane', run: op('datumPlane') },
-    { id: 'con.axis', title: 'Construction Axis', group: 'Construct', tab: 'SOLID', icon: 'axis' },
-    { id: 'con.point', title: 'Construction Point', group: 'Construct', tab: 'SOLID', icon: 'point' },
+    { id: 'con.axis', title: 'Construction Axis', group: 'Construct', tab: 'SOLID', icon: 'axis', run: op('datumAxis') },
+    { id: 'con.point', title: 'Construction Point', group: 'Construct', tab: 'SOLID', icon: 'point', run: op('datumPoint') },
     // --- select (F360-style group on the SOLID tab) ---
     { id: 'sel.filter', title: 'Select', group: 'Select', tab: 'SOLID', icon: 'point', component: ctx.selectFilterNode },
     // --- insert ---

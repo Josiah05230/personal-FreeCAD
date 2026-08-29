@@ -140,18 +140,22 @@ def primitive_cylinder(diameter=40.0, height=40.0, name=None):
 
 
 @method("feature.extrude")
-def feature_extrude(sketchId, length=10.0, reversed=False, midplane=False, cut=False):
+def feature_extrude(sketchId, length=10.0, reversed=False, midplane=False, cut=False,
+                    upToFaceRef=None):
     d, sk = _obj(sketchId)
     if sk.TypeId != "Sketcher::SketchObject":
         raise RpcError(APP_ERROR, "%r is not a sketch" % sketchId)
     body = sk.getParentGeoFeatureGroup()
     if body is None or body.TypeId != "PartDesign::Body":
         raise RpcError(APP_ERROR, "sketch is not inside a Body")
+    up = _resolve_ref(d, body, upToFaceRef) if upToFaceRef else None
     if cut:
-        build.pocket(body, sk, float(length))
+        build.pocket(body, sk, float(length), up_to=up)
     else:
-        build.pad(body, sk, float(length), reversed_=reversed, midplane=midplane)
+        build.pad(body, sk, float(length), reversed_=reversed, midplane=midplane, up_to=up)
     d.recompute()
+    if not body.Shape.isValid():
+        raise RpcError(APP_ERROR, "extrude produced an invalid shape")
     return tree_get()
 
 
@@ -180,19 +184,23 @@ def feature_revolve(sketchId, angle=360.0, axis="V", axisRef=None, reversed=Fals
 
 
 @method("feature.sweep")
-def feature_sweep(profileId, pathId, cut=False):
+def feature_sweep(profileId, pathId=None, pathRef=None, cut=False):
     d, prof = _obj(profileId)
-    path = d.getObject(pathId)
-    if path is None:
-        raise RpcError(APP_ERROR, "no path sketch %r" % pathId)
     body = prof.getParentGeoFeatureGroup()
     tid = "PartDesign::SubtractivePipe" if cut else "PartDesign::AdditivePipe"
     pipe = body.newObject(tid, "Sweep")
     pipe.Label = next_label(body, tid)
     pipe.Profile = prof
-    pipe.Spine = (path, [])
+    if pathRef:
+        obj, sub = _resolve_ref(d, body, pathRef)
+        pipe.Spine = (obj, sub if isinstance(sub, list) else [sub])
+    else:
+        path = d.getObject(pathId) if pathId else None
+        if path is None:
+            raise RpcError(APP_ERROR, "sweep needs a path sketch or edge")
+        pipe.Spine = (path, [])
+        path.Visibility = False
     prof.Visibility = False
-    path.Visibility = False
     d.recompute()
     if not body.Shape.isValid():
         raise RpcError(APP_ERROR, "sweep produced an invalid shape")
@@ -219,12 +227,14 @@ def feature_loft(sketchIds, cut=False):
 
 
 @method("feature.draft")
-def feature_draft(faces, angle=3.0, neutral=None):
+def feature_draft(faces, angle=3.0, neutral=None, neutralRef=None):
     body = _require_body()
     tip = _solid_tip(body)
     dr = build.dress_up(body, "PartDesign::Draft", tip, faces, "Draft")
     dr.Angle = float(angle)
-    if neutral:
+    if neutralRef:
+        dr.NeutralPlane = _resolve_ref(body.Document, body, neutralRef)
+    elif neutral:
         dr.NeutralPlane = (tip, [neutral])
     body.Document.recompute()
     if not body.Shape.isValid():
@@ -344,13 +354,22 @@ def feature_hole(face, point, diameter=6.0, depth=10.0, throughAll=False):
 
 
 @method("pattern.linear")
-def pattern_linear(direction=(1, 0, 0), count=3, spacing=20.0):
+def pattern_linear(direction=(1, 0, 0), count=3, spacing=20.0, directionRef=None):
     body = _require_body()
     tip = _solid_tip(body)
     d = body.Document
     p = body.newObject("PartDesign::LinearPattern", "LinearPattern")
     p.Label = next_label(body, "PartDesign::LinearPattern")
     p.Originals = [tip]
+    if directionRef:
+        p.Direction = _resolve_ref(d, body, directionRef)
+    else:
+        role = {(1, 0, 0): "X_Axis", (0, 1, 0): "Y_Axis", (0, 0, 1): "Z_Axis"}.get(
+            tuple(direction), "X_Axis")
+        for g in body.Origin.OriginFeatures:
+            if getattr(g, "Role", "") == role:
+                p.Direction = (g, [""])
+                break
     p.Length = float(spacing) * max(1, int(count) - 1)
     p.Occurrences = int(count)
     d.recompute()
@@ -436,6 +455,62 @@ def datum_plane(baseRef=None, basePlane="XY", offset=10.0):
     pl.AttachmentOffset = Placement(Vector(0, 0, float(offset)), Rotation())
     session.set_datum_shown(pl.Name, True)  # new datums are shown, like Fusion
     pl.Visibility = True
+    d.recompute()
+    return tree_get()
+
+
+@method("datum.axis")
+def datum_axis(refs=None):
+    """Construction axis from selection: one edge (axis of that curve), or two
+    points/planes (line through / intersection). refs = [GeomRef, ...]."""
+    body = _require_body()
+    d = body.Document
+    ax = body.newObject("PartDesign::Line", "DatumLine")
+    ax.Label = next_label(body, "PartDesign::Line")
+    resolved = [_resolve_ref(d, body, r) for r in (refs or []) if r]
+    if resolved:
+        try:
+            ax.AttachmentSupport = resolved
+            ax.MapMode = "TwoPointLine" if len(resolved) >= 2 else "AxisOfCurve"
+        except Exception:
+            ax.MapMode = "Deactivated"
+    session.set_datum_shown(ax.Name, True)
+    ax.Visibility = True
+    d.recompute()
+    return tree_get()
+
+
+@method("datum.point")
+def datum_point(ref=None):
+    """Construction point on a vertex / edge midpoint / plane-line intersection."""
+    body = _require_body()
+    d = body.Document
+    pt = body.newObject("PartDesign::Point", "DatumPoint")
+    pt.Label = next_label(body, "PartDesign::Point")
+    if ref:
+        try:
+            pt.AttachmentSupport = [_resolve_ref(d, body, ref)]
+            pt.MapMode = "Vertex"
+        except Exception:
+            pt.MapMode = "Deactivated"
+    session.set_datum_shown(pt.Name, True)
+    pt.Visibility = True
+    d.recompute()
+    return tree_get()
+
+
+@method("feature.suppress")
+def feature_suppress(id, suppressed=True):
+    """Toggle a feature's participation without deleting it."""
+    d, o = _obj(id)
+    ok = False
+    for prop in ("Suppressed", "Suppress"):
+        if hasattr(o, prop):
+            setattr(o, prop, bool(suppressed))
+            ok = True
+            break
+    if not ok:
+        o.Visibility = not bool(suppressed)
     d.recompute()
     return tree_get()
 
@@ -1066,6 +1141,7 @@ def tree_get():
                     "kind": _kind(f.TypeId),
                     "isTip": f is tip,
                     "afterTip": f.Name in suppressed,
+                    "suppressed": bool(getattr(f, "Suppressed", getattr(f, "Suppress", False))),
                     "visible": bool(getattr(f, "Visibility", False)) and f.Name not in suppressed,
                     "error": bool(getattr(f, "State", None) and "Error" in f.State),
                 })

@@ -2253,3 +2253,9 @@ code {
 .params-err {
   color: #e0774a;
 }
+
+/* ---- Batch 13: suppressed feature chip ---- */
+.tl-chip.suppressed {
+  opacity: 0.4;
+  text-decoration: line-through;
+}

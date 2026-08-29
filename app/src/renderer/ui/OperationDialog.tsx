@@ -15,6 +15,8 @@ export type OpKind =
   | 'patternCircular'
   | 'mirror'
   | 'datumPlane'
+  | 'datumAxis'
+  | 'datumPoint'
   | 'splitBody'
   | 'baseFlange'
 
@@ -39,6 +41,7 @@ const SPECS: Record<OpKind, OpSpec> = {
   extrude: {
     title: 'Extrude',
     needs: 'sketch',
+    hint: 'Also select a face to extrude up to it instead of a blind distance',
     fields: [
       { key: 'length', label: 'Distance', type: 'number', default: 10, step: 1 },
       { key: 'cut', label: 'Cut', type: 'checkbox', default: false },
@@ -63,6 +66,7 @@ const SPECS: Record<OpKind, OpSpec> = {
   draft: {
     title: 'Draft',
     needs: 'faces',
+    hint: 'Also select a plane or flat face as the neutral (pull) plane',
     fields: [{ key: 'angle', label: 'Angle', type: 'number', default: 3, step: 1 }]
   },
   combine: {
@@ -114,9 +118,9 @@ const SPECS: Record<OpKind, OpSpec> = {
   },
   patternLinear: {
     title: 'Rectangular Pattern',
-    needs: 'none',
+    needs: 'axis',
+    hint: 'Direction: an edge, a sketch line, or a datum / origin axis',
     fields: [
-      { key: 'axis', label: 'Axis', type: 'select', default: 'X', options: ['X', 'Y', 'Z'] },
       { key: 'count', label: 'Quantity', type: 'number', default: 3, min: 2, step: 1 },
       { key: 'spacing', label: 'Spacing', type: 'number', default: 20, min: 0.01, step: 1 }
     ]
@@ -130,6 +134,18 @@ const SPECS: Record<OpKind, OpSpec> = {
     title: 'Offset Plane',
     needs: 'plane',
     fields: [{ key: 'offset', label: 'Offset', type: 'number', default: 10, step: 1 }]
+  },
+  datumAxis: {
+    title: 'Construction Axis',
+    needs: 'axis',
+    hint: 'One edge, or two planes / faces for their intersection',
+    fields: []
+  },
+  datumPoint: {
+    title: 'Construction Point',
+    needs: 'none',
+    hint: 'Created at the body origin (vertex snap coming soon)',
+    fields: []
   },
   splitBody: {
     title: 'Split Body',
@@ -242,8 +258,8 @@ export function OperationDialog({
     (spec.needs === 'planeFace' && faces.length === 1) ||
     (spec.needs === 'sketch' && sketchesSel.length === 1) ||
     (spec.needs === 'sketches2' && sketchesSel.length >= 2) ||
-    (spec.needs === 'plane' && planeSel.length === 1) ||
-    (spec.needs === 'axis' && axisSel.length === 1)
+    (spec.needs === 'plane' && planeSel.length >= 1) ||
+    (spec.needs === 'axis' && axisSel.length >= 1)
 
   return (
     <div className="opdlg">

@@ -9,30 +9,19 @@ done, remove its line entirely rather than leaving a checked box.
 - [~] Sheet metal: only Base Flange (SheetMetal addon or pad fallback). Richer
       flange / unfold / bend features deferred (low priority).
 
-## Batch 13 - full feature wiring audit
+## Batch 13 - feature wiring audit (remaining)
 
-Wire every modelling feature end to end, all selection-driven the same way
-(pick geometry in the viewport or a node in the model tree - no dropdowns for
-geometry references). Track per feature:
+Done this pass: Extrude up-to-face, Draft neutral-plane pick, Rectangular
+Pattern direction pick (no X/Y/Z dropdown), Sweep path from a body edge,
+Construction Axis / Point from selection, Suppress vs Delete. Still open:
 
-- [ ] Sketch - plane / face pick (done); confirm construction planes + faces
-- [ ] Extrude - profile sketch; up-to-face / to-object option via a face pick
-- [ ] Revolve - profile + axis pick (done); confirm sketch-line axis
-- [ ] Loft - 2+ profile sketches in order
-- [ ] Sweep - profile + path (path from a sketch or a body edge)
-- [ ] Hole - face + point (done); confirm counterbore / countersink
-- [ ] Fillet / Chamfer - edge or face pick (done); confirm face-chain
-- [ ] Shell - face pick for removed faces (done)
-- [ ] Draft - faces + neutral plane pick
-- [ ] Rib / Web - open profile + direction (new)
-- [ ] Mirror - feature/body + plane pick (done)
-- [ ] Rectangular / Circular pattern - feature/body + direction/axis pick
-- [ ] Combine - two bodies (done); confirm keep-tool option
-- [ ] Split Body - body + cutting plane/face/surface (done)
-- [ ] Thicken / Offset surface - face pick (new)
-- [ ] Datum plane / axis / point - from selection (plane done)
-- [ ] Move / Copy body - body + transform
-- [ ] Delete / suppress feature (done - confirm suppress vs delete)
+- [~] Construction Point only lands at the body origin - needs vertex / edge
+      point selection to place it
+- [ ] Rib / Web feature (open profile + thickness + direction)
+- [ ] Thicken / Offset surface (face pick)
+- [ ] Move / Copy body (body + transform, or copy to a new body)
+- [ ] Combine "keep tool bodies" option
+- [ ] Hole counterbore / countersink options
 
 ## Deferred / not done
 

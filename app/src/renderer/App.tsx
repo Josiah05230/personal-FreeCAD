@@ -211,13 +211,23 @@ export function App(): JSX.Element {
 
   // ---- feature ops ----
   const sweep = useCallback(async () => {
-    const sk = selection.filter((s) => s.kind === 'sketch').map((s) => (s as { sketchId: string }).sketchId)
-    if (sk.length !== 2) {
-      window.alert('Select the profile sketch then the path sketch (2 sketches).')
+    const sk = selection
+      .filter((s) => s.kind === 'sketch')
+      .map((s) => (s as { sketchId: string }).sketchId)
+    const edge = selection.find((s) => s.kind === 'edge') as
+      | { bodyId: string; sub: string }
+      | undefined
+    if (sk.length === 2) {
+      // profile + path sketches
+    } else if (sk.length === 1 && edge) {
+      // profile sketch + a body edge as the path - fine
+    } else {
+      window.alert('Select a profile sketch plus a path: another sketch, or a body edge.')
       return
     }
     try {
-      await api.sweep(sk[0], sk[1])
+      if (sk.length === 2) await api.sweep(sk[0], sk[1])
+      else await api.sweep(sk[0], null, false, { kind: 'edge', bodyId: edge!.bodyId, sub: edge!.sub })
       await afterEdit()
     } catch (e) {
       window.alert((e as Error).message)
@@ -323,15 +333,21 @@ export function App(): JSX.Element {
         .map((s) => (s as { sketchId: string }).sketchId)
       try {
         switch (kind) {
-          case 'extrude':
+          case 'extrude': {
+            const upTo =
+              (faces[0]
+                ? { kind: 'face', bodyId: (faces[0] as unknown as { bodyId: string }).bodyId, sub: faces[0].sub }
+                : null) as import('./rpc').GeomRef | null
             await api.extrude(
               sketchIds[0],
               Number(v.length),
               Boolean(v.cut),
               Boolean(v.midplane),
-              Boolean(v.reversed)
+              Boolean(v.reversed),
+              upTo
             )
             break
+          }
           case 'revolve': {
             // axis: first non-profile edge / sketch line / datum axis in the selection
             let axisRef: import('./rpc').GeomRef | null = null
@@ -357,9 +373,22 @@ export function App(): JSX.Element {
           case 'loft':
             await api.loft(sketchIds, Boolean(v.cut))
             break
-          case 'draft':
-            await api.draft(faces.map((f) => f.sub), Number(v.angle), null)
+          case 'draft': {
+            // a selected plane, or a face not being drafted, is the neutral plane
+            const draftSubs = new Set(faces.map((f) => f.sub))
+            const neutral =
+              (selection
+                .map(selectionToRef)
+                .find(
+                  (r) =>
+                    r &&
+                    (r.kind === 'plane' ||
+                      r.kind === 'origin' ||
+                      (r.kind === 'face' && !draftSubs.has(r.sub)))
+                ) as import('./rpc').GeomRef | undefined) ?? null
+            await api.draft(faces.map((f) => f.sub), Number(v.angle), null, neutral)
             break
+          }
           case 'combine': {
             const bs = selection.filter((s) => s.kind === 'body').map((s) => (s as { bodyId: string }).bodyId)
             await api.combine(String(v.op), bs[0] ?? null, bs.slice(1))
@@ -384,8 +413,8 @@ export function App(): JSX.Element {
             )
             break
           case 'patternLinear': {
-            const ax = { X: [1, 0, 0], Y: [0, 1, 0], Z: [0, 0, 1] }[String(v.axis)] ?? [1, 0, 0]
-            await api.patternLinear(ax, Number(v.count), Number(v.spacing))
+            const dirRef = selection.map(selectionToRef).find(Boolean) ?? null
+            await api.patternLinear([1, 0, 0], Number(v.count), Number(v.spacing), dirRef)
             break
           }
           case 'patternCircular': {
@@ -401,6 +430,18 @@ export function App(): JSX.Element {
           case 'datumPlane': {
             const ref = selection.map(selectionToRef).find(Boolean) ?? null
             await api.datumPlane(ref, Number(v.offset))
+            break
+          }
+          case 'datumAxis': {
+            const refs = selection
+              .map(selectionToRef)
+              .filter(Boolean) as import('./rpc').GeomRef[]
+            await api.datumAxis(refs)
+            break
+          }
+          case 'datumPoint': {
+            const ref = selection.map(selectionToRef).find(Boolean) ?? null
+            await api.datumPoint(ref)
             break
           }
           case 'splitBody': {
@@ -462,6 +503,14 @@ export function App(): JSX.Element {
     async (id: string) => {
       if (!window.confirm('Delete this feature?')) return
       await api.deleteFeature(id)
+      await afterEdit()
+    },
+    [afterEdit]
+  )
+
+  const suppressFeature = useCallback(
+    async (id: string, suppressed: boolean) => {
+      await api.featureSuppress(id, suppressed)
       await afterEdit()
     },
     [afterEdit]
@@ -1068,7 +1117,8 @@ export function App(): JSX.Element {
                       onRollTo: rollTo,
                       onEdit: (id) => void editSketch(id),
                       onRename: renameFeature,
-                      onDelete: deleteFeature
+                      onDelete: deleteFeature,
+                      onSuppress: (id, s) => void suppressFeature(id, s)
                     }}
                   />
                 </>

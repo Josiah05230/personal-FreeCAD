@@ -61,11 +61,17 @@ def circle_sketch(body, radius, plane="XY"):
     return sk
 
 
-def pad(body, sketch, length, reversed_=False, midplane=False, name="Pad"):
+def pad(body, sketch, length, reversed_=False, midplane=False, name="Pad", up_to=None):
     p = body.newObject("PartDesign::Pad", name)
     p.Label = next_label(body, "PartDesign::Pad")
     p.Profile = sketch
     p.Length = float(length)
+    if up_to is not None:
+        try:
+            p.Type = "UpToFace"
+            p.UpToFace = up_to  # (obj, [sub])
+        except Exception:
+            p.Type = "Length"
     if reversed_:
         p.Reversed = True
     # FreeCAD 1.1 replaced the boolean Midplane with the SideType enum.
@@ -78,11 +84,17 @@ def pad(body, sketch, length, reversed_=False, midplane=False, name="Pad"):
     return p
 
 
-def pocket(body, sketch, length, through_all=False, name="Pocket"):
+def pocket(body, sketch, length, through_all=False, name="Pocket", up_to=None):
     p = body.newObject("PartDesign::Pocket", name)
     p.Label = next_label(body, "PartDesign::Pocket")
     p.Profile = sketch
-    if through_all:
+    if up_to is not None:
+        try:
+            p.Type = "UpToFace"
+            p.UpToFace = up_to
+        except Exception:
+            p.Length = float(length)
+    elif through_all:
         p.Type = "ThroughAll"
     else:
         p.Length = float(length)
