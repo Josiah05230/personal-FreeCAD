@@ -89,7 +89,15 @@ working first version. `docs/FEEDBACK.md` tracks the live-test checklist.
   wire + symmetric-pad fallback). Copy Body (independent duplicate). Combine
   "keep tool bodies".
 - Canvas drag-a-line calibration (INSERT > Calibrate Canvas).
-- ~69 sidecar RPC methods.
+- Always-present origin (starter empty Body); sidecar tessellation cache
+  (unchanged bodies skip OCCT meshing); visibility is pure client view state
+  (viewport flips .visible, no rebuild); rebuild-content guarded by a data sig.
+- Persisted expression dimensions: a feature dim typed as "OD*2 + 3mm" is stored
+  (session + .gwtcad.json), shown again on "Edit Value...", and re-driven when a
+  parameter changes (params.set re-evaluates all feature exprs).
+- Customisable ribbon: slim pinned default set, right-click Pin/Unpin + Set
+  hotkey on any command, data-driven hotkey dispatch (localStorage-backed).
+- ~72 sidecar RPC methods.
 
 ## Batches 7-8 additions
 
