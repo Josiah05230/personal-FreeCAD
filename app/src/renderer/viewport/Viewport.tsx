@@ -13,7 +13,12 @@ import type { ViewportApi } from './types'
 import { CadControls } from './CadControls'
 import { ViewCube } from './ViewCube'
 import { Picker } from './Picker'
-import { SketchController, type SketchFrame, type SketchTool } from './SketchController'
+import {
+  SketchController,
+  type SketchFrame,
+  type SketchTool,
+  type SketchRefGeom
+} from './SketchController'
 import { buildScene } from './sceneBuilder'
 
 function gradientBackground(): THREE.Texture {
@@ -46,6 +51,7 @@ export function Viewport({
   onWindowSelect,
   canvases = [],
   sketchFrame = null,
+  sketchRefGeom = null,
   sketchInitialEntities,
   sketchTool = 'line',
   onSketchChange,
@@ -64,6 +70,7 @@ export function Viewport({
   onWindowSelect?: (sels: Selection[]) => void
   canvases?: CanvasDTO[]
   sketchFrame?: SketchFrame | null
+  sketchRefGeom?: SketchRefGeom | null
   sketchInitialEntities?: unknown[]
   sketchTool?: SketchTool
   onSketchChange?: () => void
@@ -158,7 +165,15 @@ export function Viewport({
         getSketchEntities: () => stateRef.current?.sketch?.getEntities() ?? [],
         getNewSketchEntities: () => stateRef.current?.sketch?.getNewEntities() ?? [],
         loadSketchEntities: (ents) => stateRef.current?.sketch?.loadExisting(ents),
-        sketchUndo: () => stateRef.current?.sketch?.undo()
+        sketchUndo: () => stateRef.current?.sketch?.undo(),
+        getSketchConstraints: () => stateRef.current?.sketch?.getConstraints() ?? [],
+        applySketchConstraint: (t) => stateRef.current?.sketch?.applyConstraint(t) ?? false,
+        availableSketchConstraints: () =>
+          stateRef.current?.sketch?.availableConstraints() ?? [],
+        sketchSelectedCount: () => stateRef.current?.sketch?.selectedCount ?? 0,
+        setSketchConstruction: (on) => stateRef.current?.sketch?.setConstruction(on),
+        toggleSketchConstruction: () =>
+          stateRef.current?.sketch?.toggleConstruction() ?? false
       }
     }
 
@@ -371,7 +386,8 @@ export function Viewport({
         st.renderer.domElement,
         sketchFrame,
         st.overlay,
-        () => onSketchChangeRef.current?.()
+        () => onSketchChangeRef.current?.(),
+        sketchRefGeom
       )
       if (sketchInitialEntities && sketchInitialEntities.length) {
         st.sketch.loadExisting(sketchInitialEntities as never[])

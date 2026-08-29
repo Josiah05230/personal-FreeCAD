@@ -27,6 +27,8 @@ export interface BodyTree {
   visible: boolean
   features: Feature[]
   origin: OriginItem[]
+  /** Feature the rollback marker sits AFTER; null/undefined => at the tip. */
+  marker?: string | null
 }
 
 export interface DatumDTO {
@@ -105,6 +107,28 @@ export interface SketchFrameDTO {
   x: [number, number, number]
   y: [number, number, number]
   z: [number, number, number]
+}
+
+/** Model geometry under a sketch plane, in plane (u,v) mm, for reference + snap. */
+export interface SketchRefGeom {
+  polys: number[][][] // [poly][point][u,v]
+  points: number[][] // [point][u,v]
+}
+
+/** Manual constraint recorded in the 2D editor, resolved on sketch.finish.
+ *  refs address geometry drawn this session by `new` (index) or pre-existing
+ *  geometry by raw `geo` id; `pt` is 1=start 2=end 3=centre for point constraints. */
+export interface SketchConstraint {
+  type:
+    | 'Horizontal'
+    | 'Vertical'
+    | 'Parallel'
+    | 'Perpendicular'
+    | 'Equal'
+    | 'Tangent'
+    | 'Coincident'
+    | 'Concentric'
+  refs: Array<{ new?: number; geo?: number; sub?: number; pt?: number }>
 }
 
 export type Selection =
@@ -207,7 +231,12 @@ export const api = {
   treeGet: () => rpc<{ bodies: BodyTree[]; path: string | null }>('tree.get'),
 
   sketchOn: (ref: SketchRef) =>
-    rpc<{ sketchId: string; bodyId: string; frame: SketchFrameDTO }>('sketch.on', { ref }),
+    rpc<{
+      sketchId: string
+      bodyId: string
+      frame: SketchFrameDTO
+      refGeom: SketchRefGeom | null
+    }>('sketch.on', { ref }),
   importModel: (path: string) =>
     rpc<{ path: string; imported: string[]; count: number }>('io.importModel', { path }),
   exportModel2: (path: string) => rpc<{ path: string; objects: number }>('io.export', { path }),
@@ -258,11 +287,12 @@ export const api = {
       bodyId: string | null
       frame: SketchFrameDTO
       entities: unknown[]
+      refGeom: SketchRefGeom | null
     }>('sketch.reopen', { sketchId }),
-  sketchFinish: (sketchId: string) =>
+  sketchFinish: (sketchId: string, elements?: unknown[], constraints?: SketchConstraint[]) =>
     rpc<{ sketchId: string; count: number; constrained: boolean; closed: boolean }>(
       'sketch.finish',
-      { sketchId }
+      { sketchId, elements, constraints }
     ),
   revolve: (sketchId: string, angle: number, axis = 'V', cut = false) =>
     rpc<{ bodies: BodyTree[] }>('feature.revolve', { sketchId, angle, axis, cut }),

@@ -29,10 +29,10 @@ import { CommandPalette } from './ui/CommandPalette'
 import { OperationDialog, type OpKind, type OpValues } from './ui/OperationDialog'
 import { DrawingSheet } from './ui/DrawingSheet'
 import { AssemblyPanel } from './ui/AssemblyPanel'
-import { SketchBar } from './ui/SketchBar'
+import { SketchRibbon } from './ui/SketchRibbon'
 import { MeasurePanel, SectionPanel, type SectionState } from './ui/InspectPanels'
-import type { MeasureResult } from './rpc'
-import type { SketchTool } from './viewport/SketchController'
+import type { MeasureResult, SketchRefGeom, SketchConstraint } from './rpc'
+import type { SketchTool, SketchConstraintType } from './viewport/SketchController'
 import type { SketchFrameDTO } from './rpc'
 import { basename } from './util'
 
@@ -85,10 +85,14 @@ export function App(): JSX.Element {
     sketchId: string
     bodyId: string
     frame: SketchFrameDTO
+    refGeom: SketchRefGeom | null
   } | null>(null)
   const [sketchTool, setSketchTool] = useState<SketchTool>('line')
   const [sketchCount, setSketchCount] = useState(0)
   const [sketchInitial, setSketchInitial] = useState<unknown[]>([])
+  const [sketchConstruction, setSketchConstruction] = useState(false)
+  const [sketchAvail, setSketchAvail] = useState<SketchConstraintType[]>([])
+  const [sketchConstraintCount, setSketchConstraintCount] = useState(0)
   const [planePickMode, setPlanePickMode] = useState(false)
   const [pickPlanes, setPickPlanes] = useState<PickPlane[]>([])
 
@@ -135,14 +139,27 @@ export function App(): JSX.Element {
     setDatums(scene.datums ?? [])
     setPickPlanes(scene.pickPlanes ?? [])
     setBodies(tree.bodies)
+    setVisOverride({}) // engine state is authoritative again
   }, [])
 
   const toggleGroup = useCallback(
-    async (group: 'bodies' | 'sketches' | 'origin', visible: boolean) => {
-      await api.setVisibilityGroup(group, visible)
-      await refreshMeshesOnly()
+    (group: 'bodies' | 'sketches' | 'origin', visible: boolean) => {
+      // optimistic: paint the change now, reconcile with the engine after
+      setBodies((bs) => bs) // no-op keeps deps honest
+      setVisOverride((m) => {
+        const next = { ...m }
+        if (group === 'bodies') for (const mm of meshes) next[mm.id] = visible
+        if (group === 'sketches') for (const s of sketches) next[s.id] = visible
+        if (group === 'origin')
+          for (const b of bodies) for (const o of b.origin) next[o.id] = visible
+        return next
+      })
+      void api
+        .setVisibilityGroup(group, visible)
+        .then(() => (visible ? refreshMeshesOnly() : undefined))
+        .catch(() => undefined)
     },
-    [refreshMeshesOnly]
+    [meshes, sketches, bodies, refreshMeshesOnly]
   )
 
   const afterEdit = useCallback(async () => {
@@ -185,16 +202,28 @@ export function App(): JSX.Element {
     }
   }, [selection, afterEdit])
 
+  const resetSketchUi = useCallback(() => {
+    setSketchTool('line')
+    setSketchCount(0)
+    setSketchConstruction(false)
+    setSketchAvail([])
+    setSketchConstraintCount(0)
+    setSelection([])
+  }, [])
+
   const beginSketch = useCallback(
     async (ref: SketchRef) => {
       setPlanePickMode(false)
       const r = await api.sketchOn(ref)
-      setSketchSession({ sketchId: r.sketchId, bodyId: r.bodyId, frame: r.frame })
-      setSketchTool('line')
-      setSketchCount(0)
-      setSelection([])
+      setSketchSession({
+        sketchId: r.sketchId,
+        bodyId: r.bodyId,
+        frame: r.frame,
+        refGeom: r.refGeom
+      })
+      resetSketchUi()
     },
-    []
+    [resetSketchUi]
   )
 
   const createSketch = useCallback(async () => {
@@ -209,27 +238,43 @@ export function App(): JSX.Element {
     }
   }, [selection, beginSketch])
 
-  const editSketch = useCallback(async (sketchId: string) => {
-    const r = await api.sketchReopen(sketchId)
-    setSketchInitial(r.entities)
-    setSketchSession({ sketchId, bodyId: r.bodyId ?? '', frame: r.frame })
-    setSketchTool('select')
-    setSketchCount(r.entities.length)
-    setSelection([])
-  }, [])
+  const editSketch = useCallback(
+    async (sketchId: string) => {
+      const r = await api.sketchReopen(sketchId)
+      setSketchInitial(r.entities)
+      setSketchSession({
+        sketchId,
+        bodyId: r.bodyId ?? '',
+        frame: r.frame,
+        refGeom: r.refGeom
+      })
+      resetSketchUi()
+      setSketchTool('select')
+      setSketchCount(r.entities.length)
+    },
+    [resetSketchUi]
+  )
 
   const finishSketch = useCallback(async () => {
     if (!sketchSession) return
     const ents = vpApi.current?.getNewSketchEntities() ?? []
-    if (ents.length) await api.sketchAddGeometry(sketchSession.sketchId, ents)
-    await api.sketchFinish(sketchSession.sketchId)
+    const cons = (vpApi.current?.getSketchConstraints() ?? []) as SketchConstraint[]
     const id = sketchSession.sketchId
+    // one round trip: geometry + constraints + recompute happen server-side
+    await api.sketchFinish(id, ents, cons)
     setSketchSession(null)
     setSketchInitial([])
-    await refreshScene()
+    resetSketchUi()
+    // sketch edits touch only sketches + (rarely) the tree; skip the heavy
+    // mesh re-tessellation that refreshScene does
+    const [scene, tree] = await Promise.all([api.sceneGet(), api.treeGet()])
+    setSketches(scene.sketches ?? [])
+    setDatums(scene.datums ?? [])
+    setBodies(tree.bodies)
+    setVisOverride({})
     setSelection([{ kind: 'sketch', sketchId: id }])
     markDirty()
-  }, [sketchSession, refreshScene, markDirty])
+  }, [sketchSession, resetSketchUi, markDirty])
 
   const cancelSketch = useCallback(async () => {
     if (sketchSession) {
@@ -378,12 +423,20 @@ export function App(): JSX.Element {
   )
 
   const toggleVisibility = useCallback(
-    async (id: string, visible: boolean) => {
+    (id: string, visible: boolean) => {
+      // optimistic - the viewport filters on visOverride so this is instant
       setVisOverride((m) => ({ ...m, [id]: visible }))
-      await api.setVisibility(id, visible)
-      await refreshMeshesOnly()
+      const known =
+        meshes.some((x) => x.id === id) ||
+        sketches.some((x) => x.id === id) ||
+        datums.some((x) => x.id === id)
+      void api
+        .setVisibility(id, visible)
+        // only pay for a refetch when showing something the scene doesn't have yet
+        .then(() => (visible && !known ? refreshMeshesOnly() : undefined))
+        .catch(() => undefined)
     },
-    [refreshMeshesOnly]
+    [meshes, sketches, datums, refreshMeshesOnly]
   )
 
   // ---- file ops ----
@@ -649,7 +702,10 @@ export function App(): JSX.Element {
         else if (k === 'r') setSketchTool('rect')
         else if (k === 'c') setSketchTool('circle')
         else if (k === 'a') setSketchTool('arc')
-        else if (e.key === 'Escape') setSketchTool('select')
+        else if (k === 'x' && !ctrl) {
+          const on = vpApi.current?.toggleSketchConstruction() ?? !sketchConstruction
+          setSketchConstruction(on)
+        } else if (e.key === 'Escape') setSketchTool('select')
         return
       }
       if (!ctrl && (e.key === 's' || e.key === 'S')) {
@@ -677,10 +733,30 @@ export function App(): JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [sketchSession, save, openDesign, newDesign, fitView])
+  }, [sketchSession, sketchConstruction, save, openDesign, newDesign, fitView])
 
   const activeName = tabs.find((t) => t.id === activeTab)?.name ?? 'Untitled'
   const activeDirty = tabs.find((t) => t.id === activeTab)?.dirty ?? false
+
+  // client-side visibility: hide instantly, without waiting on the engine
+  const shownMeshes = useMemo(
+    () => meshes.filter((m) => visOverride[m.id] !== false),
+    [meshes, visOverride]
+  )
+  const shownSketches = useMemo(
+    () => sketches.filter((s) => visOverride[s.id] !== false),
+    [sketches, visOverride]
+  )
+  const shownDatums = useMemo(
+    () => datums.filter((dm) => visOverride[dm.id] !== false),
+    [datums, visOverride]
+  )
+
+  const onSketchChange = useCallback(() => {
+    setSketchCount(vpApi.current?.getSketchEntities().length ?? 0)
+    setSketchAvail(vpApi.current?.availableSketchConstraints() ?? [])
+    setSketchConstraintCount(vpApi.current?.getSketchConstraints().length ?? 0)
+  }, [])
 
   return (
     <div className="app">
@@ -719,7 +795,34 @@ export function App(): JSX.Element {
         />
 
         <div className="maincol">
-          <Ribbon commands={commands} />
+          <Ribbon
+            commands={commands}
+            sketchMode={!!sketchSession}
+            sketchPanel={
+              <SketchRibbon
+                tool={sketchTool}
+                onTool={setSketchTool}
+                construction={sketchConstruction}
+                onToggleConstruction={() => {
+                  const on = vpApi.current?.toggleSketchConstruction() ?? !sketchConstruction
+                  setSketchConstruction(on)
+                }}
+                available={sketchAvail}
+                onConstraint={(t) => {
+                  vpApi.current?.applySketchConstraint(t)
+                  onSketchChange()
+                }}
+                onUndo={() => {
+                  vpApi.current?.sketchUndo()
+                  onSketchChange()
+                }}
+                onFinish={() => void finishSketch()}
+                onCancel={() => void cancelSketch()}
+                count={sketchCount}
+                constraintCount={sketchConstraintCount}
+              />
+            }
+          />
           <DocTabs
             tabs={tabs}
             activeId={activeTab}
@@ -751,9 +854,9 @@ export function App(): JSX.Element {
               ) : (
                 <>
                   <Viewport
-                    meshes={meshes}
-                    sketches={sketches}
-                    datums={datums}
+                    meshes={shownMeshes}
+                    sketches={shownSketches}
+                    datums={shownDatums}
                     selection={selection}
                     onSelect={onSelect}
                     section={section}
@@ -769,11 +872,10 @@ export function App(): JSX.Element {
                     }
                     canvases={canvases}
                     sketchFrame={sketchSession?.frame ?? null}
+                    sketchRefGeom={sketchSession?.refGeom ?? null}
                     sketchInitialEntities={sketchInitial}
                     sketchTool={sketchTool}
-                    onSketchChange={() =>
-                      setSketchCount(vpApi.current?.getSketchEntities().length ?? 0)
-                    }
+                    onSketchChange={onSketchChange}
                     apiRef={vpApi}
                   />
                   {planePickMode && (
@@ -782,19 +884,6 @@ export function App(): JSX.Element {
                       start the sketch
                       <button onClick={() => setPlanePickMode(false)}>Cancel</button>
                     </div>
-                  )}
-                  {sketchSession && (
-                    <SketchBar
-                      tool={sketchTool}
-                      onTool={setSketchTool}
-                      onUndo={() => {
-                        vpApi.current?.sketchUndo()
-                        setSketchCount(vpApi.current?.getSketchEntities().length ?? 0)
-                      }}
-                      onFinish={() => void finishSketch()}
-                      onCancel={() => void cancelSketch()}
-                      count={sketchCount}
-                    />
                   )}
                   <Browser
                     bodies={bodies}

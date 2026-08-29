@@ -3,54 +3,16 @@
 Running checklist of user feedback from live testing. `[x]` done, `[~]` partial,
 `[ ]` open. Newest batches at the bottom.
 
-## Batch 1 - first look
-
-- [x] View cube missing (top-right)
-- [x] Browser: float it, drop the docked-sidebar / folder style
-- [x] Tabs for multiple open designs
-- [x] Waffle opens a left vertical banner that browses file directories
-- [x] Timeline full-width, left-aligned (not centered)
-- [x] Never show "Pad" / FreeCAD op names
-- [x] Ribbon tools need icons
-- [x] Add color (Fusion blue), not all grey
-- [x] Remove the ground grid
-- [x] Fix see-through / wireframe faces (double-sided material)
-
 ## Batch 2 - after run
 
-- [x] View cube too small (bumped 96 -> 132; batch 5 says still too small)
-- [x] Timeline needs play/stop
-- [x] Timeline buttons too small
-- [x] Timeline: no right scrollbar; horizontal only
-- [x] Timeline needs a scrubber
-- [x] Timeline items: double-click + right-click actions
-- [x] Waffle open shifts ribbon + tabs right (push layout)
-- [x] Model-tree visibility toggles
-- [x] Ribbon too short / had a scrollbar
-- [x] "Create" etc. dropdowns show the feature list
 - [~] Wire the actual tools (box/cyl/fillet/chamfer/shell/hole/pattern/mirror/
       plane done; revolve/loft/draft/combine/circular done; sweep needs 2 sketches)
-- [x] Dark theme background + material
-- [x] "s" command-palette search
 - [~] Save / Save As / export / import (save/open/STEP/STL/import wired; no PDF/DXF)
-- [x] Data Panel: trim folders to those with compatible files
-- [x] Git-tracked models + history/branch view (read-only history panel)
 
 ## Batch 3 - build everything
 
-- [x] Interactive 2D sketcher (line/rect/circle/arc, grid + endpoint snap,
-      finish -> real Sketcher sketch -> extrude/revolve)
-- [x] Revolve / Sweep / Loft / Draft / Combine / Circular Pattern wired
-- [x] Drawings: auto overall dims + click-to-dimension tool, title block, BOM
-      table (assemblies), PDF (printToPDF) + DXF (R12) export
-- [x] Measure (length/area/distance/angle) + Section (live clipping plane)
 - [~] Sheet metal: Base Flange (SheetMetal addon or pad fallback). Richer
       flange/unfold features deferred (low priority)
-- [x] Body split by a plane (SURFACE > Split Body). Full surface modelling
-      deferred (low priority)
-- [x] Packaging: electron-builder config (AppImage + NSIS), FreeCAD bundled as
-      extraResources, runtime path resolution, scripts/package.sh; --dir build
-      verified
 
 ## Batch 4 - timeline / origin / visibility
 
@@ -122,6 +84,43 @@ Running checklist of user feedback from live testing. `[x]` done, `[~]` partial,
 - [x] Inspect (Measure/Section) moved to a group on the SOLID tab
 - [x] Drawings rebuilt: opens a blank ISO-A3 sheet (border + title block); Add
       View one at a time + drag to place; Auto-layout is an explicit button
+
+## Batch 9 - sketch UX / responsiveness
+
+- [ ] No separate sketch popup: sketch tools live in a contextual SKETCH ribbon
+      tab that only shows in sketch mode (auto-selected on enter)
+- [ ] Sketch on a face is at the face, with the face's edges + vertices as
+      reference geometry you can snap to (centre on a point, land on an edge)
+- [ ] Manual constraints in the sketch tab: H / V / parallel / perpendicular /
+      equal / coincident / tangent / concentric
+- [ ] Canvas drag-a-line calibration (draw over a known length, type the real mm)
+- [ ] Finish Sketch was slow -> single round trip (geometry + constraints +
+      recompute in one call)
+- [ ] Finishing a sketch must never leave it visible-but-"before the timeline";
+      finish resumes the build (marker clears)
+- [ ] Way more responsive: visibility toggles are client-side first, no full
+      scene refetch on every eye-click
+
+## Batch 10 - scale / prompts / view cube / select / data panel / construction
+
+- [ ] Convert Units folds into Scale as unit presets (not its own tool)
+- [ ] Scale threw "prompt() is not supported" -> in-app dialog, no window.prompt
+- [ ] Right-click face > Set as Front/Top/Right must actually reorient the cube
+- [ ] Select tools regressed in the ribbon; restore the earlier richer set +
+      interactions, keep the ribbon placement
+- [ ] Drag to resize the left data (waffle) panel
+- [ ] Double-click to open a part from the data panel
+- [ ] Data-panel right-click: delete / rename / git history / move to folder,
+      for files and folders
+- [ ] Data-panel thumbnails: screenshot the part on save / close, use as preview
+- [ ] Sketch construction-geometry toggle: button + `x` keybind
+
+## Batch 11 - scrubber caching / open-into-tab
+
+- [ ] Timeline scrubber is slow to move; cache tessellation per rollback
+      position so scrubbing back and forth is instant
+- [ ] Opening a part drew a cube on top of it: Open must reset the doc (drop the
+      boot demo body) and load into a NEW tab, not the current scene
 
 ## Deferred / not done
 

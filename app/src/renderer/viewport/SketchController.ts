@@ -2,13 +2,24 @@
  * Interactive 2D sketching on a plane inside the 3D viewport.
  *
  * Owns pointer input while a sketch is active: projects the cursor onto the
- * sketch plane, applies grid / endpoint / origin snapping, runs a small state
- * machine per tool, and renders committed + rubber-band geometry in world space.
- * Emits plane-local (u,v mm) entities the sidecar can feed straight to Sketcher.
+ * sketch plane, applies grid / endpoint / origin / model-edge snapping, runs a
+ * small state machine per tool, records manual constraints, and renders
+ * committed + rubber-band geometry in world space. Emits plane-local (u,v mm)
+ * entities the sidecar feeds straight to Sketcher.
  */
 import * as THREE from 'three'
 
 export type SketchTool = 'select' | 'line' | 'rect' | 'circle' | 'arc'
+
+export type SketchConstraintType =
+  | 'Horizontal'
+  | 'Vertical'
+  | 'Parallel'
+  | 'Perpendicular'
+  | 'Equal'
+  | 'Tangent'
+  | 'Coincident'
+  | 'Concentric'
 
 export interface SketchFrame {
   origin: [number, number, number]
@@ -17,18 +28,33 @@ export interface SketchFrame {
   z: [number, number, number]
 }
 
-export type SketchEntity =
+export interface SketchRefGeom {
+  polys: number[][][]
+  points: number[][]
+}
+
+export type SketchEntity = (
   | { type: 'line'; a: [number, number]; b: [number, number] }
   | { type: 'rect'; a: [number, number]; b: [number, number] }
   | { type: 'circle'; c: [number, number]; r: number }
   | { type: 'arc'; c: [number, number]; r: number; a0: number; a1: number }
+) & { construction?: boolean }
+
+interface RecordedConstraint {
+  type: SketchConstraintType
+  refs: Array<{ new?: number; geo?: number; sub?: number; pt?: number }>
+}
 
 const GRID = 1 // mm snap
 const SNAP_PX = 12
 
+const isCurve = (e: SketchEntity): boolean => e.type === 'circle' || e.type === 'arc'
+const isLine = (e: SketchEntity): boolean => e.type === 'line'
+
 export class SketchController {
   private group = new THREE.Group()
   private preview = new THREE.Group()
+  private refGroup = new THREE.Group()
   private plane: THREE.Plane
   private O: THREE.Vector3
   private X: THREE.Vector3
@@ -41,12 +67,19 @@ export class SketchController {
   private cursorUV: [number, number] = [0, 0]
   private onChange: () => void
 
+  private refPolys: [number, number][][] = []
+  private refPoints: [number, number][] = []
+  private selected: number[] = []
+  private constraints: RecordedConstraint[] = []
+  private construction = false
+
   constructor(
     private readonly camera: THREE.PerspectiveCamera,
     private readonly dom: HTMLElement,
     frame: SketchFrame,
     root: THREE.Object3D,
-    onChange: () => void
+    onChange: () => void,
+    refGeom?: SketchRefGeom | null
   ) {
     this.O = new THREE.Vector3(...frame.origin)
     this.X = new THREE.Vector3(...frame.x).normalize()
@@ -55,9 +88,16 @@ export class SketchController {
     this.plane = new THREE.Plane().setFromNormalAndCoplanarPoint(N, this.O)
     this.onChange = onChange
 
+    if (refGeom) {
+      this.refPolys = refGeom.polys.map((p) => p.map((q) => [q[0], q[1]] as [number, number]))
+      this.refPoints = refGeom.points.map((q) => [q[0], q[1]] as [number, number])
+    }
+
     root.add(this.group)
     root.add(this.preview)
+    root.add(this.refGroup)
     this.addGrid()
+    this.drawRefGeom()
     this.redraw()
 
     this.dom.addEventListener('pointerdown', this.onDown)
@@ -68,7 +108,21 @@ export class SketchController {
   setTool(t: SketchTool): void {
     this.tool = t
     this.pending = []
+    if (t !== 'select') this.selected = []
     this.redraw()
+  }
+
+  setConstruction(on: boolean): void {
+    this.construction = on
+  }
+
+  toggleConstruction(): boolean {
+    this.construction = !this.construction
+    return this.construction
+  }
+
+  get isConstruction(): boolean {
+    return this.construction
   }
 
   getEntities(): SketchEntity[] {
@@ -80,6 +134,18 @@ export class SketchController {
     return this.entities.slice(this.baseCount)
   }
 
+  getConstraints(): RecordedConstraint[] {
+    return this.constraints
+  }
+
+  get constraintCount(): number {
+    return this.constraints.length
+  }
+
+  get selectedCount(): number {
+    return this.selected.length
+  }
+
   loadExisting(ents: SketchEntity[]): void {
     this.entities = ents.slice()
     this.baseCount = this.entities.length
@@ -88,6 +154,7 @@ export class SketchController {
 
   undo(): void {
     if (this.pending.length) this.pending.pop()
+    else if (this.constraints.length && !this.entities.length) this.constraints.pop()
     else this.entities.pop()
     this.redraw()
     this.onChange()
@@ -109,16 +176,18 @@ export class SketchController {
     return (Math.hypot(a.x - b.x, a.y - b.y) * this.dom.clientHeight) / 2
   }
 
+  private entityPoints(e: SketchEntity): [number, number][] {
+    if (e.type === 'line') return [e.a, e.b]
+    if (e.type === 'rect') return [e.a, e.b, [e.a[0], e.b[1]], [e.b[0], e.a[1]]]
+    return [e.c] // circle / arc centre
+  }
+
   private snap(uv: [number, number]): [number, number] {
     const tolMm = SNAP_PX / Math.max(this.pxPerMm(), 0.001)
-    // endpoints of existing entities + origin
-    const targets: [number, number][] = [[0, 0]]
-    for (const e of this.entities) {
-      if (e.type === 'line') targets.push(e.a, e.b)
-      if (e.type === 'rect') targets.push(e.a, e.b, [e.a[0], e.b[1]], [e.b[0], e.a[1]])
-      if (e.type === 'circle') targets.push(e.c)
-    }
-    for (const p of [...this.pending]) targets.push(p)
+    const targets: [number, number][] = [[0, 0], ...this.refPoints]
+    for (const e of this.entities) targets.push(...this.entityPoints(e))
+    for (const poly of this.refPolys) targets.push(...poly)
+    for (const p of this.pending) targets.push(p)
     let best: [number, number] | null = null
     let bestD = tolMm
     for (const t of targets) {
@@ -129,7 +198,34 @@ export class SketchController {
       }
     }
     if (best) return [best[0], best[1]]
+    // then: nearest point along a model edge (lets you land "on" an edge)
+    let onEdge: [number, number] | null = null
+    let onEdgeD = tolMm
+    for (const poly of this.refPolys) {
+      for (let i = 0; i + 1 < poly.length; i++) {
+        const q = this.closestOnSeg(uv, poly[i], poly[i + 1])
+        const d = Math.hypot(q[0] - uv[0], q[1] - uv[1])
+        if (d < onEdgeD) {
+          onEdgeD = d
+          onEdge = q
+        }
+      }
+    }
+    if (onEdge) return onEdge
     return [Math.round(uv[0] / GRID) * GRID, Math.round(uv[1] / GRID) * GRID]
+  }
+
+  private closestOnSeg(
+    p: [number, number],
+    a: [number, number],
+    b: [number, number]
+  ): [number, number] {
+    const abx = b[0] - a[0]
+    const aby = b[1] - a[1]
+    const len2 = abx * abx + aby * aby || 1
+    let t = ((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / len2
+    t = Math.max(0, Math.min(1, t))
+    return [a[0] + abx * t, a[1] + aby * t]
   }
 
   private pointerUV(ev: PointerEvent): [number, number] {
@@ -144,16 +240,76 @@ export class SketchController {
     return this.snap(this.worldToUV(hit))
   }
 
+  private rawPointerUV(ev: PointerEvent): [number, number] {
+    const r = this.dom.getBoundingClientRect()
+    const ndc = new THREE.Vector2(
+      ((ev.clientX - r.left) / r.width) * 2 - 1,
+      -((ev.clientY - r.top) / r.height) * 2 + 1
+    )
+    this.ray.setFromCamera(ndc, this.camera)
+    const hit = new THREE.Vector3()
+    if (!this.ray.ray.intersectPlane(this.plane, hit)) return this.cursorUV
+    return this.worldToUV(hit)
+  }
+
+  // --- distance from a uv to an entity, in mm (for select-mode picking) ---
+  private distToEntity(uv: [number, number], e: SketchEntity): number {
+    if (e.type === 'line') {
+      const q = this.closestOnSeg(uv, e.a, e.b)
+      return Math.hypot(q[0] - uv[0], q[1] - uv[1])
+    }
+    if (e.type === 'rect') {
+      const c = [e.a, [e.b[0], e.a[1]], e.b, [e.a[0], e.b[1]]] as [number, number][]
+      let m = Infinity
+      for (let i = 0; i < 4; i++) {
+        const q = this.closestOnSeg(uv, c[i], c[(i + 1) % 4])
+        m = Math.min(m, Math.hypot(q[0] - uv[0], q[1] - uv[1]))
+      }
+      return m
+    }
+    // circle / arc
+    return Math.abs(Math.hypot(uv[0] - e.c[0], uv[1] - e.c[1]) - e.r)
+  }
+
+  private pickEntity(uv: [number, number]): number {
+    const tolMm = SNAP_PX / Math.max(this.pxPerMm(), 0.001)
+    let best = -1
+    let bestD = tolMm
+    for (let i = 0; i < this.entities.length; i++) {
+      const d = this.distToEntity(uv, this.entities[i])
+      if (d < bestD) {
+        bestD = d
+        best = i
+      }
+    }
+    return best
+  }
+
   // --- input ---
   private onDown = (ev: PointerEvent): void => {
-    if (ev.button !== 0 || this.tool === 'select') return
+    if (ev.button !== 0) return
+    if (this.tool === 'select') {
+      const uv = this.rawPointerUV(ev)
+      const idx = this.pickEntity(uv)
+      ev.stopPropagation()
+      if (idx < 0) {
+        if (!ev.shiftKey) this.selected = []
+      } else if (ev.shiftKey) {
+        this.selected = this.selected.includes(idx)
+          ? this.selected.filter((i) => i !== idx)
+          : [...this.selected, idx]
+      } else {
+        this.selected = [idx]
+      }
+      this.redraw()
+      this.onChange()
+      return
+    }
     ev.stopPropagation()
     const uv = this.pointerUV(ev)
     this.pending.push(uv)
     const need = this.tool === 'arc' ? 3 : 2
-    if (this.pending.length >= need) {
-      this.commit()
-    }
+    if (this.pending.length >= need) this.commit()
     this.redraw()
   }
 
@@ -166,6 +322,7 @@ export class SketchController {
   private onKey = (ev: KeyboardEvent): void => {
     if (ev.key === 'Escape') {
       this.pending = []
+      this.selected = []
       this.redraw()
     } else if (ev.key === 'Enter' && this.tool === 'line') {
       this.pending = []
@@ -177,29 +334,128 @@ export class SketchController {
 
   private commit(): void {
     const p = this.pending
+    const k = this.construction ? { construction: true } : {}
     if (this.tool === 'line') {
-      this.entities.push({ type: 'line', a: p[0], b: p[1] })
+      this.entities.push({ type: 'line', a: p[0], b: p[1], ...k })
       this.pending = [p[1]] // chain
     } else if (this.tool === 'rect') {
-      this.entities.push({ type: 'rect', a: p[0], b: p[1] })
+      this.entities.push({ type: 'rect', a: p[0], b: p[1], ...k })
       this.pending = []
     } else if (this.tool === 'circle') {
       const r = Math.hypot(p[1][0] - p[0][0], p[1][1] - p[0][1])
-      this.entities.push({ type: 'circle', c: p[0], r })
+      this.entities.push({ type: 'circle', c: p[0], r, ...k })
       this.pending = []
     } else if (this.tool === 'arc') {
       const c = p[0]
       const r = Math.hypot(p[1][0] - c[0], p[1][1] - c[1])
       const a0 = Math.atan2(p[1][1] - c[1], p[1][0] - c[0])
       const a1 = Math.atan2(p[2][1] - c[1], p[2][0] - c[0])
-      this.entities.push({ type: 'arc', c, r, a0, a1 })
+      this.entities.push({ type: 'arc', c, r, a0, a1, ...k })
       this.pending = []
     }
     this.onChange()
   }
 
+  // --- constraints -------------------------------------------------------- //
+
+  /** Which constraint types are legal for the current selection. */
+  availableConstraints(): SketchConstraintType[] {
+    const sel = this.selected.map((i) => this.entities[i]).filter(Boolean)
+    if (!sel.length) return []
+    const out: SketchConstraintType[] = []
+    if (sel.length === 1 && isLine(sel[0])) out.push('Horizontal', 'Vertical')
+    if (sel.length === 2) {
+      const [a, b] = sel
+      if (isLine(a) && isLine(b)) out.push('Parallel', 'Perpendicular', 'Equal', 'Coincident')
+      if (isCurve(a) && isCurve(b)) out.push('Equal', 'Concentric')
+      if ((isLine(a) && isCurve(b)) || (isCurve(a) && isLine(b))) out.push('Tangent')
+    }
+    return out
+  }
+
+  applyConstraint(type: SketchConstraintType): boolean {
+    const idxs = this.selected.slice()
+    const ents = idxs.map((i) => this.entities[i])
+    if (ents.some((e) => !e)) return false
+    const ref = (i: number, pt?: number): RecordedConstraint['refs'][number] =>
+      i < this.baseCount ? { geo: i, pt } : { new: i - this.baseCount, sub: 0, pt }
+
+    if ((type === 'Horizontal' || type === 'Vertical') && ents.length === 1 && isLine(ents[0])) {
+      const e = this.entities[idxs[0]] as { type: 'line'; a: [number, number]; b: [number, number] }
+      if (type === 'Horizontal') e.b = [e.b[0], e.a[1]]
+      else e.b = [e.a[0], e.b[1]]
+      this.constraints.push({ type, refs: [ref(idxs[0])] })
+    } else if (
+      (type === 'Parallel' || type === 'Perpendicular') &&
+      ents.length === 2 &&
+      isLine(ents[0]) &&
+      isLine(ents[1])
+    ) {
+      const a = this.entities[idxs[0]] as { a: [number, number]; b: [number, number] }
+      const b = this.entities[idxs[1]] as { a: [number, number]; b: [number, number] }
+      let ang = Math.atan2(a.b[1] - a.a[1], a.b[0] - a.a[0])
+      if (type === 'Perpendicular') ang += Math.PI / 2
+      const len = Math.hypot(b.b[0] - b.a[0], b.b[1] - b.a[1])
+      b.b = [b.a[0] + Math.cos(ang) * len, b.a[1] + Math.sin(ang) * len]
+      this.constraints.push({ type, refs: [ref(idxs[0]), ref(idxs[1])] })
+    } else if (type === 'Equal' && ents.length === 2) {
+      const a = this.entities[idxs[0]]
+      const b = this.entities[idxs[1]]
+      if (isLine(a) && isLine(b)) {
+        const la = a as { a: [number, number]; b: [number, number] }
+        const lb = b as { a: [number, number]; b: [number, number] }
+        const len = Math.hypot(la.b[0] - la.a[0], la.b[1] - la.a[1])
+        const ang = Math.atan2(lb.b[1] - lb.a[1], lb.b[0] - lb.a[0])
+        lb.b = [lb.a[0] + Math.cos(ang) * len, lb.a[1] + Math.sin(ang) * len]
+      } else if (isCurve(a) && isCurve(b)) {
+        ;(b as { r: number }).r = (a as { r: number }).r
+      }
+      this.constraints.push({ type, refs: [ref(idxs[0]), ref(idxs[1])] })
+    } else if (type === 'Concentric' && ents.length === 2 && isCurve(ents[0]) && isCurve(ents[1])) {
+      ;(this.entities[idxs[1]] as { c: [number, number] }).c = [
+        ...(this.entities[idxs[0]] as { c: [number, number] }).c
+      ] as [number, number]
+      this.constraints.push({
+        type,
+        refs: [ref(idxs[0], 3), ref(idxs[1], 3)]
+      })
+    } else if (type === 'Coincident' && ents.length === 2 && isLine(ents[0]) && isLine(ents[1])) {
+      // weld the two nearest endpoints
+      const a = this.entities[idxs[0]] as { a: [number, number]; b: [number, number] }
+      const b = this.entities[idxs[1]] as { a: [number, number]; b: [number, number] }
+      const pairs: Array<[1 | 2, 1 | 2, number]> = [
+        [1, 1, Math.hypot(a.a[0] - b.a[0], a.a[1] - b.a[1])],
+        [1, 2, Math.hypot(a.a[0] - b.b[0], a.a[1] - b.b[1])],
+        [2, 1, Math.hypot(a.b[0] - b.a[0], a.b[1] - b.a[1])],
+        [2, 2, Math.hypot(a.b[0] - b.b[0], a.b[1] - b.b[1])]
+      ]
+      pairs.sort((x, y) => x[2] - y[2])
+      const [pa, pb] = pairs[0]
+      const target = pa === 1 ? a.a : a.b
+      if (pb === 1) b.a = [...target] as [number, number]
+      else b.b = [...target] as [number, number]
+      this.constraints.push({ type, refs: [ref(idxs[0], pa), ref(idxs[1], pb)] })
+    } else if (type === 'Tangent' && ents.length === 2) {
+      this.constraints.push({ type, refs: [ref(idxs[0]), ref(idxs[1])] })
+    } else {
+      return false
+    }
+    this.selected = []
+    this.redraw()
+    this.onChange()
+    return true
+  }
+
   // --- rendering ---
   private lineMat = new THREE.LineBasicMaterial({ color: 0x36a8ea })
+  private consMat = new THREE.LineDashedMaterial({
+    color: 0xc178e6,
+    dashSize: 2,
+    gapSize: 1.4
+  })
+  private selMat = new THREE.LineBasicMaterial({ color: 0xffb020, linewidth: 2 })
+  private refMat = new THREE.LineBasicMaterial({ color: 0x6b7784, transparent: true, opacity: 0.6 })
+  private refPtMat = new THREE.PointsMaterial({ color: 0x9aa7b4, size: 5, sizeAttenuation: false })
   private previewMat = new THREE.LineDashedMaterial({
     color: 0x8fd0f4,
     dashSize: 1.5,
@@ -231,11 +487,7 @@ export class SketchController {
   private entityObj(e: SketchEntity, mat: THREE.Material): THREE.Line {
     if (e.type === 'line') return this.polyToObj([e.a, e.b], mat)
     if (e.type === 'rect')
-      return this.polyToObj(
-        [e.a, [e.b[0], e.a[1]], e.b, [e.a[0], e.b[1]]],
-        mat,
-        true
-      )
+      return this.polyToObj([e.a, [e.b[0], e.a[1]], e.b, [e.a[0], e.b[1]]], mat, true)
     if (e.type === 'circle') return this.polyToObj(this.circleUVs(e.c, e.r), mat, true)
     return this.polyToObj(this.circleUVs(e.c, e.r, e.a0, e.a1), mat)
   }
@@ -253,21 +505,40 @@ export class SketchController {
     this.group.add(grid)
   }
 
+  private drawRefGeom(): void {
+    for (const poly of this.refPolys) {
+      if (poly.length >= 2) this.refGroup.add(this.polyToObj(poly, this.refMat))
+    }
+    if (this.refPoints.length) {
+      const g = new THREE.BufferGeometry().setFromPoints(
+        this.refPoints.map(([u, v]) => this.toWorld(u, v))
+      )
+      const pts = new THREE.Points(g, this.refPtMat)
+      pts.renderOrder = 19
+      this.refGroup.add(pts)
+    }
+  }
+
   private redraw(): void {
     for (const c of [...this.preview.children]) {
       this.preview.remove(c)
       ;(c as THREE.Line).geometry.dispose()
     }
-    // committed
     for (const c of [...this.group.children]) {
       if ((c as THREE.Line).isLine) {
         this.group.remove(c)
         ;(c as THREE.Line).geometry.dispose()
       }
     }
-    for (const e of this.entities) this.group.add(this.entityObj(e, this.lineMat))
+    for (let i = 0; i < this.entities.length; i++) {
+      const mat = this.selected.includes(i)
+        ? this.selMat
+        : this.entities[i].construction
+          ? this.consMat
+          : this.lineMat
+      this.group.add(this.entityObj(this.entities[i], mat))
+    }
 
-    // rubber band from pending + cursor
     if (this.pending.length) {
       const p = [...this.pending, this.cursorUV]
       if (this.tool === 'line' || this.tool === 'rect') {
@@ -282,9 +553,7 @@ export class SketchController {
       } else if (this.tool === 'arc' && this.pending.length >= 1) {
         const c = this.pending[0]
         const r = Math.hypot(this.cursorUV[0] - c[0], this.cursorUV[1] - c[1])
-        this.preview.add(
-          this.entityObj({ type: 'circle', c, r }, this.previewMat)
-        )
+        this.preview.add(this.entityObj({ type: 'circle', c, r }, this.previewMat))
       }
     }
   }
@@ -295,5 +564,6 @@ export class SketchController {
     window.removeEventListener('keydown', this.onKey)
     this.group.removeFromParent()
     this.preview.removeFromParent()
+    this.refGroup.removeFromParent()
   }
 }

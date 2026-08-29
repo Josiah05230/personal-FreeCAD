@@ -434,6 +434,51 @@ def _frame(sk):
     }
 
 
+def _plane_uv(fr, p):
+    """World point -> sketch-plane (u, v) mm. fr = _frame() result (unit axes)."""
+    ox, oy, oz = fr["origin"]
+    xx, xy, xz = fr["x"]
+    yx, yy, yz = fr["y"]
+    dx, dy, dz = p[0] - ox, p[1] - oy, p[2] - oz
+    return [dx * xx + dy * xy + dz * xz, dx * yx + dy * yy + dz * yz]
+
+
+def _face_ref_geom(sk, fr):
+    """Edges + vertices of the sketch's support face, projected into plane UV so
+    the 2D editor can show them faint and snap a new point / centre / endpoint
+    onto real model geometry."""
+    try:
+        sup = getattr(sk, "AttachmentSupport", None)
+        if not sup:
+            return None
+        obj, subs = sup[0]
+        sub = subs[0] if isinstance(subs, (list, tuple)) and subs else subs
+        if not sub or not isinstance(sub, str):
+            return None
+        face = obj.Shape.getElement(sub)
+        if face is None or face.ShapeType != "Face":
+            return None
+        polys, pts, seen = [], [], set()
+        for e in face.Edges:
+            try:
+                uv = [_plane_uv(fr, (p.x, p.y, p.z)) for p in e.discretize(24)]
+            except Exception:
+                continue
+            if len(uv) >= 2:
+                polys.append(uv)
+        for v in face.Vertexes:
+            uv = _plane_uv(fr, (v.X, v.Y, v.Z))
+            k = (round(uv[0], 4), round(uv[1], 4))
+            if k not in seen:
+                seen.add(k)
+                pts.append(uv)
+        if not polys and not pts:
+            return None
+        return {"polys": polys, "points": pts}
+    except Exception:
+        return None
+
+
 @method("sketch.onPlane")
 def sketch_on_plane(plane="XY"):
     """Create an empty sketch on an origin plane, ready for the 2D editor."""
@@ -447,7 +492,8 @@ def sketch_on_plane(plane="XY"):
     sk.MapMode = "FlatFace"
     sk.Visibility = True
     d.recompute()
-    return {"sketchId": sk.Name, "bodyId": body.Name, "frame": _frame(sk)}
+    return {"sketchId": sk.Name, "bodyId": body.Name, "frame": _frame(sk),
+            "refGeom": None}
 
 
 @method("sketch.onFace")
@@ -460,7 +506,9 @@ def sketch_on_face(bodyId, face):
     sk.MapMode = "FlatFace"
     sk.Visibility = True
     d.recompute()
-    return {"sketchId": sk.Name, "bodyId": body.Name, "frame": _frame(sk)}
+    fr = _frame(sk)
+    return {"sketchId": sk.Name, "bodyId": body.Name, "frame": fr,
+            "refGeom": _face_ref_geom(sk, fr)}
 
 
 @method("sketch.on")
@@ -498,7 +546,8 @@ def sketch_on(ref):
     sk.MapMode = "FlatFace"
     sk.Visibility = True
     d.recompute()
-    return {"sketchId": sk.Name, "bodyId": body.Name, "frame": _frame(sk)}
+    return {"sketchId": sk.Name, "bodyId": body.Name, "frame": _frame(sk),
+            "refGeom": None}
 
 
 @method("sketch.reopen")
@@ -523,8 +572,9 @@ def sketch_reopen(sketchId):
                          "a0": g.FirstParameter, "a1": g.LastParameter})
     d.recompute()
     body = sk.getParentGeoFeatureGroup()
+    fr = _frame(sk)
     return {"sketchId": sketchId, "bodyId": body.Name if body else None,
-            "frame": _frame(sk), "entities": ents}
+            "frame": fr, "entities": ents, "refGeom": _face_ref_geom(sk, fr)}
 
 
 @method("sketch.clear")
@@ -536,22 +586,102 @@ def sketch_clear(sketchId):
     return {"sketchId": sketchId, "count": 0}
 
 
-@method("sketch.finish")
-def sketch_finish(sketchId, autoConstrain=True):
-    """Add coincidence + H/V constraints, recompute, report closure."""
+def _add_sketch_elements(sk, elements):
+    """Add editor entities to a sketch. Returns emap: emap[i] = [geoId, ...] for
+    element i (a rect yields 4), so constraints can address them by element."""
+    import Part
+    from FreeCAD import Vector
+    emap = []
+    for el in elements or []:
+        t = el.get("type")
+        cons = bool(el.get("construction", False))
+        ids = []
+        if t == "line":
+            a, b = el["a"], el["b"]
+            ids.append(sk.addGeometry(
+                Part.LineSegment(Vector(a[0], a[1], 0), Vector(b[0], b[1], 0)), cons))
+        elif t == "circle":
+            c = el["c"]
+            ids.append(sk.addGeometry(
+                Part.Circle(Vector(c[0], c[1], 0), Vector(0, 0, 1), float(el["r"])), cons))
+        elif t == "arc":
+            c = el["c"]
+            circ = Part.Circle(Vector(c[0], c[1], 0), Vector(0, 0, 1), float(el["r"]))
+            ids.append(sk.addGeometry(
+                Part.ArcOfCircle(circ, float(el["a0"]), float(el["a1"])), cons))
+        elif t == "rect":
+            a, b = el["a"], el["b"]
+            x0, y0, x1, y1 = a[0], a[1], b[0], b[1]
+            corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+            for i in range(4):
+                p0, p1 = corners[i], corners[(i + 1) % 4]
+                ids.append(sk.addGeometry(
+                    Part.LineSegment(Vector(p0[0], p0[1], 0), Vector(p1[0], p1[1], 0)), False))
+        else:
+            raise RpcError(APP_ERROR, "unknown sketch element %r" % t)
+        emap.append(ids)
+    return emap
+
+
+_POINT_CONSTRAINTS = {"Coincident"}
+_LINE_PAIR_CONSTRAINTS = {"Parallel", "Perpendicular", "Equal", "Tangent"}
+
+
+def _apply_sketch_constraints(sk, constraints, emap):
+    """constraints: [{type, refs:[{new:i, sub:0, pt:1} | {geo:<id>, pt:1}]}].
+    `new` indexes into the elements just added (emap); `geo` is a raw geoId of
+    pre-existing geometry."""
     import Sketcher
+
+    def gid(ref):
+        if "geo" in ref:
+            return int(ref["geo"])
+        return emap[int(ref.get("new", 0))][int(ref.get("sub", 0))]
+
+    for c in constraints or []:
+        ct = c.get("type")
+        refs = c.get("refs", [])
+        try:
+            if ct in ("Horizontal", "Vertical") and refs:
+                sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0])))
+            elif ct in _LINE_PAIR_CONSTRAINTS and len(refs) >= 2:
+                sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0]), gid(refs[1])))
+            elif ct == "Coincident" and len(refs) >= 2:
+                sk.addConstraint(Sketcher.Constraint(
+                    "Coincident",
+                    gid(refs[0]), int(refs[0].get("pt", 1)),
+                    gid(refs[1]), int(refs[1].get("pt", 1))))
+            elif ct == "Concentric" and len(refs) >= 2:
+                sk.addConstraint(Sketcher.Constraint(
+                    "Coincident", gid(refs[0]), 3, gid(refs[1]), 3))
+        except Exception:
+            pass
+
+
+@method("sketch.finish")
+def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None):
+    """Commit geometry + manual constraints and close the sketch in one call
+    (editor sends everything at once so there is a single recompute)."""
     d, sk = _obj(sketchId)
+    emap = _add_sketch_elements(sk, elements) if elements else []
+    if constraints:
+        _apply_sketch_constraints(sk, constraints, emap)
     if autoConstrain:
         _auto_constrain(sk)
     d.recompute()
     sk.Visibility = True
     closed = False
     try:
-        import Part
-        wires = Part.Shape(sk.Shape).Wires
+        wires = sk.Shape.Wires
         closed = any(w.isClosed() for w in wires) if wires else False
     except Exception:
         pass
+    # Finishing a sketch resumes the build: never leave it sitting "after" the
+    # rollback marker where it would render but read as not-yet-existing.
+    body = sk.getParentGeoFeatureGroup()
+    if body is not None and session.marker(body.Name):
+        session.set_marker(body.Name, None)
+        session.set_rolled_empty(body.Name, False)
     return {
         "sketchId": sketchId,
         "count": int(sk.GeometryCount),
@@ -601,32 +731,10 @@ def _auto_constrain(sk):
 @method("sketch.addGeometry")
 def sketch_add_geometry(sketchId, elements):
     """elements: [{type:'line', a:[x,y], b:[x,y]} | {type:'circle', c:[x,y], r} |
-                  {type:'arc', c:[x,y], r, a0, a1}]  - coords in sketch plane mm."""
+                  {type:'arc', c:[x,y], r, a0, a1} | {type:'rect', a, b}]
+    coords in sketch plane mm."""
     d, sk = _obj(sketchId)
-    import Part
-    from FreeCAD import Vector
-    for el in elements:
-        t = el.get("type")
-        if t == "line":
-            a, b = el["a"], el["b"]
-            sk.addGeometry(Part.LineSegment(Vector(a[0], a[1], 0), Vector(b[0], b[1], 0)), False)
-        elif t == "circle":
-            c = el["c"]
-            sk.addGeometry(Part.Circle(Vector(c[0], c[1], 0), Vector(0, 0, 1), float(el["r"])), False)
-        elif t == "arc":
-            c = el["c"]
-            circ = Part.Circle(Vector(c[0], c[1], 0), Vector(0, 0, 1), float(el["r"]))
-            sk.addGeometry(Part.ArcOfCircle(circ, float(el["a0"]), float(el["a1"])), False)
-        elif t == "rect":
-            a, b = el["a"], el["b"]
-            x0, y0, x1, y1 = a[0], a[1], b[0], b[1]
-            corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
-            for i in range(4):
-                p0 = corners[i]
-                p1 = corners[(i + 1) % 4]
-                sk.addGeometry(Part.LineSegment(Vector(p0[0], p0[1], 0), Vector(p1[0], p1[1], 0)), False)
-        else:
-            raise RpcError(APP_ERROR, "unknown sketch element %r" % t)
+    _add_sketch_elements(sk, elements)
     d.recompute()
     return {"sketchId": sketchId, "count": int(sk.GeometryCount)}
 
@@ -907,6 +1015,7 @@ def tree_get():
                 "visible": bool(getattr(o, "Visibility", True)),
                 "features": feats,
                 "origin": origin,
+                "marker": session.marker(o.Name),
             })
     return {"bodies": bodies, "path": session.path()}
 

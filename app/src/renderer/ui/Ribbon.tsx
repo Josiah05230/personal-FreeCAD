@@ -1,19 +1,36 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { Command } from '../commands'
 import { Icon } from './icons'
 
 const TABS = ['SOLID', 'SURFACE', 'MESH', 'SHEET METAL', 'ASSEMBLE', 'INSERT', 'TOOLS'] as const
-type Tab = (typeof TABS)[number]
+type Tab = (typeof TABS)[number] | 'SKETCH'
 
 export function Ribbon({
   commands,
-  rightSlot
+  rightSlot,
+  sketchMode = false,
+  sketchPanel
 }: {
   commands: Command[]
   rightSlot?: React.ReactNode
+  sketchMode?: boolean
+  sketchPanel?: React.ReactNode
 }): JSX.Element {
   const [tab, setTab] = useState<Tab>('SOLID')
   const [menu, setMenu] = useState<{ group: string; x: number; y: number } | null>(null)
+
+  // entering sketch mode auto-selects the contextual tab; leaving returns to SOLID
+  const [prevTab, setPrevTab] = useState<Tab>('SOLID')
+  useEffect(() => {
+    if (sketchMode) {
+      setPrevTab((p) => (tab === 'SKETCH' ? p : tab))
+      setTab('SKETCH')
+      setMenu(null)
+    } else {
+      setTab((t) => (t === 'SKETCH' ? prevTab : t))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sketchMode])
 
   const groups = useMemo(() => {
     const forTab = commands.filter((c) => c.tab === tab)
@@ -31,13 +48,18 @@ export function Ribbon({
 
   const menuCmds = menu ? (groups.find((g) => g.name === menu.group)?.cmds ?? []) : []
 
+  const tabList: Tab[] = sketchMode ? [...TABS, 'SKETCH'] : [...TABS]
+
   return (
     <div className="ribbon">
       <div className="ribbon-tabs">
-        {TABS.map((t) => (
+        {tabList.map((t) => (
           <button
             key={t}
-            className={t === tab ? 'ribbon-tab active' : 'ribbon-tab'}
+            className={
+              (t === tab ? 'ribbon-tab active' : 'ribbon-tab') +
+              (t === 'SKETCH' ? ' contextual' : '')
+            }
             onClick={() => {
               setTab(t)
               setMenu(null)
@@ -49,6 +71,9 @@ export function Ribbon({
         <span className="ribbon-tabs-spacer" />
         {rightSlot}
       </div>
+      {tab === 'SKETCH' ? (
+        sketchPanel
+      ) : (
       <div className="ribbon-body">
         {groups.length === 0 && <div className="ribbon-none">Nothing on this tab yet</div>}
         {groups.map((g) => (
@@ -87,8 +112,9 @@ export function Ribbon({
           </div>
         ))}
       </div>
+      )}
 
-      {menu && (
+      {menu && tab !== 'SKETCH' && (
         <>
           <div className="ribbon-dd-scrim" onClick={() => setMenu(null)} />
           <div className="ribbon-dd" style={{ left: menu.x, top: menu.y }}>
