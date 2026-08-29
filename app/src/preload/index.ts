@@ -57,7 +57,15 @@ const cad = {
     ipcRenderer.invoke('drawing:writeText', text, outPath) as Promise<{ path: string }>,
   readImage: (path: string) => ipcRenderer.invoke('fs:readImage', path) as Promise<string>,
   mkdir: (dir: string) => ipcRenderer.invoke('fs:mkdir', dir) as Promise<{ dir: string }>,
-  touch: (path: string) => ipcRenderer.invoke('fs:touch', path) as Promise<{ path: string }>
+  touch: (path: string) => ipcRenderer.invoke('fs:touch', path) as Promise<{ path: string }>,
+  move: (src: string, dest: string) =>
+    ipcRenderer.invoke('fs:move', src, dest) as Promise<{ src: string; dest: string }>,
+  trash: (path: string) =>
+    ipcRenderer.invoke('fs:trash', path) as Promise<{ trashed: string }>,
+  siblingDirs: (path: string) => ipcRenderer.invoke('fs:siblingDirs', path) as Promise<string[]>,
+  captureThumb: (design: string) =>
+    ipcRenderer.invoke('win:captureThumb', design) as Promise<{ path: string | null }>,
+  thumb: (design: string) => ipcRenderer.invoke('fs:thumb', design) as Promise<string | null>
 }
 
 contextBridge.exposeInMainWorld('cad', cad)

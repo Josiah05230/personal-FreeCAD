@@ -46,6 +46,11 @@ interface CadBridge {
   readImage(path: string): Promise<string>
   mkdir(dir: string): Promise<{ dir: string }>
   touch(path: string): Promise<{ path: string }>
+  move(src: string, dest: string): Promise<{ src: string; dest: string }>
+  trash(path: string): Promise<{ trashed: string }>
+  siblingDirs(path: string): Promise<string[]>
+  captureThumb(design: string): Promise<{ path: string | null }>
+  thumb(design: string): Promise<string | null>
 }
 
 interface Window {

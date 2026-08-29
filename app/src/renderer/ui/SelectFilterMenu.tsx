@@ -1,17 +1,18 @@
-import { useState } from 'react'
-
 export type SelKind = 'face' | 'edge' | 'sketch' | 'datum' | 'body' | 'plane'
 export type SelectMode = 'paint' | 'window'
 
-const KINDS: { id: SelKind; label: string }[] = [
-  { id: 'face', label: 'Faces' },
-  { id: 'edge', label: 'Edges' },
-  { id: 'sketch', label: 'Sketch geometry' },
-  { id: 'datum', label: 'Datums / planes' },
-  { id: 'body', label: 'Bodies' }
+const KINDS: { id: SelKind; label: string; glyph: string }[] = [
+  { id: 'face', label: 'Faces', glyph: '◧' },
+  { id: 'edge', label: 'Edges', glyph: '╱' },
+  { id: 'body', label: 'Bodies', glyph: '▦' },
+  { id: 'sketch', label: 'Sketch geometry', glyph: '✎' },
+  { id: 'datum', label: 'Datums / planes', glyph: '▱' }
 ]
 
-/** Ribbon "Select" dropdown: mode (paint/window, exclusive) + entity checkboxes. */
+/**
+ * Fusion-style Select group - always-visible entity-kind toggles plus a
+ * paint / window mode switch. Inline in the ribbon, no dropdown.
+ */
 export function SelectFilterMenu({
   mode,
   onMode,
@@ -23,53 +24,49 @@ export function SelectFilterMenu({
   active: SelKind[]
   onActive: (next: SelKind[]) => void
 }): JSX.Element {
-  const [open, setOpen] = useState(false)
   const toggle = (k: SelKind): void =>
     onActive(active.includes(k) ? active.filter((x) => x !== k) : [...active, k])
+  const allOn = KINDS.every((k) => active.includes(k.id))
 
   return (
-    <div className="selmenu">
-      <button className="selmenu-btn" onClick={() => setOpen((v) => !v)}>
-        <span className="selmenu-ic">◱</span> Select <span className="selmenu-caret">▾</span>
-      </button>
-      {open && (
-        <>
-          <div className="selmenu-scrim" onClick={() => setOpen(false)} />
-          <div className="selmenu-pop">
-            <div className="selmenu-section">Mode</div>
-            <label className="selmenu-radio">
-              <input
-                type="radio"
-                name="selmode"
-                checked={mode === 'paint'}
-                onChange={() => onMode('paint')}
-              />
-              Paint select (click)
-            </label>
-            <label className="selmenu-radio">
-              <input
-                type="radio"
-                name="selmode"
-                checked={mode === 'window'}
-                onChange={() => onMode('window')}
-              />
-              Window select (drag box)
-            </label>
-            <div className="selmenu-sep" />
-            <div className="selmenu-section">Selectable</div>
-            {KINDS.map((k) => (
-              <label key={k.id} className="selmenu-check">
-                <input
-                  type="checkbox"
-                  checked={active.includes(k.id)}
-                  onChange={() => toggle(k.id)}
-                />
-                {k.label}
-              </label>
-            ))}
-          </div>
-        </>
-      )}
+    <div className="selfilter">
+      <div className="selfilter-modes">
+        <button
+          className={mode === 'paint' ? 'selfilter-mode on' : 'selfilter-mode'}
+          title="Paint select (click)"
+          onClick={() => onMode('paint')}
+        >
+          Paint
+        </button>
+        <button
+          className={mode === 'window' ? 'selfilter-mode on' : 'selfilter-mode'}
+          title="Window select (drag a box)"
+          onClick={() => onMode('window')}
+        >
+          Window
+        </button>
+      </div>
+      <div className="selfilter-kinds">
+        <button
+          className="selfilter-all"
+          title={allOn ? 'Only faces' : 'All types'}
+          onClick={() =>
+            onActive(allOn ? ['face', 'plane'] : [...KINDS.map((k) => k.id), 'plane'])
+          }
+        >
+          {allOn ? 'None' : 'All'}
+        </button>
+        {KINDS.map((k) => (
+          <button
+            key={k.id}
+            className={active.includes(k.id) ? 'selfilter-btn on' : 'selfilter-btn'}
+            title={k.label}
+            onClick={() => toggle(k.id)}
+          >
+            <span className="selfilter-glyph">{k.glyph}</span>
+          </button>
+        ))}
+      </div>
     </div>
   )
 }

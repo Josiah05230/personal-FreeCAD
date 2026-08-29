@@ -1997,3 +1997,146 @@ code {
   background: transparent;
   color: var(--text-dim);
 }
+
+/* ============ Batch 9-11 additions ============ */
+
+/* ---- Select group: inline in the ribbon (was a floating bar) ---- */
+.selfilter {
+  position: static;
+  transform: none;
+  bottom: auto;
+  left: auto;
+  background: transparent;
+  backdrop-filter: none;
+  border: none;
+  padding: 0;
+  gap: 8px;
+}
+.selfilter-modes {
+  display: flex;
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.selfilter-mode {
+  padding: 4px 8px;
+  font-size: 10px;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.selfilter-mode.on {
+  background: var(--accent);
+  color: #fff;
+}
+.selfilter-kinds {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.selfilter-glyph {
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* ---- contextual SKETCH ribbon tab ---- */
+.ribbon-tab.contextual {
+  color: var(--accent);
+}
+.ribbon-tab.contextual.active {
+  color: #fff;
+}
+.sketch-ribbon {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+}
+.sketch-ribbon .ribbon-cmd.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.sketch-ribbon-finish {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 10px;
+}
+.sketch-ribbon-count {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+/* ---- in-app prompt dialog (Electron has no window.prompt) ---- */
+.prompt-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: #0007;
+  display: grid;
+  place-items: center;
+}
+.prompt-dialog {
+  min-width: 340px;
+  background: var(--chrome-2, #23262a);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: 0 20px 60px #000a;
+}
+.prompt-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.prompt-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.prompt-field input,
+.prompt-field select {
+  padding: 6px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--line-soft);
+  background: var(--chrome-3);
+  color: var(--text);
+  font-size: 12px;
+}
+.prompt-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* ---- data panel: resize handle + thumbnails ---- */
+.datapanel-resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: ew-resize;
+  z-index: 6;
+}
+.datapanel-resize:hover {
+  background: var(--accent);
+  opacity: 0.5;
+}
+.dp-thumb {
+  width: 34px;
+  height: 24px;
+  object-fit: cover;
+  border-radius: 3px;
+  border: 1px solid var(--line-soft);
+  margin-right: 6px;
+  flex: none;
+}
+.dp-row.file {
+  align-items: center;
+}

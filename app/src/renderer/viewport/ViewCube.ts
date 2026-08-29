@@ -57,6 +57,8 @@ export class ViewCube {
   private tween: { from: THREE.Vector3; to: THREE.Vector3; up: THREE.Vector3; t: number } | null =
     null
   private disposed = false
+  /** maps cube-label space -> world space; "Set as Front/Top/Right" rewrites it */
+  private frameQuat = new THREE.Quaternion()
 
   constructor(
     private readonly mount: HTMLElement,
@@ -225,10 +227,19 @@ export class ViewCube {
     e.preventDefault()
     const z = this.zoneUnder(e)
     if (!z || z.userData.kind !== 'face') return
-    this.openMenu(e.clientX, e.clientY)
+    this.openMenu(e.clientX, e.clientY, (z.userData.dir as THREE.Vector3).clone())
   }
 
-  private openMenu(x: number, y: number): void {
+  /** Rotate the frame so the picked face ends up pointing `target` (label space). */
+  private reorient(faceLocalDir: THREE.Vector3, target: THREE.Vector3): void {
+    const cur = faceLocalDir.clone().applyQuaternion(this.frameQuat).normalize()
+    const delta = new THREE.Quaternion().setFromUnitVectors(cur, target.clone().normalize())
+    this.frameQuat.premultiply(delta)
+    // fly to look straight at that face in its new place
+    this.goToView(target.clone())
+  }
+
+  private openMenu(x: number, y: number, faceDir: THREE.Vector3): void {
     this.closeMenu()
     const host = this.mount.offsetParent instanceof HTMLElement ? this.mount.offsetParent : document.body
     const div = document.createElement('div')
@@ -236,17 +247,22 @@ export class ViewCube {
     const hostRect = host.getBoundingClientRect()
     div.style.left = `${x - hostRect.left}px`
     div.style.top = `${y - hostRect.top}px`
-    for (const [label, dir] of [
-      ['Set as Front', new THREE.Vector3(0, -1, 0)],
-      ['Set as Top', new THREE.Vector3(0, 0, 1)],
-      ['Set as Right', new THREE.Vector3(1, 0, 0)],
-      ['Home', new THREE.Vector3(1, -1, 0.8)]
-    ] as [string, THREE.Vector3][]) {
+    const actions: [string, () => void][] = [
+      ['Set as Front', () => this.reorient(faceDir, new THREE.Vector3(0, -1, 0))],
+      ['Set as Top', () => this.reorient(faceDir, new THREE.Vector3(0, 0, 1))],
+      ['Set as Right', () => this.reorient(faceDir, new THREE.Vector3(1, 0, 0))],
+      ['Reset orientation', () => {
+        this.frameQuat.identity()
+        this.home()
+      }],
+      ['Home', () => this.home()]
+    ]
+    for (const [label, run] of actions) {
       const item = document.createElement('div')
       item.className = 'viewcube-menu-item'
       item.textContent = label
       item.onclick = () => {
-        this.goToView(dir)
+        run()
         this.closeMenu()
       }
       div.appendChild(item)
@@ -268,11 +284,13 @@ export class ViewCube {
   }
 
   goToView(dir: THREE.Vector3): void {
-    const d = dir.clone().normalize()
+    // dir is in cube-label space; map it through the (possibly reoriented) frame
+    const d = dir.clone().normalize().applyQuaternion(this.frameQuat).normalize()
     const pivot = this.controls.pivot
     const dist = this.mainCam.position.distanceTo(pivot)
     const to = pivot.clone().addScaledVector(d, dist)
-    const up = Math.abs(d.z) > 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1)
+    const upLabel = Math.abs(dir.z) > 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1)
+    const up = upLabel.applyQuaternion(this.frameQuat).normalize()
     this.tween = { from: this.mainCam.position.clone(), to, up, t: 0 }
   }
 
@@ -287,7 +305,8 @@ export class ViewCube {
       this.mainCam.lookAt(this.controls.pivot)
       if (this.tween.t >= 1) this.tween = null
     }
-    this.cube.quaternion.copy(this.mainCam.quaternion).invert()
+    // cube shows the model frame: camera orientation, then the reorientation
+    this.cube.quaternion.copy(this.mainCam.quaternion).invert().multiply(this.frameQuat)
     this.renderer.render(this.scene, this.cam)
   }
 

@@ -1,6 +1,6 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron'
-import { resolve, join } from 'path'
-import { readdir, writeFile, readFile, mkdir } from 'fs/promises'
+import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
+import { resolve, join, dirname, basename } from 'path'
+import { readdir, writeFile, readFile, mkdir, rename } from 'fs/promises'
 import { homedir } from 'os'
 import { Sidecar, loadConfig } from './sidecar'
 import * as gitw from './git'
@@ -162,6 +162,52 @@ app.whenReady().then(async () => {
   ipcMain.handle('fs:touch', async (_e, path: string) => {
     await writeFile(path, '', { flag: 'wx' }).catch(() => undefined)
     return { path }
+  })
+
+  ipcMain.handle('fs:move', async (_e, src: string, dest: string) => {
+    await rename(src, dest)
+    return { src, dest }
+  })
+
+  ipcMain.handle('fs:trash', async (_e, path: string) => {
+    await shell.trashItem(resolve(path))
+    return { trashed: path }
+  })
+
+  // sibling folders of `path`'s directory (targets for "Move to folder")
+  ipcMain.handle('fs:siblingDirs', async (_e, path: string) => {
+    const base = dirname(path)
+    const up = resolve(base, '..')
+    const out: string[] = [base]
+    for (const root of [base, up]) {
+      const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
+      for (const e of entries) {
+        if (e.isDirectory() && !e.name.startsWith('.')) out.push(join(root, e.name))
+      }
+    }
+    return [...new Set(out)]
+  })
+
+  const thumbPath = (design: string): string =>
+    join(dirname(design), '.gwtcad-thumbs', basename(design).replace(/\.FCStd$/i, '') + '.png')
+
+  ipcMain.handle('win:captureThumb', async (_e, design: string) => {
+    if (!win || !design) return { path: null }
+    const img = await win.webContents.capturePage()
+    const small = img.resize({ width: 320, quality: 'good' })
+    const out = thumbPath(design)
+    await mkdir(dirname(out), { recursive: true })
+    await writeFile(out, small.toPNG())
+    return { path: out }
+  })
+
+  ipcMain.handle('fs:thumb', async (_e, design: string) => {
+    try {
+      const buf = await readFile(thumbPath(design))
+      return `data:image/png;base64,${buf.toString('base64')}`
+    } catch {
+      return null
+    }
   })
 
   try {

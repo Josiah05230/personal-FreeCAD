@@ -35,7 +35,7 @@ export interface CommandContext {
   startDrawing: () => Promise<void>
   startMeasure: () => void
   toggleSection: () => void
-  scale: (mode: 'factor' | 'units') => Promise<void>
+  scale: () => Promise<void>
   insertCanvas: () => Promise<void>
   selectFilterNode: ReactNode
 }
@@ -62,8 +62,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'mod.hole', title: 'Hole', group: 'Modify', tab: 'SOLID', icon: 'hole', run: op('hole') },
     { id: 'mod.draft', title: 'Draft', group: 'Modify', tab: 'SOLID', icon: 'draft', run: op('draft') },
     { id: 'mod.combine', title: 'Combine', group: 'Modify', tab: 'SOLID', icon: 'combine', run: op('combine') },
-    { id: 'mod.scale', title: 'Scale', group: 'Modify', tab: 'SOLID', icon: 'patternRect', run: () => ctx.scale('factor') },
-    { id: 'mod.units', title: 'Convert Units', group: 'Modify', tab: 'SOLID', icon: 'patternRect', run: () => ctx.scale('units') },
+    { id: 'mod.scale', title: 'Scale', group: 'Modify', tab: 'SOLID', icon: 'patternRect', run: () => ctx.scale() },
     // --- pattern ---
     { id: 'pat.rect', title: 'Rectangular Pattern', group: 'Pattern', tab: 'SOLID', icon: 'patternRect', run: op('patternLinear') },
     { id: 'pat.circ', title: 'Circular Pattern', group: 'Pattern', tab: 'SOLID', icon: 'patternCirc', run: op('patternCircular') },

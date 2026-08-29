@@ -31,6 +31,7 @@ import { DrawingSheet } from './ui/DrawingSheet'
 import { AssemblyPanel } from './ui/AssemblyPanel'
 import { SketchRibbon } from './ui/SketchRibbon'
 import { MeasurePanel, SectionPanel, type SectionState } from './ui/InspectPanels'
+import { PromptHost, promptText, promptForm } from './ui/PromptDialog'
 import type { MeasureResult, SketchRefGeom, SketchConstraint } from './rpc'
 import type { SketchTool, SketchConstraintType } from './viewport/SketchController'
 import type { SketchFrameDTO } from './rpc'
@@ -73,6 +74,7 @@ export function App(): JSX.Element {
 
   const [dataOpen, setDataOpen] = useState(false)
   const [gitOpen, setGitOpen] = useState(false)
+  const [gitTarget, setGitTarget] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [op, setOp] = useState<OpKind | null>(null)
 
@@ -404,7 +406,7 @@ export function App(): JSX.Element {
   const renameFeature = useCallback(
     async (id: string) => {
       const cur = bodies.flatMap((b) => b.features).find((f) => f.id === id)
-      const next = window.prompt('Rename', cur?.label ?? '')
+      const next = await promptText('Rename', cur?.label ?? '')
       if (next && next.trim()) {
         await api.renameFeature(id, next.trim())
         await afterEdit()
@@ -448,26 +450,31 @@ export function App(): JSX.Element {
     setTabs((t) =>
       t.map((x) => (x.id === activeTab ? { ...x, name: basename(p), dirty: false } : x))
     )
+    void window.cad.captureThumb(p).catch(() => undefined)
   }, [docPath, activeTab])
 
   const save = useCallback(async () => {
     if (!docPath) return saveAs()
     await api.save()
     markDirty(false)
+    void window.cad.captureThumb(docPath).catch(() => undefined)
   }, [docPath, saveAs, markDirty])
 
   const openDesign = useCallback(
     async (path?: string) => {
       const p = path ?? (await window.cad.openDialog())
       if (!p) return
+      // the sidecar holds one document: opening replaces it. Reflect that as a
+      // fresh tab rather than mutating whatever tab is in front.
       await api.open(p)
-      await refreshScene()
+      const id = `d${Date.now()}`
+      setTabs((t) => [...t.filter((x) => x.name !== 'Untitled' || x.dirty), { id, name: basename(p), dirty: false }])
+      setActiveTab(id)
       setDocPath(p)
-      setTabs((t) =>
-        t.map((x) => (x.id === activeTab ? { ...x, name: basename(p), dirty: false } : x))
-      )
+      setShowDrawing(false)
+      await refreshScene()
     },
-    [refreshScene, activeTab]
+    [refreshScene]
   )
 
   const exportModel = useCallback(async () => {
@@ -495,32 +502,39 @@ export function App(): JSX.Element {
     }
   }, [afterEdit])
 
-  const scaleBody = useCallback(
-    async (mode: 'factor' | 'units') => {
-      const target = selection.find((s) => s.kind === 'face' || s.kind === 'body') as
-        | { bodyId: string }
-        | undefined
-      const id = target?.bodyId ?? bodies[0]?.id ?? meshes[0]?.id
-      if (!id) {
-        window.alert('Select a body first.')
-        return
+  const scaleBody = useCallback(async () => {
+    const target = selection.find((s) => s.kind === 'face' || s.kind === 'body') as
+      | { bodyId: string }
+      | undefined
+    const id = target?.bodyId ?? bodies[0]?.id ?? meshes[0]?.id
+    if (!id) {
+      window.alert('Select a body first.')
+      return
+    }
+    const UNITS = ['mm', 'cm', 'm', 'in', 'ft', 'thou']
+    const r = await promptForm(
+      'Scale',
+      [
+        { key: 'mode', label: 'Mode', options: ['Uniform factor', 'Convert units'] },
+        { key: 'factor', label: 'Factor', value: '2' },
+        { key: 'from', label: 'From units', options: UNITS },
+        { key: 'to', label: 'To units', options: [...UNITS.slice(1), 'mm'] }
+      ],
+      'Apply'
+    )
+    if (!r) return
+    try {
+      if (r.mode === 'Convert units') {
+        await api.bodyConvertUnits(id, r.from, r.to)
+      } else {
+        const f = Number(r.factor)
+        if (f && f > 0) await api.bodyScale(id, f)
       }
-      try {
-        if (mode === 'factor') {
-          const f = Number(window.prompt('Scale factor', '2'))
-          if (f && f > 0) await api.bodyScale(id, f)
-        } else {
-          const from = window.prompt('Current units (mm, cm, m, in, ft, thou)', 'in')
-          const to = window.prompt('Convert to', 'mm')
-          if (from && to) await api.bodyConvertUnits(id, from, to)
-        }
-        await afterEdit()
-      } catch (e) {
-        window.alert((e as Error).message)
-      }
-    },
-    [selection, bodies, meshes, afterEdit]
-  )
+      await afterEdit()
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
+  }, [selection, bodies, meshes, afterEdit])
 
   const newDesign = useCallback(() => {
     const id = `d${Date.now()}`
@@ -630,8 +644,7 @@ export function App(): JSX.Element {
         const p = await api.ping()
         if (cancelled) return
         setStatus({ phase: 'ready', freecad: `${p.freecad} ${p.build}` })
-        await api.demoPad(60, 40, 15)
-        if (cancelled) return
+        // open to an empty document, like Fusion - no demo body
         await refreshScene()
       } catch (e) {
         if (!cancelled) setStatus({ phase: 'error', message: (e as Error).message })
@@ -764,7 +777,12 @@ export function App(): JSX.Element {
         dataOpen={dataOpen}
         onToggleData={() => setDataOpen((v) => !v)}
         gitOpen={gitOpen}
-        onToggleGit={() => setGitOpen((v) => !v)}
+        onToggleGit={() =>
+          setGitOpen((v) => {
+            if (v) setGitTarget(null)
+            return !v
+          })
+        }
         docName={activeName}
         dirty={activeDirty}
         fileActions={{
@@ -791,6 +809,10 @@ export function App(): JSX.Element {
               setActiveTab(id)
               await refreshScene()
             })()
+          }}
+          onGitHistory={(p) => {
+            setGitTarget(p)
+            setGitOpen(true)
           }}
         />
 
@@ -948,7 +970,7 @@ export function App(): JSX.Element {
           </div>
         </div>
 
-        <GitPanel open={gitOpen} filePath={docPath} />
+        <GitPanel open={gitOpen} filePath={gitTarget ?? docPath} />
       </div>
 
       <div className="statusbar">
@@ -974,6 +996,7 @@ export function App(): JSX.Element {
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
       />
+      <PromptHost />
     </div>
   )
 }
