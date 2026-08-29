@@ -77,8 +77,6 @@ working first version. `docs/FEEDBACK.md` tracks the live-test checklist.
 
 - Assembly joint SOLVING is experimental headless (joints are recorded and
   round-trip; the MbD solver is GUI-coupled, so parts don't move yet).
-- Window-select is a radio but still behaves as paint (no drag box yet).
-- View cube hover highlight is faces only (no edge/corner sub-cubes).
 - Drawings: dimension tool is linear only; no GD&T / section / detail views.
 - Git panel is read-only (no commit / checkout / diff from the UI).
 - Sheet metal, surface / body-split: not started (user: low priority).
