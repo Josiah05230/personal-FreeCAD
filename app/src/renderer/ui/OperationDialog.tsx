@@ -5,11 +5,16 @@ export type OpKind =
   | 'box'
   | 'cylinder'
   | 'extrude'
+  | 'revolve'
+  | 'loft'
+  | 'draft'
+  | 'combine'
   | 'fillet'
   | 'chamfer'
   | 'shell'
   | 'hole'
   | 'patternLinear'
+  | 'patternCircular'
   | 'mirror'
   | 'datumPlane'
 
@@ -25,7 +30,7 @@ interface FieldSpec {
 
 interface OpSpec {
   title: string
-  needs: 'none' | 'edges' | 'faces' | 'sketch' | 'planeFace'
+  needs: 'none' | 'edges' | 'faces' | 'sketch' | 'sketches2' | 'planeFace'
   fields: FieldSpec[]
 }
 
@@ -55,6 +60,47 @@ const SPECS: Record<OpKind, OpSpec> = {
       { key: 'cut', label: 'Cut', type: 'checkbox', default: false },
       { key: 'midplane', label: 'Symmetric', type: 'checkbox', default: false },
       { key: 'reversed', label: 'Flip', type: 'checkbox', default: false }
+    ]
+  },
+  revolve: {
+    title: 'Revolve',
+    needs: 'sketch',
+    fields: [
+      { key: 'angle', label: 'Angle', type: 'number', default: 360, step: 15 },
+      { key: 'axis', label: 'Axis', type: 'select', default: 'V', options: ['V', 'H'] },
+      { key: 'cut', label: 'Cut', type: 'checkbox', default: false }
+    ]
+  },
+  loft: {
+    title: 'Loft',
+    needs: 'sketches2',
+    fields: [{ key: 'cut', label: 'Cut', type: 'checkbox', default: false }]
+  },
+  draft: {
+    title: 'Draft',
+    needs: 'faces',
+    fields: [{ key: 'angle', label: 'Angle', type: 'number', default: 3, step: 1 }]
+  },
+  combine: {
+    title: 'Combine',
+    needs: 'none',
+    fields: [
+      {
+        key: 'op',
+        label: 'Operation',
+        type: 'select',
+        default: 'Fuse',
+        options: ['Fuse', 'Cut', 'Common']
+      }
+    ]
+  },
+  patternCircular: {
+    title: 'Circular Pattern',
+    needs: 'none',
+    fields: [
+      { key: 'axisPlane', label: 'Around', type: 'select', default: 'XY', options: ['XY', 'XZ', 'YZ'] },
+      { key: 'count', label: 'Quantity', type: 'number', default: 4, min: 2, step: 1 },
+      { key: 'angle', label: 'Total angle', type: 'number', default: 360, step: 15 }
     ]
   },
   fillet: {
@@ -137,24 +183,27 @@ export function OperationDialog({
 
   const edges = selection.filter((s) => s.kind === 'edge')
   const faces = selection.filter((s) => s.kind === 'face')
-  const sketchSel = selection.find((s) => s.kind === 'body') // sketch picked reported as body-ish; see note
+  const sketchesSel = selection.filter((s) => s.kind === 'sketch')
   const needMsg =
     spec.needs === 'edges'
       ? `${edges.length} edge${edges.length === 1 ? '' : 's'} selected`
       : spec.needs === 'faces' || spec.needs === 'planeFace'
         ? `${faces.length} face${faces.length === 1 ? '' : 's'} selected`
         : spec.needs === 'sketch'
-          ? sketchSel
+          ? sketchesSel.length
             ? 'sketch selected'
             : 'select a sketch'
-          : null
+          : spec.needs === 'sketches2'
+            ? `${sketchesSel.length} sketches selected (need 2+)`
+            : null
 
   const ready =
     spec.needs === 'none' ||
     (spec.needs === 'edges' && edges.length > 0) ||
     (spec.needs === 'faces' && faces.length > 0) ||
     (spec.needs === 'planeFace' && faces.length === 1) ||
-    (spec.needs === 'sketch' && !!sketchSel)
+    (spec.needs === 'sketch' && sketchesSel.length === 1) ||
+    (spec.needs === 'sketches2' && sketchesSel.length >= 2)
 
   return (
     <div className="opdlg">

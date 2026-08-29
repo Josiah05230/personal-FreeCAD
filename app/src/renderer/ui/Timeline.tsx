@@ -17,10 +17,11 @@ export interface TimelineHandlers {
   onDelete: (featureId: string) => void
 }
 
+const CHIP_W = 54 // keep in sync with .tl-chip min-width + gap
+
 /**
- * History timeline - full-width, bottom-pinned, left-aligned. Play/stop marches
- * the rollback marker; the scrubber drags it; chips are double-clickable and
- * right-clickable.
+ * History timeline - full-width, bottom-pinned, left-aligned. A draggable
+ * rollback marker sits between feature chips; the model rebuilds to that point.
  */
 export function Timeline({
   bodies,
@@ -31,17 +32,24 @@ export function Timeline({
 }): JSX.Element {
   const body = bodies[0]
   const feats = body?.features ?? []
-  const tipIndex = Math.max(0, feats.findIndex((f) => f.isTip))
-  const pos = feats.length ? (feats.some((f) => f.isTip) ? tipIndex : feats.length - 1) : 0
+  const tipIdx = feats.findIndex((f) => f.isTip)
+  const markerAt = tipIdx >= 0 ? tipIdx : feats.length - 1
 
   const [playing, setPlaying] = useState(false)
+  const [dragging, setDragging] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null)
-  const playRef = useRef<number | null>(null)
+  const trackRef = useRef<HTMLDivElement>(null)
+  const playTimer = useRef<number | null>(null)
+
+  const rollToIndex = (idx: number): void => {
+    const clamped = Math.max(0, Math.min(idx, feats.length - 1))
+    handlers.onRollTo(clamped >= feats.length - 1 ? null : feats[clamped].id)
+  }
 
   useEffect(() => {
     if (!playing) return
-    let i = pos
-    const step = (): void => {
+    let i = markerAt
+    const tick = (): void => {
       i += 1
       if (i >= feats.length) {
         setPlaying(false)
@@ -49,40 +57,51 @@ export function Timeline({
         return
       }
       handlers.onRollTo(feats[i].id)
-      playRef.current = window.setTimeout(step, 550)
+      playTimer.current = window.setTimeout(tick, 550)
     }
-    playRef.current = window.setTimeout(step, 550)
+    playTimer.current = window.setTimeout(tick, 550)
     return () => {
-      if (playRef.current) window.clearTimeout(playRef.current)
+      if (playTimer.current) window.clearTimeout(playTimer.current)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playing])
 
-  const jump = (idx: number): void => {
-    const clamped = Math.max(0, Math.min(idx, feats.length - 1))
-    handlers.onRollTo(clamped >= feats.length - 1 ? null : feats[clamped].id)
-  }
+  // drag the marker
+  useEffect(() => {
+    if (!dragging) return
+    const onMove = (e: PointerEvent): void => {
+      const el = trackRef.current
+      if (!el) return
+      const x = e.clientX - el.getBoundingClientRect().left + el.scrollLeft
+      rollToIndex(Math.round(x / CHIP_W) - 1)
+    }
+    const onUp = (): void => setDragging(false)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragging, feats.length])
 
   const menuItems = (id: string): MenuItem[] => [
     { label: 'Edit Feature', onClick: () => handlers.onEdit(id) },
     { label: 'Rename…', onClick: () => handlers.onRename(id) },
-    { label: 'Roll History Here', onClick: () => handlers.onRollTo(id) },
+    { label: 'Move timeline here', onClick: () => handlers.onRollTo(id) },
     { separator: true, label: '' },
     { label: 'Delete', danger: true, onClick: () => handlers.onDelete(id) }
   ]
 
+  const markerLeft = (markerAt + 1) * CHIP_W
+
   return (
     <div className="timeline">
       <div className="tl-controls">
-        <button className="tl-btn" title="Beginning" onClick={() => jump(0)} disabled={!feats.length}>
+        <button className="tl-btn" title="Beginning" onClick={() => rollToIndex(0)} disabled={!feats.length}>
           ⏮
         </button>
-        <button
-          className="tl-btn"
-          title="Step back"
-          onClick={() => jump(pos - 1)}
-          disabled={!feats.length}
-        >
+        <button className="tl-btn" title="Step back" onClick={() => rollToIndex(markerAt - 1)} disabled={!feats.length}>
           ◀
         </button>
         <button
@@ -93,63 +112,49 @@ export function Timeline({
         >
           {playing ? '■' : '▶'}
         </button>
-        <button
-          className="tl-btn"
-          title="Step forward"
-          onClick={() => jump(pos + 1)}
-          disabled={!feats.length}
-        >
+        <button className="tl-btn" title="Step forward" onClick={() => rollToIndex(markerAt + 1)} disabled={!feats.length}>
           ▶
         </button>
-        <button
-          className="tl-btn"
-          title="End"
-          onClick={() => handlers.onRollTo(null)}
-          disabled={!feats.length}
-        >
+        <button className="tl-btn" title="End" onClick={() => handlers.onRollTo(null)} disabled={!feats.length}>
           ⏭
         </button>
       </div>
 
-      <div className="tl-main">
-        <div className="tl-track">
-          {feats.length === 0 && <span className="tl-empty">No features yet</span>}
-          {feats.map((f, i) => {
-            const Glyph = Icon[KIND_ICON[f.kind] ?? 'point']
-            return (
-              <div
-                key={f.id}
-                className={
-                  'tl-chip' +
-                  (f.isTip ? ' tip' : '') +
-                  (f.error ? ' error' : '') +
-                  (i > pos ? ' rolled' : '')
-                }
-                title={`${f.label}  ·  ${f.opType}`}
-                onDoubleClick={() => handlers.onEdit(f.id)}
-                onContextMenu={(e) => {
-                  e.preventDefault()
-                  setMenu({ x: e.clientX, y: e.clientY, id: f.id })
-                }}
-                onClick={() => jump(i)}
-              >
-                <span className="tl-chip-ic">
-                  <Glyph />
-                </span>
-                <span className="tl-chip-label">{f.label}</span>
-              </div>
-            )
-          })}
-        </div>
-        {feats.length > 1 && (
-          <input
-            className="tl-scrub"
-            type="range"
-            min={0}
-            max={feats.length - 1}
-            value={pos}
-            onChange={(e) => jump(Number(e.target.value))}
-          />
+      <div className="tl-track" ref={trackRef}>
+        {feats.length === 0 && <span className="tl-empty">No features yet</span>}
+        {feats.map((f, i) => {
+          const Glyph = Icon[KIND_ICON[f.kind] ?? 'point']
+          return (
+            <div
+              key={f.id}
+              className={'tl-chip' + (f.error ? ' error' : '') + (i > markerAt ? ' rolled' : '')}
+              title={`${f.label}  ·  ${f.opType}`}
+              onDoubleClick={() => handlers.onEdit(f.id)}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                setMenu({ x: e.clientX, y: e.clientY, id: f.id })
+              }}
+              onClick={() => rollToIndex(i)}
+            >
+              <span className="tl-chip-ic">
+                <Glyph />
+              </span>
+              <span className="tl-chip-label">{f.label}</span>
+            </div>
+          )
+        })}
+        {feats.length > 0 && (
+          <div
+            className={dragging ? 'tl-marker dragging' : 'tl-marker'}
+            style={{ left: markerLeft }}
+            onPointerDown={(e) => {
+              e.preventDefault()
+              setDragging(true)
+            }}
+            title="Drag to roll history"
+          >
+            <span className="tl-marker-grip" />
+          </div>
         )}
       </div>
 

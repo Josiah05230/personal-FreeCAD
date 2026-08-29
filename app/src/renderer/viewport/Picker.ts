@@ -38,6 +38,9 @@ export class Picker {
     const hits = this.ray.intersectObjects(content.children, false)
     for (const h of hits) {
       const ud = h.object.userData
+      if (ud.pick === 'sketch') {
+        return { kind: 'sketch', sketchId: ud.sketchId }
+      }
       if (ud.pick === 'edge') {
         return {
           kind: 'edge',

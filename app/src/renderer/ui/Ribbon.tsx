@@ -7,7 +7,7 @@ type Tab = (typeof TABS)[number]
 
 export function Ribbon({ commands }: { commands: Command[] }): JSX.Element {
   const [tab, setTab] = useState<Tab>('SOLID')
-  const [openGroup, setOpenGroup] = useState<string | null>(null)
+  const [menu, setMenu] = useState<{ group: string; x: number; y: number } | null>(null)
 
   const groups = useMemo(() => {
     const forTab = commands.filter((c) => c.tab === tab)
@@ -23,6 +23,8 @@ export function Ribbon({ commands }: { commands: Command[] }): JSX.Element {
     return order.map((name) => ({ name, cmds: map.get(name)! }))
   }, [commands, tab])
 
+  const menuCmds = menu ? (groups.find((g) => g.name === menu.group)?.cmds ?? []) : []
+
   return (
     <div className="ribbon">
       <div className="ribbon-tabs">
@@ -32,7 +34,7 @@ export function Ribbon({ commands }: { commands: Command[] }): JSX.Element {
             className={t === tab ? 'ribbon-tab active' : 'ribbon-tab'}
             onClick={() => {
               setTab(t)
-              setOpenGroup(null)
+              setMenu(null)
             }}
           >
             {t}
@@ -64,42 +66,48 @@ export function Ribbon({ commands }: { commands: Command[] }): JSX.Element {
             </div>
             <button
               className="ribbon-group-name"
-              onClick={() => setOpenGroup((v) => (v === g.name ? null : g.name))}
+              onClick={(e) => {
+                const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                setMenu(
+                  menu?.group === g.name ? null : { group: g.name, x: r.left, y: r.bottom + 2 }
+                )
+              }}
             >
               {g.name} <span className="ribbon-group-caret">▾</span>
             </button>
-            {openGroup === g.name && (
-              <>
-                <div className="ribbon-dd-scrim" onClick={() => setOpenGroup(null)} />
-                <div className="ribbon-dd">
-                  {g.cmds.map((c) => {
-                    const Glyph = Icon[c.icon]
-                    return (
-                      <div
-                        key={c.id}
-                        className={c.run ? 'ribbon-dd-item' : 'ribbon-dd-item soon'}
-                        onClick={() => {
-                          if (c.run) {
-                            c.run()
-                            setOpenGroup(null)
-                          }
-                        }}
-                      >
-                        <span className="ribbon-dd-ic">
-                          <Glyph />
-                        </span>
-                        <span>{c.title}</span>
-                        {c.hotkey && <span className="ribbon-dd-key">{c.hotkey}</span>}
-                        {!c.run && <span className="ribbon-dd-soon">soon</span>}
-                      </div>
-                    )
-                  })}
-                </div>
-              </>
-            )}
           </div>
         ))}
       </div>
+
+      {menu && (
+        <>
+          <div className="ribbon-dd-scrim" onClick={() => setMenu(null)} />
+          <div className="ribbon-dd" style={{ left: menu.x, top: menu.y }}>
+            {menuCmds.map((c) => {
+              const Glyph = Icon[c.icon]
+              return (
+                <div
+                  key={c.id}
+                  className={c.run ? 'ribbon-dd-item' : 'ribbon-dd-item soon'}
+                  onClick={() => {
+                    if (c.run) {
+                      c.run()
+                      setMenu(null)
+                    }
+                  }}
+                >
+                  <span className="ribbon-dd-ic">
+                    <Glyph />
+                  </span>
+                  <span>{c.title}</span>
+                  {c.hotkey && <span className="ribbon-dd-key">{c.hotkey}</span>}
+                  {!c.run && <span className="ribbon-dd-soon">soon</span>}
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
     </div>
   )
 }

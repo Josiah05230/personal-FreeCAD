@@ -18,7 +18,7 @@ export interface Command {
 
 export interface CommandContext {
   openOp: (kind: OpKind) => void
-  extrude: () => Promise<void>
+  sweep: () => Promise<void>
   createSketch: () => Promise<void>
   newDesign: () => void
   open: () => Promise<void>
@@ -37,22 +37,22 @@ export function buildCommands(ctx: CommandContext): Command[] {
   return [
     // --- create ---
     { id: 'sketch.create', title: 'Create Sketch', group: 'Create', tab: 'SOLID', icon: 'sketch', hotkey: 'c s', run: () => ctx.createSketch() },
-    { id: 'solid.extrude', title: 'Extrude', group: 'Create', tab: 'SOLID', icon: 'extrude', hotkey: 'e', run: () => ctx.extrude() },
+    { id: 'solid.extrude', title: 'Extrude', group: 'Create', tab: 'SOLID', icon: 'extrude', hotkey: 'e', run: op('extrude') },
+    { id: 'solid.revolve', title: 'Revolve', group: 'Create', tab: 'SOLID', icon: 'revolve', run: op('revolve') },
+    { id: 'solid.loft', title: 'Loft', group: 'Create', tab: 'SOLID', icon: 'loft', run: op('loft') },
+    { id: 'solid.sweep', title: 'Sweep', group: 'Create', tab: 'SOLID', icon: 'sweep', run: () => ctx.sweep() },
     { id: 'prim.box', title: 'Box', group: 'Create', tab: 'SOLID', icon: 'extrude', run: op('box') },
     { id: 'prim.cyl', title: 'Cylinder', group: 'Create', tab: 'SOLID', icon: 'revolve', run: op('cylinder') },
-    { id: 'solid.revolve', title: 'Revolve', group: 'Create', tab: 'SOLID', icon: 'revolve' },
-    { id: 'solid.sweep', title: 'Sweep', group: 'Create', tab: 'SOLID', icon: 'sweep' },
-    { id: 'solid.loft', title: 'Loft', group: 'Create', tab: 'SOLID', icon: 'loft' },
     // --- modify ---
     { id: 'mod.fillet', title: 'Fillet', group: 'Modify', tab: 'SOLID', icon: 'fillet', hotkey: 'f', run: op('fillet') },
     { id: 'mod.chamfer', title: 'Chamfer', group: 'Modify', tab: 'SOLID', icon: 'chamfer', run: op('chamfer') },
     { id: 'mod.shell', title: 'Shell', group: 'Modify', tab: 'SOLID', icon: 'shell', run: op('shell') },
     { id: 'mod.hole', title: 'Hole', group: 'Modify', tab: 'SOLID', icon: 'hole', run: op('hole') },
-    { id: 'mod.draft', title: 'Draft', group: 'Modify', tab: 'SOLID', icon: 'draft' },
-    { id: 'mod.combine', title: 'Combine', group: 'Modify', tab: 'SOLID', icon: 'combine' },
+    { id: 'mod.draft', title: 'Draft', group: 'Modify', tab: 'SOLID', icon: 'draft', run: op('draft') },
+    { id: 'mod.combine', title: 'Combine', group: 'Modify', tab: 'SOLID', icon: 'combine', run: op('combine') },
     // --- pattern ---
     { id: 'pat.rect', title: 'Rectangular Pattern', group: 'Pattern', tab: 'SOLID', icon: 'patternRect', run: op('patternLinear') },
-    { id: 'pat.circ', title: 'Circular Pattern', group: 'Pattern', tab: 'SOLID', icon: 'patternCirc' },
+    { id: 'pat.circ', title: 'Circular Pattern', group: 'Pattern', tab: 'SOLID', icon: 'patternCirc', run: op('patternCircular') },
     { id: 'pat.mirror', title: 'Mirror', group: 'Pattern', tab: 'SOLID', icon: 'mirror', run: op('mirror') },
     // --- construct ---
     { id: 'con.plane', title: 'Offset Plane', group: 'Construct', tab: 'SOLID', icon: 'plane', run: op('datumPlane') },

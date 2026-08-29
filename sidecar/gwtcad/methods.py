@@ -154,6 +154,118 @@ def feature_extrude(sketchId, length=10.0, reversed=False, midplane=False, cut=F
     return tree_get()
 
 
+@method("feature.revolve")
+def feature_revolve(sketchId, angle=360.0, axis="V", reversed=False, cut=False):
+    d, sk = _obj(sketchId)
+    body = sk.getParentGeoFeatureGroup()
+    if body is None or body.TypeId != "PartDesign::Body":
+        raise RpcError(APP_ERROR, "sketch is not inside a Body")
+    tid = "PartDesign::Groove" if cut else "PartDesign::Revolution"
+    rev = body.newObject(tid, "Revolution")
+    rev.Label = next_label(body, tid)
+    rev.Profile = sk
+    rev.ReferenceAxis = (sk, ["V_Axis" if str(axis).upper().startswith("V") else "H_Axis"])
+    rev.Angle = float(angle)
+    if reversed:
+        rev.Reversed = True
+    sk.Visibility = False
+    d.recompute()
+    if not body.Shape.isValid():
+        raise RpcError(APP_ERROR, "revolve produced an invalid shape")
+    return tree_get()
+
+
+@method("feature.sweep")
+def feature_sweep(profileId, pathId, cut=False):
+    d, prof = _obj(profileId)
+    path = d.getObject(pathId)
+    if path is None:
+        raise RpcError(APP_ERROR, "no path sketch %r" % pathId)
+    body = prof.getParentGeoFeatureGroup()
+    tid = "PartDesign::SubtractivePipe" if cut else "PartDesign::AdditivePipe"
+    pipe = body.newObject(tid, "Sweep")
+    pipe.Label = next_label(body, tid)
+    pipe.Profile = prof
+    pipe.Spine = (path, [])
+    prof.Visibility = False
+    path.Visibility = False
+    d.recompute()
+    if not body.Shape.isValid():
+        raise RpcError(APP_ERROR, "sweep produced an invalid shape")
+    return tree_get()
+
+
+@method("feature.loft")
+def feature_loft(sketchIds, cut=False):
+    if not sketchIds or len(sketchIds) < 2:
+        raise RpcError(APP_ERROR, "loft needs at least two profiles")
+    d, first = _obj(sketchIds[0])
+    body = first.getParentGeoFeatureGroup()
+    tid = "PartDesign::SubtractiveLoft" if cut else "PartDesign::AdditiveLoft"
+    loft = body.newObject(tid, "Loft")
+    loft.Label = next_label(body, tid)
+    loft.Profile = first
+    loft.Sections = [d.getObject(s) for s in sketchIds[1:]]
+    for s in sketchIds:
+        d.getObject(s).Visibility = False
+    d.recompute()
+    if not body.Shape.isValid():
+        raise RpcError(APP_ERROR, "loft produced an invalid shape")
+    return tree_get()
+
+
+@method("feature.draft")
+def feature_draft(faces, angle=3.0, neutral=None):
+    body = _require_body()
+    tip = _solid_tip(body)
+    dr = build.dress_up(body, "PartDesign::Draft", tip, faces, "Draft")
+    dr.Angle = float(angle)
+    if neutral:
+        dr.NeutralPlane = (tip, [neutral])
+    body.Document.recompute()
+    if not body.Shape.isValid():
+        raise RpcError(APP_ERROR, "draft produced an invalid shape (need a neutral face?)")
+    return tree_get()
+
+
+@method("feature.combine")
+def feature_combine(op="Fuse", toolBodyId=None):
+    d = session.doc()
+    bodies = [o for o in d.Objects if o.TypeId == "PartDesign::Body"]
+    if len(bodies) < 2:
+        raise RpcError(APP_ERROR, "combine needs two bodies")
+    base = session.active_body(d)
+    tool = d.getObject(toolBodyId) if toolBodyId else next(b for b in bodies if b is not base)
+    boolean = base.newObject("PartDesign::Boolean", "Boolean")
+    boolean.Label = next_label(base, "PartDesign::Boolean")
+    boolean.Type = op  # Fuse | Cut | Common
+    boolean.Group = [tool]
+    d.recompute()
+    if not base.Shape.isValid():
+        raise RpcError(APP_ERROR, "combine produced an invalid shape")
+    return tree_get()
+
+
+@method("pattern.circular")
+def pattern_circular(count=4, angle=360.0, axisPlane="XY"):
+    body = _require_body()
+    tip = _solid_tip(body)
+    d = body.Document
+    p = body.newObject("PartDesign::PolarPattern", "PolarPattern")
+    p.Label = next_label(body, "PartDesign::PolarPattern")
+    p.Originals = [tip]
+    # revolve about the origin axis normal to the chosen plane
+    role = {"XY": "Z_Axis", "XZ": "Y_Axis", "YZ": "X_Axis"}.get(axisPlane.upper(), "Z_Axis")
+    for f in body.Origin.OriginFeatures:
+        if getattr(f, "Role", None) == role:
+            p.Axis = (f, [""])
+            break
+    p.Angle = float(angle)
+    p.Occurrences = int(count)
+    d.recompute()
+    return tree_get()
+
+
 @method("feature.fillet")
 def feature_fillet(edges, radius=2.0):
     body = _require_body()
@@ -252,14 +364,29 @@ def datum_plane(basePlane="XY", offset=10.0):
     pl.MapMode = "FlatFace"
     from FreeCAD import Placement, Vector, Rotation
     pl.AttachmentOffset = Placement(Vector(0, 0, float(offset)), Rotation())
+    session.set_datum_shown(pl.Name, True)  # new datums are shown, like Fusion
+    pl.Visibility = True
     d.recompute()
     return tree_get()
 
 
+def _frame(sk):
+    """The sketch plane's world frame: origin + x/y/z unit axes (for the 2D UI)."""
+    p = sk.Placement
+    ox = p.multVec(App.Vector(1, 0, 0)).sub(p.Base)
+    oy = p.multVec(App.Vector(0, 1, 0)).sub(p.Base)
+    oz = p.multVec(App.Vector(0, 0, 1)).sub(p.Base)
+    return {
+        "origin": [p.Base.x, p.Base.y, p.Base.z],
+        "x": [ox.x, ox.y, ox.z],
+        "y": [oy.x, oy.y, oy.z],
+        "z": [oz.x, oz.y, oz.z],
+    }
+
+
 @method("sketch.onPlane")
 def sketch_on_plane(plane="XY"):
-    """Create an empty sketch on an origin plane and return its id (for the
-    interactive sketch environment to populate)."""
+    """Create an empty sketch on an origin plane, ready for the 2D editor."""
     body = session.active_body()
     d = session.doc()
     if body is None:
@@ -268,18 +395,93 @@ def sketch_on_plane(plane="XY"):
     sk.Label = next_label(body, "Sketcher::SketchObject")
     sk.AttachmentSupport = [(build.origin_plane(body, plane), "")]
     sk.MapMode = "FlatFace"
+    sk.Visibility = True
     d.recompute()
-    return {"sketchId": sk.Name, "bodyId": body.Name, "placement": _placement(sk)}
+    return {"sketchId": sk.Name, "bodyId": body.Name, "frame": _frame(sk)}
 
 
-def _placement(o):
-    p = o.Placement
-    b, axis = p.Base, p.Rotation.Axis
+@method("sketch.onFace")
+def sketch_on_face(bodyId, face):
+    d, body = _obj(bodyId)
+    tip = _solid_tip(body)
+    sk = body.newObject("Sketcher::SketchObject", "Sketch")
+    sk.Label = next_label(body, "Sketcher::SketchObject")
+    sk.AttachmentSupport = [(tip, [face])]
+    sk.MapMode = "FlatFace"
+    sk.Visibility = True
+    d.recompute()
+    return {"sketchId": sk.Name, "bodyId": body.Name, "frame": _frame(sk)}
+
+
+@method("sketch.clear")
+def sketch_clear(sketchId):
+    d, sk = _obj(sketchId)
+    while sk.GeometryCount:
+        sk.delGeometry(sk.GeometryCount - 1)
+    d.recompute()
+    return {"sketchId": sketchId, "count": 0}
+
+
+@method("sketch.finish")
+def sketch_finish(sketchId, autoConstrain=True):
+    """Add coincidence + H/V constraints, recompute, report closure."""
+    import Sketcher
+    d, sk = _obj(sketchId)
+    if autoConstrain:
+        _auto_constrain(sk)
+    d.recompute()
+    sk.Visibility = True
+    closed = False
+    try:
+        import Part
+        wires = Part.Shape(sk.Shape).Wires
+        closed = any(w.isClosed() for w in wires) if wires else False
+    except Exception:
+        pass
     return {
-        "base": [b.x, b.y, b.z],
-        "axis": [axis.x, axis.y, axis.z],
-        "angle": p.Rotation.Angle,
+        "sketchId": sketchId,
+        "count": int(sk.GeometryCount),
+        "constrained": bool(sk.FullyConstrained),
+        "closed": closed,
     }
+
+
+def _auto_constrain(sk):
+    """Cheap auto-constraints: weld near-coincident endpoints, snap near-axis
+    lines to horizontal / vertical. Enough to make hand-drawn sketches behave."""
+    import Sketcher
+    tol = 1e-3
+    n = sk.GeometryCount
+    pts = []  # (geoId, posId, Vector)
+    for gid in range(n):
+        g = sk.Geometry[gid]
+        if g.TypeId == "Part::GeomLineSegment":
+            pts.append((gid, 1, g.StartPoint))
+            pts.append((gid, 2, g.EndPoint))
+    for i in range(len(pts)):
+        for j in range(i + 1, len(pts)):
+            g1, p1, v1 = pts[i]
+            g2, p2, v2 = pts[j]
+            if g1 == g2:
+                continue
+            if v1.distanceToPoint(v2) < 0.05:
+                try:
+                    sk.addConstraint(Sketcher.Constraint("Coincident", g1, p1, g2, p2))
+                except Exception:
+                    pass
+    for gid in range(n):
+        g = sk.Geometry[gid]
+        if g.TypeId != "Part::GeomLineSegment":
+            continue
+        dx = abs(g.StartPoint.x - g.EndPoint.x)
+        dy = abs(g.StartPoint.y - g.EndPoint.y)
+        try:
+            if dy < 0.05 and dx > 0.05:
+                sk.addConstraint(Sketcher.Constraint("Horizontal", gid))
+            elif dx < 0.05 and dy > 0.05:
+                sk.addConstraint(Sketcher.Constraint("Vertical", gid))
+        except Exception:
+            pass
 
 
 @method("sketch.addGeometry")
@@ -319,46 +521,77 @@ def sketch_add_geometry(sketchId, elements):
 # read-side: scene + tree
 # --------------------------------------------------------------------------- #
 
+def _datum_dto(o):
+    """A renderable description of a plane / axis / point datum."""
+    p = o.Placement
+    b = p.Base
+    if o.TypeId in ("App::Plane", "PartDesign::Plane"):
+        x = p.multVec(App.Vector(1, 0, 0)).sub(b)
+        y = p.multVec(App.Vector(0, 1, 0)).sub(b)
+        return {
+            "id": o.Name, "label": o.Label, "kind": "plane",
+            "origin": [b.x, b.y, b.z],
+            "x": [x.x, x.y, x.z], "y": [y.x, y.y, y.z],
+            "size": 40.0,
+        }
+    if o.TypeId in ("App::Line", "PartDesign::Line"):
+        d = p.multVec(App.Vector(1, 0, 0)).sub(b)
+        role = getattr(o, "Role", "") or o.Label
+        return {
+            "id": o.Name, "label": o.Label, "kind": "axis",
+            "origin": [b.x, b.y, b.z], "dir": [d.x, d.y, d.z], "length": 60.0,
+            "role": role,
+        }
+    if o.TypeId in ("App::Point", "PartDesign::Point"):
+        return {"id": o.Name, "label": o.Label, "kind": "point", "origin": [b.x, b.y, b.z]}
+    return None
+
+
 @method("scene.get")
 def scene_get():
-    """Render buffers for every visible solid body + visible sketches."""
+    """Render buffers for visible bodies, sketches, and datum geometry."""
     d = session.doc(create=False)
-    meshes = []
-    sketches = []
-    if d is not None:
-        for o in d.Objects:
-            if o.TypeId == "PartDesign::Body":
-                if not getattr(o, "Visibility", True):
-                    continue
-                shape = getattr(o, "Shape", None)
-                if shape is None or shape.isNull():
-                    continue
-                buf = tessellate_shape(shape)
-                buf["id"] = o.Name
-                buf["label"] = o.Label
-                meshes.append(buf)
-            elif o.TypeId == "App::Link":
-                shape = getattr(o, "Shape", None)
-                if shape is None or shape.isNull():
-                    continue
-                buf = tessellate_shape(shape)
-                buf["id"] = o.Name
-                buf["label"] = o.Label
+    meshes, sketches, datums = [], [], []
+    if d is None:
+        return {"meshes": meshes, "sketches": sketches, "datums": datums}
+
+    for o in d.Objects:
+        tid = o.TypeId
+        if tid in ("PartDesign::Body", "App::Link"):
+            if not getattr(o, "Visibility", True):
+                continue
+            if tid == "PartDesign::Body" and session.is_rolled_empty(o.Name):
+                continue
+            shape = getattr(o, "Shape", None)
+            if shape is None or shape.isNull():
+                continue
+            buf = tessellate_shape(shape)
+            buf["id"] = o.Name
+            buf["label"] = o.Label
+            if tid == "App::Link":
                 buf["component"] = True
-                meshes.append(buf)
-            elif o.TypeId == "Sketcher::SketchObject" and getattr(o, "Visibility", False):
-                polys = []
-                try:
-                    for e in o.Shape.Edges:
-                        pts = []
-                        for p in e.discretize(24):
-                            pts.extend((p.x, p.y, p.z))
-                        if len(pts) >= 6:
-                            polys.append(pts)
-                except Exception:
-                    pass
-                sketches.append({"id": o.Name, "label": o.Label, "polys": polys})
-    return {"meshes": meshes, "sketches": sketches}
+            meshes.append(buf)
+        elif tid == "Sketcher::SketchObject" and getattr(o, "Visibility", False):
+            polys = []
+            try:
+                for e in o.Shape.Edges:
+                    pts = []
+                    for p in e.discretize(24):
+                        pts.extend((p.x, p.y, p.z))
+                    if len(pts) >= 6:
+                        polys.append(pts)
+            except Exception:
+                pass
+            sketches.append({"id": o.Name, "label": o.Label, "polys": polys})
+        elif tid in ("App::Plane", "App::Line", "App::Point",
+                     "PartDesign::Plane", "PartDesign::Line", "PartDesign::Point"):
+            if not session.datum_shown(o.Name):
+                continue
+            dto = _datum_dto(o)
+            if dto:
+                datums.append(dto)
+
+    return {"meshes": meshes, "sketches": sketches, "datums": datums}
 
 
 @method("tree.get")
@@ -381,13 +614,30 @@ def tree_get():
                     "opType": op_name(f.TypeId),
                     "kind": _kind(f.TypeId),
                     "isTip": f is tip,
+                    "visible": bool(getattr(f, "Visibility", False)),
                     "error": bool(getattr(f, "State", None) and "Error" in f.State),
                 })
+            origin = []
+            try:
+                for g in o.Origin.OriginFeatures:
+                    k = ("plane" if "Plane" in g.TypeId
+                         else "axis" if "Line" in g.TypeId
+                         else "point")
+                    origin.append({
+                        "id": g.Name,
+                        "label": g.Label,
+                        "role": getattr(g, "Role", ""),
+                        "kind": k,
+                        "visible": session.datum_shown(g.Name),
+                    })
+            except Exception:
+                pass
             bodies.append({
                 "id": o.Name,
                 "label": o.Label,
                 "visible": bool(getattr(o, "Visibility", True)),
                 "features": feats,
+                "origin": origin,
             })
     return {"bodies": bodies, "path": session.path()}
 
@@ -406,36 +656,93 @@ def _obj(name):
     return d, o
 
 
+_DATUM_TIDS = ("App::Plane", "App::Line", "App::Point",
+               "PartDesign::Plane", "PartDesign::Line", "PartDesign::Point")
+
+
 @method("object.setVisibility")
 def object_set_visibility(id, visible):
     d, o = _obj(id)
-    o.Visibility = bool(visible)
+    visible = bool(visible)
+    if o.TypeId in _DATUM_TIDS:
+        session.set_datum_shown(o.Name, visible)
+    o.Visibility = visible
     d.recompute()
-    return {"id": id, "visible": bool(o.Visibility)}
+    return {"id": id, "visible": visible}
+
+
+@method("visibility.setGroup")
+def visibility_set_group(group, visible):
+    """group: 'bodies' | 'sketches' | 'origin' (origin geometry only) |
+    'construction' (user datum planes/axes/points)."""
+    d = session.doc(create=False)
+    if d is None:
+        return {"group": group, "visible": bool(visible)}
+    visible = bool(visible)
+    for o in d.Objects:
+        tid = o.TypeId
+        if group == "bodies" and tid == "PartDesign::Body":
+            o.Visibility = visible
+        elif group == "sketches" and tid == "Sketcher::SketchObject":
+            o.Visibility = visible
+        elif group == "origin" and tid in ("App::Plane", "App::Line", "App::Point"):
+            session.set_datum_shown(o.Name, visible)
+            o.Visibility = visible
+        elif group == "construction" and tid in (
+            "PartDesign::Plane", "PartDesign::Line", "PartDesign::Point"
+        ):
+            session.set_datum_shown(o.Name, visible)
+            o.Visibility = visible
+    d.recompute()
+    return {"group": group, "visible": visible}
 
 
 @method("history.rollTo")
 def history_roll_to(bodyId, featureId=None):
-    """Set the Body tip (Fusion's rollback marker). featureId=None -> newest."""
+    """Move the rollback marker to just after `featureId` (None => newest).
+
+    The Body Tip snaps to the last SOLID feature at or before the marker so the
+    displayed shape matches that moment; a sketch/datum sitting exactly at the
+    marker is shown as an overlay.
+    """
     d, body = _obj(bodyId)
     if body.TypeId != "PartDesign::Body":
         raise RpcError(APP_ERROR, "%r is not a Body" % bodyId)
     feats = [f for f in body.Group if f.TypeId != "App::Origin"]
     if not feats:
-        return {"tip": None}
-    target = feats[-1] if featureId is None else d.getObject(featureId)
-    if target is None:
-        raise RpcError(APP_ERROR, "no feature %r" % featureId)
-    body.Tip = target
-    # everything after the tip is hidden; tip solid shown
-    reached = False
-    for f in feats:
+        return {"tip": None, "marker": None}
+
+    marker_idx = len(feats) - 1 if featureId is None else next(
+        (i for i, f in enumerate(feats) if f.Name == featureId), len(feats) - 1)
+    marker = feats[marker_idx]
+
+    last_solid = None
+    for f in feats[: marker_idx + 1]:
         if _kind(f.TypeId) == "solid":
-            f.Visibility = f is target or (not reached)
-        if f is target:
-            reached = True
+            last_solid = f
+
+    if last_solid is not None:
+        body.Tip = last_solid
+        session.set_rolled_empty(body.Name, False)
+    else:
+        # nothing solid yet at this point; keep Tip where it is but flag the
+        # body so scene.get skips its (stale) shape
+        session.set_rolled_empty(body.Name, True)
+
+    # show the marker sketch/datum (if that is what the marker sits on); hide
+    # the other in-tree sketches/datums so the view is clean at that step
+    for f in feats:
+        if _kind(f.TypeId) in ("sketch", "datum"):
+            vis = f is marker
+            f.Visibility = vis
+            if _kind(f.TypeId) == "datum":
+                session.set_datum_shown(f.Name, vis)
     d.recompute()
-    return {"tip": target.Name}
+    return {
+        "tip": last_solid.Name if last_solid else None,
+        "marker": marker.Name,
+        "hasSolid": last_solid is not None,
+    }
 
 
 @method("feature.rename")

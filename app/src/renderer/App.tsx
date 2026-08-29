@@ -6,8 +6,10 @@ import {
   type SketchRender,
   type Selection,
   type DrawingView,
-  type AssemblyTree
+  type AssemblyTree,
+  type DatumDTO
 } from './rpc'
+import { SelectionFilterBar, type SelKind } from './ui/SelectionFilterBar'
 import { buildCommands } from './commands'
 import { Viewport } from './viewport/Viewport'
 import type { ViewportApi } from './viewport/types'
@@ -22,6 +24,9 @@ import { CommandPalette } from './ui/CommandPalette'
 import { OperationDialog, type OpKind, type OpValues } from './ui/OperationDialog'
 import { DrawingSheet } from './ui/DrawingSheet'
 import { AssemblyPanel } from './ui/AssemblyPanel'
+import { SketchBar } from './ui/SketchBar'
+import type { SketchTool } from './viewport/SketchController'
+import type { SketchFrameDTO } from './rpc'
 import { basename } from './util'
 
 type Status =
@@ -34,13 +39,19 @@ const isTypingTarget = (t: EventTarget | null): boolean => {
   return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
 }
 const selKey = (s: Selection): string =>
-  s.kind === 'body' ? `body:${s.bodyId}` : `${s.kind}:${s.bodyId}:${s.sub}`
+  s.kind === 'body'
+    ? `body:${s.bodyId}`
+    : s.kind === 'sketch'
+      ? `sketch:${s.sketchId}`
+      : `${s.kind}:${s.bodyId}:${s.sub}`
 
 export function App(): JSX.Element {
   const [status, setStatus] = useState<Status>({ phase: 'boot' })
   const [meshes, setMeshes] = useState<RenderMesh[]>([])
   const [sketches, setSketches] = useState<SketchRender[]>([])
+  const [datums, setDatums] = useState<DatumDTO[]>([])
   const [bodies, setBodies] = useState<BodyTree[]>([])
+  const [selFilter, setSelFilter] = useState<SelKind[]>(['face', 'edge', 'sketch', 'body'])
   const [docPath, setDocPath] = useState<string | null>(null)
   const [visOverride, setVisOverride] = useState<Record<string, boolean>>({})
   const [selection, setSelection] = useState<Selection[]>([])
@@ -55,6 +66,15 @@ export function App(): JSX.Element {
 
   const [asmTree, setAsmTree] = useState<AssemblyTree | null>(null)
   const [jointType, setJointType] = useState('Revolute')
+
+  const [sketchSession, setSketchSession] = useState<{
+    sketchId: string
+    bodyId: string
+    frame: SketchFrameDTO
+  } | null>(null)
+  const [sketchTool, setSketchTool] = useState<SketchTool>('line')
+  const [sketchCount, setSketchCount] = useState(0)
+  const [planePick, setPlanePick] = useState(false)
 
   const [tabs, setTabs] = useState<DocTab[]>([{ id: 'd1', name: 'Untitled', dirty: false }])
   const [activeTab, setActiveTab] = useState('d1')
@@ -75,6 +95,7 @@ export function App(): JSX.Element {
     ])
     setMeshes(scene.meshes)
     setSketches(scene.sketches ?? [])
+    setDatums(scene.datums ?? [])
     setBodies(tree.bodies)
     setDocPath(tree.path)
     setVisOverride({})
@@ -82,10 +103,20 @@ export function App(): JSX.Element {
   }, [])
 
   const refreshMeshesOnly = useCallback(async () => {
-    const scene = await api.sceneGet()
+    const [scene, tree] = await Promise.all([api.sceneGet(), api.treeGet()])
     setMeshes(scene.meshes)
     setSketches(scene.sketches ?? [])
+    setDatums(scene.datums ?? [])
+    setBodies(tree.bodies)
   }, [])
+
+  const toggleGroup = useCallback(
+    async (group: 'bodies' | 'sketches' | 'origin', visible: boolean) => {
+      await api.setVisibilityGroup(group, visible)
+      await refreshMeshesOnly()
+    },
+    [refreshMeshesOnly]
+  )
 
   const afterEdit = useCallback(async () => {
     await refreshScene()
@@ -94,28 +125,89 @@ export function App(): JSX.Element {
   }, [refreshScene, markDirty])
 
   // ---- selection ----
-  const onSelect = useCallback((sel: Selection | null, additive: boolean) => {
-    if (!sel) {
-      if (!additive) setSelection([])
-      return
-    }
-    setSelection((cur) => {
-      if (!additive) return [sel]
-      const k = selKey(sel)
-      return cur.some((s) => selKey(s) === k) ? cur.filter((s) => selKey(s) !== k) : [...cur, sel]
-    })
-  }, [])
+  const onSelect = useCallback(
+    (sel: Selection | null, additive: boolean) => {
+      if (!sel) {
+        if (!additive) setSelection([])
+        return
+      }
+      if (!selFilter.includes(sel.kind as SelKind)) return // selection filter
+      setSelection((cur) => {
+        if (!additive) return [sel]
+        const k = selKey(sel)
+        return cur.some((s) => selKey(s) === k)
+          ? cur.filter((s) => selKey(s) !== k)
+          : [...cur, sel]
+      })
+    },
+    [selFilter]
+  )
 
   // ---- feature ops ----
-  const runExtrude = useCallback(async () => {
-    await api.demoPad(60, 40, 15)
-    await afterEdit()
-  }, [afterEdit])
+  const sweep = useCallback(async () => {
+    const sk = selection.filter((s) => s.kind === 'sketch').map((s) => (s as { sketchId: string }).sketchId)
+    if (sk.length !== 2) {
+      window.alert('Select the profile sketch then the path sketch (2 sketches).')
+      return
+    }
+    try {
+      await api.sweep(sk[0], sk[1])
+      await afterEdit()
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
+  }, [selection, afterEdit])
+
+  const enterSketchOnPlane = useCallback(
+    async (plane: string) => {
+      setPlanePick(false)
+      const r = await api.sketchOnPlane(plane)
+      setSketchSession({ sketchId: r.sketchId, bodyId: r.bodyId, frame: r.frame })
+      setSketchTool('line')
+      setSketchCount(0)
+      setSelection([])
+    },
+    []
+  )
 
   const createSketch = useCallback(async () => {
-    await api.box(40, 40, 40)
-    await afterEdit()
-  }, [afterEdit])
+    const face = selection.find((s) => s.kind === 'face') as
+      | { bodyId: string; sub: string }
+      | undefined
+    if (face) {
+      const r = await api.sketchOnFace(face.bodyId, face.sub)
+      setSketchSession({ sketchId: r.sketchId, bodyId: r.bodyId, frame: r.frame })
+      setSketchTool('line')
+      setSketchCount(0)
+      setSelection([])
+    } else {
+      setPlanePick(true)
+    }
+  }, [selection])
+
+  const finishSketch = useCallback(async () => {
+    if (!sketchSession) return
+    const ents = vpApi.current?.getSketchEntities() ?? []
+    if (ents.length) await api.sketchAddGeometry(sketchSession.sketchId, ents)
+    await api.sketchFinish(sketchSession.sketchId)
+    const id = sketchSession.sketchId
+    setSketchSession(null)
+    await refreshScene()
+    setSelection([{ kind: 'sketch', sketchId: id }])
+    markDirty()
+  }, [sketchSession, refreshScene, markDirty])
+
+  const cancelSketch = useCallback(async () => {
+    if (sketchSession) {
+      try {
+        await api.deleteFeature(sketchSession.sketchId)
+      } catch {
+        /* fresh sketch may already be gone */
+      }
+    }
+    setSketchSession(null)
+    await refreshScene()
+  }, [sketchSession, refreshScene])
 
   const applyOp = useCallback(
     async (kind: OpKind, v: OpValues) => {
@@ -124,6 +216,9 @@ export function App(): JSX.Element {
         sub: string
         point: [number, number, number]
       }>
+      const sketchIds = selection
+        .filter((s) => s.kind === 'sketch')
+        .map((s) => (s as { sketchId: string }).sketchId)
       try {
         switch (kind) {
           case 'box':
@@ -131,6 +226,27 @@ export function App(): JSX.Element {
             break
           case 'cylinder':
             await api.cylinder(Number(v.diameter), Number(v.height))
+            break
+          case 'extrude':
+            await api.extrude(
+              sketchIds[0],
+              Number(v.length),
+              Boolean(v.cut),
+              Boolean(v.midplane),
+              Boolean(v.reversed)
+            )
+            break
+          case 'revolve':
+            await api.revolve(sketchIds[0], Number(v.angle), String(v.axis), Boolean(v.cut))
+            break
+          case 'loft':
+            await api.loft(sketchIds, Boolean(v.cut))
+            break
+          case 'draft':
+            await api.draft(faces.map((f) => f.sub), Number(v.angle), null)
+            break
+          case 'combine':
+            await api.combine(String(v.op), null)
             break
           case 'fillet':
             await api.fillet(edges, Number(v.radius))
@@ -155,6 +271,9 @@ export function App(): JSX.Element {
             await api.patternLinear(ax, Number(v.count), Number(v.spacing))
             break
           }
+          case 'patternCircular':
+            await api.patternCircular(Number(v.count), Number(v.angle), String(v.axisPlane))
+            break
           case 'mirror':
             await api.mirror(String(v.plane))
             break
@@ -346,7 +465,7 @@ export function App(): JSX.Element {
     () =>
       buildCommands({
         openOp: (k) => setOp(k),
-        extrude: runExtrude,
+        sweep,
         createSketch,
         newDesign,
         open: () => openDesign(),
@@ -360,7 +479,7 @@ export function App(): JSX.Element {
         startDrawing
       }),
     [
-      runExtrude,
+      sweep,
       createSketch,
       newDesign,
       openDesign,
@@ -377,11 +496,20 @@ export function App(): JSX.Element {
     const onKey = (e: KeyboardEvent): void => {
       if (isTypingTarget(e.target)) return
       const ctrl = e.ctrlKey || e.metaKey
+      if (sketchSession) {
+        const k = e.key.toLowerCase()
+        if (k === 'l') setSketchTool('line')
+        else if (k === 'r') setSketchTool('rect')
+        else if (k === 'c') setSketchTool('circle')
+        else if (k === 'a') setSketchTool('arc')
+        else if (e.key === 'Escape') setSketchTool('select')
+        return
+      }
       if (!ctrl && (e.key === 's' || e.key === 'S')) {
         e.preventDefault()
         setPaletteOpen(true)
       } else if (!ctrl && (e.key === 'e' || e.key === 'E')) {
-        void runExtrude()
+        setOp('extrude')
       } else if (!ctrl && (e.key === 'f' || e.key === 'F')) {
         setOp('fillet')
       } else if (ctrl && e.key.toLowerCase() === 's') {
@@ -402,7 +530,7 @@ export function App(): JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [runExtrude, save, openDesign, newDesign, fitView])
+  }, [sketchSession, save, openDesign, newDesign, fitView])
 
   const activeName = tabs.find((t) => t.id === activeTab)?.name ?? 'Untitled'
   const activeDirty = tabs.find((t) => t.id === activeTab)?.dirty ?? false
@@ -463,20 +591,56 @@ export function App(): JSX.Element {
                   <Viewport
                     meshes={meshes}
                     sketches={sketches}
+                    datums={datums}
                     selection={selection}
                     onSelect={onSelect}
+                    sketchFrame={sketchSession?.frame ?? null}
+                    sketchTool={sketchTool}
+                    onSketchChange={() =>
+                      setSketchCount(vpApi.current?.getSketchEntities().length ?? 0)
+                    }
                     apiRef={vpApi}
                   />
+                  {sketchSession && (
+                    <SketchBar
+                      tool={sketchTool}
+                      onTool={setSketchTool}
+                      onUndo={() => {
+                        vpApi.current?.sketchUndo()
+                        setSketchCount(vpApi.current?.getSketchEntities().length ?? 0)
+                      }}
+                      onFinish={() => void finishSketch()}
+                      onCancel={() => void cancelSketch()}
+                      count={sketchCount}
+                    />
+                  )}
+                  {planePick && (
+                    <div className="planepick">
+                      <div className="planepick-title">Sketch on plane</div>
+                      {['XY', 'XZ', 'YZ'].map((p) => (
+                        <button key={p} onClick={() => void enterSketchOnPlane(p)}>
+                          {p}
+                        </button>
+                      ))}
+                      <button className="ghost" onClick={() => setPlanePick(false)}>
+                        Cancel
+                      </button>
+                    </div>
+                  )}
                   <Browser
                     bodies={bodies}
                     visibility={visOverride}
                     handlers={{
                       onToggleVisibility: toggleVisibility,
+                      onToggleGroup: toggleGroup,
                       onRename: renameFeature,
                       onDelete: deleteFeature,
                       onEdit: () => undefined
                     }}
                   />
+                  {!sketchSession && (
+                    <SelectionFilterBar active={selFilter} onChange={setSelFilter} />
+                  )}
                   {asmTree && (
                     <AssemblyPanel
                       tree={asmTree}

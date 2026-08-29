@@ -8,7 +8,16 @@ export interface Feature {
   opType: string
   kind: FeatureKind
   isTip: boolean
+  visible: boolean
   error: boolean
+}
+
+export interface OriginItem {
+  id: string
+  label: string
+  role: string
+  kind: 'plane' | 'axis' | 'point'
+  visible: boolean
 }
 
 export interface BodyTree {
@@ -16,6 +25,20 @@ export interface BodyTree {
   label: string
   visible: boolean
   features: Feature[]
+  origin: OriginItem[]
+}
+
+export interface DatumDTO {
+  id: string
+  label: string
+  kind: 'plane' | 'axis' | 'point'
+  origin: [number, number, number]
+  x?: [number, number, number]
+  y?: [number, number, number]
+  size?: number
+  dir?: [number, number, number]
+  length?: number
+  role?: string
 }
 
 export interface FaceGroup {
@@ -46,10 +69,18 @@ export interface SketchRender {
   polys: number[][]
 }
 
+export interface SketchFrameDTO {
+  origin: [number, number, number]
+  x: [number, number, number]
+  y: [number, number, number]
+  z: [number, number, number]
+}
+
 export type Selection =
   | { kind: 'face'; bodyId: string; index: number; sub: string; point: [number, number, number] }
   | { kind: 'edge'; bodyId: string; index: number; sub: string; point: [number, number, number] }
   | { kind: 'body'; bodyId: string }
+  | { kind: 'sketch'; sketchId: string }
 
 export interface DrawingView {
   id: string
@@ -85,7 +116,8 @@ export const api = {
   resetDocument: () => rpc<{ document: string }>('session.reset'),
   demoPad: (width: number, depth: number, height: number) =>
     rpc<{ bodies: BodyTree[] }>('demo.pad', { width, depth, height }),
-  sceneGet: () => rpc<{ meshes: RenderMesh[]; sketches: SketchRender[] }>('scene.get'),
+  sceneGet: () =>
+    rpc<{ meshes: RenderMesh[]; sketches: SketchRender[]; datums: DatumDTO[] }>('scene.get'),
   treeGet: () => rpc<{ bodies: BodyTree[]; path: string | null }>('tree.get'),
 
   box: (width: number, depth: number, height: number) =>
@@ -108,9 +140,33 @@ export const api = {
   datumPlane: (basePlane: string, offset: number) =>
     rpc<{ bodies: BodyTree[] }>('datum.plane', { basePlane, offset }),
   sketchOnPlane: (plane: string) =>
-    rpc<{ sketchId: string; bodyId: string }>('sketch.onPlane', { plane }),
+    rpc<{ sketchId: string; bodyId: string; frame: SketchFrameDTO }>('sketch.onPlane', { plane }),
+  sketchOnFace: (bodyId: string, face: string) =>
+    rpc<{ sketchId: string; bodyId: string; frame: SketchFrameDTO }>('sketch.onFace', {
+      bodyId,
+      face
+    }),
   sketchAddGeometry: (sketchId: string, elements: unknown[]) =>
     rpc<{ sketchId: string; count: number }>('sketch.addGeometry', { sketchId, elements }),
+  sketchClear: (sketchId: string) =>
+    rpc<{ sketchId: string; count: number }>('sketch.clear', { sketchId }),
+  sketchFinish: (sketchId: string) =>
+    rpc<{ sketchId: string; count: number; constrained: boolean; closed: boolean }>(
+      'sketch.finish',
+      { sketchId }
+    ),
+  revolve: (sketchId: string, angle: number, axis = 'V', cut = false) =>
+    rpc<{ bodies: BodyTree[] }>('feature.revolve', { sketchId, angle, axis, cut }),
+  sweep: (profileId: string, pathId: string, cut = false) =>
+    rpc<{ bodies: BodyTree[] }>('feature.sweep', { profileId, pathId, cut }),
+  loft: (sketchIds: string[], cut = false) =>
+    rpc<{ bodies: BodyTree[] }>('feature.loft', { sketchIds, cut }),
+  draft: (faces: string[], angle: number, neutral: string | null) =>
+    rpc<{ bodies: BodyTree[] }>('feature.draft', { faces, angle, neutral }),
+  combine: (op: string, toolBodyId: string | null) =>
+    rpc<{ bodies: BodyTree[] }>('feature.combine', { op, toolBodyId }),
+  patternCircular: (count: number, angle: number, axisPlane: string) =>
+    rpc<{ bodies: BodyTree[] }>('pattern.circular', { count, angle, axisPlane }),
 
   drawingAddView: (bodyId: string | null, direction: string, scale = 1) =>
     rpc<DrawingView>('drawing.addView', { bodyId, direction, scale }),
@@ -144,6 +200,8 @@ export const api = {
 
   setVisibility: (id: string, visible: boolean) =>
     rpc<{ id: string; visible: boolean }>('object.setVisibility', { id, visible }),
+  setVisibilityGroup: (group: string, visible: boolean) =>
+    rpc<{ group: string; visible: boolean }>('visibility.setGroup', { group, visible }),
   rollTo: (bodyId: string, featureId: string | null) =>
     rpc<{ tip: string | null }>('history.rollTo', { bodyId, featureId }),
   renameFeature: (id: string, label: string) =>

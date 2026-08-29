@@ -4,6 +4,7 @@ import { ContextMenu, type MenuItem } from './ContextMenu'
 
 export interface BrowserHandlers {
   onToggleVisibility: (id: string, visible: boolean) => void
+  onToggleGroup: (group: 'bodies' | 'sketches' | 'origin', visible: boolean) => void
   onRename: (id: string) => void
   onDelete: (id: string) => void
   onEdit: (id: string) => void
@@ -28,7 +29,9 @@ interface RowProps {
   glyph: string
   id?: string
   visible?: boolean
-  handlers?: BrowserHandlers
+  onToggle?: (v: boolean) => void
+  menu?: MenuItem[]
+  onEditDbl?: () => void
   defaultOpen?: boolean
   children?: React.ReactNode
 }
@@ -37,28 +40,16 @@ function Row({
   depth,
   label,
   glyph,
-  id,
   visible,
-  handlers,
+  onToggle,
+  menu,
+  onEditDbl,
   defaultOpen = true,
   children
 }: RowProps): JSX.Element {
   const [open, setOpen] = useState(defaultOpen)
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const [ctx, setCtx] = useState<{ x: number; y: number } | null>(null)
   const hasKids = Array.isArray(children) ? children.length > 0 : !!children
-
-  const items: MenuItem[] = id
-    ? [
-        { label: 'Edit', onClick: () => handlers?.onEdit(id) },
-        { label: 'Rename…', onClick: () => handlers?.onRename(id) },
-        {
-          label: visible ? 'Hide' : 'Show',
-          onClick: () => handlers?.onToggleVisibility(id, !visible)
-        },
-        { separator: true, label: '' },
-        { label: 'Delete', danger: true, onClick: () => handlers?.onDelete(id) }
-      ]
-    : []
 
   return (
     <div className="br-node">
@@ -66,10 +57,10 @@ function Row({
         className="br-row"
         style={{ paddingLeft: 6 + depth * 13 }}
         onContextMenu={
-          id
+          menu
             ? (e) => {
                 e.preventDefault()
-                setMenu({ x: e.clientX, y: e.clientY })
+                setCtx({ x: e.clientX, y: e.clientY })
               }
             : undefined
         }
@@ -79,16 +70,16 @@ function Row({
           onClick={() => hasKids && setOpen(!open)}
         />
         <span className="br-glyph">{glyph}</span>
-        <span className="br-label" onDoubleClick={() => id && handlers?.onEdit(id)}>
+        <span className="br-label" onDoubleClick={onEditDbl}>
           {label}
         </span>
-        {id && typeof visible === 'boolean' && (
+        {typeof visible === 'boolean' && onToggle && (
           <span
             className={visible ? 'br-eye on' : 'br-eye'}
             title={visible ? 'Hide' : 'Show'}
             onClick={(e) => {
               e.stopPropagation()
-              handlers?.onToggleVisibility(id, !visible)
+              onToggle(!visible)
             }}
           >
             <Eye on={visible} />
@@ -96,8 +87,8 @@ function Row({
         )}
       </div>
       {open && children}
-      {menu && (
-        <ContextMenu x={menu.x} y={menu.y} items={items} onClose={() => setMenu(null)} />
+      {ctx && menu && (
+        <ContextMenu x={ctx.x} y={ctx.y} items={menu} onClose={() => setCtx(null)} />
       )}
     </div>
   )
@@ -113,43 +104,110 @@ export function Browser({
   handlers: BrowserHandlers
   visibility: Record<string, boolean>
 }): JSX.Element {
-  const sketches = bodies.flatMap((b) => b.features.filter((f) => f.kind === 'sketch'))
   const vis = (id: string, fallback: boolean): boolean =>
     id in visibility ? visibility[id] : fallback
+
+  const b0 = bodies[0]
+  const origin = b0?.origin ?? []
+  const sketches = bodies.flatMap((b) => b.features.filter((f) => f.kind === 'sketch'))
+  const datums = bodies.flatMap((b) => b.features.filter((f) => f.kind === 'datum'))
+
+  const anyOn = (ids: string[], fb: (id: string) => boolean): boolean =>
+    ids.some((id) => vis(id, fb(id)))
+
+  const featMenu = (id: string): MenuItem[] => [
+    { label: 'Edit', onClick: () => handlers.onEdit(id) },
+    { label: 'Rename…', onClick: () => handlers.onRename(id) },
+    { separator: true, label: '' },
+    { label: 'Delete', danger: true, onClick: () => handlers.onDelete(id) }
+  ]
 
   return (
     <div className="browser">
       <Row depth={0} label="Untitled" glyph="◈">
-        <Row depth={1} label="Named Views" glyph="◱" defaultOpen={false} />
-        <Row depth={1} label="Origin" glyph="✛" defaultOpen={false}>
-          <Row depth={2} label="Front" glyph="▱" />
-          <Row depth={2} label="Top" glyph="▱" />
-          <Row depth={2} label="Right" glyph="▱" />
+        <Row
+          depth={1}
+          label="Origin"
+          glyph="✛"
+          defaultOpen={false}
+          visible={anyOn(
+            origin.map((o) => o.id),
+            (id) => origin.find((o) => o.id === id)?.visible ?? false
+          )}
+          onToggle={(v) => handlers.onToggleGroup('origin', v)}
+        >
+          {origin.map((o) => (
+            <Row
+              key={o.id}
+              depth={2}
+              label={o.label}
+              glyph={o.kind === 'plane' ? '▱' : o.kind === 'axis' ? '╱' : '•'}
+              visible={vis(o.id, o.visible)}
+              onToggle={(v) => handlers.onToggleVisibility(o.id, v)}
+            />
+          ))}
         </Row>
-        <Row depth={1} label="Bodies" glyph="▨">
+
+        <Row
+          depth={1}
+          label="Bodies"
+          glyph="▨"
+          visible={anyOn(
+            bodies.map((b) => b.id),
+            (id) => bodies.find((b) => b.id === id)?.visible ?? true
+          )}
+          onToggle={(v) => handlers.onToggleGroup('bodies', v)}
+        >
           {bodies.map((b) => (
             <Row
               key={b.id}
               depth={2}
               label={b.label}
               glyph="▬"
-              id={b.id}
               visible={vis(b.id, b.visible)}
-              handlers={handlers}
+              onToggle={(v) => handlers.onToggleVisibility(b.id, v)}
+              menu={featMenu(b.id)}
+              onEditDbl={() => handlers.onEdit(b.id)}
             />
           ))}
         </Row>
+
         {sketches.length > 0 && (
-          <Row depth={1} label="Sketches" glyph="✎">
+          <Row
+            depth={1}
+            label="Sketches"
+            glyph="✎"
+            visible={anyOn(
+              sketches.map((s) => s.id),
+              (id) => sketches.find((s) => s.id === id)?.visible ?? false
+            )}
+            onToggle={(v) => handlers.onToggleGroup('sketches', v)}
+          >
             {sketches.map((f) => (
               <Row
                 key={f.id}
                 depth={2}
                 label={f.label}
                 glyph="✎"
-                id={f.id}
-                visible={vis(f.id, false)}
-                handlers={handlers}
+                visible={vis(f.id, f.visible)}
+                onToggle={(v) => handlers.onToggleVisibility(f.id, v)}
+                menu={featMenu(f.id)}
+              />
+            ))}
+          </Row>
+        )}
+
+        {datums.length > 0 && (
+          <Row depth={1} label="Construction" glyph="▱" defaultOpen={false}>
+            {datums.map((f) => (
+              <Row
+                key={f.id}
+                depth={2}
+                label={f.label}
+                glyph="▱"
+                visible={vis(f.id, f.visible)}
+                onToggle={(v) => handlers.onToggleVisibility(f.id, v)}
+                menu={featMenu(f.id)}
               />
             ))}
           </Row>

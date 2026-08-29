@@ -1,10 +1,11 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
-import type { RenderMesh, SketchRender, Selection } from '../rpc'
+import type { RenderMesh, SketchRender, Selection, DatumDTO } from '../rpc'
 import type { ViewportApi } from './types'
 import { CadControls } from './CadControls'
 import { ViewCube } from './ViewCube'
 import { Picker } from './Picker'
+import { SketchController, type SketchFrame, type SketchTool } from './SketchController'
 import { buildScene } from './sceneBuilder'
 
 function gradientBackground(): THREE.Texture {
@@ -26,20 +27,30 @@ function gradientBackground(): THREE.Texture {
 export function Viewport({
   meshes,
   sketches = [],
+  datums = [],
   selection = [],
   onSelect,
+  sketchFrame = null,
+  sketchTool = 'line',
+  onSketchChange,
   apiRef
 }: {
   meshes: RenderMesh[]
   sketches?: SketchRender[]
+  datums?: DatumDTO[]
   selection?: Selection[]
   onSelect?: (sel: Selection | null, additive: boolean) => void
+  sketchFrame?: SketchFrame | null
+  sketchTool?: SketchTool
+  onSketchChange?: () => void
   apiRef?: { current: ViewportApi | null }
 }): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   const cubeRef = useRef<HTMLDivElement>(null)
   const onSelectRef = useRef(onSelect)
   onSelectRef.current = onSelect
+  const onSketchChangeRef = useRef(onSketchChange)
+  onSketchChangeRef.current = onSketchChange
 
   const stateRef = useRef<{
     renderer: THREE.WebGLRenderer
@@ -50,6 +61,7 @@ export function Viewport({
     picker: Picker
     content: THREE.Group | null
     overlay: THREE.Group
+    sketch: SketchController | null
     framedOnce: boolean
     lastCenter: THREE.Vector3
     lastRadius: number
@@ -94,6 +106,7 @@ export function Viewport({
       picker,
       content: null,
       overlay,
+      sketch: null,
       framedOnce: false,
       lastCenter: new THREE.Vector3(),
       lastRadius: 60
@@ -105,7 +118,9 @@ export function Viewport({
           const s = stateRef.current
           if (s) s.controls.frame(s.lastCenter, s.lastRadius)
         },
-        setView: (dir) => stateRef.current?.cube.goToView(new THREE.Vector3(...dir))
+        setView: (dir) => stateRef.current?.cube.goToView(new THREE.Vector3(...dir)),
+        getSketchEntities: () => stateRef.current?.sketch?.getEntities() ?? [],
+        sketchUndo: () => stateRef.current?.sketch?.undo()
       }
     }
 
@@ -119,16 +134,17 @@ export function Viewport({
       downBtn = e.button
     }
     const onUp = (e: PointerEvent): void => {
+      const st = stateRef.current
+      if (!st || st.sketch) return // sketch mode owns clicks
       if (downBtn !== 0 || e.button !== 0) return
       if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 4) return
-      const st = stateRef.current
-      if (!st || !st.content) return
+      if (!st.content) return
       const sel = st.picker.pick(e, st.content)
       onSelectRef.current?.(sel, e.shiftKey || e.ctrlKey)
     }
     const onMove = (e: PointerEvent): void => {
       const st = stateRef.current
-      if (!st || !st.content || e.buttons !== 0) return
+      if (!st || st.sketch || !st.content || e.buttons !== 0) return
       st.picker.setHover(st.picker.pick(e, st.content), st.content)
     }
     renderer.domElement.addEventListener('pointerdown', onDown)
@@ -187,11 +203,11 @@ export function Viewport({
         else mat?.dispose()
       })
     }
-    if (!meshes.length && !sketches.length) {
+    if (!meshes.length && !sketches.length && !datums.length) {
       st.content = null
       return
     }
-    const { group, center, radius } = buildScene(meshes, sketches)
+    const { group, center, radius } = buildScene(meshes, sketches, datums)
     st.scene.add(group)
     st.content = group
     st.lastCenter = center
@@ -200,13 +216,47 @@ export function Viewport({
       st.controls.frame(center, radius)
       st.framedOnce = true
     }
-  }, [meshes, sketches])
+  }, [meshes, sketches, datums])
 
   // reflect selection
   useEffect(() => {
     const st = stateRef.current
     if (st?.content) st.picker.setSelection(selection, st.content)
   }, [selection, meshes])
+
+  // enter / leave sketch mode
+  useEffect(() => {
+    const st = stateRef.current
+    if (!st) return
+    if (sketchFrame && !st.sketch) {
+      st.picker.clear()
+      st.sketch = new SketchController(
+        st.camera,
+        st.renderer.domElement,
+        sketchFrame,
+        st.overlay,
+        () => onSketchChangeRef.current?.()
+      )
+      st.sketch.setTool(sketchTool)
+      // look straight at the plane
+      const O = new THREE.Vector3(...sketchFrame.origin)
+      const N = new THREE.Vector3(...sketchFrame.z).normalize()
+      const up = new THREE.Vector3(...sketchFrame.y).normalize()
+      const dist = Math.max(st.lastRadius * 2.4, 160)
+      st.camera.up.copy(up)
+      st.camera.position.copy(O).addScaledVector(N, dist)
+      st.controls.pivot.copy(O)
+      st.camera.lookAt(O)
+    } else if (!sketchFrame && st.sketch) {
+      st.sketch.dispose()
+      st.sketch = null
+      st.camera.up.set(0, 0, 1)
+    }
+  }, [sketchFrame])
+
+  useEffect(() => {
+    stateRef.current?.sketch?.setTool(sketchTool)
+  }, [sketchTool])
 
   return (
     <div className="viewport" ref={hostRef}>

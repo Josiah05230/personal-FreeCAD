@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import type { RenderMesh, SketchRender } from '../rpc'
+import type { RenderMesh, SketchRender, DatumDTO } from '../rpc'
 
 export interface BuiltScene {
   group: THREE.Group
@@ -7,14 +7,78 @@ export interface BuiltScene {
   radius: number
 }
 
+const AXIS_COLOR: Record<string, number> = {
+  X_Axis: 0xe0533a,
+  Y_Axis: 0x5cb85c,
+  Z_Axis: 0x4a90d9
+}
+
+function buildDatum(d: DatumDTO): THREE.Object3D {
+  const g = new THREE.Group()
+  g.userData = { pick: 'datum', datumId: d.id, kind: d.kind }
+  const O = new THREE.Vector3(...d.origin)
+  if (d.kind === 'plane' && d.x && d.y) {
+    const X = new THREE.Vector3(...d.x)
+    const Y = new THREE.Vector3(...d.y)
+    const s = d.size ?? 40
+    const c = [
+      O.clone().addScaledVector(X, -s).addScaledVector(Y, -s),
+      O.clone().addScaledVector(X, s).addScaledVector(Y, -s),
+      O.clone().addScaledVector(X, s).addScaledVector(Y, s),
+      O.clone().addScaledVector(X, -s).addScaledVector(Y, s)
+    ]
+    const geom = new THREE.BufferGeometry().setFromPoints([c[0], c[1], c[2], c[0], c[2], c[3]])
+    const fill = new THREE.Mesh(
+      geom,
+      new THREE.MeshBasicMaterial({
+        color: 0x4a90d9,
+        transparent: true,
+        opacity: 0.12,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      })
+    )
+    const border = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints(c),
+      new THREE.LineBasicMaterial({ color: 0x6aa9dd, transparent: true, opacity: 0.6 })
+    )
+    g.add(fill, border)
+  } else if (d.kind === 'axis' && d.dir) {
+    const D = new THREE.Vector3(...d.dir).normalize()
+    const L = d.length ?? 60
+    const line = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([
+        O.clone().addScaledVector(D, -L),
+        O.clone().addScaledVector(D, L)
+      ]),
+      new THREE.LineBasicMaterial({ color: AXIS_COLOR[d.role ?? ''] ?? 0x9aa0a6 })
+    )
+    g.add(line)
+  } else if (d.kind === 'point') {
+    const dot = new THREE.Mesh(
+      new THREE.SphereGeometry(1.2, 12, 12),
+      new THREE.MeshBasicMaterial({ color: 0xf0c419 })
+    )
+    dot.position.copy(O)
+    g.add(dot)
+  }
+  return g
+}
+
 // Dark theme: graphite body with a satin sheen; edges near-black; sketches blue.
 const SOLID_COLOR = 0x8a8f96
 const EDGE_COLOR = 0x1c1f24
 const SKETCH_COLOR = 0x2f9fe0
 
-export function buildScene(meshes: RenderMesh[], sketches: SketchRender[] = []): BuiltScene {
+export function buildScene(
+  meshes: RenderMesh[],
+  sketches: SketchRender[] = [],
+  datums: DatumDTO[] = []
+): BuiltScene {
   const group = new THREE.Group()
   const box = new THREE.Box3()
+
+  for (const d of datums) group.add(buildDatum(d))
 
   for (const m of meshes) {
     const geom = new THREE.BufferGeometry()
