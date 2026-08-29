@@ -662,7 +662,11 @@ def _apply_sketch_constraints(sk, constraints, emap):
         ct = c.get("type")
         refs = c.get("refs", [])
         try:
-            if ct in ("Horizontal", "Vertical") and refs:
+            if ct in ("Distance", "Radius", "Diameter") and refs:
+                v = float(c.get("value", 0) or 0)
+                if v > 0:
+                    sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0]), v))
+            elif ct in ("Horizontal", "Vertical") and refs:
                 sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0])))
             elif ct in _LINE_PAIR_CONSTRAINTS and len(refs) >= 2:
                 sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0]), gid(refs[1])))

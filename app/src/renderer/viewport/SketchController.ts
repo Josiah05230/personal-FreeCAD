@@ -9,7 +9,7 @@
  */
 import * as THREE from 'three'
 
-export type SketchTool = 'select' | 'line' | 'rect' | 'circle' | 'arc'
+export type SketchTool = 'select' | 'line' | 'rect' | 'circle' | 'arc' | 'dimension'
 
 export type SketchConstraintType =
   | 'Horizontal'
@@ -41,8 +41,9 @@ export type SketchEntity = (
 ) & { construction?: boolean }
 
 interface RecordedConstraint {
-  type: SketchConstraintType
+  type: SketchConstraintType | 'Distance' | 'Radius'
   refs: Array<{ new?: number; geo?: number; sub?: number; pt?: number }>
+  value?: number
 }
 
 const GRID = 1 // mm snap
@@ -79,7 +80,8 @@ export class SketchController {
     frame: SketchFrame,
     root: THREE.Object3D,
     onChange: () => void,
-    refGeom?: SketchRefGeom | null
+    refGeom?: SketchRefGeom | null,
+    private readonly onDimensionRequest?: (entityIndex: number, kind: 'linear' | 'radius') => void
   ) {
     this.O = new THREE.Vector3(...frame.origin)
     this.X = new THREE.Vector3(...frame.x).normalize()
@@ -288,6 +290,14 @@ export class SketchController {
   // --- input ---
   private onDown = (ev: PointerEvent): void => {
     if (ev.button !== 0) return
+    if (this.tool === 'dimension') {
+      ev.stopPropagation()
+      const idx = this.pickEntity(this.rawPointerUV(ev))
+      if (idx < 0) return
+      const e = this.entities[idx]
+      this.onDimensionRequest?.(idx, e.type === 'circle' || e.type === 'arc' ? 'radius' : 'linear')
+      return
+    }
     if (this.tool === 'select') {
       const uv = this.rawPointerUV(ev)
       const idx = this.pickEntity(uv)
@@ -371,6 +381,35 @@ export class SketchController {
       if ((isLine(a) && isCurve(b)) || (isCurve(a) && isLine(b))) out.push('Tangent')
     }
     return out
+  }
+
+  /** Set a numeric dimension on an entity (value already resolved from any
+   *  expression). Line -> length; circle/arc -> radius. */
+  setDimension(index: number, value: number): boolean {
+    const e = this.entities[index]
+    if (!e || !(value > 0)) return false
+    if (e.type === 'line') {
+      const dx = e.b[0] - e.a[0]
+      const dy = e.b[1] - e.a[1]
+      const len = Math.hypot(dx, dy) || 1
+      e.b = [e.a[0] + (dx / len) * value, e.a[1] + (dy / len) * value]
+    } else if (e.type === 'circle' || e.type === 'arc') {
+      ;(e as { r: number }).r = value
+    } else {
+      return false
+    }
+    const ref =
+      index < this.baseCount
+        ? { geo: index }
+        : { new: index - this.baseCount, sub: 0 }
+    const kind: RecordedConstraint['type'] = e.type === 'line' ? 'Distance' : 'Radius'
+    this.constraints = this.constraints.filter(
+      (c) => !((c.type === 'Distance' || c.type === 'Radius') && JSON.stringify(c.refs[0]) === JSON.stringify(ref))
+    )
+    this.constraints.push({ type: kind, refs: [ref], value })
+    this.redraw()
+    this.onChange()
+    return true
   }
 
   applyConstraint(type: SketchConstraintType): boolean {
@@ -505,7 +544,57 @@ export class SketchController {
     this.group.add(grid)
   }
 
+  private dimGroup = new THREE.Group()
+
+  private dimLabel(text: string, at: THREE.Vector3): THREE.Sprite {
+    const c = document.createElement('canvas')
+    c.width = 128
+    c.height = 40
+    const g = c.getContext('2d')!
+    g.fillStyle = 'rgba(20,22,26,0.85)'
+    g.fillRect(0, 0, 128, 40)
+    g.fillStyle = '#ffd27a'
+    g.font = '600 22px system-ui, sans-serif'
+    g.textAlign = 'center'
+    g.textBaseline = 'middle'
+    g.fillText(text, 64, 21)
+    const tex = new THREE.CanvasTexture(c)
+    tex.colorSpace = THREE.SRGBColorSpace
+    const s = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true })
+    )
+    s.position.copy(at)
+    const px = 6 / Math.max(this.pxPerMm(), 0.001)
+    s.scale.set(px * 32, px * 10, 1)
+    s.renderOrder = 40
+    return s
+  }
+
+  private redrawDims(): void {
+    for (const c of [...this.dimGroup.children]) {
+      this.dimGroup.remove(c)
+      const sp = c as THREE.Sprite
+      sp.material.map?.dispose()
+      sp.material.dispose()
+    }
+    for (const con of this.constraints) {
+      if (con.value == null) continue
+      const r0 = con.refs[0]
+      const idx = r0.geo != null ? r0.geo : (r0.new ?? 0) + this.baseCount
+      const e = this.entities[idx]
+      if (!e) continue
+      let mid: [number, number]
+      if (e.type === 'line') mid = [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2]
+      else if (e.type === 'circle' || e.type === 'arc') mid = [e.c[0], e.c[1] + e.r]
+      else continue
+      const txt =
+        con.type === 'Radius' ? `R${Number(con.value.toFixed(3))}` : `${Number(con.value.toFixed(3))}`
+      this.dimGroup.add(this.dimLabel(txt, this.toWorld(mid[0], mid[1])))
+    }
+  }
+
   private drawRefGeom(): void {
+    this.group.add(this.dimGroup)
     for (const poly of this.refPolys) {
       if (poly.length >= 2) this.refGroup.add(this.polyToObj(poly, this.refMat))
     }
@@ -538,6 +627,7 @@ export class SketchController {
           : this.lineMat
       this.group.add(this.entityObj(this.entities[i], mat))
     }
+    this.redrawDims()
 
     if (this.pending.length) {
       const p = [...this.pending, this.cursorUV]

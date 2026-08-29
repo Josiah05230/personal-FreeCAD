@@ -789,6 +789,7 @@ export function App(): JSX.Element {
         else if (k === 'r') setSketchTool('rect')
         else if (k === 'c') setSketchTool('circle')
         else if (k === 'a') setSketchTool('arc')
+        else if (k === 'd') setSketchTool('dimension')
         else if (k === 'x' && !ctrl) {
           const on = vpApi.current?.toggleSketchConstruction() ?? !sketchConstruction
           setSketchConstruction(on)
@@ -844,6 +845,26 @@ export function App(): JSX.Element {
     setSketchAvail(vpApi.current?.availableSketchConstraints() ?? [])
     setSketchConstraintCount(vpApi.current?.getSketchConstraints().length ?? 0)
   }, [])
+
+  const onSketchDimensionRequest = useCallback(
+    async (entityIndex: number, kind: 'linear' | 'radius') => {
+      const label = kind === 'radius' ? 'Radius' : 'Length'
+      const txt = await promptText(`${label} (number or expression)`, '')
+      if (!txt) return
+      let value = Number(txt)
+      if (isNaN(value)) {
+        try {
+          value = (await api.exprEval(txt, 'length')).value
+        } catch (e) {
+          window.alert((e as Error).message)
+          return
+        }
+      }
+      vpApi.current?.setSketchDimension(entityIndex, value)
+      onSketchChange()
+    },
+    [onSketchChange]
+  )
 
   return (
     <div className="app">
@@ -976,6 +997,7 @@ export function App(): JSX.Element {
                     sketchInitialEntities={sketchInitial}
                     sketchTool={sketchTool}
                     onSketchChange={onSketchChange}
+                    onSketchDimensionRequest={(i, k) => void onSketchDimensionRequest(i, k)}
                     apiRef={vpApi}
                   />
                   {planePickMode && (

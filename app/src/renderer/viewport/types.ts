@@ -1,8 +1,9 @@
 import type { SketchEntity, SketchConstraintType } from './SketchController'
 
 export interface RecordedSketchConstraint {
-  type: SketchConstraintType
+  type: SketchConstraintType | 'Distance' | 'Radius'
   refs: Array<{ new?: number; geo?: number; sub?: number; pt?: number }>
+  value?: number
 }
 
 export interface ViewportApi {
@@ -16,6 +17,7 @@ export interface ViewportApi {
   getSketchConstraints: () => RecordedSketchConstraint[]
   applySketchConstraint: (type: SketchConstraintType) => boolean
   availableSketchConstraints: () => SketchConstraintType[]
+  setSketchDimension: (entityIndex: number, value: number) => boolean
   sketchSelectedCount: () => number
   /** construction-geometry mode for newly drawn entities */
   setSketchConstruction: (on: boolean) => void

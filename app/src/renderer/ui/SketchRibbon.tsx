@@ -5,7 +5,8 @@ const TOOLS: { id: SketchTool; label: string; glyph: string; key: string }[] = [
   { id: 'line', label: 'Line', glyph: '╱', key: 'L' },
   { id: 'rect', label: 'Rectangle', glyph: '▭', key: 'R' },
   { id: 'circle', label: 'Circle', glyph: '◯', key: 'C' },
-  { id: 'arc', label: 'Arc', glyph: '⌒', key: 'A' }
+  { id: 'arc', label: 'Arc', glyph: '⌒', key: 'A' },
+  { id: 'dimension', label: 'Dimension', glyph: '⇤⇥', key: 'D' }
 ]
 
 const CONSTRAINTS: { id: SketchConstraintType; label: string; glyph: string }[] = [

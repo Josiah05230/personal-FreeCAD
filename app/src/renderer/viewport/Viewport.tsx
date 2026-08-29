@@ -57,6 +57,7 @@ export function Viewport({
   sketchInitialEntities,
   sketchTool = 'line',
   onSketchChange,
+  onSketchDimensionRequest,
   apiRef
 }: {
   meshes: RenderMesh[]
@@ -78,6 +79,7 @@ export function Viewport({
   sketchInitialEntities?: unknown[]
   sketchTool?: SketchTool
   onSketchChange?: () => void
+  onSketchDimensionRequest?: (entityIndex: number, kind: 'linear' | 'radius') => void
   apiRef?: { current: ViewportApi | null }
 }): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -86,6 +88,8 @@ export function Viewport({
   onSelectRef.current = onSelect
   const onSketchChangeRef = useRef(onSketchChange)
   onSketchChangeRef.current = onSketchChange
+  const onDimReqRef = useRef(onSketchDimensionRequest)
+  onDimReqRef.current = onSketchDimensionRequest
   const planePickRef = useRef<{ mode: boolean; cb?: (r: SketchRef) => void }>({ mode: false })
   planePickRef.current = { mode: planePickMode, cb: onPickPlane }
   const pickPlanesRef = useRef<PickPlane[]>([])
@@ -182,6 +186,7 @@ export function Viewport({
         applySketchConstraint: (t) => stateRef.current?.sketch?.applyConstraint(t) ?? false,
         availableSketchConstraints: () =>
           stateRef.current?.sketch?.availableConstraints() ?? [],
+        setSketchDimension: (i, v) => stateRef.current?.sketch?.setDimension(i, v) ?? false,
         sketchSelectedCount: () => stateRef.current?.sketch?.selectedCount ?? 0,
         setSketchConstruction: (on) => stateRef.current?.sketch?.setConstruction(on),
         toggleSketchConstruction: () =>
@@ -460,7 +465,8 @@ export function Viewport({
         sketchFrame,
         st.overlay,
         () => onSketchChangeRef.current?.(),
-        sketchRefGeom
+        sketchRefGeom,
+        (idx, kind) => onDimReqRef.current?.(idx, kind)
       )
       if (sketchInitialEntities && sketchInitialEntities.length) {
         st.sketch.loadExisting(sketchInitialEntities as never[])

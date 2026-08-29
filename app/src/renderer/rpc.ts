@@ -128,7 +128,10 @@ export interface SketchConstraint {
     | 'Tangent'
     | 'Coincident'
     | 'Concentric'
+    | 'Distance'
+    | 'Radius'
   refs: Array<{ new?: number; geo?: number; sub?: number; pt?: number }>
+  value?: number
 }
 
 export type Selection =
