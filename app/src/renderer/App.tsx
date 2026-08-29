@@ -167,7 +167,7 @@ export function App(): JSX.Element {
       setCanvases(scene.canvases ?? [])
       setBodies(tree.bodies)
       setDocPath(tree.path)
-      setVisOverride({})
+      // keep the user's show/hide choices across refreshes
     },
     []
   )
@@ -195,7 +195,8 @@ export function App(): JSX.Element {
 
   const toggleGroup = useCallback(
     (group: 'bodies' | 'sketches' | 'origin', visible: boolean) => {
-      // pure client-side paint - the viewport flips .visible flags, no rebuild
+      // pure view state - the viewport flips .visible flags. FreeCAD is never
+      // touched for show/hide, so there is nothing to wait on.
       setVisOverride((m) => {
         const next = { ...m }
         if (group === 'bodies') for (const mm of meshes) next[mm.id] = visible
@@ -204,14 +205,8 @@ export function App(): JSX.Element {
           for (const b of bodies) for (const o of b.origin) next[o.id] = visible
         return next
       })
-      // keep the engine roughly in sync for save, but never block or refetch;
-      // only datums/finished sketches need a refetch to reappear at all
-      void api
-        .setVisibilityGroup(group, visible)
-        .then(() => (visible && group !== 'bodies' ? refreshMeshesOnly() : undefined))
-        .catch(() => undefined)
     },
-    [meshes, sketches, bodies, refreshMeshesOnly]
+    [meshes, sketches, bodies]
   )
 
   const afterEdit = useCallback(async () => {
@@ -629,22 +624,12 @@ export function App(): JSX.Element {
     [refreshScene, markDirty]
   )
 
-  const toggleVisibility = useCallback(
-    (id: string, visible: boolean) => {
-      // optimistic - the viewport filters on visOverride so this is instant
-      setVisOverride((m) => ({ ...m, [id]: visible }))
-      const known =
-        meshes.some((x) => x.id === id) ||
-        sketches.some((x) => x.id === id) ||
-        datums.some((x) => x.id === id)
-      void api
-        .setVisibility(id, visible)
-        // only pay for a refetch when showing something the scene doesn't have yet
-        .then(() => (visible && !known ? refreshMeshesOnly() : undefined))
-        .catch(() => undefined)
-    },
-    [meshes, sketches, datums, refreshMeshesOnly]
-  )
+  const toggleVisibility = useCallback((id: string, visible: boolean) => {
+    // pure view state: instant, no engine round-trip, no spinner. scene.get
+    // already ships every body / sketch / datum so there is always something
+    // to toggle back on.
+    setVisOverride((m) => ({ ...m, [id]: visible }))
+  }, [])
 
   // ---- file ops ----
   const saveAs = useCallback(async () => {
@@ -1002,11 +987,19 @@ export function App(): JSX.Element {
   const activeDirty = tabs.find((t) => t.id === activeTab)?.dirty ?? false
 
   // client-side visibility: the viewport just flips object .visible flags on
-  // this set, so hiding / showing never rebuilds any geometry
-  const hiddenIds = useMemo(
-    () => new Set(Object.entries(visOverride).filter(([, v]) => v === false).map(([k]) => k)),
-    [visOverride]
-  )
+  // this set. An id is hidden if the user hid it, or (no explicit choice) the
+  // engine's own visible hint says so.
+  const hiddenIds = useMemo(() => {
+    const s = new Set<string>()
+    const consider = (id: string, serverVisible: boolean | undefined): void => {
+      const hidden = id in visOverride ? !visOverride[id] : serverVisible === false
+      if (hidden) s.add(id)
+    }
+    for (const m of meshes) consider(m.id, m.visible)
+    for (const sk of sketches) consider(sk.id, sk.visible)
+    for (const dm of datums) consider(dm.id, dm.visible)
+    return s
+  }, [visOverride, meshes, sketches, datums])
 
   const onSketchChange = useCallback(() => {
     setSketchCount(vpApi.current?.getSketchEntities().length ?? 0)

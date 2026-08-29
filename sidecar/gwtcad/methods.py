@@ -1127,6 +1127,8 @@ def scene_get():
     _ensure_starter_body(d)
     meshes, sketches, datums = [], [], []
 
+    # scene.get returns EVERYTHING with a `visible` hint; the shell owns
+    # show/hide as pure view state and never round-trips the engine for it.
     suppressed = _suppressed_names(d)
     for o in d.Objects:
         if o.Name in suppressed:
@@ -1134,8 +1136,6 @@ def scene_get():
         tid = o.TypeId
         if tid in ("PartDesign::Body", "App::Link", "Part::Feature", "Mesh::Feature",
                    "Part::FeaturePython"):
-            if not getattr(o, "Visibility", True):
-                continue
             if tid == "PartDesign::Body" and session.is_rolled_empty(o.Name):
                 continue
             if tid == "Mesh::Feature":
@@ -1157,13 +1157,14 @@ def scene_get():
                 buf["sig"] = sig
             buf["id"] = o.Name
             buf["label"] = o.Label
+            buf["visible"] = bool(getattr(o, "Visibility", True))
             if tid == "App::Link":
                 buf["component"] = True
             col = session.body_color(o.Name)
             if col:
                 buf["color"] = col
             meshes.append(buf)
-        elif tid == "Sketcher::SketchObject" and getattr(o, "Visibility", False):
+        elif tid == "Sketcher::SketchObject":
             polys = []
             try:
                 for e in o.Shape.Edges:
@@ -1174,13 +1175,13 @@ def scene_get():
                         polys.append(pts)
             except Exception:
                 pass
-            sketches.append({"id": o.Name, "label": o.Label, "polys": polys})
+            sketches.append({"id": o.Name, "label": o.Label, "polys": polys,
+                             "visible": bool(getattr(o, "Visibility", False))})
         elif tid in ("App::Plane", "App::Line", "App::Point",
                      "PartDesign::Plane", "PartDesign::Line", "PartDesign::Point"):
-            if not session.datum_shown(o.Name):
-                continue
             dto = _datum_dto(o)
             if dto:
+                dto["visible"] = session.datum_shown(o.Name)
                 datums.append(dto)
 
     # inserted 2D canvases, resolved to a world frame on their plane

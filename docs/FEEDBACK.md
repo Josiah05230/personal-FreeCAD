@@ -30,4 +30,4 @@ Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
 
-(none pending - folded into Batch 14)
+-when I complete a sketch, why does it need to load??

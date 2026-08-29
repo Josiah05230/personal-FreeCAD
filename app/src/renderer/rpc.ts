@@ -43,6 +43,7 @@ export interface DatumDTO {
   dir?: [number, number, number]
   length?: number
   role?: string
+  visible?: boolean
 }
 
 export interface FaceGroup {
@@ -74,6 +75,7 @@ export interface RenderMesh {
   color?: [number, number, number]
   needsNormals?: boolean
   component?: boolean
+  visible?: boolean
   /** cheap shape signature from the sidecar; unchanged => skip client rebuild */
   sig?: string | null
 }
@@ -109,6 +111,7 @@ export interface SketchRender {
   id: string
   label: string
   polys: number[][]
+  visible?: boolean
 }
 
 export interface SketchFrameDTO {

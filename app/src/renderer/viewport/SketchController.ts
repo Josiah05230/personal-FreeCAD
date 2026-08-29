@@ -546,50 +546,102 @@ export class SketchController {
 
   private dimGroup = new THREE.Group()
 
-  private dimLabel(text: string, at: THREE.Vector3): THREE.Sprite {
+  /** world mm that a given on-screen pixel size maps to at the sketch plane */
+  private mmForPx(px: number): number {
+    const ppm = this.pxPerMm()
+    return px / (ppm > 0.05 ? ppm : 8)
+  }
+
+  private dimLabel(text: string, at: THREE.Vector3, driven = true): THREE.Sprite {
+    const dpr = 2
     const c = document.createElement('canvas')
-    c.width = 128
-    c.height = 40
+    c.width = 160 * dpr
+    c.height = 44 * dpr
     const g = c.getContext('2d')!
-    g.fillStyle = 'rgba(20,22,26,0.85)'
-    g.fillRect(0, 0, 128, 40)
-    g.fillStyle = '#ffd27a'
-    g.font = '600 22px system-ui, sans-serif'
+    g.scale(dpr, dpr)
+    g.fillStyle = driven ? 'rgba(18,20,24,0.9)' : 'rgba(18,20,24,0.7)'
+    const r = 6
+    g.beginPath()
+    g.roundRect(2, 2, 156, 40, r)
+    g.fill()
+    g.fillStyle = driven ? '#ffd27a' : '#9fd0f0'
+    g.font = '600 24px ui-sans-serif, system-ui, sans-serif'
     g.textAlign = 'center'
     g.textBaseline = 'middle'
-    g.fillText(text, 64, 21)
+    g.fillText(text, 80, 23)
     const tex = new THREE.CanvasTexture(c)
     tex.colorSpace = THREE.SRGBColorSpace
     const s = new THREE.Sprite(
       new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true })
     )
     s.position.copy(at)
-    const px = 6 / Math.max(this.pxPerMm(), 0.001)
-    s.scale.set(px * 32, px * 10, 1)
+    const h = this.mmForPx(18) // ~18px tall on screen
+    s.scale.set(h * (160 / 44), h, 1)
     s.renderOrder = 40
     return s
   }
 
-  private redrawDims(): void {
+  private clearDims(): void {
     for (const c of [...this.dimGroup.children]) {
       this.dimGroup.remove(c)
       const sp = c as THREE.Sprite
       sp.material.map?.dispose()
       sp.material.dispose()
     }
+  }
+
+  private redrawDims(): void {
+    this.clearDims()
+    // committed driven dimensions
     for (const con of this.constraints) {
       if (con.value == null) continue
       const r0 = con.refs[0]
       const idx = r0.geo != null ? r0.geo : (r0.new ?? 0) + this.baseCount
       const e = this.entities[idx]
       if (!e) continue
-      let mid: [number, number]
-      if (e.type === 'line') mid = [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2]
-      else if (e.type === 'circle' || e.type === 'arc') mid = [e.c[0], e.c[1] + e.r]
+      let at: [number, number]
+      if (e.type === 'line') {
+        const dx = e.b[0] - e.a[0]
+        const dy = e.b[1] - e.a[1]
+        const len = Math.hypot(dx, dy) || 1
+        at = [(e.a[0] + e.b[0]) / 2 - (dy / len) * this.mmForPx(16), (e.a[1] + e.b[1]) / 2 + (dx / len) * this.mmForPx(16)]
+      } else if (e.type === 'circle' || e.type === 'arc') at = [e.c[0], e.c[1] + e.r]
       else continue
       const txt =
-        con.type === 'Radius' ? `R${Number(con.value.toFixed(3))}` : `${Number(con.value.toFixed(3))}`
-      this.dimGroup.add(this.dimLabel(txt, this.toWorld(mid[0], mid[1])))
+        con.type === 'Radius' ? `R ${Number(con.value.toFixed(3))}` : `${Number(con.value.toFixed(3))}`
+      this.dimGroup.add(this.dimLabel(txt, this.toWorld(at[0], at[1]), true))
+    }
+    // live readout for whatever is being drawn right now
+    if (this.pending.length) {
+      const cur = this.cursorUV
+      if (this.tool === 'line') {
+        const a = this.pending[this.pending.length - 1]
+        const len = Math.hypot(cur[0] - a[0], cur[1] - a[1])
+        if (len > 0.01)
+          this.dimGroup.add(
+            this.dimLabel(
+              len.toFixed(2),
+              this.toWorld((a[0] + cur[0]) / 2, (a[1] + cur[1]) / 2 + this.mmForPx(14)),
+              false
+            )
+          )
+      } else if (this.tool === 'rect') {
+        const a = this.pending[0]
+        this.dimGroup.add(
+          this.dimLabel(
+            `${Math.abs(cur[0] - a[0]).toFixed(1)} x ${Math.abs(cur[1] - a[1]).toFixed(1)}`,
+            this.toWorld((a[0] + cur[0]) / 2, Math.max(a[1], cur[1]) + this.mmForPx(14)),
+            false
+          )
+        )
+      } else if (this.tool === 'circle' || this.tool === 'arc') {
+        const c = this.pending[0]
+        const rr = Math.hypot(cur[0] - c[0], cur[1] - c[1])
+        if (rr > 0.01)
+          this.dimGroup.add(
+            this.dimLabel(`R ${rr.toFixed(2)}`, this.toWorld(c[0], c[1] + rr + this.mmForPx(10)), false)
+          )
+      }
     }
   }
 
