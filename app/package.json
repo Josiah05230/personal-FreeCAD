@@ -10,7 +10,10 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "typecheck:node": "tsc --noEmit -p tsconfig.node.json"
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
+    "pack:dir": "electron-vite build && electron-builder --dir",
+    "pack:linux": "electron-vite build && electron-builder --linux AppImage",
+    "pack:win": "electron-vite build && electron-builder --win nsis"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -19,6 +22,7 @@
     "@types/three": "^0.169.0",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
     "typescript": "^5.7.2",
     "vite": "^5.4.11"

@@ -27,3 +27,5 @@ config.local.json
 # scratch CAD output
 *.FCStd1
 scratch/
+app/resources/
+release/

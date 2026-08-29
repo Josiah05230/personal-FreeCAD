@@ -46,7 +46,9 @@ Running checklist of user feedback from live testing. `[x]` done, `[~]` partial,
 - [x] Measure (length/area/distance/angle) + Section (live clipping plane)
 - [ ] Sheet metal (low priority)
 - [ ] Surface / body-split (low priority)
-- [ ] Packaging: bundled installer (Win + Linux), signing, auto-update
+- [x] Packaging: electron-builder config (AppImage + NSIS), FreeCAD bundled as
+      extraResources, runtime path resolution, scripts/package.sh; --dir build
+      verified
 
 ## Batch 4 - timeline / origin / visibility
 

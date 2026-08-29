@@ -24,6 +24,21 @@ export type SidecarConfig = {
   sidecarStartupTimeoutMs: number
 }
 
+/**
+ * Resolve `freecadcmd`. A packaged build ships FreeCAD under
+ * `<resources>/freecad/`; a dev checkout reads config.local.json.
+ */
+function resolveFreecadCmd(repoRoot: string, configured?: string): string {
+  const res = process.resourcesPath
+  const bundled =
+    process.platform === 'win32'
+      ? resolve(res, 'freecad', 'bin', 'FreeCADCmd.exe')
+      : resolve(res, 'freecad', 'usr', 'bin', 'freecadcmd')
+  if (existsSync(bundled)) return bundled
+  if (configured) return expandHome(configured)
+  return 'freecadcmd'
+}
+
 export function loadConfig(repoRoot: string): SidecarConfig {
   const candidates = [
     resolve(repoRoot, 'config.local.json'),
@@ -32,7 +47,7 @@ export function loadConfig(repoRoot: string): SidecarConfig {
   const file = candidates.find(existsSync)
   const raw = file ? JSON.parse(readFileSync(file, 'utf-8')) : {}
   return {
-    freecadcmd: expandHome(raw.freecadcmd ?? 'freecadcmd'),
+    freecadcmd: resolveFreecadCmd(repoRoot, raw.freecadcmd),
     sidecarHost: raw.sidecarHost ?? '127.0.0.1',
     sidecarStartupTimeoutMs: raw.sidecarStartupTimeoutMs ?? 20000
   }
@@ -50,8 +65,12 @@ export class Sidecar {
 
   async start(): Promise<Endpoint> {
     if (this.endpoint) return this.endpoint
-    const serverPy = resolve(this.repoRoot, 'sidecar/server.py')
-    if (!existsSync(serverPy)) throw new Error(`sidecar not found: ${serverPy}`)
+    const candidates = [
+      resolve(this.repoRoot, 'sidecar/server.py'),
+      resolve(process.resourcesPath, 'sidecar/server.py')
+    ]
+    const serverPy = candidates.find(existsSync)
+    if (!serverPy) throw new Error(`sidecar not found (looked in ${candidates.join(', ')})`)
     if (!existsSync(this.cfg.freecadcmd)) {
       throw new Error(
         `freecadcmd not found: ${this.cfg.freecadcmd} - set it in config.local.json`

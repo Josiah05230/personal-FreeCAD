@@ -1,0 +1,40 @@
+appId: tech.grainwave.gwtcad
+productName: GWT-CAD
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - out/**/*
+  - package.json
+
+# The headless FreeCAD engine ships alongside the app. Populate
+# app/resources/freecad/ before packaging (scripts/package.sh does this):
+#   Linux: the extracted AppDir  -> resources/freecad/usr/bin/freecadcmd
+#   Windows: a FreeCAD install    -> resources/freecad/bin/FreeCADCmd.exe
+extraResources:
+  - from: ../sidecar
+    to: sidecar
+  - from: resources/freecad
+    to: freecad
+    filter:
+      - "**/*"
+
+linux:
+  target:
+    - AppImage
+  category: Graphics
+  artifactName: ${productName}-${version}-${arch}.AppImage
+
+win:
+  target:
+    - nsis
+  artifactName: ${productName}-Setup-${version}.exe
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+
+# code signing is configured per-machine via env (CSC_LINK / CSC_KEY_PASSWORD
+# on Windows); left unset here so unsigned dev builds still produce.
