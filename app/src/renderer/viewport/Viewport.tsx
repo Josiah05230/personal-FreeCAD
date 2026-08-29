@@ -1,13 +1,13 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
-import type { RenderMesh } from '../rpc'
+import type { RenderMesh, SketchRender, Selection } from '../rpc'
 import type { ViewportApi } from './types'
 import { CadControls } from './CadControls'
 import { ViewCube } from './ViewCube'
+import { Picker } from './Picker'
 import { buildScene } from './sceneBuilder'
 
 function gradientBackground(): THREE.Texture {
-  // Dark theme: a deep cool gradient, lighter toward the horizon.
   const c = document.createElement('canvas')
   c.width = 2
   c.height = 256
@@ -25,20 +25,31 @@ function gradientBackground(): THREE.Texture {
 
 export function Viewport({
   meshes,
+  sketches = [],
+  selection = [],
+  onSelect,
   apiRef
 }: {
   meshes: RenderMesh[]
+  sketches?: SketchRender[]
+  selection?: Selection[]
+  onSelect?: (sel: Selection | null, additive: boolean) => void
   apiRef?: { current: ViewportApi | null }
 }): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   const cubeRef = useRef<HTMLDivElement>(null)
+  const onSelectRef = useRef(onSelect)
+  onSelectRef.current = onSelect
+
   const stateRef = useRef<{
     renderer: THREE.WebGLRenderer
     scene: THREE.Scene
     camera: THREE.PerspectiveCamera
     controls: CadControls
     cube: ViewCube
+    picker: Picker
     content: THREE.Group | null
+    overlay: THREE.Group
     framedOnce: boolean
     lastCenter: THREE.Vector3
     lastRadius: number
@@ -55,25 +66,24 @@ export function Viewport({
     const scene = new THREE.Scene()
     scene.background = gradientBackground()
 
-    const camera = new THREE.PerspectiveCamera(
-      35,
-      host.clientWidth / host.clientHeight,
-      0.1,
-      100000
-    )
+    const camera = new THREE.PerspectiveCamera(35, host.clientWidth / host.clientHeight, 0.1, 100000)
     camera.up.set(0, 0, 1)
     camera.position.set(220, -260, 180)
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x9099a3, 2.6))
-    const key = new THREE.DirectionalLight(0xffffff, 2.1)
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x30343c, 2.4))
+    const key = new THREE.DirectionalLight(0xffffff, 2.0)
     key.position.set(0.6, -1, 1.4)
     scene.add(key)
-    const fill = new THREE.DirectionalLight(0xffffff, 0.9)
+    const fill = new THREE.DirectionalLight(0xffffff, 0.8)
     fill.position.set(-1.2, 0.8, 0.4)
     scene.add(fill)
 
+    const overlay = new THREE.Group()
+    scene.add(overlay)
+
     const controls = new CadControls(camera, renderer.domElement)
     const cube = new ViewCube(cubeRef.current!, camera, controls)
+    const picker = new Picker(camera, renderer.domElement, overlay)
 
     stateRef.current = {
       renderer,
@@ -81,7 +91,9 @@ export function Viewport({
       camera,
       controls,
       cube,
+      picker,
       content: null,
+      overlay,
       framedOnce: false,
       lastCenter: new THREE.Vector3(),
       lastRadius: 60
@@ -93,14 +105,39 @@ export function Viewport({
           const s = stateRef.current
           if (s) s.controls.frame(s.lastCenter, s.lastRadius)
         },
-        setView: (dir) =>
-          stateRef.current?.cube.goToView(new THREE.Vector3(dir[0], dir[1], dir[2]))
+        setView: (dir) => stateRef.current?.cube.goToView(new THREE.Vector3(...dir))
       }
     }
 
+    // click-to-select (left button, negligible drag)
+    let downX = 0
+    let downY = 0
+    let downBtn = -1
+    const onDown = (e: PointerEvent): void => {
+      downX = e.clientX
+      downY = e.clientY
+      downBtn = e.button
+    }
+    const onUp = (e: PointerEvent): void => {
+      if (downBtn !== 0 || e.button !== 0) return
+      if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 4) return
+      const st = stateRef.current
+      if (!st || !st.content) return
+      const sel = st.picker.pick(e, st.content)
+      onSelectRef.current?.(sel, e.shiftKey || e.ctrlKey)
+    }
+    const onMove = (e: PointerEvent): void => {
+      const st = stateRef.current
+      if (!st || !st.content || e.buttons !== 0) return
+      st.picker.setHover(st.picker.pick(e, st.content), st.content)
+    }
+    renderer.domElement.addEventListener('pointerdown', onDown)
+    renderer.domElement.addEventListener('pointerup', onUp)
+    renderer.domElement.addEventListener('pointermove', onMove)
+
     let raf = 0
     let prev = performance.now()
-    const loop = () => {
+    const loop = (): void => {
       raf = requestAnimationFrame(loop)
       const now = performance.now()
       const dt = Math.min((now - prev) / 1000, 0.05)
@@ -123,17 +160,23 @@ export function Viewport({
     return () => {
       cancelAnimationFrame(raf)
       ro.disconnect()
+      renderer.domElement.removeEventListener('pointerdown', onDown)
+      renderer.domElement.removeEventListener('pointerup', onUp)
+      renderer.domElement.removeEventListener('pointermove', onMove)
       cube.dispose()
       controls.dispose()
       renderer.dispose()
       host.removeChild(renderer.domElement)
+      if (apiRef) apiRef.current = null
       stateRef.current = null
     }
-  }, [])
+  }, [apiRef])
 
+  // rebuild content
   useEffect(() => {
     const st = stateRef.current
     if (!st) return
+    st.picker.clear()
     if (st.content) {
       st.scene.remove(st.content)
       st.content.traverse((o) => {
@@ -144,11 +187,11 @@ export function Viewport({
         else mat?.dispose()
       })
     }
-    if (!meshes.length) {
+    if (!meshes.length && !sketches.length) {
       st.content = null
       return
     }
-    const { group, center, radius } = buildScene(meshes)
+    const { group, center, radius } = buildScene(meshes, sketches)
     st.scene.add(group)
     st.content = group
     st.lastCenter = center
@@ -157,13 +200,13 @@ export function Viewport({
       st.controls.frame(center, radius)
       st.framedOnce = true
     }
-  }, [meshes])
+  }, [meshes, sketches])
 
+  // reflect selection
   useEffect(() => {
-    return () => {
-      if (apiRef) apiRef.current = null
-    }
-  }, [apiRef])
+    const st = stateRef.current
+    if (st?.content) st.picker.setSelection(selection, st.content)
+  }, [selection, meshes])
 
   return (
     <div className="viewport" ref={hostRef}>

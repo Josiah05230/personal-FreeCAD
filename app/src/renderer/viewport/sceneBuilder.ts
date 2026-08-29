@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import type { RenderMesh } from '../rpc'
+import type { RenderMesh, SketchRender } from '../rpc'
 
 export interface BuiltScene {
   group: THREE.Group
@@ -7,13 +7,12 @@ export interface BuiltScene {
   radius: number
 }
 
-// Dark theme: graphite body with a satin sheen, edges slightly lighter so they
-// read against the body rather than the classic black-on-light CAD look.
+// Dark theme: graphite body with a satin sheen; edges near-black; sketches blue.
 const SOLID_COLOR = 0x8a8f96
 const EDGE_COLOR = 0x1c1f24
+const SKETCH_COLOR = 0x2f9fe0
 
-/** Build a display group from sidecar render buffers (mm, Z-up). */
-export function buildScene(meshes: RenderMesh[]): BuiltScene {
+export function buildScene(meshes: RenderMesh[], sketches: SketchRender[] = []): BuiltScene {
   const group = new THREE.Group()
   const box = new THREE.Box3()
 
@@ -24,42 +23,61 @@ export function buildScene(meshes: RenderMesh[]): BuiltScene {
     geom.setIndex(m.indices)
     geom.userData = { bodyId: m.id, faceGroups: m.faceGroups }
 
-    const mat = new THREE.MeshStandardMaterial({
-      color: SOLID_COLOR,
-      metalness: 0.15,
-      roughness: 0.5,
-      flatShading: false,
-      side: THREE.DoubleSide // safety net: never let a mis-wound face read as see-through
-    })
-    const mesh = new THREE.Mesh(geom, mat)
+    const mesh = new THREE.Mesh(
+      geom,
+      new THREE.MeshStandardMaterial({
+        color: SOLID_COLOR,
+        metalness: 0.15,
+        roughness: 0.5,
+        side: THREE.DoubleSide
+      })
+    )
     mesh.name = `body:${m.id}`
-    mesh.renderOrder = 0
+    mesh.userData = { pick: 'face', bodyId: m.id, faceGroups: m.faceGroups }
     group.add(mesh)
+    box.expandByObject(mesh)
 
-    // model edges as one LineSegments per body
-    const segPts: number[] = []
+    // one line object per model edge, individually pickable
     for (const e of m.edges) {
       const p = e.points
-      for (let i = 0; i + 5 < p.length; i += 3) {
-        segPts.push(p[i], p[i + 1], p[i + 2], p[i + 3], p[i + 4], p[i + 5])
-      }
+      const g = new THREE.BufferGeometry()
+      g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3))
+      const line = new THREE.Line(g, new THREE.LineBasicMaterial({ color: EDGE_COLOR }))
+      line.name = `edge:${m.id}:${e.edge}`
+      line.userData = { pick: 'edge', bodyId: m.id, sub: `Edge${e.edge + 1}` }
+      line.renderOrder = 1
+      group.add(line)
     }
-    if (segPts.length) {
-      const eg = new THREE.BufferGeometry()
-      eg.setAttribute('position', new THREE.Float32BufferAttribute(segPts, 3))
-      const el = new THREE.LineSegments(
-        eg,
-        new THREE.LineBasicMaterial({ color: EDGE_COLOR })
-      )
-      el.name = `edges:${m.id}`
-      el.renderOrder = 1
-      group.add(el)
-    }
+  }
 
-    box.expandByObject(mesh)
+  for (const s of sketches) {
+    for (const poly of s.polys) {
+      const g = new THREE.BufferGeometry()
+      g.setAttribute('position', new THREE.Float32BufferAttribute(poly, 3))
+      const line = new THREE.Line(
+        g,
+        new THREE.LineBasicMaterial({ color: SKETCH_COLOR, linewidth: 2 })
+      )
+      line.name = `sketch:${s.id}`
+      line.userData = { pick: 'sketch', sketchId: s.id }
+      line.renderOrder = 2
+      group.add(line)
+    }
   }
 
   const center = box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3())
-  const radius = box.isEmpty() ? 50 : Math.max(box.getSize(new THREE.Vector3()).length() / 2, 1)
+  const radius = box.isEmpty() ? 60 : Math.max(box.getSize(new THREE.Vector3()).length() / 2, 1)
   return { group, center, radius }
+}
+
+/** Map a raytraced triangle index to the FreeCAD face sub-name. */
+export function faceSubFromTriangle(
+  faceGroups: { face: number; start: number; count: number }[],
+  triangleIndex: number
+): string | null {
+  const i = triangleIndex * 3
+  for (const g of faceGroups) {
+    if (i >= g.start && i < g.start + g.count) return `Face${g.face + 1}`
+  }
+  return null
 }

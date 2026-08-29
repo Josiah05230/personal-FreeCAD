@@ -1127,3 +1127,291 @@ code {
 .sb-spacer {
   flex: 1;
 }
+
+/* ---------- operation dialog (in-canvas) ---------- */
+.opdlg {
+  position: absolute;
+  top: 16px;
+  right: 160px;
+  z-index: 5;
+  width: 220px;
+  background: #2b2b2fee;
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  box-shadow: 0 14px 40px #0009;
+}
+
+.opdlg-title {
+  padding: 9px 12px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--line);
+}
+
+.opdlg-need {
+  padding: 5px 12px;
+  font-size: 10px;
+  color: var(--text-dim);
+  background: #00000030;
+}
+
+.opdlg-need.ok {
+  color: var(--accent-hi);
+}
+
+.opdlg-body {
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.opdlg-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+}
+
+.opdlg-field input[type='number'],
+.opdlg-field select {
+  width: 92px;
+  background: var(--chrome-1);
+  border: 1px solid var(--line-soft);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 3px 6px;
+}
+
+.opdlg-field input[type='checkbox'] {
+  accent-color: var(--accent);
+}
+
+.opdlg-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px 12px;
+  justify-content: flex-end;
+}
+
+.opdlg-actions button {
+  padding: 5px 14px;
+  border-radius: 4px;
+  border: 1px solid var(--line-soft);
+  background: var(--chrome-3);
+  cursor: pointer;
+}
+
+.opdlg-ok {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #fff;
+}
+
+.opdlg-ok:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ---------- drawing sheet ---------- */
+.drawing {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #1a1a1c;
+}
+
+.drawing-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--chrome-1);
+  border-bottom: 1px solid var(--line);
+}
+
+.drawing-back {
+  background: var(--chrome-3);
+  border: 1px solid var(--line-soft);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.drawing-title {
+  font-weight: 600;
+}
+
+.drawing-spacer {
+  flex: 1;
+}
+
+.drawing-adddir {
+  background: transparent;
+  border: 1px solid var(--line-soft);
+  color: var(--text-dim);
+  border-radius: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.drawing-adddir:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.drawing-sheet {
+  flex: 1;
+  overflow: auto;
+  padding: 20px;
+}
+
+.drawing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 18px;
+}
+
+.dw-view {
+  background: #101012;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.dw-view-head {
+  font-size: 10px;
+  color: var(--text-dim);
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dw-view-svg {
+  width: 100%;
+  height: 260px;
+  display: block;
+}
+
+.drawing-empty {
+  color: var(--text-dim);
+  padding: 30px;
+}
+
+/* ---------- assembly panel ---------- */
+.asmpanel {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  z-index: 3;
+  width: 240px;
+  max-height: 60%;
+  overflow-y: auto;
+  background: #26262ae8;
+  backdrop-filter: blur(8px);
+  border: 1px solid #00000055;
+  border-radius: 6px;
+  box-shadow: 0 6px 20px #00000066;
+}
+
+.asmpanel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.asmpanel-title {
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+}
+
+.asmpanel-add {
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.asm-section {
+  padding: 6px 10px 2px;
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.asm-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+.asm-row:hover {
+  background: var(--accent-soft);
+}
+
+.asm-ground {
+  background: transparent;
+  border: 1px solid var(--line-soft);
+  color: var(--text-dim);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 1px 6px;
+}
+
+.asm-ground.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.asm-hint {
+  padding: 6px 10px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.asm-hint.small {
+  font-size: 9px;
+}
+
+.asm-jointbar {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+}
+
+.asm-jointbar select {
+  flex: 1;
+  background: var(--chrome-1);
+  border: 1px solid var(--line-soft);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 3px;
+}
+
+.asm-jointbar button {
+  background: var(--chrome-3);
+  border: 1px solid var(--line-soft);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.asm-jointbar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

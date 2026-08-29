@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, type BodyTree, type RenderMesh } from './rpc'
+import {
+  api,
+  type BodyTree,
+  type RenderMesh,
+  type SketchRender,
+  type Selection,
+  type DrawingView,
+  type AssemblyTree
+} from './rpc'
 import { buildCommands } from './commands'
 import { Viewport } from './viewport/Viewport'
 import type { ViewportApi } from './viewport/types'
@@ -11,6 +19,9 @@ import { GitPanel } from './ui/GitPanel'
 import { Browser } from './ui/Browser'
 import { Timeline } from './ui/Timeline'
 import { CommandPalette } from './ui/CommandPalette'
+import { OperationDialog, type OpKind, type OpValues } from './ui/OperationDialog'
+import { DrawingSheet } from './ui/DrawingSheet'
+import { AssemblyPanel } from './ui/AssemblyPanel'
 import { basename } from './util'
 
 type Status =
@@ -22,17 +33,28 @@ const isTypingTarget = (t: EventTarget | null): boolean => {
   const el = t as HTMLElement | null
   return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
 }
+const selKey = (s: Selection): string =>
+  s.kind === 'body' ? `body:${s.bodyId}` : `${s.kind}:${s.bodyId}:${s.sub}`
 
 export function App(): JSX.Element {
   const [status, setStatus] = useState<Status>({ phase: 'boot' })
   const [meshes, setMeshes] = useState<RenderMesh[]>([])
+  const [sketches, setSketches] = useState<SketchRender[]>([])
   const [bodies, setBodies] = useState<BodyTree[]>([])
   const [docPath, setDocPath] = useState<string | null>(null)
   const [visOverride, setVisOverride] = useState<Record<string, boolean>>({})
+  const [selection, setSelection] = useState<Selection[]>([])
 
   const [dataOpen, setDataOpen] = useState(false)
   const [gitOpen, setGitOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [op, setOp] = useState<OpKind | null>(null)
+
+  const [drawingViews, setDrawingViews] = useState<DrawingView[]>([])
+  const [showDrawing, setShowDrawing] = useState(false)
+
+  const [asmTree, setAsmTree] = useState<AssemblyTree | null>(null)
+  const [jointType, setJointType] = useState('Revolute')
 
   const [tabs, setTabs] = useState<DocTab[]>([{ id: 'd1', name: 'Untitled', dirty: false }])
   const [activeTab, setActiveTab] = useState('d1')
@@ -46,29 +68,108 @@ export function App(): JSX.Element {
   )
 
   const refreshScene = useCallback(async () => {
-    const [scene, tree] = await Promise.all([api.sceneGet(), api.treeGet()])
+    const [scene, tree, asm] = await Promise.all([
+      api.sceneGet(),
+      api.treeGet(),
+      api.assemblyTree().catch(() => null)
+    ])
     setMeshes(scene.meshes)
+    setSketches(scene.sketches ?? [])
     setBodies(tree.bodies)
     setDocPath(tree.path)
     setVisOverride({})
+    setAsmTree(asm && asm.assembly ? asm : null)
   }, [])
 
   const refreshMeshesOnly = useCallback(async () => {
     const scene = await api.sceneGet()
     setMeshes(scene.meshes)
+    setSketches(scene.sketches ?? [])
+  }, [])
+
+  const afterEdit = useCallback(async () => {
+    await refreshScene()
+    markDirty()
+    setSelection([])
+  }, [refreshScene, markDirty])
+
+  // ---- selection ----
+  const onSelect = useCallback((sel: Selection | null, additive: boolean) => {
+    if (!sel) {
+      if (!additive) setSelection([])
+      return
+    }
+    setSelection((cur) => {
+      if (!additive) return [sel]
+      const k = selKey(sel)
+      return cur.some((s) => selKey(s) === k) ? cur.filter((s) => selKey(s) !== k) : [...cur, sel]
+    })
   }, [])
 
   // ---- feature ops ----
   const runExtrude = useCallback(async () => {
     await api.demoPad(60, 40, 15)
-    await refreshScene()
-    markDirty()
-  }, [refreshScene, markDirty])
+    await afterEdit()
+  }, [afterEdit])
 
   const createSketch = useCallback(async () => {
-    // Sketch environment lands in Milestone 1; for now this seeds a base solid.
-    await runExtrude()
-  }, [runExtrude])
+    await api.box(40, 40, 40)
+    await afterEdit()
+  }, [afterEdit])
+
+  const applyOp = useCallback(
+    async (kind: OpKind, v: OpValues) => {
+      const edges = selection.filter((s) => s.kind === 'edge').map((s) => (s as { sub: string }).sub)
+      const faces = selection.filter((s) => s.kind === 'face') as Array<{
+        sub: string
+        point: [number, number, number]
+      }>
+      try {
+        switch (kind) {
+          case 'box':
+            await api.box(Number(v.width), Number(v.depth), Number(v.height))
+            break
+          case 'cylinder':
+            await api.cylinder(Number(v.diameter), Number(v.height))
+            break
+          case 'fillet':
+            await api.fillet(edges, Number(v.radius))
+            break
+          case 'chamfer':
+            await api.chamfer(edges, Number(v.size))
+            break
+          case 'shell':
+            await api.shell(faces.map((f) => f.sub), Number(v.thickness))
+            break
+          case 'hole':
+            await api.hole(
+              faces[0].sub,
+              faces[0].point,
+              Number(v.diameter),
+              Number(v.depth),
+              Boolean(v.throughAll)
+            )
+            break
+          case 'patternLinear': {
+            const ax = { X: [1, 0, 0], Y: [0, 1, 0], Z: [0, 0, 1] }[String(v.axis)] ?? [1, 0, 0]
+            await api.patternLinear(ax, Number(v.count), Number(v.spacing))
+            break
+          }
+          case 'mirror':
+            await api.mirror(String(v.plane))
+            break
+          case 'datumPlane':
+            await api.datumPlane(String(v.basePlane), Number(v.offset))
+            break
+        }
+        setOp(null)
+        await afterEdit()
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [selection, afterEdit]
+  )
 
   const rollTo = useCallback(
     async (featureId: string | null) => {
@@ -79,32 +180,25 @@ export function App(): JSX.Element {
     [bodyId, refreshScene]
   )
 
-  const editFeature = useCallback((id: string) => {
-    // feature-edit dialogs arrive with Milestone 1
-    console.info('[edit feature]', id)
-  }, [])
-
   const renameFeature = useCallback(
     async (id: string) => {
       const cur = bodies.flatMap((b) => b.features).find((f) => f.id === id)
       const next = window.prompt('Rename', cur?.label ?? '')
       if (next && next.trim()) {
         await api.renameFeature(id, next.trim())
-        await refreshScene()
-        markDirty()
+        await afterEdit()
       }
     },
-    [bodies, refreshScene, markDirty]
+    [bodies, afterEdit]
   )
 
   const deleteFeature = useCallback(
     async (id: string) => {
       if (!window.confirm('Delete this feature?')) return
       await api.deleteFeature(id)
-      await refreshScene()
-      markDirty()
+      await afterEdit()
     },
-    [refreshScene, markDirty]
+    [afterEdit]
   )
 
   const toggleVisibility = useCallback(
@@ -133,16 +227,19 @@ export function App(): JSX.Element {
     markDirty(false)
   }, [docPath, saveAs, markDirty])
 
-  const openDesign = useCallback(async () => {
-    const p = await window.cad.openDialog()
-    if (!p) return
-    await api.open(p)
-    await refreshScene()
-    setDocPath(p)
-    setTabs((t) =>
-      t.map((x) => (x.id === activeTab ? { ...x, name: basename(p), dirty: false } : x))
-    )
-  }, [refreshScene, activeTab])
+  const openDesign = useCallback(
+    async (path?: string) => {
+      const p = path ?? (await window.cad.openDialog())
+      if (!p) return
+      await api.open(p)
+      await refreshScene()
+      setDocPath(p)
+      setTabs((t) =>
+        t.map((x) => (x.id === activeTab ? { ...x, name: basename(p), dirty: false } : x))
+      )
+    },
+    [refreshScene, activeTab]
+  )
 
   const exportModel = useCallback(async () => {
     const p = await window.cad.exportDialog(
@@ -159,15 +256,15 @@ export function App(): JSX.Element {
     ])
     if (!p) return
     await api.importStep(p)
-    await refreshScene()
-    markDirty()
-  }, [refreshScene, markDirty])
+    await afterEdit()
+  }, [afterEdit])
 
   const newDesign = useCallback(() => {
     const id = `d${Date.now()}`
     setTabs((t) => [...t, { id, name: 'Untitled', dirty: false }])
     setActiveTab(id)
     setDocPath(null)
+    setShowDrawing(false)
     void (async () => {
       await api.resetDocument()
       await refreshScene()
@@ -175,6 +272,54 @@ export function App(): JSX.Element {
   }, [refreshScene])
 
   const fitView = useCallback(() => vpApi.current?.fit(), [])
+
+  // ---- drawings ----
+  const addDrawingView = useCallback(async (dir: string) => {
+    const v = await api.drawingAddView(null, dir, 1)
+    setDrawingViews((cur) => [...cur.filter((x) => x.direction !== dir), v])
+  }, [])
+
+  const startDrawing = useCallback(async () => {
+    setShowDrawing(true)
+    setDrawingViews([])
+    for (const d of ['front', 'top', 'right', 'iso']) {
+      try {
+        const v = await api.drawingAddView(null, d, 1)
+        setDrawingViews((cur) => [...cur.filter((x) => x.direction !== d), v])
+      } catch {
+        /* body may be missing */
+      }
+    }
+  }, [])
+
+  // ---- assemblies ----
+  const addComponent = useCallback(async () => {
+    const p = await window.cad.openDialog()
+    if (!p) return
+    await api.assemblyCreate()
+    await api.assemblyAddComponent(p, basename(p).replace(/\.FCStd$/i, ''))
+    await refreshScene()
+  }, [refreshScene])
+
+  const groundComponent = useCallback(
+    async (id: string) => {
+      await api.assemblyGround(id)
+      await refreshScene()
+    },
+    [refreshScene]
+  )
+
+  const addJoint = useCallback(async () => {
+    const fs = selection.filter((s) => s.kind === 'face') as Array<{ bodyId: string; sub: string }>
+    if (fs.length !== 2) return
+    const r = await api.assemblyAddJoint(jointType, fs[0].bodyId, fs[0].sub, fs[1].bodyId, fs[1].sub)
+    await refreshScene()
+    setSelection([])
+    if (!r.solved)
+      window.alert(
+        `Joint "${jointType}" added (${r.engine}). Headless joint solving is experimental; it will move components once the solver session lands.`
+      )
+  }, [selection, jointType, refreshScene])
 
   // ---- boot ----
   useEffect(() => {
@@ -200,17 +345,19 @@ export function App(): JSX.Element {
   const commands = useMemo(
     () =>
       buildCommands({
+        openOp: (k) => setOp(k),
         extrude: runExtrude,
         createSketch,
         newDesign,
-        open: openDesign,
+        open: () => openDesign(),
         save,
         saveAs,
         exportModel,
         importStep,
         fitView,
         toggleData: () => setDataOpen((v) => !v),
-        toggleGit: () => setGitOpen((v) => !v)
+        toggleGit: () => setGitOpen((v) => !v),
+        startDrawing
       }),
     [
       runExtrude,
@@ -221,7 +368,8 @@ export function App(): JSX.Element {
       saveAs,
       exportModel,
       importStep,
-      fitView
+      fitView,
+      startDrawing
     ]
   )
 
@@ -234,6 +382,8 @@ export function App(): JSX.Element {
         setPaletteOpen(true)
       } else if (!ctrl && (e.key === 'e' || e.key === 'E')) {
         void runExtrude()
+      } else if (!ctrl && (e.key === 'f' || e.key === 'F')) {
+        setOp('fillet')
       } else if (ctrl && e.key.toLowerCase() === 's') {
         e.preventDefault()
         void save()
@@ -247,6 +397,7 @@ export function App(): JSX.Element {
         fitView()
       } else if (e.key === 'Escape') {
         setPaletteOpen(false)
+        setOp(null)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -267,7 +418,7 @@ export function App(): JSX.Element {
         dirty={activeDirty}
         fileActions={{
           onNew: newDesign,
-          onOpen: openDesign,
+          onOpen: () => openDesign(),
           onSave: save,
           onSaveAs: saveAs,
           onExport: exportModel,
@@ -276,7 +427,7 @@ export function App(): JSX.Element {
       />
 
       <div className="appbody">
-        <DataPanel open={dataOpen} onOpenFile={(p) => void api.open(p).then(refreshScene).then(() => setDocPath(p))} />
+        <DataPanel open={dataOpen} onOpenFile={(p) => void openDesign(p)} />
 
         <div className="maincol">
           <Ribbon commands={commands} />
@@ -294,31 +445,68 @@ export function App(): JSX.Element {
                   <b>Engine error</b>
                   <div>{status.message}</div>
                   <div className="hint">
-                    Check <code>config.local.json</code> points at a valid <code>freecadcmd</code>.
+                    Check <code>config.local.json</code> points at a valid{' '}
+                    <code>freecadcmd</code>.
                   </div>
                 </div>
               )}
               {status.phase === 'boot' && <div className="overlay">Starting FreeCAD engine…</div>}
-              <Viewport meshes={meshes} apiRef={vpApi} />
-              <Browser
-                bodies={bodies}
-                visibility={visOverride}
-                handlers={{
-                  onToggleVisibility: toggleVisibility,
-                  onRename: renameFeature,
-                  onDelete: deleteFeature,
-                  onEdit: editFeature
-                }}
-              />
-              <Timeline
-                bodies={bodies}
-                handlers={{
-                  onRollTo: rollTo,
-                  onEdit: editFeature,
-                  onRename: renameFeature,
-                  onDelete: deleteFeature
-                }}
-              />
+
+              {showDrawing ? (
+                <DrawingSheet
+                  views={drawingViews}
+                  onBack={() => setShowDrawing(false)}
+                  onAddView={(d) => void addDrawingView(d)}
+                />
+              ) : (
+                <>
+                  <Viewport
+                    meshes={meshes}
+                    sketches={sketches}
+                    selection={selection}
+                    onSelect={onSelect}
+                    apiRef={vpApi}
+                  />
+                  <Browser
+                    bodies={bodies}
+                    visibility={visOverride}
+                    handlers={{
+                      onToggleVisibility: toggleVisibility,
+                      onRename: renameFeature,
+                      onDelete: deleteFeature,
+                      onEdit: () => undefined
+                    }}
+                  />
+                  {asmTree && (
+                    <AssemblyPanel
+                      tree={asmTree}
+                      selection={selection}
+                      jointType={jointType}
+                      onSetJointType={setJointType}
+                      onAddComponent={addComponent}
+                      onGround={groundComponent}
+                      onAddJoint={addJoint}
+                    />
+                  )}
+                  {op && (
+                    <OperationDialog
+                      kind={op}
+                      selection={selection}
+                      onApply={applyOp}
+                      onCancel={() => setOp(null)}
+                    />
+                  )}
+                  <Timeline
+                    bodies={bodies}
+                    handlers={{
+                      onRollTo: rollTo,
+                      onEdit: () => undefined,
+                      onRename: renameFeature,
+                      onDelete: deleteFeature
+                    }}
+                  />
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -335,9 +523,10 @@ export function App(): JSX.Element {
               : 'connecting…'}
         </span>
         <span className="sb-spacer" />
+        <span>{selection.length ? `${selection.length} selected` : ''}</span>
         <span>{docPath ? basename(docPath) : 'unsaved'}</span>
         <span>mm</span>
-        <span>Middle: pan · Shift+Middle: orbit · Wheel: zoom · S: search</span>
+        <span>Click: select · Middle: pan · Shift+Middle: orbit · S: search</span>
       </div>
 
       <CommandPalette
