@@ -30,7 +30,7 @@ interface FieldSpec {
 
 interface OpSpec {
   title: string
-  needs: 'none' | 'edges' | 'faces' | 'sketch' | 'sketches2' | 'planeFace'
+  needs: 'none' | 'edges' | 'faces' | 'sketch' | 'sketches2' | 'planeFace' | 'plane' | 'axis'
   fields: FieldSpec[]
 }
 
@@ -96,9 +96,8 @@ const SPECS: Record<OpKind, OpSpec> = {
   },
   patternCircular: {
     title: 'Circular Pattern',
-    needs: 'none',
+    needs: 'axis',
     fields: [
-      { key: 'axisPlane', label: 'Around', type: 'select', default: 'XY', options: ['XY', 'XZ', 'YZ'] },
       { key: 'count', label: 'Quantity', type: 'number', default: 4, min: 2, step: 1 },
       { key: 'angle', label: 'Total angle', type: 'number', default: 360, step: 15 }
     ]
@@ -140,18 +139,13 @@ const SPECS: Record<OpKind, OpSpec> = {
   },
   mirror: {
     title: 'Mirror',
-    needs: 'none',
-    fields: [
-      { key: 'plane', label: 'Mirror plane', type: 'select', default: 'YZ', options: ['XY', 'XZ', 'YZ'] }
-    ]
+    needs: 'plane',
+    fields: []
   },
   datumPlane: {
     title: 'Offset Plane',
-    needs: 'none',
-    fields: [
-      { key: 'basePlane', label: 'Base', type: 'select', default: 'XY', options: ['XY', 'XZ', 'YZ'] },
-      { key: 'offset', label: 'Offset', type: 'number', default: 10, step: 1 }
-    ]
+    needs: 'plane',
+    fields: [{ key: 'offset', label: 'Offset', type: 'number', default: 10, step: 1 }]
   }
 }
 
@@ -184,6 +178,8 @@ export function OperationDialog({
   const edges = selection.filter((s) => s.kind === 'edge')
   const faces = selection.filter((s) => s.kind === 'face')
   const sketchesSel = selection.filter((s) => s.kind === 'sketch')
+  const planeSel = selection.filter((s) => s.kind === 'plane' || s.kind === 'face')
+  const axisSel = selection.filter((s) => s.kind === 'plane' || s.kind === 'edge' || s.kind === 'face')
   const needMsg =
     spec.needs === 'edges'
       ? `${edges.length} edge${edges.length === 1 ? '' : 's'} selected`
@@ -195,7 +191,15 @@ export function OperationDialog({
             : 'select a sketch'
           : spec.needs === 'sketches2'
             ? `${sketchesSel.length} sketches selected (need 2+)`
-            : null
+            : spec.needs === 'plane'
+              ? planeSel.length
+                ? 'plane selected'
+                : 'click a plane (tree) or a flat face'
+              : spec.needs === 'axis'
+                ? axisSel.length
+                  ? 'axis selected'
+                  : 'click an axis / edge / plane / face'
+                : null
 
   const ready =
     spec.needs === 'none' ||
@@ -203,7 +207,9 @@ export function OperationDialog({
     (spec.needs === 'faces' && faces.length > 0) ||
     (spec.needs === 'planeFace' && faces.length === 1) ||
     (spec.needs === 'sketch' && sketchesSel.length === 1) ||
-    (spec.needs === 'sketches2' && sketchesSel.length >= 2)
+    (spec.needs === 'sketches2' && sketchesSel.length >= 2) ||
+    (spec.needs === 'plane' && planeSel.length === 1) ||
+    (spec.needs === 'axis' && axisSel.length === 1)
 
   return (
     <div className="opdlg">

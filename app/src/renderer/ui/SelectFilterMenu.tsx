@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-export type SelKind = 'face' | 'edge' | 'sketch' | 'datum' | 'body'
+export type SelKind = 'face' | 'edge' | 'sketch' | 'datum' | 'body' | 'plane'
 export type SelectMode = 'paint' | 'window'
 
 const KINDS: { id: SelKind; label: string }[] = [

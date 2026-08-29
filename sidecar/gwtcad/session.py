@@ -24,8 +24,34 @@ def set_datum_shown(name, shown):
         _shown_datums.discard(name)
 
 
-# Bodies rolled back to before their first solid feature (nothing to show yet).
+# Rollback marker per body: the feature name the timeline marker sits AFTER.
+# None / absent => marker is at the end (normal editing). This is the source of
+# truth for "what exists at this point in history"; body.Tip is set from it for
+# geometry but a pre-first-solid marker leaves Tip alone and flags rolled-empty.
+_marker = {}
 _rolled_empty = set()
+
+
+def set_marker(body_name, feature_name, tip_at_rollback=None):
+    if feature_name is None:
+        _marker.pop(body_name, None)
+    else:
+        _marker[body_name] = {"feature": feature_name, "tip": tip_at_rollback}
+
+
+def marker(body_name):
+    m = _marker.get(body_name)
+    return m["feature"] if m else None
+
+
+def marker_tip(body_name):
+    m = _marker.get(body_name)
+    return m["tip"] if m else None
+
+
+def clear_markers():
+    _marker.clear()
+    _rolled_empty.clear()
 
 
 def set_rolled_empty(body_name, empty):
@@ -107,6 +133,7 @@ def reset():
     _state["name"] = d.Name
     _state["path"] = None
     _shown_datums.clear()
+    clear_markers()
     return d
 
 

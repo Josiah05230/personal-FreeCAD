@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   api,
+  onBusyChange,
   type BodyTree,
   type RenderMesh,
   type SketchRender,
@@ -10,7 +11,8 @@ import {
   type DatumDTO,
   type PickPlane,
   type SketchRef,
-  type CanvasDTO
+  type CanvasDTO,
+  selectionToRef
 } from './rpc'
 import { SelectFilterMenu, type SelKind, type SelectMode } from './ui/SelectFilterMenu'
 import { buildCommands } from './commands'
@@ -43,12 +45,12 @@ const isTypingTarget = (t: EventTarget | null): boolean => {
   const el = t as HTMLElement | null
   return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
 }
-const selKey = (s: Selection): string =>
-  s.kind === 'body'
-    ? `body:${s.bodyId}`
-    : s.kind === 'sketch'
-      ? `sketch:${s.sketchId}`
-      : `${s.kind}:${s.bodyId}:${s.sub}`
+const selKey = (s: Selection): string => {
+  if (s.kind === 'body') return `body:${s.bodyId}`
+  if (s.kind === 'sketch') return `sketch:${s.sketchId}`
+  if (s.kind === 'plane') return `plane:${s.planeId}`
+  return `${s.kind}:${s.bodyId}:${s.sub}`
+}
 
 export function App(): JSX.Element {
   const [status, setStatus] = useState<Status>({ phase: 'boot' })
@@ -56,7 +58,14 @@ export function App(): JSX.Element {
   const [sketches, setSketches] = useState<SketchRender[]>([])
   const [datums, setDatums] = useState<DatumDTO[]>([])
   const [bodies, setBodies] = useState<BodyTree[]>([])
-  const [selFilter, setSelFilter] = useState<SelKind[]>(['face', 'edge', 'sketch', 'datum', 'body'])
+  const [selFilter, setSelFilter] = useState<SelKind[]>([
+    'face',
+    'edge',
+    'sketch',
+    'datum',
+    'body',
+    'plane'
+  ])
   const [selectMode, setSelectMode] = useState<SelectMode>('paint')
   const [docPath, setDocPath] = useState<string | null>(null)
   const [visOverride, setVisOverride] = useState<Record<string, boolean>>({})
@@ -67,7 +76,6 @@ export function App(): JSX.Element {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [op, setOp] = useState<OpKind | null>(null)
 
-  const [drawingViews, setDrawingViews] = useState<DrawingView[]>([])
   const [showDrawing, setShowDrawing] = useState(false)
 
   const [asmTree, setAsmTree] = useState<AssemblyTree | null>(null)
@@ -80,6 +88,7 @@ export function App(): JSX.Element {
   } | null>(null)
   const [sketchTool, setSketchTool] = useState<SketchTool>('line')
   const [sketchCount, setSketchCount] = useState(0)
+  const [sketchInitial, setSketchInitial] = useState<unknown[]>([])
   const [planePickMode, setPlanePickMode] = useState(false)
   const [pickPlanes, setPickPlanes] = useState<PickPlane[]>([])
 
@@ -88,6 +97,9 @@ export function App(): JSX.Element {
   const [section, setSection] = useState<SectionState | null>(null)
   const [canvases, setCanvases] = useState<CanvasDTO[]>([])
   const [canvasImages, setCanvasImages] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState(0)
+
+  useEffect(() => onBusyChange(setBusy), [])
 
   const [tabs, setTabs] = useState<DocTab[]>([{ id: 'd1', name: 'Untitled', dirty: false }])
   const [activeTab, setActiveTab] = useState('d1')
@@ -190,6 +202,7 @@ export function App(): JSX.Element {
     const face = selection.find((s) => s.kind === 'face') as
       | { bodyId: string; sub: string }
       | undefined
+    setSketchInitial([])
     if (face) {
       void beginSketch({ kind: 'face', bodyId: face.bodyId, sub: face.sub })
     } else {
@@ -197,13 +210,23 @@ export function App(): JSX.Element {
     }
   }, [selection, beginSketch])
 
+  const editSketch = useCallback(async (sketchId: string) => {
+    const r = await api.sketchReopen(sketchId)
+    setSketchInitial(r.entities)
+    setSketchSession({ sketchId, bodyId: r.bodyId ?? '', frame: r.frame })
+    setSketchTool('select')
+    setSketchCount(r.entities.length)
+    setSelection([])
+  }, [])
+
   const finishSketch = useCallback(async () => {
     if (!sketchSession) return
-    const ents = vpApi.current?.getSketchEntities() ?? []
+    const ents = vpApi.current?.getNewSketchEntities() ?? []
     if (ents.length) await api.sketchAddGeometry(sketchSession.sketchId, ents)
     await api.sketchFinish(sketchSession.sketchId)
     const id = sketchSession.sketchId
     setSketchSession(null)
+    setSketchInitial([])
     await refreshScene()
     setSelection([{ kind: 'sketch', sketchId: id }])
     markDirty()
@@ -283,15 +306,21 @@ export function App(): JSX.Element {
             await api.patternLinear(ax, Number(v.count), Number(v.spacing))
             break
           }
-          case 'patternCircular':
-            await api.patternCircular(Number(v.count), Number(v.angle), String(v.axisPlane))
+          case 'patternCircular': {
+            const ref = selection.map(selectionToRef).find(Boolean) ?? null
+            await api.patternCircular(Number(v.count), Number(v.angle), ref)
             break
-          case 'mirror':
-            await api.mirror(String(v.plane))
+          }
+          case 'mirror': {
+            const ref = selection.map(selectionToRef).find(Boolean) ?? null
+            await api.mirror(ref)
             break
-          case 'datumPlane':
-            await api.datumPlane(String(v.basePlane), Number(v.offset))
+          }
+          case 'datumPlane': {
+            const ref = selection.map(selectionToRef).find(Boolean) ?? null
+            await api.datumPlane(ref, Number(v.offset))
             break
+          }
         }
         setOp(null)
         await afterEdit()
@@ -482,22 +511,17 @@ export function App(): JSX.Element {
   }, [selection, measureMode])
 
   // ---- drawings ----
-  const addDrawingView = useCallback(async (dir: string) => {
-    const v = await api.drawingAddView(null, dir, 1)
-    setDrawingViews((cur) => [...cur.filter((x) => x.direction !== dir), v])
+  const makeView = useCallback(async (dir: string): Promise<DrawingView | null> => {
+    try {
+      return await api.drawingAddView(null, dir, 1)
+    } catch (e) {
+      window.alert((e as Error).message)
+      return null
+    }
   }, [])
 
   const startDrawing = useCallback(async () => {
-    setShowDrawing(true)
-    setDrawingViews([])
-    for (const d of ['front', 'top', 'right', 'iso']) {
-      try {
-        const v = await api.drawingAddView(null, d, 1)
-        setDrawingViews((cur) => [...cur.filter((x) => x.direction !== d), v])
-      } catch {
-        /* body may be missing */
-      }
-    }
+    setShowDrawing(true) // opens a blank sheet; user adds views
   }, [])
 
   // ---- assemblies ----
@@ -703,11 +727,10 @@ export function App(): JSX.Element {
 
               {showDrawing ? (
                 <DrawingSheet
-                  views={drawingViews}
+                  makeView={makeView}
                   docPath={docPath}
                   assembly={asmTree}
                   onBack={() => setShowDrawing(false)}
-                  onAddView={(d) => void addDrawingView(d)}
                 />
               ) : (
                 <>
@@ -724,6 +747,7 @@ export function App(): JSX.Element {
                     canvases={canvases}
                     canvasImages={canvasImages}
                     sketchFrame={sketchSession?.frame ?? null}
+                    sketchInitialEntities={sketchInitial}
                     sketchTool={sketchTool}
                     onSketchChange={() =>
                       setSketchCount(vpApi.current?.getSketchEntities().length ?? 0)
@@ -753,12 +777,14 @@ export function App(): JSX.Element {
                   <Browser
                     bodies={bodies}
                     visibility={visOverride}
+                    selection={selection}
                     handlers={{
                       onToggleVisibility: toggleVisibility,
                       onToggleGroup: toggleGroup,
                       onRename: renameFeature,
                       onDelete: deleteFeature,
-                      onEdit: () => undefined
+                      onEdit: (id) => void editSketch(id),
+                      onSelect: (sel, add) => onSelect(sel, add)
                     }}
                   />
                   {asmTree && (
@@ -800,7 +826,7 @@ export function App(): JSX.Element {
                     bodies={bodies}
                     handlers={{
                       onRollTo: rollTo,
-                      onEdit: () => undefined,
+                      onEdit: (id) => void editSketch(id),
                       onRename: renameFeature,
                       onDelete: deleteFeature
                     }}
@@ -815,12 +841,15 @@ export function App(): JSX.Element {
       </div>
 
       <div className="statusbar">
+        {busy > 0 && <span className="sb-spinner" title="Working…" />}
         <span>
-          {status.phase === 'ready'
-            ? `FreeCAD ${status.freecad}`
-            : status.phase === 'error'
-              ? 'engine offline'
-              : 'connecting…'}
+          {busy > 0
+            ? 'Working…'
+            : status.phase === 'ready'
+              ? `FreeCAD ${status.freecad}`
+              : status.phase === 'error'
+                ? 'engine offline'
+                : 'connecting…'}
         </span>
         <span className="sb-spacer" />
         <span>{selection.length ? `${selection.length} selected` : ''}</span>

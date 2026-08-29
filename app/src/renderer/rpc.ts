@@ -8,6 +8,7 @@ export interface Feature {
   opType: string
   kind: FeatureKind
   isTip: boolean
+  afterTip?: boolean
   visible: boolean
   error: boolean
 }
@@ -110,6 +111,23 @@ export type Selection =
   | { kind: 'edge'; bodyId: string; index: number; sub: string; point: [number, number, number] }
   | { kind: 'body'; bodyId: string }
   | { kind: 'sketch'; sketchId: string }
+  | { kind: 'plane'; planeId: string; role?: string; label?: string }
+
+/** A geometry reference the sidecar understands (mirror plane, pattern axis...). */
+export type GeomRef =
+  | { kind: 'origin'; role: string }
+  | { kind: 'plane'; id: string }
+  | { kind: 'face'; bodyId: string; sub: string }
+  | { kind: 'edge'; bodyId: string; sub: string }
+
+export function selectionToRef(s: Selection): GeomRef | null {
+  if (s.kind === 'plane') {
+    return s.role ? { kind: 'origin', role: s.role } : { kind: 'plane', id: s.planeId }
+  }
+  if (s.kind === 'face') return { kind: 'face', bodyId: s.bodyId, sub: s.sub }
+  if (s.kind === 'edge') return { kind: 'edge', bodyId: s.bodyId, sub: s.sub }
+  return null
+}
 
 export interface MeasureResult {
   refs: string[]
@@ -151,7 +169,26 @@ export interface AssemblyTree {
   joints: AssemblyJoint[]
 }
 
-const rpc = <T,>(m: string, p: Record<string, unknown> = {}) => window.cad.rpc<T>(m, p)
+/** Global in-flight counter so the shell can show a busy indicator. */
+let _busy = 0
+const _busyListeners = new Set<(n: number) => void>()
+export function onBusyChange(fn: (n: number) => void): () => void {
+  _busyListeners.add(fn)
+  return () => _busyListeners.delete(fn)
+}
+function bumpBusy(delta: number): void {
+  _busy = Math.max(0, _busy + delta)
+  for (const l of _busyListeners) l(_busy)
+}
+
+const rpc = async <T,>(m: string, p: Record<string, unknown> = {}): Promise<T> => {
+  bumpBusy(1)
+  try {
+    return await window.cad.rpc<T>(m, p)
+  } finally {
+    bumpBusy(-1)
+  }
+}
 
 export const api = {
   ping: () => rpc<{ pong: boolean; freecad: string; build: string }>('ping'),
@@ -199,9 +236,10 @@ export const api = {
     rpc<{ bodies: BodyTree[] }>('feature.hole', { face, point, diameter, depth, throughAll }),
   patternLinear: (direction: number[], count: number, spacing: number) =>
     rpc<{ bodies: BodyTree[] }>('pattern.linear', { direction, count, spacing }),
-  mirror: (plane: string) => rpc<{ bodies: BodyTree[] }>('feature.mirror', { plane }),
-  datumPlane: (basePlane: string, offset: number) =>
-    rpc<{ bodies: BodyTree[] }>('datum.plane', { basePlane, offset }),
+  mirror: (planeRef: GeomRef | null, plane = 'YZ') =>
+    rpc<{ bodies: BodyTree[] }>('feature.mirror', { planeRef, plane }),
+  datumPlane: (baseRef: GeomRef | null, offset: number, basePlane = 'XY') =>
+    rpc<{ bodies: BodyTree[] }>('datum.plane', { baseRef, offset, basePlane }),
   sketchOnPlane: (plane: string) =>
     rpc<{ sketchId: string; bodyId: string; frame: SketchFrameDTO }>('sketch.onPlane', { plane }),
   sketchOnFace: (bodyId: string, face: string) =>
@@ -213,6 +251,13 @@ export const api = {
     rpc<{ sketchId: string; count: number }>('sketch.addGeometry', { sketchId, elements }),
   sketchClear: (sketchId: string) =>
     rpc<{ sketchId: string; count: number }>('sketch.clear', { sketchId }),
+  sketchReopen: (sketchId: string) =>
+    rpc<{
+      sketchId: string
+      bodyId: string | null
+      frame: SketchFrameDTO
+      entities: unknown[]
+    }>('sketch.reopen', { sketchId }),
   sketchFinish: (sketchId: string) =>
     rpc<{ sketchId: string; count: number; constrained: boolean; closed: boolean }>(
       'sketch.finish',
@@ -228,8 +273,8 @@ export const api = {
     rpc<{ bodies: BodyTree[] }>('feature.draft', { faces, angle, neutral }),
   combine: (op: string, toolBodyId: string | null) =>
     rpc<{ bodies: BodyTree[] }>('feature.combine', { op, toolBodyId }),
-  patternCircular: (count: number, angle: number, axisPlane: string) =>
-    rpc<{ bodies: BodyTree[] }>('pattern.circular', { count, angle, axisPlane }),
+  patternCircular: (count: number, angle: number, axisRef: GeomRef | null, axisPlane = 'XY') =>
+    rpc<{ bodies: BodyTree[] }>('pattern.circular', { count, angle, axisRef, axisPlane }),
 
   measure: (refs: { bodyId: string; sub: string }[]) =>
     rpc<MeasureResult>('measure.compute', { refs }),

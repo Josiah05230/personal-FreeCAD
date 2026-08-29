@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 export interface MenuItem {
   label: string
@@ -20,6 +20,18 @@ export function ContextMenu({
   items: MenuItem[]
   onClose: () => void
 }): JSX.Element {
+  const ref = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState({ x, y })
+
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const nx = Math.min(x, window.innerWidth - r.width - 8)
+    const ny = Math.min(y, window.innerHeight - r.height - 8)
+    setPos({ x: Math.max(4, nx), y: Math.max(4, ny) })
+  }, [x, y])
+
   useEffect(() => {
     const h = (): void => onClose()
     window.addEventListener('click', h)
@@ -34,8 +46,9 @@ export function ContextMenu({
 
   return (
     <div
+      ref={ref}
       className="ctxmenu"
-      style={{ left: x, top: y }}
+      style={{ left: pos.x, top: pos.y }}
       onContextMenu={(e) => e.preventDefault()}
     >
       {items.map((it, i) =>

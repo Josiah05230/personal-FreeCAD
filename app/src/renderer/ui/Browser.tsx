@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { BodyTree } from '../rpc'
+import type { BodyTree, Selection } from '../rpc'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 
 export interface BrowserHandlers {
@@ -8,6 +8,7 @@ export interface BrowserHandlers {
   onRename: (id: string) => void
   onDelete: (id: string) => void
   onEdit: (id: string) => void
+  onSelect: (sel: Selection, additive: boolean) => void
 }
 
 const Eye = ({ on }: { on: boolean }): JSX.Element =>
@@ -30,6 +31,8 @@ interface RowProps {
   id?: string
   visible?: boolean
   onToggle?: (v: boolean) => void
+  onPick?: (additive: boolean) => void
+  selected?: boolean
   menu?: MenuItem[]
   onEditDbl?: () => void
   defaultOpen?: boolean
@@ -42,6 +45,8 @@ function Row({
   glyph,
   visible,
   onToggle,
+  onPick,
+  selected,
   menu,
   onEditDbl,
   defaultOpen = true,
@@ -54,7 +59,7 @@ function Row({
   return (
     <div className="br-node">
       <div
-        className="br-row"
+        className={selected ? 'br-row selected' : 'br-row'}
         style={{ paddingLeft: 6 + depth * 13 }}
         onContextMenu={
           menu
@@ -70,7 +75,11 @@ function Row({
           onClick={() => hasKids && setOpen(!open)}
         />
         <span className="br-glyph">{glyph}</span>
-        <span className="br-label" onDoubleClick={onEditDbl}>
+        <span
+          className="br-label"
+          onClick={(e) => onPick?.(e.shiftKey || e.ctrlKey)}
+          onDoubleClick={onEditDbl}
+        >
           {label}
         </span>
         {typeof visible === 'boolean' && onToggle && (
@@ -98,14 +107,17 @@ function Row({
 export function Browser({
   bodies,
   handlers,
-  visibility
+  visibility,
+  selection
 }: {
   bodies: BodyTree[]
   handlers: BrowserHandlers
   visibility: Record<string, boolean>
+  selection: Selection[]
 }): JSX.Element {
   const vis = (id: string, fallback: boolean): boolean =>
     id in visibility ? visibility[id] : fallback
+  const isSel = (pred: (s: Selection) => boolean): boolean => selection.some(pred)
 
   const b0 = bodies[0]
   const origin = b0?.origin ?? []
@@ -115,8 +127,8 @@ export function Browser({
   const anyOn = (ids: string[], fb: (id: string) => boolean): boolean =>
     ids.some((id) => vis(id, fb(id)))
 
-  const featMenu = (id: string): MenuItem[] => [
-    { label: 'Edit', onClick: () => handlers.onEdit(id) },
+  const featMenu = (id: string, kind?: 'sketch'): MenuItem[] => [
+    { label: kind === 'sketch' ? 'Edit Sketch' : 'Edit', onClick: () => handlers.onEdit(id) },
     { label: 'Rename…', onClick: () => handlers.onRename(id) },
     { separator: true, label: '' },
     { label: 'Delete', danger: true, onClick: () => handlers.onDelete(id) }
@@ -144,6 +156,13 @@ export function Browser({
               glyph={o.kind === 'plane' ? '▱' : o.kind === 'axis' ? '╱' : '•'}
               visible={vis(o.id, o.visible)}
               onToggle={(v) => handlers.onToggleVisibility(o.id, v)}
+              onPick={(add) =>
+                handlers.onSelect(
+                  { kind: 'plane', planeId: o.id, role: o.role, label: o.label },
+                  add
+                )
+              }
+              selected={isSel((s) => s.kind === 'plane' && s.planeId === o.id)}
             />
           ))}
         </Row>
@@ -166,6 +185,8 @@ export function Browser({
               glyph="▬"
               visible={vis(b.id, b.visible)}
               onToggle={(v) => handlers.onToggleVisibility(b.id, v)}
+              onPick={(add) => handlers.onSelect({ kind: 'body', bodyId: b.id }, add)}
+              selected={isSel((s) => s.kind === 'body' && s.bodyId === b.id)}
               menu={featMenu(b.id)}
               onEditDbl={() => handlers.onEdit(b.id)}
             />
@@ -178,38 +199,56 @@ export function Browser({
             label="Sketches"
             glyph="✎"
             visible={anyOn(
-              sketches.map((s) => s.id),
+              sketches.filter((s) => !s.afterTip).map((s) => s.id),
               (id) => sketches.find((s) => s.id === id)?.visible ?? false
             )}
             onToggle={(v) => handlers.onToggleGroup('sketches', v)}
           >
-            {sketches.map((f) => (
-              <Row
-                key={f.id}
-                depth={2}
-                label={f.label}
-                glyph="✎"
-                visible={vis(f.id, f.visible)}
-                onToggle={(v) => handlers.onToggleVisibility(f.id, v)}
-                menu={featMenu(f.id)}
-              />
-            ))}
+            {sketches.map((f) =>
+              f.afterTip ? (
+                <div key={f.id} className="br-row rolled" style={{ paddingLeft: 32 }}>
+                  <span className="br-glyph">✎</span>
+                  <span className="br-label">{f.label}</span>
+                </div>
+              ) : (
+                <Row
+                  key={f.id}
+                  depth={2}
+                  label={f.label}
+                  glyph="✎"
+                  visible={vis(f.id, f.visible)}
+                  onToggle={(v) => handlers.onToggleVisibility(f.id, v)}
+                  menu={featMenu(f.id, 'sketch')}
+                />
+              )
+            )}
           </Row>
         )}
 
         {datums.length > 0 && (
           <Row depth={1} label="Construction" glyph="▱" defaultOpen={false}>
-            {datums.map((f) => (
-              <Row
-                key={f.id}
-                depth={2}
-                label={f.label}
-                glyph="▱"
-                visible={vis(f.id, f.visible)}
-                onToggle={(v) => handlers.onToggleVisibility(f.id, v)}
-                menu={featMenu(f.id)}
-              />
-            ))}
+            {datums.map((f) =>
+              f.afterTip ? (
+                <div key={f.id} className="br-row rolled" style={{ paddingLeft: 32 }}>
+                  <span className="br-glyph">▱</span>
+                  <span className="br-label">{f.label}</span>
+                </div>
+              ) : (
+                <Row
+                  key={f.id}
+                  depth={2}
+                  label={f.label}
+                  glyph="▱"
+                  visible={vis(f.id, f.visible)}
+                  onToggle={(v) => handlers.onToggleVisibility(f.id, v)}
+                  onPick={(add) =>
+                    handlers.onSelect({ kind: 'plane', planeId: f.id, label: f.label }, add)
+                  }
+                  selected={isSel((s) => s.kind === 'plane' && s.planeId === f.id)}
+                  menu={featMenu(f.id)}
+                />
+              )
+            )}
           </Row>
         )}
       </Row>

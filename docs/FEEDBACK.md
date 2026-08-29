@@ -100,3 +100,22 @@ Running checklist of user feedback from live testing. `[x]` done, `[~]` partial,
 - [x] Modify > Scale (factor) + Convert Units (mm/cm/m/in/ft/thou)
 - [x] Create Sketch: click an origin/construction plane or a face in the
       viewport (ghost planes, no popup); visibility not auto-toggled
+
+## Batch 8 - progress UI / timeline insert / tool selection / drawings
+
+- [ ] Show a busy indicator (bottom-left bar/spinner) during any create/load
+- [ ] New feature inserts at the rollback marker (not always the end); the
+      scrubber auto-advances to just after the new feature
+- [ ] Right-click a sketch in the tree pulls up scrollbars (ctx menu overflow);
+      add "Edit Sketch" to that menu
+- [ ] Rolled-back features must not exist: could still show/hide a construction
+      plane that sat after the marker
+- [ ] Many tools don't work / selection steps not wired. Audit every op's
+      selection requirements. Mirror should take a body (tree/click) + a plane
+      (click a tree plane or a flat face) - no dropdown
+- [x] Can Claude drive the UI live? No - no display capture/input in this env;
+      build + boot-check only. VNC/X + screenshot tools would enable it
+- [ ] Inspect (Measure/Section) should be a group under SOLID, not its own tab
+- [ ] "Drawing from Design" looks terrible / unusable. Want a blank-page default
+      mode + optionally an automated-drawing mode (scripted / Claude-assisted /
+      combo), with a plain default always available

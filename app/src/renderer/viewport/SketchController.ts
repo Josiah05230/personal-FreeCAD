@@ -37,6 +37,7 @@ export class SketchController {
   private tool: SketchTool = 'line'
   private pending: [number, number][] = []
   private entities: SketchEntity[] = []
+  private baseCount = 0
   private cursorUV: [number, number] = [0, 0]
   private onChange: () => void
 
@@ -72,6 +73,17 @@ export class SketchController {
 
   getEntities(): SketchEntity[] {
     return this.entities
+  }
+
+  /** Entities added since the session began (for reopen -> only push the new). */
+  getNewEntities(): SketchEntity[] {
+    return this.entities.slice(this.baseCount)
+  }
+
+  loadExisting(ents: SketchEntity[]): void {
+    this.entities = ents.slice()
+    this.baseCount = this.entities.length
+    this.redraw()
   }
 
   undo(): void {

@@ -45,6 +45,7 @@ export function Viewport({
   canvases = [],
   canvasImages = {},
   sketchFrame = null,
+  sketchInitialEntities,
   sketchTool = 'line',
   onSketchChange,
   apiRef
@@ -61,6 +62,7 @@ export function Viewport({
   canvases?: CanvasDTO[]
   canvasImages?: Record<string, string>
   sketchFrame?: SketchFrame | null
+  sketchInitialEntities?: unknown[]
   sketchTool?: SketchTool
   onSketchChange?: () => void
   apiRef?: { current: ViewportApi | null }
@@ -149,6 +151,8 @@ export function Viewport({
         },
         setView: (dir) => stateRef.current?.cube.goToView(new THREE.Vector3(...dir)),
         getSketchEntities: () => stateRef.current?.sketch?.getEntities() ?? [],
+        getNewSketchEntities: () => stateRef.current?.sketch?.getNewEntities() ?? [],
+        loadSketchEntities: (ents) => stateRef.current?.sketch?.loadExisting(ents),
         sketchUndo: () => stateRef.current?.sketch?.undo()
       }
     }
@@ -322,6 +326,9 @@ export function Viewport({
         st.overlay,
         () => onSketchChangeRef.current?.()
       )
+      if (sketchInitialEntities && sketchInitialEntities.length) {
+        st.sketch.loadExisting(sketchInitialEntities as never[])
+      }
       st.sketch.setTool(sketchTool)
       // look straight at the plane
       const O = new THREE.Vector3(...sketchFrame.origin)

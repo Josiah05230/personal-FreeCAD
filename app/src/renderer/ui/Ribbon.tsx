@@ -2,16 +2,7 @@ import { useMemo, useState } from 'react'
 import type { Command } from '../commands'
 import { Icon } from './icons'
 
-const TABS = [
-  'SOLID',
-  'SURFACE',
-  'MESH',
-  'SHEET METAL',
-  'ASSEMBLE',
-  'INSERT',
-  'INSPECT',
-  'TOOLS'
-] as const
+const TABS = ['SOLID', 'SURFACE', 'MESH', 'SHEET METAL', 'ASSEMBLE', 'INSERT', 'TOOLS'] as const
 type Tab = (typeof TABS)[number]
 
 export function Ribbon({

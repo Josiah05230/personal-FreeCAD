@@ -827,6 +827,15 @@ code {
   background: var(--accent-soft);
 }
 
+.br-row.selected {
+  background: #2f9fe033;
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.br-row.rolled {
+  opacity: 0.4;
+}
+
 .br-row:hover .br-eye {
   opacity: 1;
 }
@@ -1431,6 +1440,21 @@ code {
   flex: 1;
 }
 
+.sb-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--line-soft);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: sb-spin 0.7s linear infinite;
+}
+
+@keyframes sb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* ---------- operation dialog (in-canvas) ---------- */
 .opdlg {
   position: absolute;
@@ -1627,13 +1651,47 @@ code {
 .drawing-sheet {
   flex: 1;
   overflow: auto;
-  padding: 20px;
+  padding: 24px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  background: #2a2a2e;
 }
 
-.drawing-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 18px;
+.drawing-page-svg {
+  width: min(100%, 1400px);
+  height: auto;
+  background: #fff;
+  box-shadow: 0 8px 40px #0009;
+}
+
+.drawing-add {
+  position: relative;
+}
+
+.drawing-addmenu {
+  position: absolute;
+  top: 26px;
+  left: 0;
+  z-index: 20;
+  background: var(--chrome-3);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 10px 28px #0009;
+  padding: 4px;
+  min-width: 120px;
+}
+
+.drawing-addmenu div {
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.drawing-addmenu div:hover {
+  background: var(--accent-soft);
 }
 
 .dw-view {

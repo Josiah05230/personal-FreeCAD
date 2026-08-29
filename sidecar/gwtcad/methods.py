@@ -247,22 +247,26 @@ def feature_combine(op="Fuse", toolBodyId=None):
 
 
 @method("pattern.circular")
-def pattern_circular(count=4, angle=360.0, axisPlane="XY"):
+def pattern_circular(count=4, angle=360.0, axisRef=None, axisPlane="XY"):
     body = _require_body()
     tip = _solid_tip(body)
     d = body.Document
     p = body.newObject("PartDesign::PolarPattern", "PolarPattern")
     p.Label = next_label(body, "PartDesign::PolarPattern")
     p.Originals = [tip]
-    # revolve about the origin axis normal to the chosen plane
-    role = {"XY": "Z_Axis", "XZ": "Y_Axis", "YZ": "X_Axis"}.get(axisPlane.upper(), "Z_Axis")
-    for f in body.Origin.OriginFeatures:
-        if getattr(f, "Role", None) == role:
-            p.Axis = (f, [""])
-            break
+    if axisRef:
+        p.Axis = _resolve_ref(d, body, axisRef)
+    else:
+        role = {"XY": "Z_Axis", "XZ": "Y_Axis", "YZ": "X_Axis"}.get(axisPlane.upper(), "Z_Axis")
+        for f in body.Origin.OriginFeatures:
+            if getattr(f, "Role", None) == role:
+                p.Axis = (f, [""])
+                break
     p.Angle = float(angle)
     p.Occurrences = int(count)
     d.recompute()
+    if not body.Shape.isValid():
+        raise RpcError(APP_ERROR, "circular pattern produced an invalid shape")
     return tree_get()
 
 
@@ -341,26 +345,64 @@ def pattern_linear(direction=(1, 0, 0), count=3, spacing=20.0):
     return tree_get()
 
 
+def _resolve_ref(d, body, ref):
+    """A geometry reference from the UI -> (obj, [subelement]) for
+    MirrorPlane / ReferenceAxis / AttachmentSupport.
+
+    ref = {"kind":"origin","role":"YZ_Plane"|"X_Axis"|...}
+        | {"kind":"plane","id":"<construction plane/axis name>"}
+        | {"kind":"face","bodyId":"...","sub":"Face3"}
+        | {"kind":"edge","bodyId":"...","sub":"Edge7"}
+    """
+    k = ref.get("kind")
+    if k == "origin":
+        role = ref["role"]
+        for g in body.Origin.OriginFeatures:
+            if getattr(g, "Role", "") == role:
+                return (g, [""])
+        raise RpcError(APP_ERROR, "origin feature %r not found" % role)
+    if k == "plane":
+        o = d.getObject(ref["id"])
+        if o is None:
+            raise RpcError(APP_ERROR, "no datum %r" % ref.get("id"))
+        return (o, [""])
+    if k in ("face", "edge"):
+        src = d.getObject(ref["bodyId"])
+        if src is None:
+            raise RpcError(APP_ERROR, "no object %r" % ref.get("bodyId"))
+        base = src.Tip if src.TypeId == "PartDesign::Body" else src
+        return (base, [ref["sub"]])
+    raise RpcError(APP_ERROR, "bad reference kind %r" % k)
+
+
 @method("feature.mirror")
-def feature_mirror(plane="YZ"):
+def feature_mirror(planeRef=None, plane="YZ"):
     body = _require_body()
     tip = _solid_tip(body)
     d = body.Document
     m = body.newObject("PartDesign::Mirrored", "Mirrored")
     m.Label = next_label(body, "PartDesign::Mirrored")
     m.Originals = [tip]
-    m.MirrorPlane = (build.origin_plane(body, plane), [""])
+    if planeRef:
+        m.MirrorPlane = _resolve_ref(d, body, planeRef)
+    else:
+        m.MirrorPlane = (build.origin_plane(body, plane), [""])
     d.recompute()
+    if not body.Shape.isValid():
+        raise RpcError(APP_ERROR, "mirror produced an invalid shape")
     return tree_get()
 
 
 @method("datum.plane")
-def datum_plane(basePlane="XY", offset=10.0):
+def datum_plane(baseRef=None, basePlane="XY", offset=10.0):
     body = _require_body()
     d = body.Document
     pl = body.newObject("PartDesign::Plane", "DatumPlane")
     pl.Label = next_label(body, "PartDesign::Plane")
-    pl.AttachmentSupport = [(build.origin_plane(body, basePlane), [""])]
+    if baseRef:
+        pl.AttachmentSupport = [_resolve_ref(d, body, baseRef)]
+    else:
+        pl.AttachmentSupport = [(build.origin_plane(body, basePlane), [""])]
     pl.MapMode = "FlatFace"
     from FreeCAD import Placement, Vector, Rotation
     pl.AttachmentOffset = Placement(Vector(0, 0, float(offset)), Rotation())
@@ -449,6 +491,32 @@ def sketch_on(ref):
     sk.Visibility = True
     d.recompute()
     return {"sketchId": sk.Name, "bodyId": body.Name, "frame": _frame(sk)}
+
+
+@method("sketch.reopen")
+def sketch_reopen(sketchId):
+    """Re-enter an existing sketch for editing. Returns its plane frame and its
+    current geometry as editor entities."""
+    d, sk = _obj(sketchId)
+    if sk.TypeId != "Sketcher::SketchObject":
+        raise RpcError(APP_ERROR, "%r is not a sketch" % sketchId)
+    sk.Visibility = True
+    ents = []
+    for g in sk.Geometry:
+        t = g.TypeId
+        if t == "Part::GeomLineSegment":
+            ents.append({"type": "line",
+                         "a": [g.StartPoint.x, g.StartPoint.y],
+                         "b": [g.EndPoint.x, g.EndPoint.y]})
+        elif t == "Part::GeomCircle":
+            ents.append({"type": "circle", "c": [g.Center.x, g.Center.y], "r": g.Radius})
+        elif t == "Part::GeomArcOfCircle":
+            ents.append({"type": "arc", "c": [g.Center.x, g.Center.y], "r": g.Radius,
+                         "a0": g.FirstParameter, "a1": g.LastParameter})
+    d.recompute()
+    body = sk.getParentGeoFeatureGroup()
+    return {"sketchId": sketchId, "bodyId": body.Name if body else None,
+            "frame": _frame(sk), "entities": ents}
 
 
 @method("sketch.clear")
@@ -637,6 +705,27 @@ def _pick_planes(d):
     return out
 
 
+def _suppressed_names(d):
+    """Names of features AFTER the rollback marker in any Body - not part of the
+    model at this point in history, so they must not render or be toggled on.
+    Driven by the session marker, not body.Tip."""
+    out = set()
+    for b in d.Objects:
+        if b.TypeId != "PartDesign::Body":
+            continue
+        mk = session.marker(b.Name)
+        if not mk:
+            continue
+        feats = [f for f in b.Group if f.TypeId != "App::Origin"]
+        past = False
+        for f in feats:
+            if past:
+                out.add(f.Name)
+            if f.Name == mk:
+                past = True
+    return out
+
+
 @method("scene.get")
 def scene_get():
     """Render buffers for visible bodies, sketches, and datum geometry."""
@@ -645,7 +734,10 @@ def scene_get():
     if d is None:
         return {"meshes": meshes, "sketches": sketches, "datums": datums, "pickPlanes": []}
 
+    suppressed = _suppressed_names(d)
     for o in d.Objects:
+        if o.Name in suppressed:
+            continue
         tid = o.TypeId
         if tid in ("PartDesign::Body", "App::Link", "Part::Feature", "Mesh::Feature",
                    "Part::FeaturePython"):
@@ -753,6 +845,21 @@ def tree_get():
     d = session.doc(create=False)
     bodies = []
     if d is not None:
+        # a create/edit advances body.Tip past where it was at rollback; when that
+        # happens the marker follows the tip forward (build resumes from here)
+        for o in d.Objects:
+            if o.TypeId != "PartDesign::Body":
+                continue
+            mk = session.marker(o.Name)
+            tip = getattr(o, "Tip", None)
+            if mk and tip is not None and tip.Name != session.marker_tip(o.Name):
+                names = [f.Name for f in o.Group if f.TypeId != "App::Origin"]
+                if tip.Name in names:
+                    session.set_marker(o.Name, None if tip.Name == names[-1] else tip.Name,
+                                       tip_at_rollback=tip.Name)
+                    session.set_rolled_empty(o.Name, False)
+
+        suppressed = _suppressed_names(d)
         for o in d.Objects:
             if o.TypeId != "PartDesign::Body":
                 continue
@@ -767,7 +874,8 @@ def tree_get():
                     "opType": op_name(f.TypeId),
                     "kind": _kind(f.TypeId),
                     "isTip": f is tip,
-                    "visible": bool(getattr(f, "Visibility", False)),
+                    "afterTip": f.Name in suppressed,
+                    "visible": bool(getattr(f, "Visibility", False)) and f.Name not in suppressed,
                     "error": bool(getattr(f, "State", None) and "Error" in f.State),
                 })
             origin = []
@@ -869,6 +977,8 @@ def history_roll_to(bodyId, featureId=None):
         (i for i, f in enumerate(feats) if f.Name == featureId), len(feats) - 1)
     marker = feats[marker_idx]
 
+    at_end = marker_idx == len(feats) - 1
+
     last_solid = None
     for f in feats[: marker_idx + 1]:
         if _kind(f.TypeId) == "solid":
@@ -878,22 +988,24 @@ def history_roll_to(bodyId, featureId=None):
         body.Tip = last_solid
         session.set_rolled_empty(body.Name, False)
     else:
-        # nothing solid yet at this point; keep Tip where it is but flag the
-        # body so scene.get skips its (stale) shape
-        session.set_rolled_empty(body.Name, True)
+        session.set_rolled_empty(body.Name, not at_end)
 
-    # show the marker sketch/datum (if that is what the marker sits on); hide
-    # the other in-tree sketches/datums so the view is clean at that step
+    session.set_marker(
+        body.Name,
+        None if at_end else marker.Name,
+        tip_at_rollback=body.Tip.Name if body.Tip else None,
+    )
+
     for f in feats:
         if _kind(f.TypeId) in ("sketch", "datum"):
-            vis = f is marker
+            vis = f is marker and not at_end
             f.Visibility = vis
             if _kind(f.TypeId) == "datum":
                 session.set_datum_shown(f.Name, vis)
     d.recompute()
     return {
         "tip": last_solid.Name if last_solid else None,
-        "marker": marker.Name,
+        "marker": None if at_end else marker.Name,
         "hasSolid": last_solid is not None,
     }
 
