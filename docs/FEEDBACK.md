@@ -42,7 +42,7 @@ Running checklist of user feedback from live testing. `[x]` done, `[~]` partial,
       finish -> real Sketcher sketch -> extrude/revolve)
 - [x] Revolve / Sweep / Loft / Draft / Combine / Circular Pattern wired
 - [ ] Drawings: dimensions, title block, BOM, PDF / DXF export  (views only so far)
-- [ ] Measure / section analysis
+- [x] Measure (length/area/distance/angle) + Section (live clipping plane)
 - [ ] Sheet metal (low priority)
 - [ ] Surface / body-split (low priority)
 - [ ] Packaging: bundled installer (Win + Linux), signing, auto-update

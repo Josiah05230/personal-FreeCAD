@@ -1019,6 +1019,84 @@ code {
   white-space: nowrap;
 }
 
+/* ---------- inspect panels (measure / section) ---------- */
+.inspect-panel {
+  position: absolute;
+  top: 16px;
+  right: 190px;
+  z-index: 5;
+  width: 210px;
+  background: #2b2b2fee;
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  box-shadow: 0 14px 40px #0009;
+}
+
+.inspect-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--line);
+}
+
+.inspect-x {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.inspect-x:hover {
+  color: var(--text);
+}
+
+.inspect-hint {
+  padding: 10px 12px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.inspect-body {
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.inspect-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+}
+
+.inspect-k {
+  color: var(--text-dim);
+}
+
+.inspect-v {
+  font-family: 'SF Mono', Consolas, monospace;
+  color: var(--accent-hi);
+}
+
+.inspect-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+}
+
+.inspect-field select,
+.inspect-field input[type='range'] {
+  width: 110px;
+}
+
 /* ---------- ribbon select-filter menu ---------- */
 .ribbon-tabs-spacer {
   flex: 1;

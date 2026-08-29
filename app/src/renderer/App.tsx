@@ -25,6 +25,8 @@ import { OperationDialog, type OpKind, type OpValues } from './ui/OperationDialo
 import { DrawingSheet } from './ui/DrawingSheet'
 import { AssemblyPanel } from './ui/AssemblyPanel'
 import { SketchBar } from './ui/SketchBar'
+import { MeasurePanel, SectionPanel, type SectionState } from './ui/InspectPanels'
+import type { MeasureResult } from './rpc'
 import type { SketchTool } from './viewport/SketchController'
 import type { SketchFrameDTO } from './rpc'
 import { basename } from './util'
@@ -76,6 +78,10 @@ export function App(): JSX.Element {
   const [sketchTool, setSketchTool] = useState<SketchTool>('line')
   const [sketchCount, setSketchCount] = useState(0)
   const [planePick, setPlanePick] = useState(false)
+
+  const [measureMode, setMeasureMode] = useState(false)
+  const [measureResult, setMeasureResult] = useState<MeasureResult | null>(null)
+  const [section, setSection] = useState<SectionState | null>(null)
 
   const [tabs, setTabs] = useState<DocTab[]>([{ id: 'd1', name: 'Untitled', dirty: false }])
   const [activeTab, setActiveTab] = useState('d1')
@@ -393,6 +399,33 @@ export function App(): JSX.Element {
 
   const fitView = useCallback(() => vpApi.current?.fit(), [])
 
+  // ---- inspect ----
+  const startMeasure = useCallback(() => {
+    setMeasureMode((v) => !v)
+    setMeasureResult(null)
+    setSelection([])
+  }, [])
+
+  const toggleSection = useCallback(() => {
+    setSection((s) => (s ? null : { plane: 'XY', offset: 0, flip: false }))
+  }, [])
+
+  useEffect(() => {
+    if (!measureMode) return
+    const picks = selection.filter((s) => s.kind === 'face' || s.kind === 'edge') as Array<{
+      bodyId: string
+      sub: string
+    }>
+    if (picks.length >= 1 && picks.length <= 2) {
+      void api
+        .measure(picks.map((p) => ({ bodyId: p.bodyId, sub: p.sub })))
+        .then(setMeasureResult)
+        .catch(() => setMeasureResult(null))
+    } else {
+      setMeasureResult(null)
+    }
+  }, [selection, measureMode])
+
   // ---- drawings ----
   const addDrawingView = useCallback(async (dir: string) => {
     const v = await api.drawingAddView(null, dir, 1)
@@ -477,7 +510,9 @@ export function App(): JSX.Element {
         fitView,
         toggleData: () => setDataOpen((v) => !v),
         toggleGit: () => setGitOpen((v) => !v),
-        startDrawing
+        startDrawing,
+        startMeasure,
+        toggleSection
       }),
     [
       sweep,
@@ -489,7 +524,9 @@ export function App(): JSX.Element {
       exportModel,
       importStep,
       fitView,
-      startDrawing
+      startDrawing,
+      startMeasure,
+      toggleSection
     ]
   )
 
@@ -605,6 +642,7 @@ export function App(): JSX.Element {
                     datums={datums}
                     selection={selection}
                     onSelect={onSelect}
+                    section={section}
                     sketchFrame={sketchSession?.frame ?? null}
                     sketchTool={sketchTool}
                     onSketchChange={() =>
@@ -666,6 +704,22 @@ export function App(): JSX.Element {
                       selection={selection}
                       onApply={applyOp}
                       onCancel={() => setOp(null)}
+                    />
+                  )}
+                  {measureMode && (
+                    <MeasurePanel
+                      result={measureResult}
+                      onClose={() => {
+                        setMeasureMode(false)
+                        setMeasureResult(null)
+                      }}
+                    />
+                  )}
+                  {section && (
+                    <SectionPanel
+                      state={section}
+                      onChange={setSection}
+                      onClose={() => setSection(null)}
                     />
                   )}
                   <Timeline

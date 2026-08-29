@@ -815,6 +815,79 @@ def document_info():
 # drawings (TechDraw, headless)
 # --------------------------------------------------------------------------- #
 
+@method("measure.compute")
+def measure_compute(refs):
+    """refs: [{bodyId, sub}]  where sub is 'Face3' / 'Edge7' / 'Vertex2'.
+
+    1 edge -> length; 1 face -> area + perimeter; 2 subs -> min distance
+    (+ angle for two planar faces or two straight edges).
+    """
+    d = session.doc(create=False)
+    if d is None:
+        raise RpcError(APP_ERROR, "no document")
+    def _resolve(shp, name):
+        letters = "".join(c for c in name if c.isalpha())
+        num = int("".join(c for c in name if c.isdigit()))
+        coll = {"Face": shp.Faces, "Edge": shp.Edges, "Vertex": shp.Vertexes}.get(letters)
+        if coll is None or num < 1 or num > len(coll):
+            raise RpcError(APP_ERROR, "cannot resolve %r" % name)
+        return coll[num - 1]
+
+    subs = []
+    for r in refs:
+        o = d.getObject(r["bodyId"])
+        if o is None:
+            raise RpcError(APP_ERROR, "no object %r" % r["bodyId"])
+        subs.append((r["sub"], _resolve(o.Shape, r["sub"])))
+
+    out = {"refs": [r["sub"] for r in refs]}
+    if len(subs) == 1:
+        name, s = subs[0]
+        if name.startswith("Edge"):
+            out["kind"] = "length"
+            out["length"] = round(s.Length, 4)
+        elif name.startswith("Face"):
+            out["kind"] = "area"
+            out["area"] = round(s.Area, 4)
+            out["perimeter"] = round(sum(e.Length for e in s.Edges), 4)
+        elif name.startswith("Vertex"):
+            p = s.Point
+            out["kind"] = "point"
+            out["point"] = [round(p.x, 4), round(p.y, 4), round(p.z, 4)]
+        return out
+
+    (n1, s1), (n2, s2) = subs[0], subs[1]
+    try:
+        dist, pts, _ = s1.distToShape(s2)
+        out["kind"] = "distance"
+        out["distance"] = round(dist, 4)
+        if pts:
+            a, b = pts[0]
+            out["from"] = [round(a.x, 4), round(a.y, 4), round(a.z, 4)]
+            out["to"] = [round(b.x, 4), round(b.y, 4), round(b.z, 4)]
+    except Exception as e:
+        raise RpcError(APP_ERROR, "distance failed: %s" % e)
+
+    import math
+
+    def _dir(sub, nm):
+        if nm.startswith("Edge") and sub.Curve.TypeId == "Part::GeomLine":
+            v = sub.Curve.Direction
+            return App.Vector(v.x, v.y, v.z)
+        if nm.startswith("Face"):
+            try:
+                return sub.normalAt(0.5, 0.5)
+            except Exception:
+                return None
+        return None
+
+    d1, d2 = _dir(s1, n1), _dir(s2, n2)
+    if d1 and d2 and d1.Length > 0 and d2.Length > 0:
+        cosang = max(-1.0, min(1.0, d1.dot(d2) / (d1.Length * d2.Length)))
+        out["angle"] = round(math.degrees(math.acos(abs(cosang))), 3)
+    return out
+
+
 @method("drawing.addView")
 def drawing_add_view(bodyId=None, direction="front", scale=1.0):
     d = session.doc()

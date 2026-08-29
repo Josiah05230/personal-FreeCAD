@@ -82,6 +82,19 @@ export type Selection =
   | { kind: 'body'; bodyId: string }
   | { kind: 'sketch'; sketchId: string }
 
+export interface MeasureResult {
+  refs: string[]
+  kind?: 'length' | 'area' | 'point' | 'distance'
+  length?: number
+  area?: number
+  perimeter?: number
+  point?: [number, number, number]
+  distance?: number
+  from?: [number, number, number]
+  to?: [number, number, number]
+  angle?: number
+}
+
 export interface DrawingView {
   id: string
   label: string
@@ -167,6 +180,9 @@ export const api = {
     rpc<{ bodies: BodyTree[] }>('feature.combine', { op, toolBodyId }),
   patternCircular: (count: number, angle: number, axisPlane: string) =>
     rpc<{ bodies: BodyTree[] }>('pattern.circular', { count, angle, axisPlane }),
+
+  measure: (refs: { bodyId: string; sub: string }[]) =>
+    rpc<MeasureResult>('measure.compute', { refs }),
 
   drawingAddView: (bodyId: string | null, direction: string, scale = 1) =>
     rpc<DrawingView>('drawing.addView', { bodyId, direction, scale }),

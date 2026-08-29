@@ -30,6 +30,8 @@ export interface CommandContext {
   toggleData: () => void
   toggleGit: () => void
   startDrawing: () => Promise<void>
+  startMeasure: () => void
+  toggleSection: () => void
 }
 
 export function buildCommands(ctx: CommandContext): Command[] {
@@ -63,8 +65,8 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'asm.joint', title: 'Joint', group: 'Assemble', tab: 'ASSEMBLE', icon: 'axis' },
     { id: 'asm.rigidGroup', title: 'Rigid Group', group: 'Assemble', tab: 'ASSEMBLE', icon: 'combine' },
     // --- inspect ---
-    { id: 'insp.measure', title: 'Measure', group: 'Inspect', tab: 'INSPECT', icon: 'axis' },
-    { id: 'insp.section', title: 'Section Analysis', group: 'Inspect', tab: 'INSPECT', icon: 'plane' },
+    { id: 'insp.measure', title: 'Measure', group: 'Inspect', tab: 'INSPECT', icon: 'axis', hotkey: 'm', run: () => ctx.startMeasure() },
+    { id: 'insp.section', title: 'Section Analysis', group: 'Inspect', tab: 'INSPECT', icon: 'plane', run: () => ctx.toggleSection() },
     // --- drawing ---
     { id: 'draw.fromDesign', title: 'Drawing from Design', group: 'Drawing', tab: 'TOOLS', icon: 'sketch', run: () => ctx.startDrawing() },
     // --- file / view ---

@@ -30,6 +30,7 @@ export function Viewport({
   datums = [],
   selection = [],
   onSelect,
+  section = null,
   sketchFrame = null,
   sketchTool = 'line',
   onSketchChange,
@@ -39,6 +40,7 @@ export function Viewport({
   sketches?: SketchRender[]
   datums?: DatumDTO[]
   selection?: Selection[]
+  section?: { plane: 'XY' | 'XZ' | 'YZ'; offset: number; flip: boolean } | null
   onSelect?: (sel: Selection | null, additive: boolean) => void
   sketchFrame?: SketchFrame | null
   sketchTool?: SketchTool
@@ -73,6 +75,7 @@ export function Viewport({
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.setSize(host.clientWidth, host.clientHeight)
     renderer.outputColorSpace = THREE.SRGBColorSpace
+    renderer.localClippingEnabled = true
     host.appendChild(renderer.domElement)
 
     const scene = new THREE.Scene()
@@ -223,6 +226,31 @@ export function Viewport({
     const st = stateRef.current
     if (st?.content) st.picker.setSelection(selection, st.content)
   }, [selection, meshes])
+
+  // section clipping plane
+  useEffect(() => {
+    const st = stateRef.current
+    if (!st) return
+    const planes: THREE.Plane[] = []
+    if (section) {
+      const n = new THREE.Vector3(
+        section.plane === 'YZ' ? 1 : 0,
+        section.plane === 'XZ' ? 1 : 0,
+        section.plane === 'XY' ? 1 : 0
+      )
+      if (section.flip) n.negate()
+      planes.push(new THREE.Plane(n, -section.offset * (section.flip ? -1 : 1)))
+    }
+    st.scene.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined
+      if (!m) return
+      for (const mat of Array.isArray(m) ? m : [m]) {
+        mat.clippingPlanes = planes
+        mat.clipShadows = true
+        mat.needsUpdate = true
+      }
+    })
+  }, [section, meshes, datums])
 
   // enter / leave sketch mode
   useEffect(() => {
