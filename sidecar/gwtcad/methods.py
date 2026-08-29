@@ -229,17 +229,25 @@ def feature_draft(faces, angle=3.0, neutral=None):
 
 
 @method("feature.combine")
-def feature_combine(op="Fuse", toolBodyId=None):
+def feature_combine(op="Fuse", baseBodyId=None, toolBodyIds=None):
     d = session.doc()
     bodies = [o for o in d.Objects if o.TypeId == "PartDesign::Body"]
     if len(bodies) < 2:
         raise RpcError(APP_ERROR, "combine needs two bodies")
-    base = session.active_body(d)
-    tool = d.getObject(toolBodyId) if toolBodyId else next(b for b in bodies if b is not base)
+    base = d.getObject(baseBodyId) if baseBodyId else session.active_body(d)
+    if base is None or base.TypeId != "PartDesign::Body":
+        raise RpcError(APP_ERROR, "pick a base body")
+    if toolBodyIds:
+        tools = [d.getObject(t) for t in toolBodyIds if d.getObject(t) is not base]
+    else:
+        tools = [b for b in bodies if b is not base]
+    tools = [t for t in tools if t is not None]
+    if not tools:
+        raise RpcError(APP_ERROR, "pick at least one tool body")
     boolean = base.newObject("PartDesign::Boolean", "Boolean")
     boolean.Label = next_label(base, "PartDesign::Boolean")
     boolean.Type = op  # Fuse | Cut | Common
-    boolean.Group = [tool]
+    boolean.Group = tools
     d.recompute()
     if not base.Shape.isValid():
         raise RpcError(APP_ERROR, "combine produced an invalid shape")
@@ -807,8 +815,8 @@ def scene_get():
 # --------------------------------------------------------------------------- #
 
 @method("canvas.insert")
-def canvas_insert(plane="XY", widthMm=100.0, heightMm=100.0):
-    c = session.add_canvas(plane, widthMm, heightMm)
+def canvas_insert(plane="XY", widthMm=100.0, heightMm=100.0, image=None):
+    c = session.add_canvas(plane, widthMm, heightMm, image)
     return c
 
 
@@ -1030,6 +1038,19 @@ def feature_delete(id):
 # document: save / open
 # --------------------------------------------------------------------------- #
 
+def _sidecar_json(fcstd_path):
+    return fcstd_path + ".gwtcad.json"
+
+
+def _write_sidecar(path):
+    import json
+    try:
+        with open(_sidecar_json(path), "w") as f:
+            json.dump(session.dump_state(), f)
+    except Exception:
+        pass
+
+
 @method("document.saveAs")
 def document_save_as(path):
     d = session.doc(create=False)
@@ -1038,6 +1059,7 @@ def document_save_as(path):
     path = os.path.abspath(os.path.expanduser(path))
     d.saveAs(path)
     session.set_path(path)
+    _write_sidecar(path)
     return {"path": path}
 
 
@@ -1050,15 +1072,24 @@ def document_save():
     if not p:
         raise RpcError(APP_ERROR, "document has no path yet - use saveAs")
     d.save()
+    _write_sidecar(p)
     return {"path": p}
 
 
 @method("document.open")
 def document_open(path):
+    import json
     path = os.path.abspath(os.path.expanduser(path))
     if not os.path.isfile(path):
         raise RpcError(APP_ERROR, "no such file: %s" % path)
     d = session.open_path(path)
+    try:
+        sj = _sidecar_json(path)
+        if os.path.isfile(sj):
+            with open(sj) as f:
+                session.load_state(json.load(f))
+    except Exception:
+        pass
     d.recompute()
     return {"path": path, "name": d.Name}
 
@@ -1234,6 +1265,74 @@ _PALETTE = [
     [0.62, 0.68, 0.75], [0.80, 0.55, 0.45], [0.55, 0.72, 0.55],
     [0.75, 0.70, 0.45], [0.60, 0.55, 0.75], [0.45, 0.70, 0.72],
 ]
+
+
+@method("body.split")
+def body_split(bodyId, planeRef):
+    """Cut a solid with a plane (surface split). Produces one Part::Feature per
+    resulting piece; the source body is hidden."""
+    d, src = _obj(bodyId)
+    shape = getattr(src, "Shape", None)
+    if shape is None or shape.isNull():
+        raise RpcError(APP_ERROR, "%r has no solid" % bodyId)
+
+    # build a large plane from the reference's placement / face
+    resolve_body = src if src.TypeId == "PartDesign::Body" else session.active_body(d)
+    ref_obj, subs = _resolve_ref(d, resolve_body, planeRef)
+    if subs and subs[0] and hasattr(ref_obj, "Shape"):
+        face = ref_obj.Shape.getElement(subs[0])
+        origin = face.CenterOfMass
+        normal = face.normalAt(0.5, 0.5)
+    else:
+        p = ref_obj.Placement
+        origin = p.Base
+        normal = p.Rotation.multVec(App.Vector(0, 0, 1))
+
+    bb = shape.BoundBox
+    big = max(bb.XLength, bb.YLength, bb.ZLength) * 3 + 50
+    plane = Part.Plane(App.Vector(origin), App.Vector(normal)).toShape(-big, big, -big, big)
+
+    import BOPTools.SplitAPI as SplitAPI
+    result = SplitAPI.slice(shape, [plane], "Split", 1e-6)
+    solids = result.Solids
+    if len(solids) < 2:
+        raise RpcError(APP_ERROR, "the plane did not divide the body")
+    src.Visibility = False
+    made = []
+    for i, s in enumerate(solids):
+        nf = d.addObject("Part::Feature", "%s_part%d" % (src.Label, i + 1))
+        nf.Shape = s
+        session.set_body_color(nf.Name, _PALETTE[i % len(_PALETTE)])
+        made.append(nf.Name)
+    d.recompute()
+    return tree_get()
+
+
+@method("sheet.baseFlange")
+def sheet_base_flange(sketchId, thickness=1.5):
+    """Base flange from a sketch profile using the SheetMetal addon if present,
+    otherwise a plain pad of that thickness (still a valid sheet blank)."""
+    d, sk = _obj(sketchId)
+    body = sk.getParentGeoFeatureGroup()
+    if body is None:
+        raise RpcError(APP_ERROR, "sketch is not in a body")
+    try:
+        import SheetMetalCmd  # noqa: F401
+        # the addon's base bend feature
+        f = body.newObject("Part::FeaturePython", "BaseFlange")
+        import SheetMetalBaseCmd
+        SheetMetalBaseCmd.SMBaseBend(f, sk)
+        f.thickness = float(thickness)
+        sk.Visibility = False
+        d.recompute()
+        if body.Shape.isValid():
+            return tree_get()
+    except Exception:
+        pass
+    # fallback: pad
+    build.pad(body, sk, float(thickness))
+    d.recompute()
+    return tree_get()
 
 
 @method("io.importStep")  # kept for back-compat

@@ -74,8 +74,7 @@ export function buildScene(
   meshes: RenderMesh[],
   sketches: SketchRender[] = [],
   datums: DatumDTO[] = [],
-  canvases: CanvasDTO[] = [],
-  canvasImages: Record<string, string> = {}
+  canvases: CanvasDTO[] = []
 ): BuiltScene {
   const group = new THREE.Group()
   const box = new THREE.Box3()
@@ -90,7 +89,7 @@ export function buildScene(
       .addScaledVector(X, c.offset[0])
       .addScaledVector(Y, c.offset[1])
     const geo = new THREE.PlaneGeometry(c.w, c.h)
-    const url = canvasImages[c.id]
+    const url = c.image ?? undefined
     const mat = new THREE.MeshBasicMaterial({
       color: 0xffffff,
       transparent: true,

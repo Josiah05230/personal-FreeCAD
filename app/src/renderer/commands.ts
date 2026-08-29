@@ -51,6 +51,10 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'solid.sweep', title: 'Sweep', group: 'Create', tab: 'SOLID', icon: 'sweep', run: () => ctx.sweep() },
     { id: 'prim.box', title: 'Box', group: 'Create', tab: 'SOLID', icon: 'extrude', run: op('box') },
     { id: 'prim.cyl', title: 'Cylinder', group: 'Create', tab: 'SOLID', icon: 'revolve', run: op('cylinder') },
+    // --- surface ---
+    { id: 'surf.split', title: 'Split Body', group: 'Modify', tab: 'SURFACE', icon: 'plane', run: op('splitBody') },
+    // --- sheet metal ---
+    { id: 'sm.base', title: 'Base Flange', group: 'Create', tab: 'SHEET METAL', icon: 'extrude', run: op('baseFlange') },
     // --- modify ---
     { id: 'mod.fillet', title: 'Fillet', group: 'Modify', tab: 'SOLID', icon: 'fillet', hotkey: 'f', run: op('fillet') },
     { id: 'mod.chamfer', title: 'Chamfer', group: 'Modify', tab: 'SOLID', icon: 'chamfer', run: op('chamfer') },

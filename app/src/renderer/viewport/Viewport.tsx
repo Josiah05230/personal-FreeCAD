@@ -42,8 +42,9 @@ export function Viewport({
   planePickMode = false,
   pickPlanes = [],
   onPickPlane,
+  selectMode = 'paint',
+  onWindowSelect,
   canvases = [],
-  canvasImages = {},
   sketchFrame = null,
   sketchInitialEntities,
   sketchTool = 'line',
@@ -59,8 +60,9 @@ export function Viewport({
   planePickMode?: boolean
   pickPlanes?: PickPlane[]
   onPickPlane?: (ref: SketchRef) => void
+  selectMode?: 'paint' | 'window'
+  onWindowSelect?: (sels: Selection[]) => void
   canvases?: CanvasDTO[]
-  canvasImages?: Record<string, string>
   sketchFrame?: SketchFrame | null
   sketchInitialEntities?: unknown[]
   sketchTool?: SketchTool
@@ -77,6 +79,9 @@ export function Viewport({
   planePickRef.current = { mode: planePickMode, cb: onPickPlane }
   const pickPlanesRef = useRef<PickPlane[]>([])
   pickPlanesRef.current = pickPlanes
+  const winSelRef = useRef<{ mode: string; cb?: (s: Selection[]) => void }>({ mode: 'paint' })
+  winSelRef.current = { mode: selectMode, cb: onWindowSelect }
+  const bandRef = useRef<HTMLDivElement>(null)
 
   const stateRef = useRef<{
     renderer: THREE.WebGLRenderer
@@ -161,13 +166,48 @@ export function Viewport({
     let downX = 0
     let downY = 0
     let downBtn = -1
+    let banding = false
     const onDown = (e: PointerEvent): void => {
       downX = e.clientX
       downY = e.clientY
       downBtn = e.button
+      const st = stateRef.current
+      if (
+        e.button === 0 &&
+        winSelRef.current.mode === 'window' &&
+        !st?.sketch &&
+        !planePickRef.current.mode
+      ) {
+        banding = true
+        const b = bandRef.current
+        if (b) {
+          const r = host.getBoundingClientRect()
+          b.style.display = 'block'
+          b.style.left = `${e.clientX - r.left}px`
+          b.style.top = `${e.clientY - r.top}px`
+          b.style.width = '0px'
+          b.style.height = '0px'
+        }
+      }
     }
     const onUp = (e: PointerEvent): void => {
       const st = stateRef.current
+      if (banding) {
+        banding = false
+        const b = bandRef.current
+        if (b) b.style.display = 'none'
+        if (st?.content) {
+          const r = host.getBoundingClientRect()
+          const sels = st.picker.windowSelect(
+            st.content,
+            { x0: downX - r.left, y0: downY - r.top, x1: e.clientX - r.left, y1: e.clientY - r.top },
+            host.clientWidth,
+            host.clientHeight
+          )
+          winSelRef.current.cb?.(sels)
+        }
+        return
+      }
       if (!st || st.sketch) return // sketch mode owns clicks
       if (downBtn !== 0 || e.button !== 0) return
       if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 4) return
@@ -202,6 +242,19 @@ export function Viewport({
     }
     const onMove = (e: PointerEvent): void => {
       const st = stateRef.current
+      if (banding) {
+        const b = bandRef.current
+        const r = host.getBoundingClientRect()
+        if (b) {
+          const x = Math.min(e.clientX, downX) - r.left
+          const y = Math.min(e.clientY, downY) - r.top
+          b.style.left = `${x}px`
+          b.style.top = `${y}px`
+          b.style.width = `${Math.abs(e.clientX - downX)}px`
+          b.style.height = `${Math.abs(e.clientY - downY)}px`
+        }
+        return
+      }
       if (!st || st.sketch || !st.content || e.buttons !== 0) return
       st.picker.setHover(st.picker.pick(e, st.content), st.content)
     }
@@ -265,13 +318,7 @@ export function Viewport({
       st.content = null
       return
     }
-    const { group, center, radius } = buildScene(
-      meshes,
-      sketches,
-      datums,
-      canvases,
-      canvasImages
-    )
+    const { group, center, radius } = buildScene(meshes, sketches, datums, canvases)
     st.scene.add(group)
     st.content = group
     st.lastCenter = center
@@ -280,7 +327,7 @@ export function Viewport({
       st.controls.frame(center, radius)
       st.framedOnce = true
     }
-  }, [meshes, sketches, datums, canvases, canvasImages])
+  }, [meshes, sketches, datums, canvases])
 
   // reflect selection
   useEffect(() => {
@@ -396,6 +443,7 @@ export function Viewport({
 
   return (
     <div className="viewport" ref={hostRef}>
+      <div className="rubber-band" ref={bandRef} style={{ display: 'none' }} />
       <div className="viewcube-wrap">
         <div className="viewcube" ref={cubeRef} />
         <button

@@ -154,6 +154,57 @@ export class Picker {
     else mat?.dispose()
   }
 
+  /** Faces whose centroid projects inside the screen rect (window select). */
+  windowSelect(
+    content: THREE.Object3D,
+    rect: { x0: number; y0: number; x1: number; y1: number },
+    domW: number,
+    domH: number
+  ): Selection[] {
+    const minX = Math.min(rect.x0, rect.x1)
+    const maxX = Math.max(rect.x0, rect.x1)
+    const minY = Math.min(rect.y0, rect.y1)
+    const maxY = Math.max(rect.y0, rect.y1)
+    const out: Selection[] = []
+    const v = new THREE.Vector3()
+    for (const c of content.children) {
+      if (c.userData.pick !== 'face') continue
+      const mesh = c as THREE.Mesh
+      const geom = mesh.geometry as THREE.BufferGeometry
+      const idx = geom.getIndex()
+      const pos = geom.getAttribute('position')
+      if (!idx) continue
+      const groups = mesh.userData.faceGroups as { face: number; start: number; count: number }[]
+      for (const g of groups) {
+        let cx = 0
+        let cy = 0
+        let cz = 0
+        let n = 0
+        for (let i = g.start; i < g.start + g.count; i++) {
+          const vi = idx.getX(i)
+          cx += pos.getX(vi)
+          cy += pos.getY(vi)
+          cz += pos.getZ(vi)
+          n++
+        }
+        if (!n) continue
+        v.set(cx / n, cy / n, cz / n).applyMatrix4(mesh.matrixWorld).project(this.camera)
+        const sx = ((v.x + 1) / 2) * domW
+        const sy = ((1 - v.y) / 2) * domH
+        if (v.z < 1 && sx >= minX && sx <= maxX && sy >= minY && sy <= maxY) {
+          out.push({
+            kind: 'face',
+            bodyId: mesh.userData.bodyId,
+            index: 0,
+            sub: `Face${g.face + 1}`,
+            point: [cx / n, cy / n, cz / n]
+          })
+        }
+      }
+    }
+    return out
+  }
+
   clear(): void {
     this.setHover(null, this.overlayRoot)
     this.setSelection([], this.overlayRoot)

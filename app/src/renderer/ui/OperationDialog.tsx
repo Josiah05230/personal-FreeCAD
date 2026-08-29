@@ -17,6 +17,8 @@ export type OpKind =
   | 'patternCircular'
   | 'mirror'
   | 'datumPlane'
+  | 'splitBody'
+  | 'baseFlange'
 
 interface FieldSpec {
   key: string
@@ -146,6 +148,18 @@ const SPECS: Record<OpKind, OpSpec> = {
     title: 'Offset Plane',
     needs: 'plane',
     fields: [{ key: 'offset', label: 'Offset', type: 'number', default: 10, step: 1 }]
+  },
+  splitBody: {
+    title: 'Split Body',
+    needs: 'plane',
+    fields: []
+  },
+  baseFlange: {
+    title: 'Base Flange',
+    needs: 'sketch',
+    fields: [
+      { key: 'thickness', label: 'Thickness', type: 'number', default: 1.5, min: 0.1, step: 0.5 }
+    ]
   }
 }
 

@@ -83,39 +83,52 @@ Running checklist of user feedback from live testing. `[x]` done, `[~]` partial,
 - [x] Orbit locks past 90deg -> now free orbit (yaw stays level, pitch tumbles
       over the poles without clamping)
 - [x] Selection filter -> ribbon dropdown w/ checkboxes; paint vs window radios
-- [ ] Window select not yet functional (radio switches, still behaves as paint)
-- [ ] View cube hover highlight for edges + corners
+- [x] Window select: drag a rubber-band box; faces whose centroid is inside get
+      added to the selection
+- [x] View cube: 26 pick zones (6 faces + 12 edges + 8 corners), hover-highlit,
+      click any to snap
 
 ## Batch 7 - formats / insert / data panel / select group / view cube / scale / sketch planes
 
 - [x] Import/export: STEP/IGES/BREP + STL/OBJ/3MF/PLY/OFF; multi-body files land
       as separate objects, each a distinct palette colour. (File-embedded colours
       still not read - limited headless.)
-- [~] Insert canvas: image on a plane via the INSERT tab, calibrate by ratio.
-      (In-viewport drag-to-calibrate + PDF pages still TODO; session-only, not
-      saved to .FCStd yet.)
+- [~] Insert canvas: image on a plane via the INSERT tab, calibrate by ratio,
+      and it now persists (companion `<file>.gwtcad.json`). In-viewport
+      drag-a-line-to-calibrate and PDF pages are still TODO.
 - [x] Data Panel: New Design / New Folder buttons at any level
 - [x] Selection filter is now a "Select" group on the SOLID tab
-- [ ] View cube: selectable edges + corners (26-zone cube) - still faces only
+- [x] View cube: selectable edges + corners (26-zone cube)
 - [x] Modify > Scale (factor) + Convert Units (mm/cm/m/in/ft/thou)
 - [x] Create Sketch: click an origin/construction plane or a face in the
       viewport (ghost planes, no popup); visibility not auto-toggled
 
 ## Batch 8 - progress UI / timeline insert / tool selection / drawings
 
-- [ ] Show a busy indicator (bottom-left bar/spinner) during any create/load
-- [ ] New feature inserts at the rollback marker (not always the end); the
-      scrubber auto-advances to just after the new feature
-- [ ] Right-click a sketch in the tree pulls up scrollbars (ctx menu overflow);
-      add "Edit Sketch" to that menu
-- [ ] Rolled-back features must not exist: could still show/hide a construction
-      plane that sat after the marker
-- [ ] Many tools don't work / selection steps not wired. Audit every op's
-      selection requirements. Mirror should take a body (tree/click) + a plane
-      (click a tree plane or a flat face) - no dropdown
-- [x] Can Claude drive the UI live? No - no display capture/input in this env;
-      build + boot-check only. VNC/X + screenshot tools would enable it
-- [ ] Inspect (Measure/Section) should be a group under SOLID, not its own tab
-- [ ] "Drawing from Design" looks terrible / unusable. Want a blank-page default
-      mode + optionally an automated-drawing mode (scripted / Claude-assisted /
-      combo), with a plain default always available
+- [x] Busy spinner + "Working..." in the status bar during any RPC call
+- [x] New feature inserts at the rollback marker; the marker follows the tip
+      forward so the scrubber lands just after what you made
+- [x] Right-click a sketch -> "Edit Sketch" (reopens with its geometry); the
+      context menu is clamped to the viewport (no more overflow scrollbars)
+- [x] Rolled-back features are suppressed: not rendered, greyed + non-toggleable
+      in the tree
+- [x] Tool selection reworked: model-tree rows selectable; Mirror / Offset Plane
+      / Circular Pattern take a plane/axis from the selection (tree plane or flat
+      face), no dropdowns; Combine takes selected bodies; sidecar resolves
+      origin/construction/face/edge refs
+- [x] Can Claude drive the UI live? No - no display capture/input in this env
+- [x] Inspect (Measure/Section) moved to a group on the SOLID tab
+- [x] Drawings rebuilt: opens a blank ISO-A3 sheet (border + title block); Add
+      View one at a time + drag to place; Auto-layout is an explicit button
+
+## Deferred / not done
+
+- Assembly joint SOLVING (joints recorded + round-trip; MbD solver is GUI-coupled
+  headless) - needs a headless-solver path or an embedded GUI session
+- Sheet metal beyond Base Flange; the SheetMetal addon's richer features
+- Canvas: drag-a-line-on-the-image calibration, multi-page PDF underlays
+- Git panel write ops (commit / checkout / diff from the UI)
+- Manual sketch constraints + dimensions (auto H/V/coincident only today)
+- File-embedded colours on STEP/3MF import (GUI-only in FreeCAD)
+- Live packaged build with the real ~1GB bundled FreeCAD (pipeline verified with
+  --dir; run `scripts/package.sh linux`)

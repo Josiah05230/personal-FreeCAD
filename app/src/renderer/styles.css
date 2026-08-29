@@ -511,6 +511,14 @@ code {
   display: block;
 }
 
+.rubber-band {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: #2f9fe022;
+  pointer-events: none;
+  z-index: 4;
+}
+
 .viewcube-wrap {
   position: absolute;
   top: 14px;

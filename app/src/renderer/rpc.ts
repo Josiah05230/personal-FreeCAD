@@ -85,6 +85,7 @@ export interface CanvasDTO {
   h: number
   offset: [number, number]
   rot: number
+  image?: string | null
   frame: { origin: number[]; x: number[]; y: number[] }
 }
 
@@ -214,8 +215,8 @@ export const api = {
     rpc<{ id: string; factor: number }>('body.scale', { id, factor }),
   bodyConvertUnits: (id: string, fromUnit: string, toUnit: string) =>
     rpc<{ id: string; factor: number }>('body.convertUnits', { id, fromUnit, toUnit }),
-  canvasInsert: (plane: string, widthMm: number, heightMm: number) =>
-    rpc<CanvasDTO>('canvas.insert', { plane, widthMm, heightMm }),
+  canvasInsert: (plane: string, widthMm: number, heightMm: number, image: string) =>
+    rpc<CanvasDTO>('canvas.insert', { plane, widthMm, heightMm, image }),
   canvasCalibrate: (id: string, realMm: number, measuredMm: number) =>
     rpc<CanvasDTO>('canvas.calibrate', { id, realMm, measuredMm }),
   canvasDelete: (id: string) => rpc<{ deleted: string }>('canvas.delete', { id }),
@@ -271,8 +272,12 @@ export const api = {
     rpc<{ bodies: BodyTree[] }>('feature.loft', { sketchIds, cut }),
   draft: (faces: string[], angle: number, neutral: string | null) =>
     rpc<{ bodies: BodyTree[] }>('feature.draft', { faces, angle, neutral }),
-  combine: (op: string, toolBodyId: string | null) =>
-    rpc<{ bodies: BodyTree[] }>('feature.combine', { op, toolBodyId }),
+  combine: (op: string, baseBodyId: string | null, toolBodyIds: string[]) =>
+    rpc<{ bodies: BodyTree[] }>('feature.combine', { op, baseBodyId, toolBodyIds }),
+  splitBody: (bodyId: string, planeRef: GeomRef) =>
+    rpc<{ bodies: BodyTree[] }>('body.split', { bodyId, planeRef }),
+  sheetBaseFlange: (sketchId: string, thickness: number) =>
+    rpc<{ bodies: BodyTree[] }>('sheet.baseFlange', { sketchId, thickness }),
   patternCircular: (count: number, angle: number, axisRef: GeomRef | null, axisPlane = 'XY') =>
     rpc<{ bodies: BodyTree[] }>('pattern.circular', { count, angle, axisRef, axisPlane }),
 

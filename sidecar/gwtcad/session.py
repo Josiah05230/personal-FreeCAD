@@ -86,12 +86,32 @@ _canvases = {}
 _canvas_seq = [0]
 
 
-def add_canvas(plane_role, w_mm, h_mm):
+def add_canvas(plane_role, w_mm, h_mm, image=None):
     _canvas_seq[0] += 1
     cid = "Canvas%d" % _canvas_seq[0]
     _canvases[cid] = {"id": cid, "plane": plane_role, "w": float(w_mm), "h": float(h_mm),
-                      "offset": [0.0, 0.0], "rot": 0.0}
+                      "offset": [0.0, 0.0], "rot": 0.0, "image": image}
     return _canvases[cid]
+
+
+def load_state(blob):
+    """Restore session-only extras (canvases, colours) from a companion file."""
+    _canvases.clear()
+    for c in blob.get("canvases", []):
+        _canvases[c["id"]] = c
+    _colors.clear()
+    _colors.update(blob.get("colors", {}))
+    mx = 0
+    for cid in _canvases:
+        try:
+            mx = max(mx, int(cid.replace("Canvas", "")))
+        except Exception:
+            pass
+    _canvas_seq[0] = mx
+
+
+def dump_state():
+    return {"canvases": list(_canvases.values()), "colors": dict(_colors)}
 
 
 def canvases():

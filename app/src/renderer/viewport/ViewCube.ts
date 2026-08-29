@@ -1,10 +1,10 @@
 /**
  * ViewCube - the orientation gizmo in the top-right corner.
  *
- * Own small canvas, own scene/camera; its rotation is slaved to the main camera
- * every frame. Hover highlights the face under the cursor. Click snaps to that
- * view; right-click offers "set as Front / Top / Right". Drag orbits the main
- * view with the identical feel.
+ * Own small canvas/scene/camera; rotation slaved to the main camera each frame.
+ * 26 pick zones (6 faces, 12 edges, 8 corners) like Fusion's cube: hover
+ * highlights the zone under the cursor, click snaps to that direction,
+ * right-click a face offers Set as Front/Top/Right. Drag orbits the main view.
  */
 import * as THREE from 'three'
 import type { CadControls } from './CadControls'
@@ -18,15 +18,17 @@ const LABELS: Record<string, string> = {
   '1,0,0': 'RIGHT',
   '-1,0,0': 'LEFT'
 }
+const S = 1.6 // cube half-extent * 2 (side length)
+const H = S / 2
 
-function faceTexture(text: string, hot = false): THREE.CanvasTexture {
+function faceTexture(text: string): THREE.CanvasTexture {
   const c = document.createElement('canvas')
   c.width = c.height = 128
   const g = c.getContext('2d')!
-  g.fillStyle = hot ? '#cfe6fa' : '#e9ebee'
+  g.fillStyle = '#e9ebee'
   g.fillRect(0, 0, 128, 128)
-  g.strokeStyle = hot ? '#2f9fe0' : '#b7bcc3'
-  g.lineWidth = hot ? 8 : 4
+  g.strokeStyle = '#b7bcc3'
+  g.lineWidth = 4
   g.strokeRect(4, 4, 120, 120)
   g.fillStyle = '#333941'
   g.font = '600 19px "Segoe UI", system-ui, sans-serif'
@@ -43,16 +45,14 @@ export class ViewCube {
   private renderer: THREE.WebGLRenderer
   private scene = new THREE.Scene()
   private cam: THREE.OrthographicCamera
-  private cube: THREE.Mesh
-  private mats: THREE.MeshBasicMaterial[]
-  private texNormal: THREE.CanvasTexture[]
-  private texHot: THREE.CanvasTexture[]
+  private cube: THREE.Group
+  private zones: THREE.Mesh[] = []
   private ray = new THREE.Raycaster()
   private dragging = false
   private lastX = 0
   private lastY = 0
   private moved = 0
-  private hotFace = -1
+  private hot: THREE.Mesh | null = null
   private menuEl: HTMLDivElement | null = null
   private tween: { from: THREE.Vector3; to: THREE.Vector3; up: THREE.Vector3; t: number } | null =
     null
@@ -63,28 +63,32 @@ export class ViewCube {
     private readonly mainCam: THREE.PerspectiveCamera,
     private readonly controls: CadControls
   ) {
-    const size = Math.max(mount.clientWidth || 132, 96)
+    const size = Math.max(mount.clientWidth || 150, 96)
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.renderer.setSize(size, size)
     mount.appendChild(this.renderer.domElement)
 
-    this.cam = new THREE.OrthographicCamera(-1.75, 1.75, 1.75, -1.75, 0.1, 20)
+    this.cam = new THREE.OrthographicCamera(-1.9, 1.9, 1.9, -1.9, 0.1, 20)
     this.cam.position.set(0, 0, 6)
     this.cam.up.set(0, 1, 0)
     this.cam.lookAt(0, 0, 0)
 
-    this.texNormal = FACE_KEYS.map((k) => faceTexture(LABELS[k], false))
-    this.texHot = FACE_KEYS.map((k) => faceTexture(LABELS[k], true))
-    this.mats = this.texNormal.map((t) => new THREE.MeshBasicMaterial({ map: t }))
-    this.cube = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.6, 1.6), this.mats)
+    this.cube = new THREE.Group()
     this.scene.add(this.cube)
+
+    // visible textured box
+    const mats = FACE_KEYS.map((k) => new THREE.MeshBasicMaterial({ map: faceTexture(LABELS[k]) }))
+    const box = new THREE.Mesh(new THREE.BoxGeometry(S, S, S), mats)
+    this.cube.add(box)
     this.cube.add(
       new THREE.LineSegments(
-        new THREE.EdgesGeometry(this.cube.geometry),
+        new THREE.EdgesGeometry(box.geometry),
         new THREE.LineBasicMaterial({ color: 0x8a9099 })
       )
     )
+
+    this.buildZones()
 
     const el = this.renderer.domElement
     el.style.cursor = 'pointer'
@@ -95,6 +99,68 @@ export class ViewCube {
     window.addEventListener('pointerup', this.onUp)
   }
 
+  /** 6 faces + 12 edges + 8 corners, each a thin pick zone tagged with a dir. */
+  private buildZones(): void {
+    const T = 0.34 // zone thickness at edges/corners
+    const add = (
+      geo: THREE.BoxGeometry,
+      pos: [number, number, number],
+      dir: [number, number, number],
+      kind: string
+    ): void => {
+      const m = new THREE.Mesh(
+        geo,
+        new THREE.MeshBasicMaterial({ color: 0x2f9fe0, transparent: true, opacity: 0 })
+      )
+      m.position.set(...pos)
+      m.userData = { dir: new THREE.Vector3(...dir).normalize(), kind }
+      this.cube.add(m)
+      this.zones.push(m)
+    }
+    const faceGeo = new THREE.BoxGeometry(S - 2 * T, S - 2 * T, 0.02)
+    for (const ax of [0, 1, 2]) {
+      for (const s of [1, -1]) {
+        const d: [number, number, number] = [0, 0, 0]
+        d[ax] = s
+        const g = faceGeo.clone()
+        if (ax === 0) g.rotateY(Math.PI / 2)
+        if (ax === 1) g.rotateX(Math.PI / 2)
+        add(g, [d[0] * H, d[1] * H, d[2] * H], d, 'face')
+      }
+    }
+    // edges: for each pair of axes, 4 combinations of signs
+    for (let a = 0; a < 3; a++) {
+      for (let b = a + 1; b < 3; b++) {
+        const c = 3 - a - b
+        for (const sa of [1, -1]) {
+          for (const sb of [1, -1]) {
+            const d: [number, number, number] = [0, 0, 0]
+            d[a] = sa
+            d[b] = sb
+            const dims: [number, number, number] = [T, T, T]
+            dims[c] = S - 2 * T
+            add(
+              new THREE.BoxGeometry(...dims),
+              [d[0] * H, d[1] * H, d[2] * H],
+              d,
+              'edge'
+            )
+          }
+        }
+      }
+    }
+    // corners
+    for (const sx of [1, -1])
+      for (const sy of [1, -1])
+        for (const sz of [1, -1])
+          add(
+            new THREE.BoxGeometry(T, T, T),
+            [sx * H, sy * H, sz * H],
+            [sx, sy, sz],
+            'corner'
+          )
+  }
+
   private ndc(e: PointerEvent | MouseEvent): THREE.Vector2 {
     const r = this.renderer.domElement.getBoundingClientRect()
     return new THREE.Vector2(
@@ -103,23 +169,17 @@ export class ViewCube {
     )
   }
 
-  private faceUnder(e: PointerEvent | MouseEvent): number {
+  private zoneUnder(e: PointerEvent | MouseEvent): THREE.Mesh | null {
     this.ray.setFromCamera(this.ndc(e), this.cam)
-    const hit = this.ray.intersectObject(this.cube, false)[0]
-    return hit && hit.face ? Math.floor(hit.faceIndex! / 2) : -1
+    const hits = this.ray.intersectObjects(this.zones, false)
+    return hits.length ? (hits[0].object as THREE.Mesh) : null
   }
 
-  private dirForFace(fi: number): THREE.Vector3 {
-    const [x, y, z] = FACE_KEYS[fi].split(',').map(Number)
-    return new THREE.Vector3(x, y, z)
-  }
-
-  private setHot(fi: number): void {
-    if (fi === this.hotFace) return
-    if (this.hotFace >= 0) this.mats[this.hotFace].map = this.texNormal[this.hotFace]
-    if (fi >= 0) this.mats[fi].map = this.texHot[fi]
-    for (const m of this.mats) m.needsUpdate = true
-    this.hotFace = fi
+  private setHot(z: THREE.Mesh | null): void {
+    if (z === this.hot) return
+    if (this.hot) (this.hot.material as THREE.MeshBasicMaterial).opacity = 0
+    if (z) (z.material as THREE.MeshBasicMaterial).opacity = 0.38
+    this.hot = z
   }
 
   private onDown = (e: PointerEvent): void => {
@@ -141,11 +201,11 @@ export class ViewCube {
       this.moved += Math.abs(dx) + Math.abs(dy)
       this.controls.applyOrbit(-dx * 0.01, -dy * 0.01)
     } else {
-      this.setHot(this.faceUnder(e))
+      this.setHot(this.zoneUnder(e))
     }
   }
 
-  private onLeave = (): void => this.setHot(-1)
+  private onLeave = (): void => this.setHot(null)
 
   private onUp = (e: PointerEvent): void => {
     if (!this.dragging) return
@@ -156,19 +216,19 @@ export class ViewCube {
       /* not captured */
     }
     if (this.moved < 4) {
-      const fi = this.faceUnder(e)
-      if (fi >= 0) this.goToView(this.dirForFace(fi))
+      const z = this.zoneUnder(e)
+      if (z) this.goToView((z.userData.dir as THREE.Vector3).clone())
     }
   }
 
   private onContext = (e: MouseEvent): void => {
     e.preventDefault()
-    const fi = this.faceUnder(e)
-    if (fi < 0) return
-    this.openMenu(e.clientX, e.clientY, fi)
+    const z = this.zoneUnder(e)
+    if (!z || z.userData.kind !== 'face') return
+    this.openMenu(e.clientX, e.clientY)
   }
 
-  private openMenu(x: number, y: number, fi: number): void {
+  private openMenu(x: number, y: number): void {
     this.closeMenu()
     const host = this.mount.offsetParent instanceof HTMLElement ? this.mount.offsetParent : document.body
     const div = document.createElement('div')
@@ -180,7 +240,7 @@ export class ViewCube {
       ['Set as Front', new THREE.Vector3(0, -1, 0)],
       ['Set as Top', new THREE.Vector3(0, 0, 1)],
       ['Set as Right', new THREE.Vector3(1, 0, 0)],
-      ['Go to this face', this.dirForFace(fi)]
+      ['Home', new THREE.Vector3(1, -1, 0.8)]
     ] as [string, THREE.Vector3][]) {
       const item = document.createElement('div')
       item.className = 'viewcube-menu-item'
@@ -203,7 +263,6 @@ export class ViewCube {
     this.menuEl = null
   }
 
-  /** Default 3/4 iso view. */
   home(): void {
     this.goToView(new THREE.Vector3(1, -1, 0.8))
   }
@@ -213,8 +272,7 @@ export class ViewCube {
     const pivot = this.controls.pivot
     const dist = this.mainCam.position.distanceTo(pivot)
     const to = pivot.clone().addScaledVector(d, dist)
-    const up =
-      Math.abs(d.z) > 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1)
+    const up = Math.abs(d.z) > 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1)
     this.tween = { from: this.mainCam.position.clone(), to, up, t: 0 }
   }
 

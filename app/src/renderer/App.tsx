@@ -96,7 +96,6 @@ export function App(): JSX.Element {
   const [measureResult, setMeasureResult] = useState<MeasureResult | null>(null)
   const [section, setSection] = useState<SectionState | null>(null)
   const [canvases, setCanvases] = useState<CanvasDTO[]>([])
-  const [canvasImages, setCanvasImages] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(0)
 
   useEffect(() => onBusyChange(setBusy), [])
@@ -280,9 +279,11 @@ export function App(): JSX.Element {
           case 'draft':
             await api.draft(faces.map((f) => f.sub), Number(v.angle), null)
             break
-          case 'combine':
-            await api.combine(String(v.op), null)
+          case 'combine': {
+            const bs = selection.filter((s) => s.kind === 'body').map((s) => (s as { bodyId: string }).bodyId)
+            await api.combine(String(v.op), bs[0] ?? null, bs.slice(1))
             break
+          }
           case 'fillet':
             await api.fillet(edges, Number(v.radius))
             break
@@ -319,6 +320,21 @@ export function App(): JSX.Element {
           case 'datumPlane': {
             const ref = selection.map(selectionToRef).find(Boolean) ?? null
             await api.datumPlane(ref, Number(v.offset))
+            break
+          }
+          case 'splitBody': {
+            const ref = selection.map(selectionToRef).find(Boolean)
+            const b = selection.find((s) => s.kind === 'body') as { bodyId: string } | undefined
+            const target =
+              b?.bodyId ??
+              (selection.find((s) => s.kind === 'face') as { bodyId: string } | undefined)?.bodyId ??
+              bodies[0]?.id
+            if (ref && target) await api.splitBody(target, ref)
+            break
+          }
+          case 'baseFlange': {
+            const sk = sketchIds[0]
+            if (sk) await api.sheetBaseFlange(sk, Number(v.thickness))
             break
           }
         }
@@ -478,8 +494,8 @@ export function App(): JSX.Element {
     await img.decode().catch(() => undefined)
     const w = 100
     const h = img.naturalHeight && img.naturalWidth ? (100 * img.naturalHeight) / img.naturalWidth : 100
-    const c = await api.canvasInsert('XY', w, h)
-    setCanvasImages((m) => ({ ...m, [c.id]: dataUrl }))
+    await api.canvasInsert('XY', w, h, dataUrl)
+    
     await refreshMeshesOnly()
   }, [refreshMeshesOnly])
 
@@ -744,8 +760,14 @@ export function App(): JSX.Element {
                     planePickMode={planePickMode}
                     pickPlanes={pickPlanes}
                     onPickPlane={(ref) => void beginSketch(ref)}
+                    selectMode={selectMode}
+                    onWindowSelect={(sels) =>
+                      setSelection((cur) => {
+                        const keys = new Set(cur.map(selKey))
+                        return [...cur, ...sels.filter((s) => !keys.has(selKey(s)))]
+                      })
+                    }
                     canvases={canvases}
-                    canvasImages={canvasImages}
                     sketchFrame={sketchSession?.frame ?? null}
                     sketchInitialEntities={sketchInitial}
                     sketchTool={sketchTool}
