@@ -41,7 +41,8 @@ Running checklist of user feedback from live testing. `[x]` done, `[~]` partial,
 - [x] Interactive 2D sketcher (line/rect/circle/arc, grid + endpoint snap,
       finish -> real Sketcher sketch -> extrude/revolve)
 - [x] Revolve / Sweep / Loft / Draft / Combine / Circular Pattern wired
-- [ ] Drawings: dimensions, title block, BOM, PDF / DXF export  (views only so far)
+- [x] Drawings: auto overall dims + click-to-dimension tool, title block, BOM
+      table (assemblies), PDF (printToPDF) + DXF (R12) export
 - [x] Measure (length/area/distance/angle) + Section (live clipping plane)
 - [ ] Sheet metal (low priority)
 - [ ] Surface / body-split (low priority)

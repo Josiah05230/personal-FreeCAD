@@ -41,6 +41,8 @@ interface CadBridge {
   gitStatus(filePath: string): Promise<GitStatus>
   gitLog(filePath: string, limit?: number): Promise<GitCommit[]>
   gitBranches(filePath: string): Promise<GitBranch[]>
+  exportPdf(html: string, outPath: string): Promise<{ path: string }>
+  writeText(text: string, outPath: string): Promise<{ path: string }>
 }
 
 interface Window {

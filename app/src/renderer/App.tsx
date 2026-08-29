@@ -631,6 +631,8 @@ export function App(): JSX.Element {
               {showDrawing ? (
                 <DrawingSheet
                   views={drawingViews}
+                  docPath={docPath}
+                  assembly={asmTree}
                   onBack={() => setShowDrawing(false)}
                   onAddView={(d) => void addDrawingView(d)}
                 />

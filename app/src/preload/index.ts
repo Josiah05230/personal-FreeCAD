@@ -49,7 +49,12 @@ const cad = {
   gitLog: (filePath: string, limit?: number) =>
     ipcRenderer.invoke('git:log', filePath, limit) as Promise<GitCommit[]>,
   gitBranches: (filePath: string) =>
-    ipcRenderer.invoke('git:branches', filePath) as Promise<GitBranch[]>
+    ipcRenderer.invoke('git:branches', filePath) as Promise<GitBranch[]>,
+
+  exportPdf: (html: string, outPath: string) =>
+    ipcRenderer.invoke('drawing:exportPdf', html, outPath) as Promise<{ path: string }>,
+  writeText: (text: string, outPath: string) =>
+    ipcRenderer.invoke('drawing:writeText', text, outPath) as Promise<{ path: string }>
 }
 
 contextBridge.exposeInMainWorld('cad', cad)

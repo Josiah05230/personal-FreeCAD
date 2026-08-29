@@ -1547,6 +1547,63 @@ code {
   border-color: var(--accent);
 }
 
+.drawing-adddir.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.drawing-export {
+  background: var(--chrome-3);
+  border: 1px solid var(--line-soft);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 3px 12px;
+  cursor: pointer;
+  font-size: 11px;
+  margin-left: 4px;
+}
+
+.drawing-export:hover {
+  border-color: var(--accent);
+}
+
+.drawing-page {
+  background: #101012;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: 18px;
+  min-height: 100%;
+}
+
+.drawing-bom {
+  margin-top: 18px;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.drawing-bom th,
+.drawing-bom td {
+  border: 1px solid var(--line-soft);
+  padding: 4px 12px;
+  text-align: left;
+}
+
+.drawing-titleblock {
+  margin-top: 18px;
+  display: inline-flex;
+  gap: 22px;
+  border: 1px solid var(--line-soft);
+  padding: 8px 14px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.drawing-titleblock b {
+  color: var(--text);
+}
+
 .drawing-sheet {
   flex: 1;
   overflow: auto;

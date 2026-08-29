@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import { resolve, join } from 'path'
-import { readdir } from 'fs/promises'
+import { readdir, writeFile } from 'fs/promises'
 import { homedir } from 'os'
 import { Sidecar, loadConfig } from './sidecar'
 import * as gitw from './git'
@@ -125,6 +125,27 @@ app.whenReady().then(async () => {
   ipcMain.handle('git:status', (_e, filePath: string) => gitw.status(filePath))
   ipcMain.handle('git:log', (_e, filePath: string, limit?: number) => gitw.log(filePath, limit))
   ipcMain.handle('git:branches', (_e, filePath: string) => gitw.branches(filePath))
+
+  ipcMain.handle('drawing:exportPdf', async (_e, html: string, outPath: string) => {
+    const w = new BrowserWindow({ show: false, webPreferences: { offscreen: true } })
+    try {
+      await w.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+      const pdf = await w.webContents.printToPDF({
+        landscape: true,
+        printBackground: true,
+        pageSize: 'A3'
+      })
+      await writeFile(outPath, pdf)
+      return { path: outPath }
+    } finally {
+      w.destroy()
+    }
+  })
+
+  ipcMain.handle('drawing:writeText', async (_e, text: string, outPath: string) => {
+    await writeFile(outPath, text, 'utf-8')
+    return { path: outPath }
+  })
 
   try {
     const ep = await sidecar.start()
