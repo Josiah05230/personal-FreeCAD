@@ -323,7 +323,7 @@ def pattern_circular(count=4, angle=360.0, axisRef=None, axisPlane="XY"):
                 break
     p.Angle = float(angle)
     p.Occurrences = int(count)
-    d.recompute()
+    _apply_transformed(body, p)
     if not body.Shape.isValid():
         raise RpcError(APP_ERROR, "circular pattern produced an invalid shape")
     return tree_get()
@@ -526,6 +526,19 @@ def body_transform(id, translate=(0, 0, 0), rotate=(0, 0, 0), relative=True):
     return tree_get()
 
 
+def _apply_transformed(body, feat):
+    """PartDesign Transformed features (LinearPattern / PolarPattern / Mirrored)
+    only fold into the body once it is the Tip and has been recomputed with the
+    dirty flag set - a plain d.recompute() leaves them inert headless."""
+    d = body.Document
+    body.Tip = feat
+    try:
+        feat.touch()
+    except Exception:
+        pass
+    d.recompute(None, True, True)
+
+
 @method("pattern.linear")
 def pattern_linear(direction=(1, 0, 0), count=3, spacing=20.0, directionRef=None):
     body = _require_body()
@@ -545,7 +558,9 @@ def pattern_linear(direction=(1, 0, 0), count=3, spacing=20.0, directionRef=None
                 break
     p.Length = float(spacing) * max(1, int(count) - 1)
     p.Occurrences = int(count)
-    d.recompute()
+    _apply_transformed(body, p)
+    if not body.Shape.isValid():
+        raise RpcError(APP_ERROR, "rectangular pattern produced an invalid shape")
     return tree_get()
 
 
@@ -607,7 +622,7 @@ def feature_mirror(planeRef=None, plane="YZ"):
         m.MirrorPlane = _resolve_ref(d, body, planeRef)
     else:
         m.MirrorPlane = (build.origin_plane(body, plane), [""])
-    d.recompute()
+    _apply_transformed(body, m)
     if not body.Shape.isValid():
         raise RpcError(APP_ERROR, "mirror produced an invalid shape")
     return tree_get()
