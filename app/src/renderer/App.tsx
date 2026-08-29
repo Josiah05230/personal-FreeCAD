@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   api,
+  apiQuiet,
   onBusyChange,
   type BodyTree,
   type RenderMesh,
@@ -47,6 +48,9 @@ import type { MeasureResult, SketchRefGeom, SketchConstraint } from './rpc'
 import type { SketchTool, SketchConstraintType } from './viewport/SketchController'
 import type { SketchFrameDTO } from './rpc'
 import { basename } from './util'
+import { perfProfile } from './perfProfile'
+
+const PERF = perfProfile()
 
 type Status =
   | { phase: 'boot' }
@@ -549,22 +553,69 @@ export function App(): JSX.Element {
     [selection, afterEdit]
   )
 
+  const cachePut = useCallback(
+    (key: string, val: { scene: Awaited<ReturnType<typeof api.sceneGet>>; tree: Awaited<ReturnType<typeof api.treeGet>> }) => {
+      const c = rollCacheRef.current
+      c.delete(key) // move-to-newest for the LRU trim below
+      c.set(key, val)
+      while (c.size > PERF.rollCacheMax) c.delete(c.keys().next().value as string)
+    },
+    []
+  )
+
   const rollTo = useCallback(
     async (featureId: string | null) => {
       if (!bodyId) return
       const key = `${bodyId}:${featureId ?? 'TIP'}`
       const seq = ++rollSeqRef.current
       const cached = rollCacheRef.current.get(key)
-      if (cached) applySceneTree(cached.scene, cached.tree) // instant
+      if (cached) applySceneTree(cached.scene, cached.tree) // instant paint from cache
 
-      await api.rollTo(bodyId, featureId)
-      if (rollSeqRef.current !== seq) return // a newer roll supersedes this one
-      const [scene, tree] = await Promise.all([api.sceneGet(), api.treeGet()])
-      if (rollSeqRef.current !== seq) return
-      rollCacheRef.current.set(key, { scene, tree })
-      if (!cached) applySceneTree(scene, tree)
+      if (!cached) {
+        await api.rollTo(bodyId, featureId)
+        if (rollSeqRef.current !== seq) return
+        const [scene, tree] = await Promise.all([api.sceneGet(), api.treeGet()])
+        if (rollSeqRef.current !== seq) return
+        cachePut(key, { scene, tree })
+        applySceneTree(scene, tree)
+      }
+
+      // Warm a few neighbouring positions in the background so a one- or two-step
+      // scrub lands instantly. Sized by the machine's perf tier. Leaves the
+      // engine back on `featureId` when done (or on cache-hit-only, re-syncs it).
+      const feats = bodies[0]?.features ?? []
+      const idx = featureId == null ? feats.length - 1 : feats.findIndex((f) => f.id === featureId)
+      const wants: (string | null)[] = []
+      for (let dd = 1; dd <= PERF.prefetchRadius; dd++) {
+        for (const j of [idx - dd, idx + dd]) {
+          if (j < 0 || j >= feats.length) continue
+          const fid = j === feats.length - 1 ? null : feats[j].id
+          if (!rollCacheRef.current.has(`${bodyId}:${fid ?? 'TIP'}`)) wants.push(fid)
+        }
+      }
+      const needResync = cached && (wants.length === 0 || PERF.prefetchRadius === 0)
+      if (needResync) {
+        void apiQuiet.rollTo(bodyId, featureId).catch(() => undefined)
+        return
+      }
+      if (!wants.length) return
+      void (async () => {
+        for (const fid of wants) {
+          if (rollSeqRef.current !== seq) return
+          try {
+            await apiQuiet.rollTo(bodyId, fid)
+            if (rollSeqRef.current !== seq) return
+            const [scene, tree] = await Promise.all([apiQuiet.sceneGet(), apiQuiet.treeGet()])
+            if (rollSeqRef.current !== seq) return
+            cachePut(`${bodyId}:${fid ?? 'TIP'}`, { scene, tree })
+          } catch {
+            /* prefetch is best-effort */
+          }
+        }
+        if (rollSeqRef.current === seq) await apiQuiet.rollTo(bodyId, featureId).catch(() => undefined)
+      })()
     },
-    [bodyId, applySceneTree]
+    [bodyId, bodies, applySceneTree, cachePut]
   )
 
   const renameFeature = useCallback(
@@ -854,19 +905,38 @@ export function App(): JSX.Element {
       )
   }, [selection, jointType, refreshScene])
 
+  // test / automation bridge - lets an out-of-band script refresh the scene
+  // after driving the engine directly (used for screenshots + UI smoke runs)
+  useEffect(() => {
+    ;(window as unknown as { __gwtcad?: unknown }).__gwtcad = {
+      refresh: () => refreshScene(),
+      fit: () => vpApi.current?.fit(),
+      applyOp: (k: OpKind, v: OpValues) => void applyOp(k, v),
+      beginSketch,
+      editSketch,
+      perf: PERF
+    }
+  }, [refreshScene, applyOp, beginSketch, editSketch])
+
   // ---- boot ----
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      try {
-        const p = await api.ping()
-        if (cancelled) return
-        setStatus({ phase: 'ready', freecad: `${p.freecad} ${p.build}` })
-        // open to an empty document, like Fusion - no demo body
-        await refreshScene()
-      } catch (e) {
-        if (!cancelled) setStatus({ phase: 'error', message: (e as Error).message })
+      // the FreeCAD sidecar can take several seconds to import; keep pinging
+      let lastErr: unknown = null
+      for (let i = 0; i < 30 && !cancelled; i++) {
+        try {
+          const p = await api.ping()
+          if (cancelled) return
+          setStatus({ phase: 'ready', freecad: `${p.freecad} ${p.build}` })
+          await refreshScene()
+          return
+        } catch (e) {
+          lastErr = e
+          await new Promise((r) => setTimeout(r, 600))
+        }
       }
+      if (!cancelled) setStatus({ phase: 'error', message: (lastErr as Error)?.message ?? 'no engine' })
     })()
     return () => {
       cancelled = true
@@ -1272,6 +1342,11 @@ export function App(): JSX.Element {
         <span>{selection.length ? `${selection.length} selected` : ''}</span>
         <span>{docPath ? basename(docPath) : 'unsaved'}</span>
         <span>mm</span>
+        <span
+          title={`${PERF.cores} cores · ~${PERF.memGB}GB · ${PERF.softwareGL ? 'software GL' : 'GPU'} · prefetch ${PERF.prefetchRadius} · cache ${PERF.rollCacheMax}`}
+        >
+          perf: {PERF.tier}
+        </span>
         <span>Click: select · Middle: pan · Shift+Middle: orbit · S: search</span>
       </div>
 

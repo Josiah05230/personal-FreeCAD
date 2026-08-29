@@ -219,6 +219,78 @@ app.whenReady().then(async () => {
 
   await createWindow()
 
+  // --shot <out.png> [--shot-demo] : wait for the renderer + engine, optionally
+  // build a demo part via the test bridge, capturePage, and quit. Dev tooling.
+  const shotIdx = process.argv.indexOf('--shot')
+  if (shotIdx !== -1 && win) {
+    const out = process.argv[shotIdx + 1] || join(homedir(), 'gwtcad-shot.png')
+    const demo = process.argv.includes('--shot-demo')
+    void (async () => {
+      const w = win!
+      for (let i = 0; i < 60; i++) {
+        const ready = await w.webContents
+          .executeJavaScript(`window.cad.rpc('ping',{}).then(()=>true).catch(()=>false)`)
+          .catch(() => false)
+        if (ready) break
+        await new Promise((r) => setTimeout(r, 500))
+      }
+      await w.webContents.executeJavaScript(`window.__gwtcad&&window.__gwtcad.refresh();0`).catch(() => 0)
+      if (demo) {
+        await w.webContents
+          .executeJavaScript(
+            `(async()=>{const r=window.cad.rpc;
+             const cz=(g,m)=>{let z=0,n=0;for(let i=g.start;i<g.start+g.count;i++){z+=m.positions[m.indices[i]*3+2];n++}return z/n};
+             const topFace=m=>{let tf=m.faceGroups[0],b=-1e9;for(const g of m.faceGroups){const z=cz(g,m);if(z>b){b=z;tf=g}}return 'Face'+(tf.face+1)};
+             await r('session.reset',{});
+             const s=await r('sketch.on',{ref:{kind:'origin',role:'XY_Plane'}});
+             await r('sketch.finish',{sketchId:s.sketchId,elements:[{type:'rect',a:[-45,-30],b:[45,30]}],constraints:[]});
+             await r('feature.extrude',{sketchId:s.sketchId,length:36});
+             const bid=(await r('tree.get',{})).bodies[0].id;
+             let m=(await r('scene.get',{})).meshes[0];
+             const es=m.edges.filter(e=>{const zs=e.points.filter((_,i)=>i%3===2);return Math.max(...zs)-Math.min(...zs)>30}).slice(0,4).map(e=>'Edge'+(e.edge+1));
+             await r('feature.fillet',{edges:es,radius:10});
+             m=(await r('scene.get',{})).meshes[0];
+             const hs=await r('sketch.on',{ref:{kind:'face',bodyId:bid,sub:topFace(m)}});
+             await r('sketch.finish',{sketchId:hs.sketchId,elements:[{type:'circle',c:[0,0],r:15}],constraints:[]});
+             await r('feature.extrude',{sketchId:hs.sketchId,length:16});
+             m=(await r('scene.get',{})).meshes[0];
+             const bs=await r('sketch.on',{ref:{kind:'face',bodyId:bid,sub:topFace(m)}});
+             await r('sketch.finish',{sketchId:bs.sketchId,elements:[{type:'circle',c:[0,0],r:8}],constraints:[]});
+             await r('feature.extrude',{sketchId:bs.sketchId,length:60,cut:true});
+             const t=await r('tree.get',{}); const sc=await r('scene.get',{});
+             return 'ok feats='+(t.bodies[0]?t.bodies[0].features.length:'?')+' meshes='+sc.meshes.length+' verts='+(sc.meshes[0]?sc.meshes[0].positions.length/3:0);})()`
+          )
+          .then((v) => process.stdout.write('[shot] demo -> ' + v + '\n'))
+          .catch((e) => process.stderr.write('[shot] demo err ' + e + '\n'))
+        process.stdout.write('[shot] demo built, refreshing\n')
+        await new Promise((r) => setTimeout(r, 1200))
+        const rr = await w.webContents
+          .executeJavaScript(`window.__gwtcad.refresh().then(()=>'refreshed').catch(e=>'ref err '+e)`)
+          .catch((e) => 'ref throw ' + e)
+        process.stdout.write('[shot] ' + rr + '\n')
+        await new Promise((r) => setTimeout(r, 1500))
+        const dbg = await w.webContents
+          .executeJavaScript(
+            `(async()=>{const cs=[...document.querySelectorAll('canvas')].map(c=>[c.width,c.height]);
+             const t=await window.cad.rpc('tree.get',{});
+             return JSON.stringify({canvases:cs,feats:t.bodies[0]?t.bodies[0].features.length:-1})})()`
+          )
+          .catch((e) => 'dbg err ' + e)
+        process.stdout.write('[shot] dbg ' + dbg + '\n')
+        await w.webContents.executeJavaScript(`window.__gwtcad.fit();0`).catch(() => 0)
+        await new Promise((r) => setTimeout(r, 1500))
+        await w.webContents.executeJavaScript(`window.__gwtcad.fit();0`).catch(() => 0)
+        await new Promise((r) => setTimeout(r, 2000))
+      } else {
+        await new Promise((r) => setTimeout(r, 1500))
+      }
+      const img = await w.webContents.capturePage()
+      await writeFile(out, img.toPNG())
+      process.stdout.write(`[shot] wrote ${out} ${img.getSize().width}x${img.getSize().height}\n`)
+      app.quit()
+    })()
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

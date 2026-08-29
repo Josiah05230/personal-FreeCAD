@@ -240,6 +240,24 @@ const rpc = async <T,>(m: string, p: Record<string, unknown> = {}): Promise<T> =
   }
 }
 
+/** Background calls that must not light the busy indicator (timeline prefetch). */
+const rpcQuiet = <T,>(m: string, p: Record<string, unknown> = {}): Promise<T> =>
+  window.cad.rpc<T>(m, p)
+
+export const apiQuiet = {
+  rollTo: (bodyId: string, featureId: string | null) =>
+    rpcQuiet<{ tip: string | null }>('history.rollTo', { bodyId, featureId }),
+  sceneGet: () =>
+    rpcQuiet<{
+      meshes: RenderMesh[]
+      sketches: SketchRender[]
+      datums: DatumDTO[]
+      pickPlanes: PickPlane[]
+      canvases: CanvasDTO[]
+    }>('scene.get'),
+  treeGet: () => rpcQuiet<{ bodies: BodyTree[]; path: string | null }>('tree.get')
+}
+
 export const api = {
   ping: () => rpc<{ pong: boolean; freecad: string; build: string }>('ping'),
   resetDocument: () => rpc<{ document: string }>('session.reset'),

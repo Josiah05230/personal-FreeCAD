@@ -20,6 +20,7 @@ import {
   type SketchRefGeom
 } from './SketchController'
 import { buildScene } from './sceneBuilder'
+import { perfProfile } from '../perfProfile'
 
 function gradientBackground(): THREE.Texture {
   const c = document.createElement('canvas')
@@ -127,7 +128,7 @@ export function Viewport({
   useEffect(() => {
     const host = hostRef.current!
     const renderer = new THREE.WebGLRenderer({ antialias: true })
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, perfProfile().pixelRatioCap))
     renderer.setSize(host.clientWidth, host.clientHeight)
     renderer.outputColorSpace = THREE.SRGBColorSpace
     renderer.localClippingEnabled = true
