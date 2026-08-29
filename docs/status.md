@@ -56,6 +56,37 @@ working first version. `docs/FEEDBACK.md` tracks the live-test checklist.
 - electron-builder: AppImage + NSIS, FreeCAD bundled as extraResources, runtime
   path resolution, `scripts/package.sh`. `--dir` build verified.
 
+## Batches 9-13 additions
+
+- Contextual SKETCH ribbon tab (no floating palette); enters on sketch, leaves
+  back to the previous tab.
+- Sketch-on-face reference geometry: the support face's edges + vertices are
+  projected into the sketch plane and used as snap targets (points, on-edge).
+- Manual sketch constraints (H/V/parallel/perp/equal/tangent/coincident/
+  concentric) + a Dimension tool (line length / circle radius, number or unit
+  expression) with on-canvas labels. Construction toggle (button + `x`).
+- sketch.finish is one round trip (geometry + constraints + recompute); finishing
+  clears the rollback marker so a fresh sketch is never "before" the timeline.
+- Client-side visibility toggles (optimistic, no full refetch). Scrubber caches
+  scene+tree per rollback position; timeline drag rAF-throttled.
+- In-app PromptDialog (Electron has no window.prompt). Scale absorbs Convert
+  Units. View cube "Set as Front/Top/Right" reorients a frame quaternion.
+- Select group inline in the ribbon (kind toggles + paint/window), no dropdown.
+- Data panel: resize handle, double-click open, right-click (rename / move / git
+  history / delete-to-trash), thumbnails from a window screenshot on save.
+- Open resets the sidecar doc into a fresh tab; boot no longer makes a demo body.
+- Parameters panel + unit-aware expression evaluator (expr.py): dimension inputs
+  in feature dialogs accept "15in + 2.4mm", "bore/2", sqrt()/sin()..., with a
+  live "= value" preview. params persist in the doc sidecar json.
+- No Box / Cylinder primitives. Revolve axis, Rectangular Pattern direction,
+  Draft neutral plane, Sweep path (edge), Construction Axis / Point - all from
+  selection, no geometry dropdowns.
+- Real PartDesign::Hole with counterbore / countersink. Move / Rotate Body
+  (body.transform). Suppress vs Delete (feature.suppress) with struck-through
+  timeline chips.
+- Canvas drag-a-line calibration (INSERT > Calibrate Canvas).
+- ~67 sidecar RPC methods.
+
 ## Batches 7-8 additions
 
 - Import/export STEP/IGES/BREP + STL/OBJ/3MF/PLY/OFF, multi-body -> separate
@@ -79,7 +110,8 @@ working first version. `docs/FEEDBACK.md` tracks the live-test checklist.
   round-trip; the MbD solver is GUI-coupled, so parts don't move yet).
 - Drawings: dimension tool is linear only; no GD&T / section / detail views.
 - Git panel is read-only (no commit / checkout / diff from the UI).
-- Sheet metal, surface / body-split: not started (user: low priority).
-- Sketch constraints are auto-only (no manual dimension/constraint entry yet).
+- Sheet metal beyond Base Flange; surface modelling (Thicken / offset).
+- Rib / Web feature; Copy body; Combine keep-tool; Construction Point on a
+  picked vertex (needs vertex selection in the Picker).
 - Packaged build not run end to end with a real bundled FreeCAD (needs the ~1GB
   copy; `scripts/package.sh` does it).
