@@ -1,0 +1,7 @@
+{
+  "//": "Copy to config.local.json and adjust for your machine. config.local.json is gitignored.",
+  "freecadcmd": "~/Applications/FreeCAD-1.1.1.AppDir/usr/bin/freecadcmd",
+  "sidecarHost": "127.0.0.1",
+  "sidecarPort": 0,
+  "sidecarStartupTimeoutMs": 20000
+}
