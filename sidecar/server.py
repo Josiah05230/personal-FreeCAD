@@ -42,8 +42,12 @@ class Server(HTTPServer):
     _start_ppid = os.getppid()
 
     def service_actions(self):
-        if os.getppid() != self._start_ppid and os.getppid() == 1:
-            _log("parent gone (orphaned) - exiting")
+        # If our parent PID ever changes we have been orphaned (the Electron
+        # supervisor died). Depending on the init system an orphan reparents to
+        # PID 1 or to a subreaper, so compare against the launch-time parent
+        # rather than checking for PID 1 specifically.
+        if os.getppid() != self._start_ppid:
+            _log("parent changed (%d -> %d) - orphaned, exiting" % (self._start_ppid, os.getppid()))
             os._exit(0)
 
 
