@@ -33,6 +33,16 @@ import { SketchRibbon } from './ui/SketchRibbon'
 import { MeasurePanel, SectionPanel, type SectionState } from './ui/InspectPanels'
 import { PromptHost, promptText, promptForm } from './ui/PromptDialog'
 import { ParametersPanel } from './ui/ParametersPanel'
+import {
+  loadPinned,
+  savePinned,
+  loadHotkeys,
+  saveHotkeys,
+  comboFromEvent,
+  normaliseCombo,
+  type PinMap,
+  type HotkeyMap
+} from './ribbonPrefs'
 import type { MeasureResult, SketchRefGeom, SketchConstraint } from './rpc'
 import type { SketchTool, SketchConstraintType } from './viewport/SketchController'
 import type { SketchFrameDTO } from './rpc'
@@ -82,6 +92,24 @@ export function App(): JSX.Element {
 
   const [showDrawing, setShowDrawing] = useState(false)
   const [paramsOpen, setParamsOpen] = useState(false)
+  const [pins, setPins] = useState<PinMap>(() => loadPinned())
+  const [hotkeys, setHotkeys] = useState<HotkeyMap>(() => loadHotkeys())
+  const setPin = useCallback((id: string, pinned: boolean) => {
+    setPins((p) => {
+      const next = { ...p, [id]: pinned }
+      savePinned(next)
+      return next
+    })
+  }, [])
+  const setHotkey = useCallback((id: string, combo: string | null) => {
+    setHotkeys((h) => {
+      const next = { ...h }
+      if (combo) next[id] = combo
+      else delete next[id]
+      saveHotkeys(next)
+      return next
+    })
+  }, [])
 
   const [asmTree, setAsmTree] = useState<AssemblyTree | null>(null)
   const [jointType, setJointType] = useState('Revolute')
@@ -930,32 +958,45 @@ export function App(): JSX.Element {
         } else if (e.key === 'Escape') setSketchTool('select')
         return
       }
+      if (ctrl && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        void save()
+        return
+      }
+      if (ctrl && e.key.toLowerCase() === 'o') {
+        e.preventDefault()
+        void openDesign()
+        return
+      }
+      if (ctrl && e.key.toLowerCase() === 'n') {
+        e.preventDefault()
+        newDesign()
+        return
+      }
       if (!ctrl && (e.key === 's' || e.key === 'S')) {
         e.preventDefault()
         setPaletteOpen(true)
-      } else if (!ctrl && (e.key === 'e' || e.key === 'E')) {
-        setOp('extrude')
-      } else if (!ctrl && (e.key === 'f' || e.key === 'F')) {
-        setOp('fillet')
-      } else if (ctrl && e.key.toLowerCase() === 's') {
-        e.preventDefault()
-        void save()
-      } else if (ctrl && e.key.toLowerCase() === 'o') {
-        e.preventDefault()
-        void openDesign()
-      } else if (ctrl && e.key.toLowerCase() === 'n') {
-        e.preventDefault()
-        newDesign()
-      } else if (e.key === 'F6') {
-        fitView()
-      } else if (e.key === 'Escape') {
+        return
+      }
+      if (e.key === 'Escape') {
         setPaletteOpen(false)
         setOp(null)
+        return
+      }
+      // data-driven command hotkeys (user-overridable)
+      const combo = comboFromEvent(e)
+      const cmd = commands.find((c) => {
+        const h = hotkeys[c.id] ?? c.hotkey
+        return h && normaliseCombo(h) === combo && c.run
+      })
+      if (cmd) {
+        e.preventDefault()
+        cmd.run?.()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [sketchSession, sketchConstruction, save, openDesign, newDesign, fitView])
+  }, [sketchSession, sketchConstruction, save, openDesign, newDesign, commands, hotkeys])
 
   const activeName = tabs.find((t) => t.id === activeTab)?.name ?? 'Untitled'
   const activeDirty = tabs.find((t) => t.id === activeTab)?.dirty ?? false
@@ -1041,6 +1082,10 @@ export function App(): JSX.Element {
         <div className="maincol">
           <Ribbon
             commands={commands}
+            pins={pins}
+            hotkeys={hotkeys}
+            onSetPin={setPin}
+            onSetHotkey={setHotkey}
             sketchMode={!!sketchSession}
             sketchPanel={
               <SketchRibbon
