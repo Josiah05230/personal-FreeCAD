@@ -5,7 +5,7 @@ export type FeatureKind = 'sketch' | 'datum' | 'solid' | 'other'
 export interface Feature {
   id: string
   label: string
-  type: string
+  opType: string
   kind: FeatureKind
   isTip: boolean
   error: boolean

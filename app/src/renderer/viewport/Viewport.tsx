@@ -2,17 +2,19 @@ import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import type { RenderMesh } from '../rpc'
 import { CadControls } from './CadControls'
+import { ViewCube } from './ViewCube'
 import { buildScene } from './sceneBuilder'
 
 function gradientBackground(): THREE.Texture {
+  // Fusion's viewport ground is a light cool gradient, not a dark room.
   const c = document.createElement('canvas')
   c.width = 2
   c.height = 256
   const ctx = c.getContext('2d')!
   const g = ctx.createLinearGradient(0, 0, 0, 256)
-  g.addColorStop(0, '#5b6470')
-  g.addColorStop(0.55, '#3a3f47')
-  g.addColorStop(1, '#2b2e34')
+  g.addColorStop(0, '#dfe4ea')
+  g.addColorStop(0.5, '#c4ccd4')
+  g.addColorStop(1, '#aab4bf')
   ctx.fillStyle = g
   ctx.fillRect(0, 0, 2, 256)
   const tex = new THREE.CanvasTexture(c)
@@ -22,16 +24,17 @@ function gradientBackground(): THREE.Texture {
 
 export function Viewport({ meshes }: { meshes: RenderMesh[] }): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
+  const cubeRef = useRef<HTMLDivElement>(null)
   const stateRef = useRef<{
     renderer: THREE.WebGLRenderer
     scene: THREE.Scene
     camera: THREE.PerspectiveCamera
     controls: CadControls
+    cube: ViewCube
     content: THREE.Group | null
     framedOnce: boolean
   } | null>(null)
 
-  // one-time setup
   useEffect(() => {
     const host = hostRef.current!
     const renderer = new THREE.WebGLRenderer({ antialias: true })
@@ -50,30 +53,38 @@ export function Viewport({ meshes }: { meshes: RenderMesh[] }): JSX.Element {
       100000
     )
     camera.up.set(0, 0, 1)
-    camera.position.set(200, -200, 150)
+    camera.position.set(220, -260, 180)
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x3a3f47, 2.2))
-    const key = new THREE.DirectionalLight(0xffffff, 2.0)
-    key.position.set(1, -1.4, 2)
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x9099a3, 2.6))
+    const key = new THREE.DirectionalLight(0xffffff, 2.1)
+    key.position.set(0.6, -1, 1.4)
     scene.add(key)
-    const fill = new THREE.DirectionalLight(0xffffff, 0.7)
-    fill.position.set(-1.5, 1, 0.5)
+    const fill = new THREE.DirectionalLight(0xffffff, 0.9)
+    fill.position.set(-1.2, 0.8, 0.4)
     scene.add(fill)
 
-    const grid = new THREE.GridHelper(2000, 100, 0x4a4f57, 0x3b3f46)
-    grid.rotation.x = Math.PI / 2 // GridHelper is XZ by default; put it on XY (Z-up)
-    ;(grid.material as THREE.Material).transparent = true
-    ;(grid.material as THREE.Material).opacity = 0.5
-    scene.add(grid)
-
     const controls = new CadControls(camera, renderer.domElement)
+    const cube = new ViewCube(cubeRef.current!, camera, controls)
 
-    stateRef.current = { renderer, scene, camera, controls, content: null, framedOnce: false }
+    stateRef.current = {
+      renderer,
+      scene,
+      camera,
+      controls,
+      cube,
+      content: null,
+      framedOnce: false
+    }
 
     let raf = 0
+    let prev = performance.now()
     const loop = () => {
       raf = requestAnimationFrame(loop)
+      const now = performance.now()
+      const dt = Math.min((now - prev) / 1000, 0.05)
+      prev = now
       controls.update()
+      cube.update(dt)
       renderer.render(scene, camera)
     }
     loop()
@@ -90,6 +101,7 @@ export function Viewport({ meshes }: { meshes: RenderMesh[] }): JSX.Element {
     return () => {
       cancelAnimationFrame(raf)
       ro.disconnect()
+      cube.dispose()
       controls.dispose()
       renderer.dispose()
       host.removeChild(renderer.domElement)
@@ -97,7 +109,6 @@ export function Viewport({ meshes }: { meshes: RenderMesh[] }): JSX.Element {
     }
   }, [])
 
-  // rebuild content when meshes change
   useEffect(() => {
     const st = stateRef.current
     if (!st) return
@@ -124,5 +135,9 @@ export function Viewport({ meshes }: { meshes: RenderMesh[] }): JSX.Element {
     }
   }, [meshes])
 
-  return <div className="viewport" ref={hostRef} />
+  return (
+    <div className="viewport" ref={hostRef}>
+      <div className="viewcube" ref={cubeRef} />
+    </div>
+  )
 }

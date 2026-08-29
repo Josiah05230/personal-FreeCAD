@@ -1,5 +1,7 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
-import { resolve } from 'path'
+import { resolve, join } from 'path'
+import { readdir } from 'fs/promises'
+import { homedir } from 'os'
 import { Sidecar, loadConfig } from './sidecar'
 
 // repo root is one level above app/ in dev; in a packaged build this is
@@ -50,6 +52,21 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('cad:sidecarStatus', () => ({ started: !!sidecar }))
+
+  ipcMain.handle('fs:listDir', async (_e, dir?: string) => {
+    const target = dir && dir.length ? resolve(dir) : homedir()
+    const entries = await readdir(target, { withFileTypes: true })
+    const items = entries
+      .filter((e) => !e.name.startsWith('.'))
+      .map((e) => {
+        const isDir = e.isDirectory()
+        const ext = isDir ? '' : e.name.slice(e.name.lastIndexOf('.') + 1).toLowerCase()
+        return { name: e.name, path: join(target, e.name), isDir, ext }
+      })
+      .filter((it) => it.isDir || it.ext === 'fcstd')
+      .sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1))
+    return { dir: target, parent: resolve(target, '..'), items }
+  })
 
   try {
     const ep = await sidecar.start()

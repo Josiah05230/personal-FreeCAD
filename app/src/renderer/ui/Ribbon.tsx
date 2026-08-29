@@ -1,53 +1,75 @@
 import { useState } from 'react'
+import { Icon, type IconName } from './icons'
 
 const TABS = ['SOLID', 'SURFACE', 'MESH', 'SHEET METAL', 'ASSEMBLE', 'INSPECT', 'TOOLS'] as const
+type Tab = (typeof TABS)[number]
 
 interface Cmd {
   label: string
+  icon: IconName
   onClick?: () => void
   disabled?: boolean
 }
-interface CmdGroup {
+interface Group {
   name: string
   cmds: Cmd[]
 }
 
-/** Placeholder ribbon: real command wiring arrives with Milestone 1. */
-export function Ribbon({ onDemoPad }: { onDemoPad: () => void }): JSX.Element {
-  const [tab, setTab] = useState<(typeof TABS)[number]>('SOLID')
+export function Ribbon({ onExtrude }: { onExtrude: () => void }): JSX.Element {
+  const [tab, setTab] = useState<Tab>('SOLID')
 
-  const groups: Record<string, CmdGroup[]> = {
+  const groups: Partial<Record<Tab, Group[]>> = {
     SOLID: [
-      { name: 'Create', cmds: [
-        { label: 'Extrude', onClick: onDemoPad },
-        { label: 'Revolve', disabled: true },
-        { label: 'Sweep', disabled: true },
-        { label: 'Loft', disabled: true },
-        { label: 'Rib', disabled: true },
-        { label: 'Box', disabled: true }
-      ] },
-      { name: 'Modify', cmds: [
-        { label: 'Fillet', disabled: true },
-        { label: 'Chamfer', disabled: true },
-        { label: 'Shell', disabled: true },
-        { label: 'Draft', disabled: true },
-        { label: 'Combine', disabled: true },
-        { label: 'Press Pull', disabled: true }
-      ] },
-      { name: 'Pattern', cmds: [
-        { label: 'Rectangular', disabled: true },
-        { label: 'Circular', disabled: true },
-        { label: 'Mirror', disabled: true }
-      ] },
-      { name: 'Construct', cmds: [
-        { label: 'Offset Plane', disabled: true },
-        { label: 'Axis', disabled: true },
-        { label: 'Point', disabled: true }
-      ] }
+      {
+        name: 'Create',
+        cmds: [
+          { label: 'Extrude', icon: 'extrude', onClick: onExtrude },
+          { label: 'Revolve', icon: 'revolve', disabled: true },
+          { label: 'Sweep', icon: 'sweep', disabled: true },
+          { label: 'Loft', icon: 'loft', disabled: true },
+          { label: 'Rib', icon: 'rib', disabled: true }
+        ]
+      },
+      {
+        name: 'Modify',
+        cmds: [
+          { label: 'Fillet', icon: 'fillet', disabled: true },
+          { label: 'Chamfer', icon: 'chamfer', disabled: true },
+          { label: 'Shell', icon: 'shell', disabled: true },
+          { label: 'Draft', icon: 'draft', disabled: true },
+          { label: 'Combine', icon: 'combine', disabled: true }
+        ]
+      },
+      {
+        name: 'Hole',
+        cmds: [{ label: 'Hole', icon: 'hole', disabled: true }]
+      },
+      {
+        name: 'Pattern',
+        cmds: [
+          { label: 'Rectangular', icon: 'patternRect', disabled: true },
+          { label: 'Circular', icon: 'patternCirc', disabled: true },
+          { label: 'Mirror', icon: 'mirror', disabled: true }
+        ]
+      },
+      {
+        name: 'Construct',
+        cmds: [
+          { label: 'Plane', icon: 'plane', disabled: true },
+          { label: 'Axis', icon: 'axis', disabled: true },
+          { label: 'Point', icon: 'point', disabled: true }
+        ]
+      },
+      {
+        name: 'Sketch',
+        cmds: [{ label: 'Create Sketch', icon: 'sketch', disabled: true }]
+      }
     ]
   }
 
-  const activeGroups = groups[tab] ?? [{ name: '', cmds: [{ label: 'Not wired yet', disabled: true }] }]
+  const active = groups[tab] ?? [
+    { name: '', cmds: [{ label: 'Not wired yet', icon: 'point', disabled: true }] }
+  ]
 
   return (
     <div className="ribbon">
@@ -63,20 +85,25 @@ export function Ribbon({ onDemoPad }: { onDemoPad: () => void }): JSX.Element {
         ))}
       </div>
       <div className="ribbon-body">
-        {activeGroups.map((g) => (
-          <div className="ribbon-group" key={g.name}>
+        {active.map((g, gi) => (
+          <div className="ribbon-group" key={g.name || gi}>
             <div className="ribbon-group-cmds">
-              {g.cmds.map((c) => (
-                <button
-                  key={c.label}
-                  className="ribbon-cmd"
-                  disabled={c.disabled}
-                  onClick={c.onClick}
-                >
-                  <span className="ribbon-cmd-icon" aria-hidden />
-                  <span className="ribbon-cmd-label">{c.label}</span>
-                </button>
-              ))}
+              {g.cmds.map((c) => {
+                const Glyph = Icon[c.icon]
+                return (
+                  <button
+                    key={c.label}
+                    className="ribbon-cmd"
+                    disabled={c.disabled}
+                    onClick={c.onClick}
+                  >
+                    <span className="ribbon-cmd-icon">
+                      <Glyph />
+                    </span>
+                    <span className="ribbon-cmd-label">{c.label}</span>
+                  </button>
+                )
+              })}
             </div>
             <div className="ribbon-group-name">{g.name}</div>
           </div>

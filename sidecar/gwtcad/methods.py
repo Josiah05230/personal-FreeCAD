@@ -13,6 +13,7 @@ from FreeCAD import Vector
 from .registry import method, RpcError, APP_ERROR
 from . import session
 from .tessellate import tessellate_shape
+from .vocab import op_name, next_label
 
 _DATUM_TYPES = (
     "PartDesign::Plane", "PartDesign::Line", "PartDesign::Point",
@@ -66,6 +67,7 @@ def demo_pad(width=60.0, depth=40.0, height=15.0):
     d = session.reset()
     body = d.addObject("PartDesign::Body", "Body")
     sketch = body.newObject("Sketcher::SketchObject", "Sketch")
+    sketch.Label = next_label(body, "Sketcher::SketchObject")
     sketch.AttachmentSupport = [(_origin_plane(body, "XY_Plane"), "")]
     sketch.MapMode = "FlatFace"
 
@@ -77,6 +79,7 @@ def demo_pad(width=60.0, depth=40.0, height=15.0):
     d.recompute()
 
     pad = body.newObject("PartDesign::Pad", "Pad")
+    pad.Label = next_label(body, "PartDesign::Pad")
     pad.Profile = sketch
     pad.Length = float(height)
     sketch.Visibility = False
@@ -128,7 +131,7 @@ def tree_get():
                 feats.append({
                     "id": f.Name,
                     "label": f.Label,
-                    "type": f.TypeId,
+                    "opType": op_name(f.TypeId),
                     "kind": _kind(f.TypeId),
                     "isTip": f is tip,
                     "error": bool(getattr(f, "State", None) and "Error" in f.State),

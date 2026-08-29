@@ -7,8 +7,9 @@ export interface BuiltScene {
   radius: number
 }
 
-const SOLID_COLOR = 0xd6d8db
-const EDGE_COLOR = 0x2b2f36
+// Fusion's default body appearance reads as a warm satin steel, not flat grey.
+const SOLID_COLOR = 0xc7c1b4
+const EDGE_COLOR = 0x3b3f45
 
 /** Build a display group from sidecar render buffers (mm, Z-up). */
 export function buildScene(meshes: RenderMesh[]): BuiltScene {
@@ -24,9 +25,10 @@ export function buildScene(meshes: RenderMesh[]): BuiltScene {
 
     const mat = new THREE.MeshStandardMaterial({
       color: SOLID_COLOR,
-      metalness: 0.05,
-      roughness: 0.55,
-      flatShading: false
+      metalness: 0.15,
+      roughness: 0.5,
+      flatShading: false,
+      side: THREE.DoubleSide // safety net: never let a mis-wound face read as see-through
     })
     const mesh = new THREE.Mesh(geom, mat)
     mesh.name = `body:${m.id}`

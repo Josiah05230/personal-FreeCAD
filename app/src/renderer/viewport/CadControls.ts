@@ -132,7 +132,8 @@ export class CadControls {
     this.pivot.sub(hit).multiplyScalar(factor).add(hit)
   }
 
-  private applyOrbit(yaw: number, pitch: number): void {
+  /** Public so the ViewCube can drive the exact same orbit path. */
+  applyOrbit(yaw: number, pitch: number): void {
     const offset = this.camera.position.clone().sub(this.pivot)
     const radius = offset.length()
     const cur = new THREE.Spherical().setFromVector3(

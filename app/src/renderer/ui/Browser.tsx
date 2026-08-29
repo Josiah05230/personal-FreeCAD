@@ -1,27 +1,26 @@
 import { useState } from 'react'
 import type { BodyTree } from '../rpc'
 
-function Row({
-  depth,
-  label,
-  icon,
-  children
-}: {
+interface NodeProps {
   depth: number
   label: string
-  icon: string
+  glyph: string
+  defaultOpen?: boolean
   children?: React.ReactNode
-}): JSX.Element {
-  const [open, setOpen] = useState(true)
-  const hasKids = !!children
+}
+
+function Node({ depth, label, glyph, defaultOpen = true, children }: NodeProps): JSX.Element {
+  const [open, setOpen] = useState(defaultOpen)
+  const hasKids = Array.isArray(children) ? children.length > 0 : !!children
   return (
     <div className="br-node">
-      <div className="br-row" style={{ paddingLeft: 8 + depth * 14 }}>
-        <span
-          className={hasKids ? (open ? 'br-twist open' : 'br-twist') : 'br-twist none'}
-          onClick={() => hasKids && setOpen(!open)}
-        />
-        <span className="br-icon">{icon}</span>
+      <div
+        className="br-row"
+        style={{ paddingLeft: 6 + depth * 13 }}
+        onClick={() => hasKids && setOpen(!open)}
+      >
+        <span className={hasKids ? (open ? 'br-tw open' : 'br-tw') : 'br-tw none'} />
+        <span className="br-glyph">{glyph}</span>
         <span className="br-label">{label}</span>
       </div>
       {open && children}
@@ -29,31 +28,34 @@ function Row({
   )
 }
 
-/** Fusion-style browser. Tree shape is fixed for Milestone 0. */
+/**
+ * Floating browser panel - overlays the top-left of the canvas, sizes to
+ * content, translucent. Not a docked sidebar.
+ */
 export function Browser({ bodies }: { bodies: BodyTree[] }): JSX.Element {
+  const sketches = bodies.flatMap((b) => b.features.filter((f) => f.kind === 'sketch'))
   return (
     <div className="browser">
-      <Row depth={0} label="GWT-CAD" icon="▦">
-        <Row depth={1} label="Document Settings" icon="⚙" />
-        <Row depth={1} label="Named Views" icon="◱" />
-        <Row depth={1} label="Origin" icon="✛">
-          <Row depth={2} label="XY Plane" icon="▱" />
-          <Row depth={2} label="XZ Plane" icon="▱" />
-          <Row depth={2} label="YZ Plane" icon="▱" />
-        </Row>
-        <Row depth={1} label="Bodies" icon="▤">
+      <Node depth={0} label="Untitled" glyph="◈">
+        <Node depth={1} label="Named Views" glyph="◱" defaultOpen={false} />
+        <Node depth={1} label="Origin" glyph="✛" defaultOpen={false}>
+          <Node depth={2} label="Front" glyph="▱" />
+          <Node depth={2} label="Top" glyph="▱" />
+          <Node depth={2} label="Right" glyph="▱" />
+        </Node>
+        <Node depth={1} label="Bodies" glyph="▨">
           {bodies.map((b) => (
-            <Row key={b.id} depth={2} label={b.label} icon="▨" />
+            <Node key={b.id} depth={2} label={b.label} glyph="▬" />
           ))}
-        </Row>
-        <Row depth={1} label="Sketches" icon="✎">
-          {bodies.flatMap((b) =>
-            b.features
-              .filter((f) => f.kind === 'sketch')
-              .map((f) => <Row key={f.id} depth={2} label={f.label} icon="✎" />)
-          )}
-        </Row>
-      </Row>
+        </Node>
+        {sketches.length > 0 && (
+          <Node depth={1} label="Sketches" glyph="✎">
+            {sketches.map((f) => (
+              <Node key={f.id} depth={2} label={f.label} glyph="✎" />
+            ))}
+          </Node>
+        )}
+      </Node>
     </div>
   )
 }
