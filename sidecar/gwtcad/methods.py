@@ -413,6 +413,44 @@ def sketch_on_face(bodyId, face):
     return {"sketchId": sk.Name, "bodyId": body.Name, "frame": _frame(sk)}
 
 
+@method("sketch.on")
+def sketch_on(ref):
+    """Unified sketch-plane pick from the viewport.
+
+    ref = {"kind": "origin", "role": "XY_Plane"}
+        | {"kind": "plane",  "id": "<construction plane name>"}
+        | {"kind": "face",   "bodyId": "...", "sub": "Face3"}
+    """
+    kind = ref.get("kind")
+    d = session.doc()
+    body = session.active_body(d) or build.new_body(d)
+    if kind == "face":
+        return sketch_on_face(ref["bodyId"], ref["sub"])
+    sk = body.newObject("Sketcher::SketchObject", "Sketch")
+    sk.Label = next_label(body, "Sketcher::SketchObject")
+    if kind == "origin":
+        role = ref.get("role", "XY_Plane")
+        target = None
+        for g in body.Origin.OriginFeatures:
+            if getattr(g, "Role", "") == role:
+                target = g
+                break
+        if target is None:
+            raise RpcError(APP_ERROR, "origin plane %r not found" % role)
+        sk.AttachmentSupport = [(target, "")]
+    elif kind == "plane":
+        pl = d.getObject(ref["id"])
+        if pl is None:
+            raise RpcError(APP_ERROR, "no plane %r" % ref.get("id"))
+        sk.AttachmentSupport = [(pl, "")]
+    else:
+        raise RpcError(APP_ERROR, "bad sketch ref kind %r" % kind)
+    sk.MapMode = "FlatFace"
+    sk.Visibility = True
+    d.recompute()
+    return {"sketchId": sk.Name, "bodyId": body.Name, "frame": _frame(sk)}
+
+
 @method("sketch.clear")
 def sketch_clear(sketchId):
     d, sk = _obj(sketchId)
@@ -547,29 +585,90 @@ def _datum_dto(o):
     return None
 
 
+def _mesh_feature_buffer(o):
+    """Render buffer straight from a Mesh::Feature (imported STL/OBJ/3MF)."""
+    try:
+        m = o.Mesh
+        pts = m.Points
+        positions = []
+        for p in pts:
+            positions.extend((p.x, p.y, p.z))
+        indices = []
+        for f in m.Facets:
+            indices.extend(f.PointIndices)
+        # flat-ish normals via computeVertexNormals fallback on the client
+        normals = [0.0] * len(positions)
+        bb = m.BoundBox
+        return {
+            "positions": positions, "normals": normals, "indices": indices,
+            "faceGroups": [{"face": 0, "start": 0, "count": len(indices)}],
+            "edges": [],
+            "bbox": {"min": [bb.XMin, bb.YMin, bb.ZMin],
+                     "max": [bb.XMax, bb.YMax, bb.ZMax]},
+            "needsNormals": True,
+        }
+    except Exception:
+        return None
+
+
+_ORIGIN_ROLES = ("XY_Plane", "XZ_Plane", "YZ_Plane")
+
+
+_WORLD_PLANES = [
+    {"id": "XY_Plane", "label": "XY plane", "kind": "plane", "ptype": "origin",
+     "origin": [0, 0, 0], "x": [1, 0, 0], "y": [0, 1, 0], "size": 40.0, "role": "XY_Plane"},
+    {"id": "XZ_Plane", "label": "XZ plane", "kind": "plane", "ptype": "origin",
+     "origin": [0, 0, 0], "x": [1, 0, 0], "y": [0, 0, 1], "size": 40.0, "role": "XZ_Plane"},
+    {"id": "YZ_Plane", "label": "YZ plane", "kind": "plane", "ptype": "origin",
+     "origin": [0, 0, 0], "x": [0, 1, 0], "y": [0, 0, 1], "size": 40.0, "role": "YZ_Plane"},
+]
+
+
+def _pick_planes(d):
+    """Every plane a sketch can attach to - the 3 world origin planes (always)
+    plus any construction planes - for the in-viewport sketch-plane picker."""
+    out = [dict(p) for p in _WORLD_PLANES]
+    for o in d.Objects:
+        if o.TypeId in ("App::Plane", "PartDesign::Plane"):
+            fr = _datum_dto(o)
+            if fr:
+                fr["ptype"] = "construction"
+                out.append(fr)
+    return out
+
+
 @method("scene.get")
 def scene_get():
     """Render buffers for visible bodies, sketches, and datum geometry."""
     d = session.doc(create=False)
     meshes, sketches, datums = [], [], []
     if d is None:
-        return {"meshes": meshes, "sketches": sketches, "datums": datums}
+        return {"meshes": meshes, "sketches": sketches, "datums": datums, "pickPlanes": []}
 
     for o in d.Objects:
         tid = o.TypeId
-        if tid in ("PartDesign::Body", "App::Link"):
+        if tid in ("PartDesign::Body", "App::Link", "Part::Feature", "Mesh::Feature",
+                   "Part::FeaturePython"):
             if not getattr(o, "Visibility", True):
                 continue
             if tid == "PartDesign::Body" and session.is_rolled_empty(o.Name):
                 continue
-            shape = getattr(o, "Shape", None)
-            if shape is None or shape.isNull():
-                continue
-            buf = tessellate_shape(shape)
+            if tid == "Mesh::Feature":
+                buf = _mesh_feature_buffer(o)
+                if buf is None:
+                    continue
+            else:
+                shape = getattr(o, "Shape", None)
+                if shape is None or shape.isNull():
+                    continue
+                buf = tessellate_shape(shape)
             buf["id"] = o.Name
             buf["label"] = o.Label
             if tid == "App::Link":
                 buf["component"] = True
+            col = session.body_color(o.Name)
+            if col:
+                buf["color"] = col
             meshes.append(buf)
         elif tid == "Sketcher::SketchObject" and getattr(o, "Visibility", False):
             polys = []
@@ -591,7 +690,61 @@ def scene_get():
             if dto:
                 datums.append(dto)
 
-    return {"meshes": meshes, "sketches": sketches, "datums": datums}
+    # inserted 2D canvases, resolved to a world frame on their plane
+    canv = []
+    _ORIGIN_FRAMES = {
+        "XY": {"origin": [0, 0, 0], "x": [1, 0, 0], "y": [0, 1, 0]},
+        "XZ": {"origin": [0, 0, 0], "x": [1, 0, 0], "y": [0, 0, 1]},
+        "YZ": {"origin": [0, 0, 0], "x": [0, 1, 0], "y": [0, 0, 1]},
+    }
+    for c in session.canvases():
+        fr = _ORIGIN_FRAMES.get(c["plane"], _ORIGIN_FRAMES["XY"])
+        canv.append({**c, "frame": fr})
+
+    return {
+        "meshes": meshes,
+        "sketches": sketches,
+        "datums": datums,
+        "pickPlanes": _pick_planes(d),
+        "canvases": canv,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# inserted 2D canvases (image underlays)
+# --------------------------------------------------------------------------- #
+
+@method("canvas.insert")
+def canvas_insert(plane="XY", widthMm=100.0, heightMm=100.0):
+    c = session.add_canvas(plane, widthMm, heightMm)
+    return c
+
+
+@method("canvas.calibrate")
+def canvas_calibrate(id, realMm, measuredMm):
+    """User draws a line over a known feature: it currently reads `measuredMm`
+    in canvas units but should be `realMm`. Rescale the canvas by the ratio."""
+    c = session.update_canvas(id)
+    if c is None:
+        raise RpcError(APP_ERROR, "no canvas %r" % id)
+    if float(measuredMm) <= 0:
+        raise RpcError(APP_ERROR, "measured length must be > 0")
+    ratio = float(realMm) / float(measuredMm)
+    return session.update_canvas(id, w=c["w"] * ratio, h=c["h"] * ratio)
+
+
+@method("canvas.update")
+def canvas_update(id, w=None, h=None, offset=None, rot=None):
+    c = session.update_canvas(id, w=w, h=h, offset=offset, rot=rot)
+    if c is None:
+        raise RpcError(APP_ERROR, "no canvas %r" % id)
+    return c
+
+
+@method("canvas.delete")
+def canvas_delete(id):
+    session.remove_canvas(id)
+    return {"deleted": id}
 
 
 @method("tree.get")
@@ -963,36 +1116,135 @@ def assembly_tree():
     return _assembly.tree(d)
 
 
-@method("io.importStep")
+_BREP_EXT = {".step", ".stp", ".iges", ".igs", ".brep", ".brp"}
+_MESH_EXT = {".stl", ".obj", ".3mf", ".ply", ".off"}
+_PALETTE = [
+    [0.62, 0.68, 0.75], [0.80, 0.55, 0.45], [0.55, 0.72, 0.55],
+    [0.75, 0.70, 0.45], [0.60, 0.55, 0.75], [0.45, 0.70, 0.72],
+]
+
+
+@method("io.importStep")  # kept for back-compat
 def io_import_step(path):
-    """STEP / IGES / BREP import. Uses the headless-safe `Import` module."""
-    import Import
+    return io_import_model(path)
+
+
+@method("io.importModel")
+def io_import_model(path):
+    """Import STEP/IGES/BREP (as solids) or STL/OBJ/3MF/PLY/OFF (as meshes).
+
+    Multi-body files land as separate objects. Each imported object gets a
+    distinct palette colour (file colours are not reliably readable headless).
+    """
     d = session.doc()
     path = os.path.abspath(os.path.expanduser(path))
     if not os.path.isfile(path):
         raise RpcError(APP_ERROR, "no such file: %s" % path)
-    Import.insert(path, d.Name)
-    d.recompute()
-    return {"path": path}
+    ext = os.path.splitext(path)[1].lower()
+    before = set(o.Name for o in d.Objects)
 
-@method("io.exportStep")
-def io_export_step(path):
+    if ext in _BREP_EXT:
+        import Import
+        Import.insert(path, d.Name)
+    elif ext in _MESH_EXT:
+        import Mesh
+        Mesh.insert(path, d.Name)
+    else:
+        raise RpcError(APP_ERROR, "unsupported import format %r" % ext)
+
+    d.recompute()
+    stem = os.path.splitext(os.path.basename(path))[0]
+    new = [o for o in d.Objects if o.Name not in before]
+    for i, o in enumerate(new):
+        session.set_body_color(o.Name, _PALETTE[i % len(_PALETTE)])
+        try:
+            o.Label = stem if len(new) == 1 else "%s %d" % (stem, i + 1)
+        except Exception:
+            pass
+    return {"path": path, "imported": [o.Name for o in new], "count": len(new)}
+
+
+def _export_targets(d):
+    return [o for o in d.Objects
+            if o.TypeId in ("PartDesign::Body", "Part::Feature", "Mesh::Feature",
+                            "App::Link", "Part::FeaturePython")]
+
+
+@method("io.export")
+def io_export(path):
+    """Export by extension: STEP/IGES/BREP (B-rep) or STL/OBJ/3MF/PLY (mesh)."""
     d = session.doc(create=False)
     if d is None:
         raise RpcError(APP_ERROR, "no document")
     path = os.path.abspath(os.path.expanduser(path))
-    objs = [o for o in d.Objects if o.TypeId == "PartDesign::Body"]
-    Part.export(objs, path)
-    return {"path": path, "bodies": len(objs)}
+    ext = os.path.splitext(path)[1].lower()
+    objs = _export_targets(d)
+    if not objs:
+        raise RpcError(APP_ERROR, "nothing to export")
+    if ext in _BREP_EXT:
+        Part.export(objs, path)
+    elif ext in _MESH_EXT:
+        import Mesh
+        Mesh.export(objs, path)
+    else:
+        raise RpcError(APP_ERROR, "unsupported export format %r" % ext)
+    return {"path": path, "objects": len(objs)}
+
+
+@method("io.exportStep")
+def io_export_step(path):
+    return io_export(path if path.lower().endswith((".step", ".stp")) else path + ".step")
 
 
 @method("io.exportStl")
 def io_export_stl(path):
-    import Mesh
-    d = session.doc(create=False)
-    if d is None:
-        raise RpcError(APP_ERROR, "no document")
-    path = os.path.abspath(os.path.expanduser(path))
-    objs = [o for o in d.Objects if o.TypeId == "PartDesign::Body"]
-    Mesh.export(objs, path)
-    return {"path": path, "bodies": len(objs)}
+    return io_export(path if path.lower().endswith(".stl") else path + ".stl")
+
+
+# --------------------------------------------------------------------------- #
+# scale / unit conversion
+# --------------------------------------------------------------------------- #
+
+_UNIT_MM = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4, "ft": 304.8, "thou": 0.0254}
+
+
+@method("body.scale")
+def body_scale(id, factor):
+    """Non-parametric uniform scale about the object's origin. Works on imports
+    (Part::Feature / Mesh::Feature) and PartDesign bodies (baked to a
+    Part::Feature so the scale sticks)."""
+    d, o = _obj(id)
+    f = float(factor)
+    if f <= 0:
+        raise RpcError(APP_ERROR, "scale factor must be > 0")
+    from FreeCAD import Matrix
+    m = Matrix()
+    m.scale(f, f, f)
+
+    if o.TypeId == "Mesh::Feature":
+        mesh = o.Mesh.copy()
+        mesh.transform(m)
+        o.Mesh = mesh
+    elif hasattr(o, "Shape") and o.Shape and not o.Shape.isNull():
+        scaled = o.Shape.transformGeometry(m)
+        if o.TypeId == "Part::Feature":
+            o.Shape = scaled
+        else:
+            nf = d.addObject("Part::Feature", o.Label + "_scaled")
+            nf.Shape = scaled
+            o.Visibility = False
+            session.set_body_color(nf.Name, session.body_color(o.Name) or [0.62, 0.68, 0.75])
+            o = nf
+    else:
+        raise RpcError(APP_ERROR, "cannot scale %r" % id)
+    d.recompute()
+    return {"id": o.Name, "factor": f}
+
+
+@method("body.convertUnits")
+def body_convert_units(id, fromUnit, toUnit):
+    src = _UNIT_MM.get(fromUnit)
+    dst = _UNIT_MM.get(toUnit)
+    if src is None or dst is None:
+        raise RpcError(APP_ERROR, "unknown unit (use %s)" % ", ".join(_UNIT_MM))
+    return body_scale(id, src / dst)

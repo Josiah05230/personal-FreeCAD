@@ -2,7 +2,16 @@ import { useMemo, useState } from 'react'
 import type { Command } from '../commands'
 import { Icon } from './icons'
 
-const TABS = ['SOLID', 'SURFACE', 'MESH', 'SHEET METAL', 'ASSEMBLE', 'INSPECT', 'TOOLS'] as const
+const TABS = [
+  'SOLID',
+  'SURFACE',
+  'MESH',
+  'SHEET METAL',
+  'ASSEMBLE',
+  'INSERT',
+  'INSPECT',
+  'TOOLS'
+] as const
 type Tab = (typeof TABS)[number]
 
 export function Ribbon({
@@ -55,6 +64,7 @@ export function Ribbon({
           <div className="ribbon-group" key={g.name}>
             <div className="ribbon-group-cmds">
               {g.cmds.map((c) => {
+                if (c.component) return <div key={c.id}>{c.component}</div>
                 const Glyph = Icon[c.icon]
                 return (
                   <button

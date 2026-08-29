@@ -39,6 +39,50 @@ def is_rolled_empty(body_name):
     return body_name in _rolled_empty
 
 
+# Per-object display colour [r,g,b] 0-1 (headless has no ViewObject).
+_colors = {}
+
+
+def set_body_color(name, rgb):
+    if rgb is None:
+        _colors.pop(name, None)
+    else:
+        _colors[name] = list(rgb)
+
+
+def body_color(name):
+    return _colors.get(name)
+
+
+# Inserted 2D canvases (image underlays). Session-scoped for now; the renderer
+# holds the pixels, the sidecar holds placement + real-world size.
+_canvases = {}
+_canvas_seq = [0]
+
+
+def add_canvas(plane_role, w_mm, h_mm):
+    _canvas_seq[0] += 1
+    cid = "Canvas%d" % _canvas_seq[0]
+    _canvases[cid] = {"id": cid, "plane": plane_role, "w": float(w_mm), "h": float(h_mm),
+                      "offset": [0.0, 0.0], "rot": 0.0}
+    return _canvases[cid]
+
+
+def canvases():
+    return list(_canvases.values())
+
+
+def update_canvas(cid, **kw):
+    if cid not in _canvases:
+        return None
+    _canvases[cid].update({k: v for k, v in kw.items() if v is not None})
+    return _canvases[cid]
+
+
+def remove_canvas(cid):
+    _canvases.pop(cid, None)
+
+
 def _find(name):
     for d in App.listDocuments().values():
         if d.Name == name:

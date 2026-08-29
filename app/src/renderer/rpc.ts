@@ -61,7 +61,36 @@ export interface RenderMesh {
   faceGroups: FaceGroup[]
   edges: EdgePoly[]
   bbox: { min: [number, number, number]; max: [number, number, number] }
+  color?: [number, number, number]
+  needsNormals?: boolean
+  component?: boolean
 }
+
+export interface PickPlane {
+  id: string
+  label: string
+  ptype: 'origin' | 'construction'
+  role?: string
+  origin: [number, number, number]
+  x: [number, number, number]
+  y: [number, number, number]
+  size?: number
+}
+
+export interface CanvasDTO {
+  id: string
+  plane: string
+  w: number
+  h: number
+  offset: [number, number]
+  rot: number
+  frame: { origin: number[]; x: number[]; y: number[] }
+}
+
+export type SketchRef =
+  | { kind: 'origin'; role: string }
+  | { kind: 'plane'; id: string }
+  | { kind: 'face'; bodyId: string; sub: string }
 
 export interface SketchRender {
   id: string
@@ -130,8 +159,29 @@ export const api = {
   demoPad: (width: number, depth: number, height: number) =>
     rpc<{ bodies: BodyTree[] }>('demo.pad', { width, depth, height }),
   sceneGet: () =>
-    rpc<{ meshes: RenderMesh[]; sketches: SketchRender[]; datums: DatumDTO[] }>('scene.get'),
+    rpc<{
+      meshes: RenderMesh[]
+      sketches: SketchRender[]
+      datums: DatumDTO[]
+      pickPlanes: PickPlane[]
+      canvases: CanvasDTO[]
+    }>('scene.get'),
   treeGet: () => rpc<{ bodies: BodyTree[]; path: string | null }>('tree.get'),
+
+  sketchOn: (ref: SketchRef) =>
+    rpc<{ sketchId: string; bodyId: string; frame: SketchFrameDTO }>('sketch.on', { ref }),
+  importModel: (path: string) =>
+    rpc<{ path: string; imported: string[]; count: number }>('io.importModel', { path }),
+  exportModel2: (path: string) => rpc<{ path: string; objects: number }>('io.export', { path }),
+  bodyScale: (id: string, factor: number) =>
+    rpc<{ id: string; factor: number }>('body.scale', { id, factor }),
+  bodyConvertUnits: (id: string, fromUnit: string, toUnit: string) =>
+    rpc<{ id: string; factor: number }>('body.convertUnits', { id, fromUnit, toUnit }),
+  canvasInsert: (plane: string, widthMm: number, heightMm: number) =>
+    rpc<CanvasDTO>('canvas.insert', { plane, widthMm, heightMm }),
+  canvasCalibrate: (id: string, realMm: number, measuredMm: number) =>
+    rpc<CanvasDTO>('canvas.calibrate', { id, realMm, measuredMm }),
+  canvasDelete: (id: string) => rpc<{ deleted: string }>('canvas.delete', { id }),
 
   box: (width: number, depth: number, height: number) =>
     rpc<{ bodies: BodyTree[] }>('primitive.box', { width, depth, height }),

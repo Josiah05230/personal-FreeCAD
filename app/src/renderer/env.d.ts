@@ -43,6 +43,9 @@ interface CadBridge {
   gitBranches(filePath: string): Promise<GitBranch[]>
   exportPdf(html: string, outPath: string): Promise<{ path: string }>
   writeText(text: string, outPath: string): Promise<{ path: string }>
+  readImage(path: string): Promise<string>
+  mkdir(dir: string): Promise<{ dir: string }>
+  touch(path: string): Promise<{ path: string }>
 }
 
 interface Window {

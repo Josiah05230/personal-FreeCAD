@@ -7,7 +7,10 @@ import {
   type Selection,
   type DrawingView,
   type AssemblyTree,
-  type DatumDTO
+  type DatumDTO,
+  type PickPlane,
+  type SketchRef,
+  type CanvasDTO
 } from './rpc'
 import { SelectFilterMenu, type SelKind, type SelectMode } from './ui/SelectFilterMenu'
 import { buildCommands } from './commands'
@@ -77,11 +80,14 @@ export function App(): JSX.Element {
   } | null>(null)
   const [sketchTool, setSketchTool] = useState<SketchTool>('line')
   const [sketchCount, setSketchCount] = useState(0)
-  const [planePick, setPlanePick] = useState(false)
+  const [planePickMode, setPlanePickMode] = useState(false)
+  const [pickPlanes, setPickPlanes] = useState<PickPlane[]>([])
 
   const [measureMode, setMeasureMode] = useState(false)
   const [measureResult, setMeasureResult] = useState<MeasureResult | null>(null)
   const [section, setSection] = useState<SectionState | null>(null)
+  const [canvases, setCanvases] = useState<CanvasDTO[]>([])
+  const [canvasImages, setCanvasImages] = useState<Record<string, string>>({})
 
   const [tabs, setTabs] = useState<DocTab[]>([{ id: 'd1', name: 'Untitled', dirty: false }])
   const [activeTab, setActiveTab] = useState('d1')
@@ -103,6 +109,8 @@ export function App(): JSX.Element {
     setMeshes(scene.meshes)
     setSketches(scene.sketches ?? [])
     setDatums(scene.datums ?? [])
+    setPickPlanes(scene.pickPlanes ?? [])
+    setCanvases(scene.canvases ?? [])
     setBodies(tree.bodies)
     setDocPath(tree.path)
     setVisOverride({})
@@ -114,6 +122,7 @@ export function App(): JSX.Element {
     setMeshes(scene.meshes)
     setSketches(scene.sketches ?? [])
     setDatums(scene.datums ?? [])
+    setPickPlanes(scene.pickPlanes ?? [])
     setBodies(tree.bodies)
   }, [])
 
@@ -165,10 +174,10 @@ export function App(): JSX.Element {
     }
   }, [selection, afterEdit])
 
-  const enterSketchOnPlane = useCallback(
-    async (plane: string) => {
-      setPlanePick(false)
-      const r = await api.sketchOnPlane(plane)
+  const beginSketch = useCallback(
+    async (ref: SketchRef) => {
+      setPlanePickMode(false)
+      const r = await api.sketchOn(ref)
       setSketchSession({ sketchId: r.sketchId, bodyId: r.bodyId, frame: r.frame })
       setSketchTool('line')
       setSketchCount(0)
@@ -182,15 +191,11 @@ export function App(): JSX.Element {
       | { bodyId: string; sub: string }
       | undefined
     if (face) {
-      const r = await api.sketchOnFace(face.bodyId, face.sub)
-      setSketchSession({ sketchId: r.sketchId, bodyId: r.bodyId, frame: r.frame })
-      setSketchTool('line')
-      setSketchCount(0)
-      setSelection([])
+      void beginSketch({ kind: 'face', bodyId: face.bodyId, sub: face.sub })
     } else {
-      setPlanePick(true)
+      setPlanePickMode(true) // click a plane / face in the viewport
     }
-  }, [selection])
+  }, [selection, beginSketch])
 
   const finishSketch = useCallback(async () => {
     if (!sketchSession) return
@@ -378,12 +383,46 @@ export function App(): JSX.Element {
 
   const importStep = useCallback(async () => {
     const p = await window.cad.openDialog([
-      { name: 'STEP / IGES', extensions: ['step', 'stp', 'iges', 'igs', 'brep'] }
+      {
+        name: '3D models',
+        extensions: ['step', 'stp', 'iges', 'igs', 'brep', 'stl', 'obj', '3mf', 'ply', 'off']
+      }
     ])
     if (!p) return
-    await api.importStep(p)
-    await afterEdit()
+    try {
+      await api.importModel(p)
+      await afterEdit()
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
   }, [afterEdit])
+
+  const scaleBody = useCallback(
+    async (mode: 'factor' | 'units') => {
+      const target = selection.find((s) => s.kind === 'face' || s.kind === 'body') as
+        | { bodyId: string }
+        | undefined
+      const id = target?.bodyId ?? bodies[0]?.id ?? meshes[0]?.id
+      if (!id) {
+        window.alert('Select a body first.')
+        return
+      }
+      try {
+        if (mode === 'factor') {
+          const f = Number(window.prompt('Scale factor', '2'))
+          if (f && f > 0) await api.bodyScale(id, f)
+        } else {
+          const from = window.prompt('Current units (mm, cm, m, in, ft, thou)', 'in')
+          const to = window.prompt('Convert to', 'mm')
+          if (from && to) await api.bodyConvertUnits(id, from, to)
+        }
+        await afterEdit()
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [selection, bodies, meshes, afterEdit]
+  )
 
   const newDesign = useCallback(() => {
     const id = `d${Date.now()}`
@@ -398,6 +437,22 @@ export function App(): JSX.Element {
   }, [refreshScene])
 
   const fitView = useCallback(() => vpApi.current?.fit(), [])
+
+  const insertCanvas = useCallback(async () => {
+    const p = await window.cad.openDialog([
+      { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }
+    ])
+    if (!p) return
+    const dataUrl = await window.cad.readImage(p)
+    const img = new Image()
+    img.src = dataUrl
+    await img.decode().catch(() => undefined)
+    const w = 100
+    const h = img.naturalHeight && img.naturalWidth ? (100 * img.naturalHeight) / img.naturalWidth : 100
+    const c = await api.canvasInsert('XY', w, h)
+    setCanvasImages((m) => ({ ...m, [c.id]: dataUrl }))
+    await refreshMeshesOnly()
+  }, [refreshMeshesOnly])
 
   // ---- inspect ----
   const startMeasure = useCallback(() => {
@@ -512,7 +567,17 @@ export function App(): JSX.Element {
         toggleGit: () => setGitOpen((v) => !v),
         startDrawing,
         startMeasure,
-        toggleSection
+        toggleSection,
+        scale: scaleBody,
+        insertCanvas,
+        selectFilterNode: (
+          <SelectFilterMenu
+            mode={selectMode}
+            onMode={setSelectMode}
+            active={selFilter}
+            onActive={setSelFilter}
+          />
+        )
       }),
     [
       sweep,
@@ -526,7 +591,11 @@ export function App(): JSX.Element {
       fitView,
       startDrawing,
       startMeasure,
-      toggleSection
+      toggleSection,
+      scaleBody,
+      insertCanvas,
+      selectMode,
+      selFilter
     ]
   )
 
@@ -593,20 +662,24 @@ export function App(): JSX.Element {
       />
 
       <div className="appbody">
-        <DataPanel open={dataOpen} onOpenFile={(p) => void openDesign(p)} />
+        <DataPanel
+          open={dataOpen}
+          onOpenFile={(p) => void openDesign(p)}
+          onNewDesignAt={(p) => {
+            void (async () => {
+              await api.resetDocument()
+              await api.saveAs(p)
+              setDocPath(p)
+              const id = `d${Date.now()}`
+              setTabs((t) => [...t, { id, name: basename(p), dirty: false }])
+              setActiveTab(id)
+              await refreshScene()
+            })()
+          }}
+        />
 
         <div className="maincol">
-          <Ribbon
-            commands={commands}
-            rightSlot={
-              <SelectFilterMenu
-                mode={selectMode}
-                onMode={setSelectMode}
-                active={selFilter}
-                onActive={setSelFilter}
-              />
-            }
-          />
+          <Ribbon commands={commands} />
           <DocTabs
             tabs={tabs}
             activeId={activeTab}
@@ -645,6 +718,11 @@ export function App(): JSX.Element {
                     selection={selection}
                     onSelect={onSelect}
                     section={section}
+                    planePickMode={planePickMode}
+                    pickPlanes={pickPlanes}
+                    onPickPlane={(ref) => void beginSketch(ref)}
+                    canvases={canvases}
+                    canvasImages={canvasImages}
                     sketchFrame={sketchSession?.frame ?? null}
                     sketchTool={sketchTool}
                     onSketchChange={() =>
@@ -652,6 +730,13 @@ export function App(): JSX.Element {
                     }
                     apiRef={vpApi}
                   />
+                  {planePickMode && (
+                    <div className="hintbar">
+                      Click an origin plane, construction plane, or a flat face to
+                      start the sketch
+                      <button onClick={() => setPlanePickMode(false)}>Cancel</button>
+                    </div>
+                  )}
                   {sketchSession && (
                     <SketchBar
                       tool={sketchTool}
@@ -664,19 +749,6 @@ export function App(): JSX.Element {
                       onCancel={() => void cancelSketch()}
                       count={sketchCount}
                     />
-                  )}
-                  {planePick && (
-                    <div className="planepick">
-                      <div className="planepick-title">Sketch on plane</div>
-                      {['XY', 'XZ', 'YZ'].map((p) => (
-                        <button key={p} onClick={() => void enterSketchOnPlane(p)}>
-                          {p}
-                        </button>
-                      ))}
-                      <button className="ghost" onClick={() => setPlanePick(false)}>
-                        Cancel
-                      </button>
-                    </div>
                   )}
                   <Browser
                     bodies={bodies}

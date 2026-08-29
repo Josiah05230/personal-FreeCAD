@@ -1,6 +1,14 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
-import type { RenderMesh, SketchRender, Selection, DatumDTO } from '../rpc'
+import type {
+  RenderMesh,
+  SketchRender,
+  Selection,
+  DatumDTO,
+  PickPlane,
+  SketchRef,
+  CanvasDTO
+} from '../rpc'
 import type { ViewportApi } from './types'
 import { CadControls } from './CadControls'
 import { ViewCube } from './ViewCube'
@@ -31,6 +39,11 @@ export function Viewport({
   selection = [],
   onSelect,
   section = null,
+  planePickMode = false,
+  pickPlanes = [],
+  onPickPlane,
+  canvases = [],
+  canvasImages = {},
   sketchFrame = null,
   sketchTool = 'line',
   onSketchChange,
@@ -42,6 +55,11 @@ export function Viewport({
   selection?: Selection[]
   section?: { plane: 'XY' | 'XZ' | 'YZ'; offset: number; flip: boolean } | null
   onSelect?: (sel: Selection | null, additive: boolean) => void
+  planePickMode?: boolean
+  pickPlanes?: PickPlane[]
+  onPickPlane?: (ref: SketchRef) => void
+  canvases?: CanvasDTO[]
+  canvasImages?: Record<string, string>
   sketchFrame?: SketchFrame | null
   sketchTool?: SketchTool
   onSketchChange?: () => void
@@ -53,6 +71,10 @@ export function Viewport({
   onSelectRef.current = onSelect
   const onSketchChangeRef = useRef(onSketchChange)
   onSketchChangeRef.current = onSketchChange
+  const planePickRef = useRef<{ mode: boolean; cb?: (r: SketchRef) => void }>({ mode: false })
+  planePickRef.current = { mode: planePickMode, cb: onPickPlane }
+  const pickPlanesRef = useRef<PickPlane[]>([])
+  pickPlanesRef.current = pickPlanes
 
   const stateRef = useRef<{
     renderer: THREE.WebGLRenderer
@@ -63,6 +85,7 @@ export function Viewport({
     picker: Picker
     content: THREE.Group | null
     overlay: THREE.Group
+    ghosts: THREE.Group
     sketch: SketchController | null
     framedOnce: boolean
     lastCenter: THREE.Vector3
@@ -94,7 +117,9 @@ export function Viewport({
     scene.add(fill)
 
     const overlay = new THREE.Group()
+    const ghosts = new THREE.Group()
     scene.add(overlay)
+    scene.add(ghosts)
 
     const controls = new CadControls(camera, renderer.domElement)
     const cube = new ViewCube(cubeRef.current!, camera, controls)
@@ -109,6 +134,7 @@ export function Viewport({
       picker,
       content: null,
       overlay,
+      ghosts,
       sketch: null,
       framedOnce: false,
       lastCenter: new THREE.Vector3(),
@@ -141,6 +167,31 @@ export function Viewport({
       if (!st || st.sketch) return // sketch mode owns clicks
       if (downBtn !== 0 || e.button !== 0) return
       if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 4) return
+
+      // sketch-plane pick mode: ghosts first, then a body face
+      if (planePickRef.current.mode) {
+        const gp = st.picker.pick(e, st.ghosts)
+        if (gp && gp.kind === 'sketch') {
+          const pp = pickPlanesRef.current.find((p) => p.id === (gp as { sketchId: string }).sketchId)
+          if (pp) {
+            planePickRef.current.cb?.(
+              pp.ptype === 'origin' && pp.role
+                ? { kind: 'origin', role: pp.role }
+                : { kind: 'plane', id: pp.id }
+            )
+            return
+          }
+        }
+        if (st.content) {
+          const fp = st.picker.pick(e, st.content)
+          if (fp && fp.kind === 'face') {
+            planePickRef.current.cb?.({ kind: 'face', bodyId: fp.bodyId, sub: fp.sub })
+            return
+          }
+        }
+        return
+      }
+
       if (!st.content) return
       const sel = st.picker.pick(e, st.content)
       onSelectRef.current?.(sel, e.shiftKey || e.ctrlKey)
@@ -206,11 +257,17 @@ export function Viewport({
         else mat?.dispose()
       })
     }
-    if (!meshes.length && !sketches.length && !datums.length) {
+    if (!meshes.length && !sketches.length && !datums.length && !canvases.length) {
       st.content = null
       return
     }
-    const { group, center, radius } = buildScene(meshes, sketches, datums)
+    const { group, center, radius } = buildScene(
+      meshes,
+      sketches,
+      datums,
+      canvases,
+      canvasImages
+    )
     st.scene.add(group)
     st.content = group
     st.lastCenter = center
@@ -219,7 +276,7 @@ export function Viewport({
       st.controls.frame(center, radius)
       st.framedOnce = true
     }
-  }, [meshes, sketches, datums])
+  }, [meshes, sketches, datums, canvases, canvasImages])
 
   // reflect selection
   useEffect(() => {
@@ -285,6 +342,50 @@ export function Viewport({
   useEffect(() => {
     stateRef.current?.sketch?.setTool(sketchTool)
   }, [sketchTool])
+
+  // ghost planes for the sketch-plane picker
+  useEffect(() => {
+    const st = stateRef.current
+    if (!st) return
+    for (const c of [...st.ghosts.children]) {
+      st.ghosts.remove(c)
+      const mm = (c as THREE.Mesh).material as THREE.Material | undefined
+      ;(c as THREE.Mesh).geometry?.dispose?.()
+      mm?.dispose?.()
+    }
+    if (!planePickMode) return
+    for (const p of pickPlanes) {
+      const O = new THREE.Vector3(...p.origin)
+      const X = new THREE.Vector3(...p.x).normalize()
+      const Y = new THREE.Vector3(...p.y).normalize()
+      const s = (p.size ?? 40) * 1.4
+      const c = [
+        O.clone().addScaledVector(X, -s).addScaledVector(Y, -s),
+        O.clone().addScaledVector(X, s).addScaledVector(Y, -s),
+        O.clone().addScaledVector(X, s).addScaledVector(Y, s),
+        O.clone().addScaledVector(X, -s).addScaledVector(Y, s)
+      ]
+      const g = new THREE.BufferGeometry().setFromPoints([c[0], c[1], c[2], c[0], c[2], c[3]])
+      const isOrigin = p.ptype === 'origin'
+      const mesh = new THREE.Mesh(
+        g,
+        new THREE.MeshBasicMaterial({
+          color: isOrigin ? 0x4a90d9 : 0xd8a24a,
+          transparent: true,
+          opacity: 0.16,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        })
+      )
+      mesh.userData = { pick: 'sketch', sketchId: p.id }
+      st.ghosts.add(mesh)
+      const border = new THREE.LineLoop(
+        new THREE.BufferGeometry().setFromPoints(c),
+        new THREE.LineBasicMaterial({ color: isOrigin ? 0x6aa9dd : 0xe0b877 })
+      )
+      st.ghosts.add(border)
+    }
+  }, [planePickMode, pickPlanes])
 
   return (
     <div className="viewport" ref={hostRef}>

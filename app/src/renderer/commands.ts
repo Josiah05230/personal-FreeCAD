@@ -2,6 +2,7 @@
  * Central command registry. One definition per tool, consumed by the ribbon, the
  * command palette ('s'), and (later) the marking menu.
  */
+import type { ReactNode } from 'react'
 import type { IconName } from './ui/icons'
 import type { OpKind } from './ui/OperationDialog'
 
@@ -14,6 +15,8 @@ export interface Command {
   hotkey?: string
   /** undefined => not yet implemented (shown disabled, still searchable). */
   run?: () => void | Promise<void>
+  /** if set, the ribbon renders this instead of a button (e.g. the Select menu) */
+  component?: ReactNode
 }
 
 export interface CommandContext {
@@ -32,6 +35,9 @@ export interface CommandContext {
   startDrawing: () => Promise<void>
   startMeasure: () => void
   toggleSection: () => void
+  scale: (mode: 'factor' | 'units') => Promise<void>
+  insertCanvas: () => Promise<void>
+  selectFilterNode: ReactNode
 }
 
 export function buildCommands(ctx: CommandContext): Command[] {
@@ -52,6 +58,8 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'mod.hole', title: 'Hole', group: 'Modify', tab: 'SOLID', icon: 'hole', run: op('hole') },
     { id: 'mod.draft', title: 'Draft', group: 'Modify', tab: 'SOLID', icon: 'draft', run: op('draft') },
     { id: 'mod.combine', title: 'Combine', group: 'Modify', tab: 'SOLID', icon: 'combine', run: op('combine') },
+    { id: 'mod.scale', title: 'Scale', group: 'Modify', tab: 'SOLID', icon: 'patternRect', run: () => ctx.scale('factor') },
+    { id: 'mod.units', title: 'Convert Units', group: 'Modify', tab: 'SOLID', icon: 'patternRect', run: () => ctx.scale('units') },
     // --- pattern ---
     { id: 'pat.rect', title: 'Rectangular Pattern', group: 'Pattern', tab: 'SOLID', icon: 'patternRect', run: op('patternLinear') },
     { id: 'pat.circ', title: 'Circular Pattern', group: 'Pattern', tab: 'SOLID', icon: 'patternCirc', run: op('patternCircular') },
@@ -60,6 +68,11 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'con.plane', title: 'Offset Plane', group: 'Construct', tab: 'SOLID', icon: 'plane', run: op('datumPlane') },
     { id: 'con.axis', title: 'Construction Axis', group: 'Construct', tab: 'SOLID', icon: 'axis' },
     { id: 'con.point', title: 'Construction Point', group: 'Construct', tab: 'SOLID', icon: 'point' },
+    // --- select (F360-style group on the SOLID tab) ---
+    { id: 'sel.filter', title: 'Select', group: 'Select', tab: 'SOLID', icon: 'point', component: ctx.selectFilterNode },
+    // --- insert ---
+    { id: 'ins.canvas', title: 'Canvas', group: 'Insert', tab: 'INSERT', icon: 'sketch', run: () => ctx.insertCanvas() },
+    { id: 'ins.model', title: 'Insert 3D Model', group: 'Insert', tab: 'INSERT', icon: 'extrude', run: () => ctx.importStep() },
     // --- assemble ---
     { id: 'asm.newComponent', title: 'New Component', group: 'Assemble', tab: 'ASSEMBLE', icon: 'combine' },
     { id: 'asm.joint', title: 'Joint', group: 'Assemble', tab: 'ASSEMBLE', icon: 'axis' },

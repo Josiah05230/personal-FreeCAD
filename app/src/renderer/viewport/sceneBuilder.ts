@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import type { RenderMesh, SketchRender, DatumDTO } from '../rpc'
+import type { RenderMesh, SketchRender, DatumDTO, CanvasDTO } from '../rpc'
 
 export interface BuiltScene {
   group: THREE.Group
@@ -73,24 +73,67 @@ const SKETCH_COLOR = 0x2f9fe0
 export function buildScene(
   meshes: RenderMesh[],
   sketches: SketchRender[] = [],
-  datums: DatumDTO[] = []
+  datums: DatumDTO[] = [],
+  canvases: CanvasDTO[] = [],
+  canvasImages: Record<string, string> = {}
 ): BuiltScene {
   const group = new THREE.Group()
   const box = new THREE.Box3()
 
   for (const d of datums) group.add(buildDatum(d))
 
+  for (const c of canvases) {
+    const O = new THREE.Vector3(...(c.frame.origin as [number, number, number]))
+    const X = new THREE.Vector3(...(c.frame.x as [number, number, number])).normalize()
+    const Y = new THREE.Vector3(...(c.frame.y as [number, number, number])).normalize()
+    const pos = O.clone()
+      .addScaledVector(X, c.offset[0])
+      .addScaledVector(Y, c.offset[1])
+    const geo = new THREE.PlaneGeometry(c.w, c.h)
+    const url = canvasImages[c.id]
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: url ? 0.9 : 0.2,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    })
+    if (url) {
+      new THREE.TextureLoader().load(url, (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace
+        mat.map = tex
+        mat.needsUpdate = true
+      })
+    }
+    const quad = new THREE.Mesh(geo, mat)
+    quad.position.copy(pos.addScaledVector(X, c.w / 2).addScaledVector(Y, c.h / 2))
+    // orient the plane's local XY onto the frame's X/Y
+    const m = new THREE.Matrix4().makeBasis(X, Y, new THREE.Vector3().crossVectors(X, Y))
+    quad.quaternion.setFromRotationMatrix(m)
+    quad.userData = { pick: 'canvas', canvasId: c.id }
+    quad.renderOrder = -1
+    group.add(quad)
+  }
+
   for (const m of meshes) {
     const geom = new THREE.BufferGeometry()
     geom.setAttribute('position', new THREE.Float32BufferAttribute(m.positions, 3))
-    geom.setAttribute('normal', new THREE.Float32BufferAttribute(m.normals, 3))
-    geom.setIndex(m.indices)
+    if (m.needsNormals || m.normals.length !== m.positions.length) {
+      geom.setIndex(m.indices)
+      geom.computeVertexNormals()
+    } else {
+      geom.setAttribute('normal', new THREE.Float32BufferAttribute(m.normals, 3))
+      geom.setIndex(m.indices)
+    }
     geom.userData = { bodyId: m.id, faceGroups: m.faceGroups }
 
+    const color = m.color
+      ? new THREE.Color(m.color[0], m.color[1], m.color[2])
+      : new THREE.Color(SOLID_COLOR)
     const mesh = new THREE.Mesh(
       geom,
       new THREE.MeshStandardMaterial({
-        color: SOLID_COLOR,
+        color,
         metalness: 0.15,
         roughness: 0.5,
         side: THREE.DoubleSide

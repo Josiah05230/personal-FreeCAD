@@ -54,7 +54,10 @@ const cad = {
   exportPdf: (html: string, outPath: string) =>
     ipcRenderer.invoke('drawing:exportPdf', html, outPath) as Promise<{ path: string }>,
   writeText: (text: string, outPath: string) =>
-    ipcRenderer.invoke('drawing:writeText', text, outPath) as Promise<{ path: string }>
+    ipcRenderer.invoke('drawing:writeText', text, outPath) as Promise<{ path: string }>,
+  readImage: (path: string) => ipcRenderer.invoke('fs:readImage', path) as Promise<string>,
+  mkdir: (dir: string) => ipcRenderer.invoke('fs:mkdir', dir) as Promise<{ dir: string }>,
+  touch: (path: string) => ipcRenderer.invoke('fs:touch', path) as Promise<{ path: string }>
 }
 
 contextBridge.exposeInMainWorld('cad', cad)

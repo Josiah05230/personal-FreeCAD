@@ -610,6 +610,26 @@ code {
   color: var(--text-dim);
 }
 
+.datapanel-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.datapanel-actions button {
+  background: var(--chrome-3);
+  border: 1px solid var(--line-soft);
+  color: var(--text-dim);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.datapanel-actions button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
 .gitpanel-refresh {
   background: transparent;
   border: none;
@@ -1844,7 +1864,34 @@ code {
   color: #fff;
 }
 
-/* ---------- plane picker ---------- */
+/* ---------- hint bar ---------- */
+.hintbar {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 14px;
+  background: #0696d7e0;
+  color: #fff;
+  border-radius: 8px;
+  font-size: 11px;
+  box-shadow: 0 10px 30px #0008;
+}
+
+.hintbar button {
+  background: #ffffff26;
+  border: 1px solid #ffffff44;
+  color: #fff;
+  border-radius: 4px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+/* ---------- plane picker (legacy) ---------- */
 .planepick {
   position: absolute;
   top: 60px;

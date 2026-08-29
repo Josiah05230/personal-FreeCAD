@@ -1,23 +1,25 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 /**
  * The Data Panel - a vertical banner that slides in from the left edge (toggled
- * by the waffle). It browses directories for designs; it is not a full file
- * explorer. Opening a design lands with multi-document support (Milestone 1+).
+ * by the waffle). Browses directories for designs; New Design / New Folder at
+ * any level.
  */
 export function DataPanel({
   open,
-  onOpenFile
+  onOpenFile,
+  onNewDesignAt
 }: {
   open: boolean
   onOpenFile: (path: string) => void
+  onNewDesignAt: (path: string) => void
 }): JSX.Element {
   const [dir, setDir] = useState<string | null>(null)
   const [parent, setParent] = useState<string>('')
   const [items, setItems] = useState<DirEntry[]>([])
   const [error, setError] = useState<string | null>(null)
 
-  const load = (target?: string): void => {
+  const load = useCallback((target?: string): void => {
     window.cad
       .listDir(target)
       .then((r) => {
@@ -27,16 +29,43 @@ export function DataPanel({
         setError(null)
       })
       .catch((e) => setError(String(e)))
-  }
+  }, [])
 
   useEffect(() => {
     if (open && dir === null) load()
-  }, [open, dir])
+  }, [open, dir, load])
+
+  const sep = dir && dir.includes('\\') ? '\\' : '/'
+
+  const newFolder = async (): Promise<void> => {
+    if (!dir) return
+    const name = window.prompt('New folder name')
+    if (!name) return
+    await window.cad.mkdir(dir + sep + name)
+    load(dir)
+  }
+
+  const newDesign = (): void => {
+    if (!dir) return
+    const name = window.prompt('New design name', 'Untitled')
+    if (!name) return
+    const file = name.toLowerCase().endsWith('.fcstd') ? name : name + '.FCStd'
+    onNewDesignAt(dir + sep + file)
+    load(dir)
+  }
 
   return (
     <div className={open ? 'datapanel open' : 'datapanel'}>
       <div className="datapanel-head">
         <span className="datapanel-title">DATA</span>
+        <span className="datapanel-actions">
+          <button title="New folder" onClick={() => void newFolder()}>
+            🗀+
+          </button>
+          <button title="New design" onClick={newDesign}>
+            ◈+
+          </button>
+        </span>
       </div>
       <div className="datapanel-path" title={dir ?? ''}>
         {dir ?? 'Loading…'}

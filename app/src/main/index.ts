@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import { resolve, join } from 'path'
-import { readdir, writeFile } from 'fs/promises'
+import { readdir, writeFile, readFile, mkdir } from 'fs/promises'
 import { homedir } from 'os'
 import { Sidecar, loadConfig } from './sidecar'
 import * as gitw from './git'
@@ -145,6 +145,23 @@ app.whenReady().then(async () => {
   ipcMain.handle('drawing:writeText', async (_e, text: string, outPath: string) => {
     await writeFile(outPath, text, 'utf-8')
     return { path: outPath }
+  })
+
+  ipcMain.handle('fs:readImage', async (_e, path: string) => {
+    const buf = await readFile(path)
+    const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
+    const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
+    return `data:${mime};base64,${buf.toString('base64')}`
+  })
+
+  ipcMain.handle('fs:mkdir', async (_e, dir: string) => {
+    await mkdir(dir, { recursive: true })
+    return { dir }
+  })
+
+  ipcMain.handle('fs:touch', async (_e, path: string) => {
+    await writeFile(path, '', { flag: 'wx' }).catch(() => undefined)
+    return { path }
   })
 
   try {

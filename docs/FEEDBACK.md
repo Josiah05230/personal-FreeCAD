@@ -85,3 +85,18 @@ Running checklist of user feedback from live testing. `[x]` done, `[~]` partial,
 - [x] Selection filter -> ribbon dropdown w/ checkboxes; paint vs window radios
 - [ ] Window select not yet functional (radio switches, still behaves as paint)
 - [ ] View cube hover highlight for edges + corners
+
+## Batch 7 - formats / insert / data panel / select group / view cube / scale / sketch planes
+
+- [x] Import/export: STEP/IGES/BREP + STL/OBJ/3MF/PLY/OFF; multi-body files land
+      as separate objects, each a distinct palette colour. (File-embedded colours
+      still not read - limited headless.)
+- [~] Insert canvas: image on a plane via the INSERT tab, calibrate by ratio.
+      (In-viewport drag-to-calibrate + PDF pages still TODO; session-only, not
+      saved to .FCStd yet.)
+- [x] Data Panel: New Design / New Folder buttons at any level
+- [x] Selection filter is now a "Select" group on the SOLID tab
+- [ ] View cube: selectable edges + corners (26-zone cube) - still faces only
+- [x] Modify > Scale (factor) + Convert Units (mm/cm/m/in/ft/thou)
+- [x] Create Sketch: click an origin/construction plane or a face in the
+      viewport (ghost planes, no popup); visibility not auto-toggled
