@@ -247,6 +247,11 @@ const rpcQuiet = <T,>(m: string, p: Record<string, unknown> = {}): Promise<T> =>
 export const apiQuiet = {
   rollTo: (bodyId: string, featureId: string | null) =>
     rpcQuiet<{ tip: string | null }>('history.rollTo', { bodyId, featureId }),
+  sketchFinish: (sketchId: string, elements?: unknown[], constraints?: unknown[]) =>
+    rpcQuiet<{ sketchId: string; count: number; constrained: boolean; closed: boolean }>(
+      'sketch.finish',
+      { sketchId, elements, constraints }
+    ),
   sceneGet: () =>
     rpcQuiet<{
       meshes: RenderMesh[]

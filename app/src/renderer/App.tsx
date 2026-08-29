@@ -47,7 +47,7 @@ import {
 import type { MeasureResult, SketchRefGeom, SketchConstraint } from './rpc'
 import type { SketchTool, SketchConstraintType } from './viewport/SketchController'
 import type { SketchFrameDTO } from './rpc'
-import { basename } from './util'
+import { basename, sketchEntitiesToPolys } from './util'
 import { perfProfile } from './perfProfile'
 
 const PERF = perfProfile()
@@ -322,25 +322,35 @@ export function App(): JSX.Element {
 
   const finishSketch = useCallback(async () => {
     if (!sketchSession) return
-    const ents = vpApi.current?.getNewSketchEntities() ?? []
+    const newEnts = vpApi.current?.getNewSketchEntities() ?? []
+    const allEnts = vpApi.current?.getSketchEntities() ?? []
     const cons = (vpApi.current?.getSketchConstraints() ?? []) as SketchConstraint[]
-    const id = sketchSession.sketchId
-    // one round trip: geometry + constraints + recompute happen server-side
-    await api.sketchFinish(id, ents, cons)
-    rollCacheRef.current.clear()
+    const { sketchId: id, frame } = sketchSession
+
+    // 1. leave sketch mode and paint the finished sketch immediately from the
+    //    entities we already have - no waiting on the engine.
+    const optimistic = { id, label: id, polys: sketchEntitiesToPolys(allEnts as never[], frame), visible: true }
+    setSketches((prev) => [...prev.filter((s) => s.id !== id), optimistic])
     setSketchSession(null)
     setSketchInitial([])
     resetSketchUi()
-    // sketch edits touch only sketches + (rarely) the tree; skip the heavy
-    // mesh re-tessellation that refreshScene does
-    const [scene, tree] = await Promise.all([api.sceneGet(), api.treeGet()])
-    setSketches(scene.sketches ?? [])
-    setDatums(scene.datums ?? [])
-    setBodies(tree.bodies)
-    setVisOverride({})
     setSelection([{ kind: 'sketch', sketchId: id }])
     markDirty()
-  }, [sketchSession, resetSketchUi, markDirty])
+    rollCacheRef.current.clear()
+
+    // 2. commit to the engine in the background, then reconcile with the real
+    //    (constraint-solved) geometry. Uses the quiet RPC path - no spinner.
+    try {
+      await apiQuiet.sketchFinish(id, newEnts, cons)
+      const [scene, tree] = await Promise.all([apiQuiet.sceneGet(), apiQuiet.treeGet()])
+      setSketches(scene.sketches ?? [])
+      setDatums(scene.datums ?? [])
+      setBodies(tree.bodies)
+    } catch (e) {
+      window.alert((e as Error).message)
+      await refreshScene()
+    }
+  }, [sketchSession, resetSketchUi, markDirty, refreshScene])
 
   const cancelSketch = useCallback(async () => {
     if (sketchSession) {

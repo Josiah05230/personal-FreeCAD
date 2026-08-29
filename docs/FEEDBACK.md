@@ -13,6 +13,8 @@ done, remove its line entirely rather than leaving a checked box.
 
 - Assembly joint SOLVING (joints recorded + round-trip; MbD solver is GUI-coupled
   headless) - needs a headless-solver path or an embedded GUI session.
+- Drawing hidden (dashed) lines: TechDraw headless getHiddenEdges() returns
+  nothing, so drawings show visible edges only.
 - Thicken / offset-surface - needs surface bodies, which this shell does not
   model yet (everything is a solid PartDesign body).
 - PartDesign::Rib is missing from the bundled FreeCAD 1.1.1 build, so Rib uses an
@@ -29,5 +31,3 @@ done, remove its line entirely rather than leaving a checked box.
 Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
-
--when I complete a sketch, why does it need to load??
