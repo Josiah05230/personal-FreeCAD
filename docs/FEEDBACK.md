@@ -22,7 +22,8 @@ Running checklist of user feedback from live testing. `[x]` done, `[~]` partial,
       reference geometry you can snap to (centre on a point, land on an edge)
 - [x] Manual constraints in the sketch tab: H / V / parallel / perpendicular /
       equal / coincident / tangent / concentric
-- [ ] Canvas drag-a-line calibration (draw over a known length, type the real mm)
+- [x] Canvas drag-a-line calibration: INSERT > Calibrate Canvas, click the two
+      ends of a known length, type the real mm, canvas rescales
 - [x] Finish Sketch was slow -> single round trip (geometry + constraints +
       recompute in one call)
 - [x] Finishing a sketch must never leave it visible-but-"before the timeline";
@@ -70,7 +71,7 @@ Running checklist of user feedback from live testing. `[x]` done, `[~]` partial,
 - Assembly joint SOLVING (joints recorded + round-trip; MbD solver is GUI-coupled
   headless) - needs a headless-solver path or an embedded GUI session
 - Sheet metal beyond Base Flange; the SheetMetal addon's richer features
-- Canvas: drag-a-line-on-the-image calibration, multi-page PDF underlays
+- Canvas: multi-page PDF underlays
 - Git panel write ops (commit / checkout / diff from the UI)
 - Sketch dimensions (numeric drag-to-dimension in the 2D editor); manual
   constraints beyond the current set

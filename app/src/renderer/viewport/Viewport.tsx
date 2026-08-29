@@ -50,6 +50,8 @@ export function Viewport({
   selectMode = 'paint',
   onWindowSelect,
   canvases = [],
+  calibrateCanvas = null,
+  onCalibrate,
   sketchFrame = null,
   sketchRefGeom = null,
   sketchInitialEntities,
@@ -69,6 +71,8 @@ export function Viewport({
   selectMode?: 'paint' | 'window'
   onWindowSelect?: (sels: Selection[]) => void
   canvases?: CanvasDTO[]
+  calibrateCanvas?: CanvasDTO | null
+  onCalibrate?: (measuredMm: number) => void
   sketchFrame?: SketchFrame | null
   sketchRefGeom?: SketchRefGeom | null
   sketchInitialEntities?: unknown[]
@@ -89,6 +93,14 @@ export function Viewport({
   const winSelRef = useRef<{ mode: string; cb?: (s: Selection[]) => void }>({ mode: 'paint' })
   winSelRef.current = { mode: selectMode, cb: onWindowSelect }
   const bandRef = useRef<HTMLDivElement>(null)
+  const calibRef = useRef<{
+    canvas: CanvasDTO | null
+    cb?: (mm: number) => void
+    pts: THREE.Vector3[]
+    line: THREE.Line | null
+  }>({ canvas: null, pts: [], line: null })
+  calibRef.current.canvas = calibrateCanvas
+  calibRef.current.cb = onCalibrate
 
   const stateRef = useRef<{
     renderer: THREE.WebGLRenderer
@@ -227,6 +239,46 @@ export function Viewport({
       if (downBtn !== 0 || e.button !== 0) return
       if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 4) return
 
+      // canvas calibration: click two points on the canvas plane
+      const cal = calibRef.current
+      if (cal.canvas) {
+        const fr = cal.canvas.frame
+        const O = new THREE.Vector3(fr.origin[0], fr.origin[1], fr.origin[2])
+        const X = new THREE.Vector3(fr.x[0], fr.x[1], fr.x[2]).normalize()
+        const Y = new THREE.Vector3(fr.y[0], fr.y[1], fr.y[2]).normalize()
+        const n = new THREE.Vector3().crossVectors(X, Y).normalize()
+        const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, O)
+        const r = host.getBoundingClientRect()
+        const ndc = new THREE.Vector2(
+          ((e.clientX - r.left) / r.width) * 2 - 1,
+          -((e.clientY - r.top) / r.height) * 2 + 1
+        )
+        const rc = new THREE.Raycaster()
+        rc.setFromCamera(ndc, st.camera)
+        const hit = new THREE.Vector3()
+        if (!rc.ray.intersectPlane(plane, hit)) return
+        cal.pts.push(hit)
+        if (cal.line) {
+          st.overlay.remove(cal.line)
+          cal.line.geometry.dispose()
+          cal.line = null
+        }
+        if (cal.pts.length === 2) {
+          const mm = cal.pts[0].distanceTo(cal.pts[1])
+          cal.pts = []
+          cal.cb?.(mm)
+        } else {
+          const g = new THREE.BufferGeometry().setFromPoints([cal.pts[0], cal.pts[0]])
+          cal.line = new THREE.Line(
+            g,
+            new THREE.LineBasicMaterial({ color: 0xffb020 })
+          )
+          cal.line.renderOrder = 30
+          st.overlay.add(cal.line)
+        }
+        return
+      }
+
       // sketch-plane pick mode: ghosts first, then a body face
       if (planePickRef.current.mode) {
         const gp = st.picker.pick(e, st.ghosts)
@@ -267,6 +319,27 @@ export function Viewport({
           b.style.top = `${y}px`
           b.style.width = `${Math.abs(e.clientX - downX)}px`
           b.style.height = `${Math.abs(e.clientY - downY)}px`
+        }
+        return
+      }
+      const cal = calibRef.current
+      if (cal.canvas && cal.pts.length === 1 && cal.line && st) {
+        const fr = cal.canvas.frame
+        const O = new THREE.Vector3(fr.origin[0], fr.origin[1], fr.origin[2])
+        const X = new THREE.Vector3(fr.x[0], fr.x[1], fr.x[2]).normalize()
+        const Y = new THREE.Vector3(fr.y[0], fr.y[1], fr.y[2]).normalize()
+        const n = new THREE.Vector3().crossVectors(X, Y).normalize()
+        const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, O)
+        const r = host.getBoundingClientRect()
+        const ndc = new THREE.Vector2(
+          ((e.clientX - r.left) / r.width) * 2 - 1,
+          -((e.clientY - r.top) / r.height) * 2 + 1
+        )
+        const rc = new THREE.Raycaster()
+        rc.setFromCamera(ndc, st.camera)
+        const hit = new THREE.Vector3()
+        if (rc.ray.intersectPlane(plane, hit)) {
+          cal.line.geometry.setFromPoints([cal.pts[0], hit])
         }
         return
       }
@@ -412,6 +485,20 @@ export function Viewport({
   useEffect(() => {
     stateRef.current?.sketch?.setTool(sketchTool)
   }, [sketchTool])
+
+  // tidy the calibration rubber line when leaving calibrate mode
+  useEffect(() => {
+    const cal = calibRef.current
+    const st = stateRef.current
+    if (!calibrateCanvas) {
+      cal.pts = []
+      if (cal.line && st) {
+        st.overlay.remove(cal.line)
+        cal.line.geometry.dispose()
+        cal.line = null
+      }
+    }
+  }, [calibrateCanvas])
 
   // ghost planes for the sketch-plane picker
   useEffect(() => {

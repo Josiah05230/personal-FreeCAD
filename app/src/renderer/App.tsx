@@ -593,6 +593,34 @@ export function App(): JSX.Element {
 
   const fitView = useCallback(() => vpApi.current?.fit(), [])
 
+  const [calibrateId, setCalibrateId] = useState<string | null>(null)
+  const startCalibrate = useCallback(() => {
+    const c = canvases[canvases.length - 1]
+    if (!c) {
+      window.alert('Insert a canvas first (INSERT > Canvas).')
+      return
+    }
+    setCalibrateId(c.id)
+  }, [canvases])
+
+  const onCalibrateLine = useCallback(
+    async (measuredMm: number) => {
+      const id = calibrateId
+      setCalibrateId(null)
+      if (!id || measuredMm <= 0) return
+      const real = await promptText(
+        `That line is ${measuredMm.toFixed(2)} mm on the canvas now. Real length?`,
+        measuredMm.toFixed(2)
+      )
+      if (!real) return
+      const n = Number(real)
+      if (!n || n <= 0) return
+      await api.canvasCalibrate(id, n, measuredMm)
+      await refreshMeshesOnly()
+    },
+    [calibrateId, refreshMeshesOnly]
+  )
+
   const insertCanvas = useCallback(async () => {
     const p = await window.cad.openDialog([
       { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }
@@ -719,6 +747,7 @@ export function App(): JSX.Element {
         toggleSection,
         scale: scaleBody,
         insertCanvas,
+        calibrateCanvas: startCalibrate,
         toggleParams: () => setParamsOpen((v) => !v),
         selectFilterNode: (
           <SelectFilterMenu
@@ -744,6 +773,7 @@ export function App(): JSX.Element {
       toggleSection,
       scaleBody,
       insertCanvas,
+      startCalibrate,
       selectMode,
       selFilter
     ]
@@ -937,6 +967,10 @@ export function App(): JSX.Element {
                       })
                     }
                     canvases={canvases}
+                    calibrateCanvas={
+                      calibrateId ? canvases.find((c) => c.id === calibrateId) ?? null : null
+                    }
+                    onCalibrate={(mm) => void onCalibrateLine(mm)}
                     sketchFrame={sketchSession?.frame ?? null}
                     sketchRefGeom={sketchSession?.refGeom ?? null}
                     sketchInitialEntities={sketchInitial}
@@ -949,6 +983,12 @@ export function App(): JSX.Element {
                       Click an origin plane, construction plane, or a flat face to
                       start the sketch
                       <button onClick={() => setPlanePickMode(false)}>Cancel</button>
+                    </div>
+                  )}
+                  {calibrateId && (
+                    <div className="hintbar">
+                      Click the two ends of a known length on the canvas
+                      <button onClick={() => setCalibrateId(null)}>Cancel</button>
                     </div>
                   )}
                   <Browser

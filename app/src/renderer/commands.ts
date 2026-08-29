@@ -37,6 +37,7 @@ export interface CommandContext {
   toggleSection: () => void
   scale: () => Promise<void>
   insertCanvas: () => Promise<void>
+  calibrateCanvas: () => void
   toggleParams: () => void
   selectFilterNode: ReactNode
 }
@@ -74,6 +75,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'sel.filter', title: 'Select', group: 'Select', tab: 'SOLID', icon: 'point', component: ctx.selectFilterNode },
     // --- insert ---
     { id: 'ins.canvas', title: 'Canvas', group: 'Insert', tab: 'INSERT', icon: 'sketch', run: () => ctx.insertCanvas() },
+    { id: 'ins.calibrate', title: 'Calibrate Canvas', group: 'Insert', tab: 'INSERT', icon: 'sketch', run: () => ctx.calibrateCanvas() },
     { id: 'ins.model', title: 'Insert 3D Model', group: 'Insert', tab: 'INSERT', icon: 'extrude', run: () => ctx.importStep() },
     // --- assemble ---
     { id: 'asm.newComponent', title: 'New Component', group: 'Assemble', tab: 'ASSEMBLE', icon: 'combine' },
