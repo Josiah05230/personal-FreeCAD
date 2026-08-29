@@ -5,7 +5,13 @@ import { Icon } from './icons'
 const TABS = ['SOLID', 'SURFACE', 'MESH', 'SHEET METAL', 'ASSEMBLE', 'INSPECT', 'TOOLS'] as const
 type Tab = (typeof TABS)[number]
 
-export function Ribbon({ commands }: { commands: Command[] }): JSX.Element {
+export function Ribbon({
+  commands,
+  rightSlot
+}: {
+  commands: Command[]
+  rightSlot?: React.ReactNode
+}): JSX.Element {
   const [tab, setTab] = useState<Tab>('SOLID')
   const [menu, setMenu] = useState<{ group: string; x: number; y: number } | null>(null)
 
@@ -40,6 +46,8 @@ export function Ribbon({ commands }: { commands: Command[] }): JSX.Element {
             {t}
           </button>
         ))}
+        <span className="ribbon-tabs-spacer" />
+        {rightSlot}
       </div>
       <div className="ribbon-body">
         {groups.length === 0 && <div className="ribbon-none">Nothing on this tab yet</div>}

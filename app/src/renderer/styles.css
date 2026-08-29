@@ -511,13 +511,59 @@ code {
   display: block;
 }
 
-.viewcube {
+.viewcube-wrap {
   position: absolute;
   top: 14px;
   right: 16px;
-  width: 132px;
-  height: 132px;
   z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.viewcube {
+  width: 150px;
+  height: 150px;
+}
+
+.viewcube-home {
+  width: 26px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  background: #23262ac8;
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.viewcube-home:hover {
+  border-color: var(--accent);
+  color: var(--accent-hi);
+}
+
+.viewcube-menu {
+  position: absolute;
+  z-index: 40;
+  min-width: 160px;
+  background: var(--chrome-3);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 10px 28px #0009;
+  padding: 4px;
+}
+
+.viewcube-menu-item {
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.viewcube-menu-item:hover {
+  background: var(--accent-soft);
 }
 
 /* ---------- side panels (push layout) ---------- */
@@ -973,7 +1019,98 @@ code {
   white-space: nowrap;
 }
 
-/* ---------- selection filter ---------- */
+/* ---------- ribbon select-filter menu ---------- */
+.ribbon-tabs-spacer {
+  flex: 1;
+}
+
+.selmenu {
+  position: relative;
+  margin: 0 6px 2px 0;
+  align-self: center;
+}
+
+.selmenu-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--chrome-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 3px 9px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.selmenu-btn:hover {
+  border-color: var(--accent);
+}
+
+.selmenu-ic {
+  color: var(--accent-hi);
+}
+
+.selmenu-caret {
+  font-size: 8px;
+  color: var(--text-dim);
+}
+
+.selmenu-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 44;
+}
+
+.selmenu-pop {
+  position: absolute;
+  right: 0;
+  top: 26px;
+  z-index: 45;
+  min-width: 190px;
+  background: var(--chrome-3);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 10px 28px #0009;
+  padding: 6px;
+}
+
+.selmenu-section {
+  font-size: 9px;
+  letter-spacing: 0.6px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  padding: 4px 6px 2px;
+}
+
+.selmenu-radio,
+.selmenu-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.selmenu-radio:hover,
+.selmenu-check:hover {
+  background: var(--accent-soft);
+}
+
+.selmenu-radio input,
+.selmenu-check input {
+  accent-color: var(--accent);
+}
+
+.selmenu-sep {
+  height: 1px;
+  background: var(--line);
+  margin: 5px 4px;
+}
+
+/* ---------- (legacy) selection filter bar ---------- */
 .selfilter {
   position: absolute;
   bottom: 70px;

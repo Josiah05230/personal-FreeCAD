@@ -260,7 +260,19 @@ export function Viewport({
 
   return (
     <div className="viewport" ref={hostRef}>
-      <div className="viewcube" ref={cubeRef} />
+      <div className="viewcube-wrap">
+        <div className="viewcube" ref={cubeRef} />
+        <button
+          className="viewcube-home"
+          title="Home view"
+          onClick={() => stateRef.current?.cube.home()}
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3">
+            <path d="M2 7 L7 2.5 L12 7" />
+            <path d="M3.4 6 v5.5 h7.2 V6" />
+          </svg>
+        </button>
+      </div>
     </div>
   )
 }

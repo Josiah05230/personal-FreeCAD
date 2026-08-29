@@ -9,7 +9,7 @@ import {
   type AssemblyTree,
   type DatumDTO
 } from './rpc'
-import { SelectionFilterBar, type SelKind } from './ui/SelectionFilterBar'
+import { SelectFilterMenu, type SelKind, type SelectMode } from './ui/SelectFilterMenu'
 import { buildCommands } from './commands'
 import { Viewport } from './viewport/Viewport'
 import type { ViewportApi } from './viewport/types'
@@ -51,7 +51,8 @@ export function App(): JSX.Element {
   const [sketches, setSketches] = useState<SketchRender[]>([])
   const [datums, setDatums] = useState<DatumDTO[]>([])
   const [bodies, setBodies] = useState<BodyTree[]>([])
-  const [selFilter, setSelFilter] = useState<SelKind[]>(['face', 'edge', 'sketch', 'body'])
+  const [selFilter, setSelFilter] = useState<SelKind[]>(['face', 'edge', 'sketch', 'datum', 'body'])
+  const [selectMode, setSelectMode] = useState<SelectMode>('paint')
   const [docPath, setDocPath] = useState<string | null>(null)
   const [visOverride, setVisOverride] = useState<Record<string, boolean>>({})
   const [selection, setSelection] = useState<Selection[]>([])
@@ -558,7 +559,17 @@ export function App(): JSX.Element {
         <DataPanel open={dataOpen} onOpenFile={(p) => void openDesign(p)} />
 
         <div className="maincol">
-          <Ribbon commands={commands} />
+          <Ribbon
+            commands={commands}
+            rightSlot={
+              <SelectFilterMenu
+                mode={selectMode}
+                onMode={setSelectMode}
+                active={selFilter}
+                onActive={setSelFilter}
+              />
+            }
+          />
           <DocTabs
             tabs={tabs}
             activeId={activeTab}
@@ -638,9 +649,6 @@ export function App(): JSX.Element {
                       onEdit: () => undefined
                     }}
                   />
-                  {!sketchSession && (
-                    <SelectionFilterBar active={selFilter} onChange={setSelFilter} />
-                  )}
                   {asmTree && (
                     <AssemblyPanel
                       tree={asmTree}

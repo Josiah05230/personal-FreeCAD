@@ -10,14 +10,13 @@
  *   - Shift + middle drag .... orbit
  *   - Wheel .................. dolly, zoomed toward the cursor
  *
- * Orbit is "constrained": world up (+Z) stays vertical, pitch clamped just shy
- * of the poles, so the horizon never rolls. Momentum continues briefly on
- * release and decays exponentially.
+ * Orbit is free: horizontal drags stay level (yaw about world +Z) but vertical
+ * drags tumble all the way over the poles without locking. Momentum continues
+ * briefly on release and decays exponentially.
  */
 import * as THREE from 'three'
 
 const UP = new THREE.Vector3(0, 0, 1)
-const PITCH_LIMIT = THREE.MathUtils.degToRad(89.5)
 
 type Mode = 'none' | 'pan' | 'orbit'
 
@@ -132,24 +131,23 @@ export class CadControls {
     this.pivot.sub(hit).multiplyScalar(factor).add(hit)
   }
 
-  /** Public so the ViewCube can drive the exact same orbit path. */
+  /**
+   * Free orbit. Yaw rotates about world +Z so horizontal drags keep the horizon
+   * level; pitch rotates about the camera's own right axis with NO pole clamp,
+   * so you can tumble straight over the top and keep going. The up vector
+   * tumbles with the pitch. Public so the ViewCube drives the identical path.
+   */
   applyOrbit(yaw: number, pitch: number): void {
     const offset = this.camera.position.clone().sub(this.pivot)
-    const radius = offset.length()
-    const cur = new THREE.Spherical().setFromVector3(
-      new THREE.Vector3(offset.x, offset.z, -offset.y) // convert Z-up -> spherical's Y-up
-    )
-    cur.theta += yaw
-    cur.phi = THREE.MathUtils.clamp(
-      cur.phi + pitch,
-      Math.PI / 2 - PITCH_LIMIT,
-      Math.PI / 2 + PITCH_LIMIT
-    )
-    cur.radius = radius
-    const v = new THREE.Vector3().setFromSpherical(cur)
-    const back = new THREE.Vector3(v.x, -v.z, v.y) // spherical Y-up -> Z-up
-    this.camera.position.copy(this.pivot).add(back)
-    this.camera.up.copy(UP)
+
+    const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0).normalize()
+    const qYaw = new THREE.Quaternion().setFromAxisAngle(UP, yaw)
+    const qPitch = new THREE.Quaternion().setFromAxisAngle(right, pitch)
+    const q = qYaw.multiply(qPitch)
+
+    offset.applyQuaternion(q)
+    this.camera.up.applyQuaternion(q).normalize()
+    this.camera.position.copy(this.pivot).add(offset)
     this.camera.lookAt(this.pivot)
   }
 

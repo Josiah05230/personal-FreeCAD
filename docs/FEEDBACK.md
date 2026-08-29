@@ -64,18 +64,21 @@ Running checklist of user feedback from live testing. `[x]` done, `[~]` partial,
 ## Batch 5 - offset plane / dropdowns / selection filter
 
 - [x] Offset plane "did nothing" -> new datums now auto-show
-- [ ] Offset-plane creation should filter selection to planes only
+- [ ] Offset-plane creation should filter selection to planes only (low prio -
+      the op doesn't consume selection yet)
 - [x] Create/Modify dropdowns did nothing -> fixed (were clipped by overflow)
 - [x] Selection filter tool (paint / window / face / edge / point ...)
-- [ ] Move selection filter into the ribbon as a dropdown with checkboxes;
-      paint vs window select mutually exclusive
+- [x] Move selection filter into the ribbon as a dropdown with checkboxes;
+      paint vs window select mutually exclusive (radios)
 
 ## Batch 6 - view cube / selection filter placement
 
-- [ ] View cube still too small
-- [ ] View cube needs a Home button
-- [ ] View cube hover highlight (face / edge / corner under cursor)
-- [ ] View cube right-click a face -> "set as Top / Front", others follow
-- [ ] Orbit locks up past 90deg on the vertical axis - should keep going freely
-- [ ] Selection filter -> ribbon dropdown w/ checkboxes; paint vs window
-      mutually exclusive
+- [x] View cube still too small (now 150px, reads mount size)
+- [x] View cube needs a Home button
+- [x] View cube hover highlight (faces; edges/corners still TODO)
+- [x] View cube right-click a face -> Set as Front / Top / Right, cube follows
+- [x] Orbit locks past 90deg -> now free orbit (yaw stays level, pitch tumbles
+      over the poles without clamping)
+- [x] Selection filter -> ribbon dropdown w/ checkboxes; paint vs window radios
+- [ ] Window select not yet functional (radio switches, still behaves as paint)
+- [ ] View cube hover highlight for edges + corners
