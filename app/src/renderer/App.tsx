@@ -63,6 +63,7 @@ export function App(): JSX.Element {
   const [selFilter, setSelFilter] = useState<SelKind[]>([
     'face',
     'edge',
+    'vertex',
     'sketch',
     'datum',
     'body',
@@ -389,9 +390,12 @@ export function App(): JSX.Element {
             await api.draft(faces.map((f) => f.sub), Number(v.angle), null, neutral)
             break
           }
+          case 'rib':
+            await api.rib(sketchIds[0], Number(v.thickness), Boolean(v.reversed))
+            break
           case 'combine': {
             const bs = selection.filter((s) => s.kind === 'body').map((s) => (s as { bodyId: string }).bodyId)
-            await api.combine(String(v.op), bs[0] ?? null, bs.slice(1))
+            await api.combine(String(v.op), bs[0] ?? null, bs.slice(1), Boolean(v.keepTools))
             break
           }
           case 'fillet':
@@ -426,6 +430,14 @@ export function App(): JSX.Element {
                 [Number(v.dx), Number(v.dy), Number(v.dz)],
                 [Number(v.rx), Number(v.ry), Number(v.rz)]
               )
+            break
+          }
+          case 'copyBody': {
+            const tgt = selection.find((s) => s.kind === 'body' || s.kind === 'face') as
+              | { bodyId: string }
+              | undefined
+            const id = tgt?.bodyId ?? bodies[0]?.id
+            if (id) await api.bodyCopy(id)
             break
           }
           case 'patternLinear': {

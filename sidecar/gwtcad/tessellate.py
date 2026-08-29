@@ -121,6 +121,13 @@ def tessellate_shape(shape):
         vert_offset += len(fp) // 3
         face_groups.append({"face": fi, "start": start, "count": len(fidx)})
 
+    verts = []
+    for vi, v in enumerate(getattr(shape, "Vertexes", [])):
+        try:
+            verts.append({"vertex": vi, "p": [v.X, v.Y, v.Z]})
+        except Exception:
+            continue
+
     edges = []
     for ei, edge in enumerate(shape.Edges):
         pts = []
@@ -144,6 +151,7 @@ def tessellate_shape(shape):
         "indices": indices,
         "faceGroups": face_groups,
         "edges": edges,
+        "vertices": verts,
         "bbox": {
             "min": [bb.XMin, bb.YMin, bb.ZMin],
             "max": [bb.XMax, bb.YMax, bb.ZMax],

@@ -21,6 +21,7 @@ export class Picker {
     private readonly overlayRoot: THREE.Object3D
   ) {
     this.ray.params.Line = { threshold: 1.2 }
+    this.ray.params.Points = { threshold: 3 }
   }
 
   private setPointer(ev: PointerEvent | MouseEvent): void {
@@ -40,6 +41,17 @@ export class Picker {
       const ud = h.object.userData
       if (ud.pick === 'sketch') {
         return { kind: 'sketch', sketchId: ud.sketchId }
+      }
+      if (ud.pick === 'vertex' && h.index != null) {
+        const sub = (ud.vsub as string[] | undefined)?.[h.index]
+        if (sub)
+          return {
+            kind: 'vertex',
+            bodyId: ud.bodyId,
+            index: 0,
+            sub,
+            point: [h.point.x, h.point.y, h.point.z]
+          }
       }
       if (ud.pick === 'edge') {
         return {
@@ -66,6 +78,15 @@ export class Picker {
   }
 
   private overlayFor(sel: Selection, content: THREE.Object3D, color: number): THREE.Object3D | null {
+    if (sel.kind === 'vertex') {
+      const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...sel.point)])
+      const p = new THREE.Points(
+        g,
+        new THREE.PointsMaterial({ color, size: 11, sizeAttenuation: false, depthTest: false })
+      )
+      p.renderOrder = 12
+      return p
+    }
     if (sel.kind === 'edge') {
       const src = content.children.find(
         (c) => c.userData.pick === 'edge' && c.userData.sub === sel.sub && c.userData.bodyId === sel.bodyId

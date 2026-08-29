@@ -9,24 +9,15 @@ done, remove its line entirely rather than leaving a checked box.
 - [~] Sheet metal: only Base Flange (SheetMetal addon or pad fallback). Richer
       flange / unfold / bend features deferred (low priority).
 
-## Batch 13 - feature wiring audit (remaining)
-
-Done so far: Extrude up-to-face, Draft neutral-plane pick, Rectangular Pattern
-direction pick (no X/Y/Z dropdown), Sweep path from a body edge, Construction
-Axis / Point from selection, Suppress vs Delete, Hole counterbore / countersink
-(real PartDesign::Hole), Move / Rotate Body. Still open:
-
-- [~] Construction Point only lands at the body origin - needs vertex / edge
-      point selection to place it
-- [ ] Rib / Web feature (open profile + thickness + direction)
-- [ ] Thicken / Offset surface (face pick)
-- [ ] Copy body to a new independent body
-- [ ] Combine "keep tool bodies" option
-
 ## Deferred / not done
 
 - Assembly joint SOLVING (joints recorded + round-trip; MbD solver is GUI-coupled
   headless) - needs a headless-solver path or an embedded GUI session.
+- Thicken / offset-surface - needs surface bodies, which this shell does not
+  model yet (everything is a solid PartDesign body).
+- PartDesign::Rib is missing from the bundled FreeCAD 1.1.1 build, so Rib uses an
+  offset-wire + symmetric-pad fallback; swap to the real feature if a later
+  FreeCAD build provides it.
 - Canvas: multi-page PDF underlays.
 - Git panel write ops (commit / checkout / diff from the UI).
 - File-embedded colours on STEP / 3MF import (GUI-only in FreeCAD).

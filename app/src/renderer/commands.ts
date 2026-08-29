@@ -51,6 +51,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'solid.revolve', title: 'Revolve', group: 'Create', tab: 'SOLID', icon: 'revolve', run: op('revolve') },
     { id: 'solid.loft', title: 'Loft', group: 'Create', tab: 'SOLID', icon: 'loft', run: op('loft') },
     { id: 'solid.sweep', title: 'Sweep', group: 'Create', tab: 'SOLID', icon: 'sweep', run: () => ctx.sweep() },
+    { id: 'solid.rib', title: 'Rib', group: 'Create', tab: 'SOLID', icon: 'extrude', run: op('rib') },
     // --- surface ---
     { id: 'surf.split', title: 'Split Body', group: 'Modify', tab: 'SURFACE', icon: 'plane', run: op('splitBody') },
     // --- sheet metal ---
@@ -64,6 +65,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'mod.combine', title: 'Combine', group: 'Modify', tab: 'SOLID', icon: 'combine', run: op('combine') },
     { id: 'mod.scale', title: 'Scale', group: 'Modify', tab: 'SOLID', icon: 'patternRect', run: () => ctx.scale() },
     { id: 'mod.move', title: 'Move / Rotate', group: 'Modify', tab: 'SOLID', icon: 'patternRect', run: op('moveBody') },
+    { id: 'mod.copy', title: 'Copy Body', group: 'Modify', tab: 'SOLID', icon: 'combine', run: op('copyBody') },
     // --- pattern ---
     { id: 'pat.rect', title: 'Rectangular Pattern', group: 'Pattern', tab: 'SOLID', icon: 'patternRect', run: op('patternLinear') },
     { id: 'pat.circ', title: 'Circular Pattern', group: 'Pattern', tab: 'SOLID', icon: 'patternCirc', run: op('patternCircular') },

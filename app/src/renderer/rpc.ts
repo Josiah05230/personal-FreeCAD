@@ -56,6 +56,11 @@ export interface EdgePoly {
   points: number[]
 }
 
+export interface MeshVertex {
+  vertex: number
+  p: [number, number, number]
+}
+
 export interface RenderMesh {
   id: string
   label: string
@@ -64,6 +69,7 @@ export interface RenderMesh {
   indices: number[]
   faceGroups: FaceGroup[]
   edges: EdgePoly[]
+  vertices?: MeshVertex[]
   bbox: { min: [number, number, number]; max: [number, number, number] }
   color?: [number, number, number]
   needsNormals?: boolean
@@ -138,6 +144,7 @@ export interface SketchConstraint {
 export type Selection =
   | { kind: 'face'; bodyId: string; index: number; sub: string; point: [number, number, number] }
   | { kind: 'edge'; bodyId: string; index: number; sub: string; point: [number, number, number] }
+  | { kind: 'vertex'; bodyId: string; index: number; sub: string; point: [number, number, number] }
   | { kind: 'body'; bodyId: string }
   | { kind: 'sketch'; sketchId: string }
   | { kind: 'plane'; planeId: string; role?: string; label?: string }
@@ -148,6 +155,7 @@ export type GeomRef =
   | { kind: 'plane'; id: string }
   | { kind: 'face'; bodyId: string; sub: string }
   | { kind: 'edge'; bodyId: string; sub: string }
+  | { kind: 'vertex'; bodyId: string; sub: string }
   | { kind: 'sketch'; id: string; sub?: string }
 
 export interface Param {
@@ -162,6 +170,7 @@ export function selectionToRef(s: Selection): GeomRef | null {
   }
   if (s.kind === 'face') return { kind: 'face', bodyId: s.bodyId, sub: s.sub }
   if (s.kind === 'edge') return { kind: 'edge', bodyId: s.bodyId, sub: s.sub }
+  if (s.kind === 'vertex') return { kind: 'vertex', bodyId: s.bodyId, sub: s.sub }
   return null
 }
 
@@ -370,8 +379,15 @@ export const api = {
   datumPoint: (ref: GeomRef | null) => rpc<{ bodies: BodyTree[] }>('datum.point', { ref }),
   featureSuppress: (id: string, suppressed: boolean) =>
     rpc<{ bodies: BodyTree[] }>('feature.suppress', { id, suppressed }),
-  combine: (op: string, baseBodyId: string | null, toolBodyIds: string[]) =>
-    rpc<{ bodies: BodyTree[] }>('feature.combine', { op, baseBodyId, toolBodyIds }),
+  combine: (
+    op: string,
+    baseBodyId: string | null,
+    toolBodyIds: string[],
+    keepTools = false
+  ) => rpc<{ bodies: BodyTree[] }>('feature.combine', { op, baseBodyId, toolBodyIds, keepTools }),
+  rib: (sketchId: string, thickness: number, reversed = false) =>
+    rpc<{ bodies: BodyTree[] }>('feature.rib', { sketchId, thickness, reversed }),
+  bodyCopy: (id: string) => rpc<{ bodies: BodyTree[] }>('body.copy', { id }),
   splitBody: (bodyId: string, planeRef: GeomRef) =>
     rpc<{ bodies: BodyTree[] }>('body.split', { bodyId, planeRef }),
   sheetBaseFlange: (sketchId: string, thickness: number) =>

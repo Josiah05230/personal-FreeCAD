@@ -1,9 +1,10 @@
-export type SelKind = 'face' | 'edge' | 'sketch' | 'datum' | 'body' | 'plane'
+export type SelKind = 'face' | 'edge' | 'vertex' | 'sketch' | 'datum' | 'body' | 'plane'
 export type SelectMode = 'paint' | 'window'
 
 const KINDS: { id: SelKind; label: string; glyph: string }[] = [
   { id: 'face', label: 'Faces', glyph: '◧' },
   { id: 'edge', label: 'Edges', glyph: '╱' },
+  { id: 'vertex', label: 'Vertices', glyph: '•' },
   { id: 'body', label: 'Bodies', glyph: '▦' },
   { id: 'sketch', label: 'Sketch geometry', glyph: '✎' },
   { id: 'datum', label: 'Datums / planes', glyph: '▱' }

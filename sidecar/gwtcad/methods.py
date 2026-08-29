@@ -243,7 +243,7 @@ def feature_draft(faces, angle=3.0, neutral=None, neutralRef=None):
 
 
 @method("feature.combine")
-def feature_combine(op="Fuse", baseBodyId=None, toolBodyIds=None):
+def feature_combine(op="Fuse", baseBodyId=None, toolBodyIds=None, keepTools=False):
     d = session.doc()
     bodies = [o for o in d.Objects if o.TypeId == "PartDesign::Body"]
     if len(bodies) < 2:
@@ -258,6 +258,12 @@ def feature_combine(op="Fuse", baseBodyId=None, toolBodyIds=None):
     tools = [t for t in tools if t is not None]
     if not tools:
         raise RpcError(APP_ERROR, "pick at least one tool body")
+    if keepTools:
+        for t in tools:
+            try:
+                d.copyObject(t, True)
+            except Exception:
+                pass
     boolean = base.newObject("PartDesign::Boolean", "Boolean")
     boolean.Label = next_label(base, "PartDesign::Boolean")
     boolean.Type = op  # Fuse | Cut | Common
@@ -389,6 +395,94 @@ def feature_hole(face, point, diameter=6.0, depth=10.0, throughAll=False,
     return tree_get()
 
 
+@method("feature.rib")
+def feature_rib(sketchId, thickness=3.0, reversed=False, midplane=True):
+    """Rib / web: an open profile sketch thickened symmetrically toward the solid.
+
+    Prefers PartDesign::Rib; where the FreeCAD build lacks it, falls back to
+    offsetting the open wire to a thin closed profile and padding it symmetric so
+    the result fuses into the body."""
+    d, sk = _obj(sketchId)
+    body = sk.getParentGeoFeatureGroup()
+    if body is None or body.TypeId != "PartDesign::Body":
+        raise RpcError(APP_ERROR, "sketch is not inside a Body")
+
+    try:
+        rib = body.newObject("PartDesign::Rib", "Rib")
+        rib.Label = next_label(body, "PartDesign::Rib")
+        rib.Profile = sk
+        for prop in ("Width", "Thickness"):
+            if hasattr(rib, prop):
+                setattr(rib, prop, float(thickness))
+                break
+        if midplane and hasattr(rib, "Midplane"):
+            rib.Midplane = True
+        if reversed and hasattr(rib, "Reversed"):
+            rib.Reversed = True
+        sk.Visibility = False
+        d.recompute()
+        if body.Shape.isValid():
+            return tree_get()
+    except Exception:
+        pass
+
+    for o in list(body.Group):
+        if o.TypeId == "PartDesign::Rib":
+            try:
+                d.removeObject(o.Name)
+            except Exception:
+                pass
+
+    import Part
+    try:
+        w = sk.Shape.Wires[0]
+        span = w.BoundBox.DiagonalLength or 10.0
+        off = w.makeOffset2D(float(thickness) / 2.0, openResult=True, intersection=True)
+        Part.Face(off)  # validity check
+    except Exception:
+        raise RpcError(APP_ERROR,
+                       "rib needs an open profile that spans between solid walls")
+    helper = body.newObject("Sketcher::SketchObject", "Sketch")
+    helper.Label = next_label(body, "Sketcher::SketchObject")
+    helper.Placement = sk.Placement
+    inv = sk.Placement.inverse()
+    for e in off.Edges:
+        try:
+            a = inv.multVec(e.valueAt(e.FirstParameter))
+            b = inv.multVec(e.valueAt(e.LastParameter))
+            helper.addGeometry(
+                Part.LineSegment(App.Vector(a.x, a.y, 0), App.Vector(b.x, b.y, 0)), False)
+        except Exception:
+            pass
+    d.recompute()
+    pad = build.pad(body, helper, max(span, float(thickness) * 4), midplane=True)
+    try:
+        pad.Label = next_label(body, "PartDesign::Pad").replace("Extrude", "Rib")
+    except Exception:
+        pass
+    sk.Visibility = False
+    helper.Visibility = False
+    d.recompute()
+    if not body.Shape.isValid():
+        raise RpcError(APP_ERROR, "rib produced an invalid shape")
+    return tree_get()
+
+
+@method("body.copy")
+def body_copy(id):
+    """Duplicate a whole body (with its feature history) as an independent body."""
+    d, o = _obj(id)
+    if o.TypeId != "PartDesign::Body":
+        raise RpcError(APP_ERROR, "select a body to copy")
+    res = d.copyObject(o, True)
+    copies = res if isinstance(res, (list, tuple)) else [res]
+    new_body = next((c for c in copies if getattr(c, "TypeId", "") == "PartDesign::Body"), None)
+    if new_body is not None:
+        new_body.Label = o.Label + " copy"
+    d.recompute()
+    return tree_get()
+
+
 @method("body.transform")
 def body_transform(id, translate=(0, 0, 0), rotate=(0, 0, 0), relative=True):
     """Move / rotate a whole body. rotate = (rx, ry, rz) degrees."""
@@ -445,7 +539,7 @@ def _resolve_ref(d, body, ref):
         if o is None:
             raise RpcError(APP_ERROR, "no datum %r" % ref.get("id"))
         return (o, [""])
-    if k in ("face", "edge"):
+    if k in ("face", "edge", "vertex"):
         src = d.getObject(ref["bodyId"])
         if src is None:
             raise RpcError(APP_ERROR, "no object %r" % ref.get("bodyId"))
@@ -538,7 +632,13 @@ def datum_point(ref=None):
     if ref:
         try:
             pt.AttachmentSupport = [_resolve_ref(d, body, ref)]
-            pt.MapMode = "Vertex"
+            wanted = "Vertex" if ref.get("kind") == "vertex" else "Center"
+            for mode in (wanted, "Vertex", "Translate", "Center", "ObjectXY"):
+                try:
+                    pt.MapMode = mode
+                    break
+                except Exception:
+                    continue
         except Exception:
             pt.MapMode = "Deactivated"
     session.set_datum_shown(pt.Name, True)

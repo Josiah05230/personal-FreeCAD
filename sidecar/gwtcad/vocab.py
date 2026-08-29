@@ -20,6 +20,7 @@ OP_NAME = {
     "PartDesign::Chamfer": "Chamfer",
     "PartDesign::Thickness": "Shell",
     "PartDesign::Draft": "Draft",
+    "PartDesign::Rib": "Rib",
     "PartDesign::Mirrored": "Mirror",
     "PartDesign::LinearPattern": "Rectangular Pattern",
     "PartDesign::PolarPattern": "Circular Pattern",

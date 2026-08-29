@@ -143,6 +143,26 @@ export function buildScene(
     group.add(mesh)
     box.expandByObject(mesh)
 
+    // one pickable point per model vertex
+    if (m.vertices && m.vertices.length) {
+      const vpos: number[] = []
+      const vsub: string[] = []
+      for (const v of m.vertices) {
+        vpos.push(v.p[0], v.p[1], v.p[2])
+        vsub.push(`Vertex${v.vertex + 1}`)
+      }
+      const vg = new THREE.BufferGeometry()
+      vg.setAttribute('position', new THREE.Float32BufferAttribute(vpos, 3))
+      const pts = new THREE.Points(
+        vg,
+        new THREE.PointsMaterial({ color: 0xcdd3da, size: 6, sizeAttenuation: false })
+      )
+      pts.name = `verts:${m.id}`
+      pts.userData = { pick: 'vertex', bodyId: m.id, vsub }
+      pts.renderOrder = 3
+      group.add(pts)
+    }
+
     // one line object per model edge, individually pickable
     for (const e of m.edges) {
       const p = e.points

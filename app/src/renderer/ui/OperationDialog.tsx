@@ -4,6 +4,7 @@ import { api, type Selection } from '../rpc'
 export type OpKind =
   | 'extrude'
   | 'revolve'
+  | 'rib'
   | 'loft'
   | 'draft'
   | 'combine'
@@ -18,6 +19,7 @@ export type OpKind =
   | 'datumAxis'
   | 'datumPoint'
   | 'moveBody'
+  | 'copyBody'
   | 'splitBody'
   | 'baseFlange'
 
@@ -59,6 +61,15 @@ const SPECS: Record<OpKind, OpSpec> = {
       { key: 'cut', label: 'Cut', type: 'checkbox', default: false }
     ]
   },
+  rib: {
+    title: 'Rib',
+    needs: 'sketch',
+    hint: 'An open profile sketch that reaches the solid; thickened to both sides',
+    fields: [
+      { key: 'thickness', label: 'Thickness', type: 'number', default: 3, min: 0.01, step: 0.5 },
+      { key: 'reversed', label: 'Flip side', type: 'checkbox', default: false }
+    ]
+  },
   loft: {
     title: 'Loft',
     needs: 'sketches2',
@@ -80,7 +91,8 @@ const SPECS: Record<OpKind, OpSpec> = {
         type: 'select',
         default: 'Fuse',
         options: ['Fuse', 'Cut', 'Common']
-      }
+      },
+      { key: 'keepTools', label: 'Keep tool bodies', type: 'checkbox', default: false }
     ]
   },
   patternCircular: {
@@ -126,6 +138,12 @@ const SPECS: Record<OpKind, OpSpec> = {
       { key: 'cutDepth', label: 'C-bore depth', type: 'number', default: 0, min: 0, step: 0.5 }
     ]
   },
+  copyBody: {
+    title: 'Copy Body',
+    needs: 'none',
+    hint: 'Duplicates the selected body (or the first body) as an independent body',
+    fields: []
+  },
   moveBody: {
     title: 'Move / Rotate Body',
     needs: 'none',
@@ -167,7 +185,7 @@ const SPECS: Record<OpKind, OpSpec> = {
   datumPoint: {
     title: 'Construction Point',
     needs: 'none',
-    hint: 'Created at the body origin (vertex snap coming soon)',
+    hint: 'Select a vertex (or an edge / face centre) to place it there, else the body origin',
     fields: []
   },
   splitBody: {
