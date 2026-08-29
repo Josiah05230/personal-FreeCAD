@@ -1468,7 +1468,12 @@ def tree_get():
                 "origin": origin,
                 "marker": session.marker(o.Name),
             })
-    return {"bodies": bodies, "path": session.path()}
+    return {
+        "bodies": bodies,
+        "path": session.path(),
+        "canUndo": d is not None and int(getattr(d, "UndoCount", 0)) > 0,
+        "canRedo": d is not None and int(getattr(d, "RedoCount", 0)) > 0,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -1524,6 +1529,36 @@ def visibility_set_group(group, visible):
             o.Visibility = visible
     d.recompute()
     return {"group": group, "visible": visible}
+
+
+@method("history.undo")
+def history_undo():
+    d = session.doc(create=False)
+    can = d is not None and int(getattr(d, "UndoCount", 0)) > 0
+    if can:
+        d.undo()
+        d.recompute()
+        _TESS_CACHE.clear()
+    out = tree_get()
+    out["undone"] = bool(can)
+    out["canUndo"] = d is not None and int(getattr(d, "UndoCount", 0)) > 0
+    out["canRedo"] = d is not None and int(getattr(d, "RedoCount", 0)) > 0
+    return out
+
+
+@method("history.redo")
+def history_redo():
+    d = session.doc(create=False)
+    can = d is not None and int(getattr(d, "RedoCount", 0)) > 0
+    if can:
+        d.redo()
+        d.recompute()
+        _TESS_CACHE.clear()
+    out = tree_get()
+    out["redone"] = bool(can)
+    out["canUndo"] = d is not None and int(getattr(d, "UndoCount", 0)) > 0
+    out["canRedo"] = d is not None and int(getattr(d, "RedoCount", 0)) > 0
+    return out
 
 
 @method("history.rollTo")

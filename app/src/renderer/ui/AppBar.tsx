@@ -8,7 +8,8 @@ export function AppBar({
   gitOpen,
   docName,
   dirty,
-  fileActions
+  fileActions,
+  history
 }: {
   onToggleData: () => void
   dataOpen: boolean
@@ -17,6 +18,7 @@ export function AppBar({
   docName: string
   dirty: boolean
   fileActions: FileActions
+  history: { onUndo: () => void; onRedo: () => void; canUndo: boolean; canRedo: boolean }
 }): JSX.Element {
   return (
     <div className="appbar">
@@ -41,13 +43,23 @@ export function AppBar({
             <path d="M4.5 2 v3.5 h6 V2 M4.5 13 v-4 h6 v4" />
           </svg>
         </button>
-        <button className="qat-btn" title="Undo" disabled>
+        <button
+          className="qat-btn"
+          title="Undo (Ctrl+Z)"
+          disabled={!history.canUndo}
+          onClick={history.onUndo}
+        >
           <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.3">
             <path d="M5 4 L2 7 L5 10" />
             <path d="M2 7 h7 a3.5 3.5 0 0 1 0 7 H6" />
           </svg>
         </button>
-        <button className="qat-btn" title="Redo" disabled>
+        <button
+          className="qat-btn"
+          title="Redo (Ctrl+Shift+Z)"
+          disabled={!history.canRedo}
+          onClick={history.onRedo}
+        >
           <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.3">
             <path d="M10 4 L13 7 L10 10" />
             <path d="M13 7 H6 a3.5 3.5 0 0 0 0 7 H9" />

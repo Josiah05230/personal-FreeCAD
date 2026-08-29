@@ -191,10 +191,20 @@ def _find(name):
     return None
 
 
+def _enable_undo(d):
+    """Headless documents ship with undo off; turn it on so history.undo works."""
+    try:
+        d.UndoMode = 1
+        d.UndoLimit = 64
+    except Exception:
+        pass
+    return d
+
+
 def doc(create=True):
     d = _find(_state["name"])
     if d is None and create:
-        d = App.newDocument(_DEFAULT_NAME)
+        d = _enable_undo(App.newDocument(_DEFAULT_NAME))
         _state["name"] = d.Name
         _state["path"] = None
     return d
@@ -204,7 +214,7 @@ def reset():
     d = _find(_state["name"])
     if d is not None:
         App.closeDocument(d.Name)
-    d = App.newDocument(_DEFAULT_NAME)
+    d = _enable_undo(App.newDocument(_DEFAULT_NAME))
     _state["name"] = d.Name
     _state["path"] = None
     _shown_datums.clear()
@@ -218,7 +228,7 @@ def open_path(path):
     d = _find(_state["name"])
     if d is not None:
         App.closeDocument(d.Name)
-    d = App.openDocument(path)
+    d = _enable_undo(App.openDocument(path))
     _state["name"] = d.Name
     _state["path"] = path
     return d

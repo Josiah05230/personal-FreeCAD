@@ -42,6 +42,33 @@ def _error(code, message, data=None):
     return err
 
 
+# Methods that never mutate the FreeCAD document, or manage their own doc
+# lifecycle - these run outside an undo transaction.
+_NO_TXN = {
+    "ping", "scene.get", "tree.get", "measure.compute", "params.list",
+    "expr.eval", "feature.primaryDim", "feature.exprs", "drawing.list",
+    "drawing.addView", "document.info", "assembly.tree",
+    "session.reset", "document.open", "document.save", "document.saveAs",
+    "history.undo", "history.redo",
+    "io.export", "io.exportStep", "io.exportStl",
+    "object.setVisibility", "visibility.setGroup",
+}
+
+
+def _open_txn(name):
+    if name in _NO_TXN:
+        return None
+    try:
+        from gwtcad import session
+        d = session.doc(create=False)
+        if d is None:
+            return None
+        d.openTransaction(name)
+        return d
+    except Exception:
+        return None
+
+
 def dispatch(payload):
     """Handle one parsed JSON-RPC request object. Returns a response dict.
 
@@ -65,6 +92,7 @@ def dispatch(payload):
         return {"jsonrpc": "2.0", "id": rpc_id,
                 "error": _error(METHOD_NOT_FOUND, "no such method: %s" % name)}
 
+    txn = _open_txn(name)
     try:
         if isinstance(params, dict):
             result = fn(**params)
@@ -72,15 +100,32 @@ def dispatch(payload):
             result = fn(*params)
         else:
             result = fn(params)
+        if txn is not None:
+            try:
+                txn.commitTransaction()
+            except Exception:
+                pass
         return {"jsonrpc": "2.0", "id": rpc_id, "result": result}
     except RpcError as e:
+        _abort(txn)
         return {"jsonrpc": "2.0", "id": rpc_id,
                 "error": _error(e.code, e.message, e.data)}
     except TypeError as e:
         # most commonly a bad params signature
+        _abort(txn)
         return {"jsonrpc": "2.0", "id": rpc_id,
                 "error": _error(INVALID_PARAMS, str(e))}
     except Exception as e:  # noqa: BLE001 - sidecar must never crash on a bad call
+        _abort(txn)
         return {"jsonrpc": "2.0", "id": rpc_id,
                 "error": _error(APP_ERROR, "%s: %s" % (type(e).__name__, e),
                                 {"traceback": traceback.format_exc()})}
+
+
+def _abort(txn):
+    if txn is None:
+        return
+    try:
+        txn.abortTransaction()
+    except Exception:
+        pass

@@ -271,7 +271,18 @@ export const api = {
       pickPlanes: PickPlane[]
       canvases: CanvasDTO[]
     }>('scene.get'),
-  treeGet: () => rpc<{ bodies: BodyTree[]; path: string | null }>('tree.get'),
+  treeGet: () =>
+    rpc<{ bodies: BodyTree[]; path: string | null; canUndo?: boolean; canRedo?: boolean }>(
+      'tree.get'
+    ),
+  undo: () =>
+    rpc<{ bodies: BodyTree[]; path: string | null; undone: boolean; canUndo: boolean; canRedo: boolean }>(
+      'history.undo'
+    ),
+  redo: () =>
+    rpc<{ bodies: BodyTree[]; path: string | null; redone: boolean; canUndo: boolean; canRedo: boolean }>(
+      'history.redo'
+    ),
 
   sketchOn: (ref: SketchRef) =>
     rpc<{

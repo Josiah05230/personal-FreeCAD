@@ -96,6 +96,8 @@ export function App(): JSX.Element {
 
   const [showDrawing, setShowDrawing] = useState(false)
   const [paramsOpen, setParamsOpen] = useState(false)
+  const [canUndo, setCanUndo] = useState(false)
+  const [canRedo, setCanRedo] = useState(false)
   const [pins, setPins] = useState<PinMap>(() => loadPinned())
   const [hotkeys, setHotkeys] = useState<HotkeyMap>(() => loadHotkeys())
   const setPin = useCallback((id: string, pinned: boolean) => {
@@ -171,6 +173,8 @@ export function App(): JSX.Element {
       setCanvases(scene.canvases ?? [])
       setBodies(tree.bodies)
       setDocPath(tree.path)
+      if ('canUndo' in tree) setCanUndo(!!tree.canUndo)
+      if ('canRedo' in tree) setCanRedo(!!tree.canRedo)
       // keep the user's show/hide choices across refreshes
     },
     []
@@ -647,6 +651,26 @@ export function App(): JSX.Element {
     [afterEdit]
   )
 
+  const doUndo = useCallback(async () => {
+    if (!canUndo) return
+    const r = await api.undo()
+    setCanUndo(r.canUndo)
+    setCanRedo(r.canRedo)
+    rollCacheRef.current.clear()
+    await refreshScene()
+    markDirty()
+  }, [canUndo, refreshScene, markDirty])
+
+  const doRedo = useCallback(async () => {
+    if (!canRedo) return
+    const r = await api.redo()
+    setCanUndo(r.canUndo)
+    setCanRedo(r.canRedo)
+    rollCacheRef.current.clear()
+    await refreshScene()
+    markDirty()
+  }, [canRedo, refreshScene, markDirty])
+
   const editFeatureDim = useCallback(
     async (id: string) => {
       let pd
@@ -1028,6 +1052,16 @@ export function App(): JSX.Element {
         newDesign()
         return
       }
+      if (ctrl && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        void doUndo()
+        return
+      }
+      if (ctrl && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) {
+        e.preventDefault()
+        void doRedo()
+        return
+      }
       if (!ctrl && (e.key === 's' || e.key === 'S')) {
         e.preventDefault()
         setPaletteOpen(true)
@@ -1051,7 +1085,7 @@ export function App(): JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [sketchSession, sketchConstruction, save, openDesign, newDesign, commands, hotkeys])
+  }, [sketchSession, sketchConstruction, save, openDesign, newDesign, doUndo, doRedo, commands, hotkeys])
 
   const activeName = tabs.find((t) => t.id === activeTab)?.name ?? 'Untitled'
   const activeDirty = tabs.find((t) => t.id === activeTab)?.dirty ?? false
@@ -1118,6 +1152,12 @@ export function App(): JSX.Element {
           onSaveAs: saveAs,
           onExport: exportModel,
           onImport: importStep
+        }}
+        history={{
+          onUndo: () => void doUndo(),
+          onRedo: () => void doRedo(),
+          canUndo,
+          canRedo
         }}
       />
 
