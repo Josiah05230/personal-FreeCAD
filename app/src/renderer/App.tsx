@@ -409,9 +409,25 @@ export function App(): JSX.Element {
               faces[0].point,
               Number(v.diameter),
               Number(v.depth),
-              Boolean(v.throughAll)
+              Boolean(v.throughAll),
+              String(v.cutType || 'None') as 'None' | 'Counterbore' | 'Countersink',
+              Number(v.cutDiameter),
+              Number(v.cutDepth)
             )
             break
+          case 'moveBody': {
+            const tgt = selection.find((s) => s.kind === 'body' || s.kind === 'face') as
+              | { bodyId: string }
+              | undefined
+            const id = tgt?.bodyId ?? bodies[0]?.id
+            if (id)
+              await api.bodyTransform(
+                id,
+                [Number(v.dx), Number(v.dy), Number(v.dz)],
+                [Number(v.rx), Number(v.ry), Number(v.rz)]
+              )
+            break
+          }
           case 'patternLinear': {
             const dirRef = selection.map(selectionToRef).find(Boolean) ?? null
             await api.patternLinear([1, 0, 0], Number(v.count), Number(v.spacing), dirRef)

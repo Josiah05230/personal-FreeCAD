@@ -11,17 +11,17 @@ done, remove its line entirely rather than leaving a checked box.
 
 ## Batch 13 - feature wiring audit (remaining)
 
-Done this pass: Extrude up-to-face, Draft neutral-plane pick, Rectangular
-Pattern direction pick (no X/Y/Z dropdown), Sweep path from a body edge,
-Construction Axis / Point from selection, Suppress vs Delete. Still open:
+Done so far: Extrude up-to-face, Draft neutral-plane pick, Rectangular Pattern
+direction pick (no X/Y/Z dropdown), Sweep path from a body edge, Construction
+Axis / Point from selection, Suppress vs Delete, Hole counterbore / countersink
+(real PartDesign::Hole), Move / Rotate Body. Still open:
 
 - [~] Construction Point only lands at the body origin - needs vertex / edge
       point selection to place it
 - [ ] Rib / Web feature (open profile + thickness + direction)
 - [ ] Thicken / Offset surface (face pick)
-- [ ] Move / Copy body (body + transform, or copy to a new body)
+- [ ] Copy body to a new independent body
 - [ ] Combine "keep tool bodies" option
-- [ ] Hole counterbore / countersink options
 
 ## Deferred / not done
 

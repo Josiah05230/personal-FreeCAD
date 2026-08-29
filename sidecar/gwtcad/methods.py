@@ -329,8 +329,10 @@ def feature_shell(faces, thickness=2.0):
 
 
 @method("feature.hole")
-def feature_hole(face, point, diameter=6.0, depth=10.0, throughAll=False):
-    """Circular pocket on a planar face at a world-space point."""
+def feature_hole(face, point, diameter=6.0, depth=10.0, throughAll=False,
+                 cutType="None", cutDiameter=0.0, cutDepth=0.0, csAngle=90.0):
+    """Hole on a planar face at a world-space point, with optional counterbore
+    or countersink."""
     body = _require_body()
     tip = _solid_tip(body)
     d = body.Document
@@ -340,16 +342,62 @@ def feature_hole(face, point, diameter=6.0, depth=10.0, throughAll=False):
     sk.MapMode = "FlatFace"
     d.recompute()
     import Part
-    from FreeCAD import Vector, Placement
+    from FreeCAD import Vector
     wp = Vector(point[0], point[1], point[2])
     local = sk.Placement.inverse().multVec(wp)
     sk.addGeometry(Part.Circle(Vector(local.x, local.y, 0), Vector(0, 0, 1),
                                float(diameter) / 2.0), False)
     d.recompute()
-    build.pocket(body, sk, float(depth), through_all=bool(throughAll))
-    d.recompute()
+
+    made = False
+    try:
+        h = body.newObject("PartDesign::Hole", "Hole")
+        h.Label = next_label(body, "PartDesign::Hole")
+        h.Profile = sk
+        h.Diameter = float(diameter)
+        if throughAll:
+            h.DepthType = "ThroughAll"
+        else:
+            h.DepthType = "Dimension"
+            h.Depth = float(depth)
+        if cutType in ("Counterbore", "Countersink"):
+            h.HoleCutType = cutType
+            if float(cutDiameter) > 0:
+                h.HoleCutDiameter = float(cutDiameter)
+            if cutType == "Counterbore" and float(cutDepth) > 0:
+                h.HoleCutDepth = float(cutDepth)
+            if cutType == "Countersink":
+                h.HoleCutCountersinkAngle = float(csAngle)
+        sk.Visibility = False
+        d.recompute()
+        made = body.Shape.isValid()
+    except Exception:
+        made = False
+
+    if not made:
+        for o in list(body.Group):
+            if o.TypeId == "PartDesign::Hole":
+                try:
+                    d.removeObject(o.Name)
+                except Exception:
+                    pass
+        build.pocket(body, sk, float(depth), through_all=bool(throughAll))
+        d.recompute()
+
     if not body.Shape.isValid():
         raise RpcError(APP_ERROR, "hole produced an invalid shape")
+    return tree_get()
+
+
+@method("body.transform")
+def body_transform(id, translate=(0, 0, 0), rotate=(0, 0, 0), relative=True):
+    """Move / rotate a whole body. rotate = (rx, ry, rz) degrees."""
+    d, o = _obj(id)
+    from FreeCAD import Placement, Vector, Rotation
+    delta = Placement(Vector(*translate),
+                      Rotation(float(rotate[2]), float(rotate[1]), float(rotate[0])))
+    o.Placement = o.Placement.multiply(delta) if relative else delta
+    d.recompute()
     return tree_get()
 
 

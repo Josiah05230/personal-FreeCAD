@@ -287,8 +287,30 @@ export const api = {
     rpc<{ bodies: BodyTree[] }>('feature.chamfer', { edges, size }),
   shell: (faces: string[], thickness: number) =>
     rpc<{ bodies: BodyTree[] }>('feature.shell', { faces, thickness }),
-  hole: (face: string, point: number[], diameter: number, depth: number, throughAll: boolean) =>
-    rpc<{ bodies: BodyTree[] }>('feature.hole', { face, point, diameter, depth, throughAll }),
+  hole: (
+    face: string,
+    point: number[],
+    diameter: number,
+    depth: number,
+    throughAll: boolean,
+    cutType: 'None' | 'Counterbore' | 'Countersink' = 'None',
+    cutDiameter = 0,
+    cutDepth = 0,
+    csAngle = 90
+  ) =>
+    rpc<{ bodies: BodyTree[] }>('feature.hole', {
+      face,
+      point,
+      diameter,
+      depth,
+      throughAll,
+      cutType,
+      cutDiameter,
+      cutDepth,
+      csAngle
+    }),
+  bodyTransform: (id: string, translate: number[], rotate: number[], relative = true) =>
+    rpc<{ bodies: BodyTree[] }>('body.transform', { id, translate, rotate, relative }),
   patternLinear: (
     direction: number[],
     count: number,

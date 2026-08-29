@@ -17,6 +17,7 @@ export type OpKind =
   | 'datumPlane'
   | 'datumAxis'
   | 'datumPoint'
+  | 'moveBody'
   | 'splitBody'
   | 'baseFlange'
 
@@ -113,7 +114,29 @@ const SPECS: Record<OpKind, OpSpec> = {
     fields: [
       { key: 'diameter', label: 'Diameter', type: 'number', default: 6, min: 0.01, step: 0.5 },
       { key: 'depth', label: 'Depth', type: 'number', default: 10, min: 0.01, step: 1 },
-      { key: 'throughAll', label: 'Through all', type: 'checkbox', default: false }
+      { key: 'throughAll', label: 'Through all', type: 'checkbox', default: false },
+      {
+        key: 'cutType',
+        label: 'Head',
+        type: 'select',
+        default: 'None',
+        options: ['None', 'Counterbore', 'Countersink']
+      },
+      { key: 'cutDiameter', label: 'Head dia', type: 'number', default: 0, min: 0, step: 0.5 },
+      { key: 'cutDepth', label: 'C-bore depth', type: 'number', default: 0, min: 0, step: 0.5 }
+    ]
+  },
+  moveBody: {
+    title: 'Move / Rotate Body',
+    needs: 'none',
+    hint: 'Applies to the selected body (or the first body). Rotation in degrees.',
+    fields: [
+      { key: 'dx', label: 'Move X', type: 'number', default: 0, step: 1 },
+      { key: 'dy', label: 'Move Y', type: 'number', default: 0, step: 1 },
+      { key: 'dz', label: 'Move Z', type: 'number', default: 0, step: 1 },
+      { key: 'rx', label: 'Rotate X', type: 'number', default: 0, step: 5 },
+      { key: 'ry', label: 'Rotate Y', type: 'number', default: 0, step: 5 },
+      { key: 'rz', label: 'Rotate Z', type: 'number', default: 0, step: 5 }
     ]
   },
   patternLinear: {
