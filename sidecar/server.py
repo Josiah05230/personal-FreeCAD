@@ -33,6 +33,20 @@ def _log(*a):
     print("[sidecar]", *a, file=sys.stderr, flush=True)
 
 
+class Server(HTTPServer):
+    """HTTPServer that exits if it is orphaned (parent process died).
+
+    The Electron supervisor may be SIGKILLed (crash, `timeout`, task manager)
+    without a chance to reap us; without this the sidecar leaks.
+    """
+    _start_ppid = os.getppid()
+
+    def service_actions(self):
+        if os.getppid() != self._start_ppid and os.getppid() == 1:
+            _log("parent gone (orphaned) - exiting")
+            os._exit(0)
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -116,7 +130,7 @@ def _resolve_host_port():
 
 def main():
     host, port = _resolve_host_port()
-    httpd = HTTPServer((host, port), Handler)
+    httpd = Server((host, port), Handler)
     bound_host, bound_port = httpd.server_address[0], httpd.server_address[1]
 
     # the one line the parent process parses

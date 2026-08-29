@@ -38,21 +38,32 @@ and replaces the entire front-end:
 
 ## Status
 
-Milestone 0 (in progress): sidecar builds a demo pad headless and streams render
-buffers; Electron shell renders it and you can orbit. This is the "does the
-viewport feel right" checkpoint before committing to the full build.
-
-See `docs/roadmap.md`.
+Milestone 0: the pipeline is built and verified end to end (headless FreeCAD ->
+sidecar RPC -> Electron -> three.js). The one thing left for M0 is subjective and
+needs a person: **orbit / pan / zoom feel**. Run it and judge. See
+`docs/status-M0.md` and `docs/roadmap.md`.
 
 ## Running (dev)
 
-Requires a local FreeCAD 1.1+ (AppImage extracted, or system install with
-`freecadcmd`). Point `config.local.json` at it (copy from `config.example.json`).
+Requires a local FreeCAD 1.1+ (AppImage extracted, or a system install that
+provides `freecadcmd`). Copy `config.example.json` to `config.local.json` and set
+the `freecadcmd` path.
 
 ```bash
-# 1. sidecar smoke test (no Electron)
-scripts/sidecar-dev.sh
+cp config.example.json config.local.json   # edit "freecadcmd"
+cd app && npm install && cd ..
 
-# 2. full app (spawns the sidecar itself)
-cd app && npm install && npm run dev
+scripts/dev.sh          # full app (Electron spawns the sidecar itself)
+scripts/sidecar-dev.sh  # optional: run just the sidecar, poke it with curl
 ```
+
+`scripts/dev.sh` clears `ELECTRON_RUN_AS_NODE` (some shells export it, which stops
+Electron opening a window).
+
+### Viewport controls (Fusion default map)
+
+| Input | Action |
+|---|---|
+| Middle-drag | Pan |
+| Shift + middle-drag | Orbit (constrained, horizon locked) |
+| Wheel | Dolly, zoomed toward the cursor |
