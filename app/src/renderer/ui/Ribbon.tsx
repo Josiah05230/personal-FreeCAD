@@ -1,75 +1,27 @@
-import { useState } from 'react'
-import { Icon, type IconName } from './icons'
+import { useMemo, useState } from 'react'
+import type { Command } from '../commands'
+import { Icon } from './icons'
 
 const TABS = ['SOLID', 'SURFACE', 'MESH', 'SHEET METAL', 'ASSEMBLE', 'INSPECT', 'TOOLS'] as const
 type Tab = (typeof TABS)[number]
 
-interface Cmd {
-  label: string
-  icon: IconName
-  onClick?: () => void
-  disabled?: boolean
-}
-interface Group {
-  name: string
-  cmds: Cmd[]
-}
-
-export function Ribbon({ onExtrude }: { onExtrude: () => void }): JSX.Element {
+export function Ribbon({ commands }: { commands: Command[] }): JSX.Element {
   const [tab, setTab] = useState<Tab>('SOLID')
+  const [openGroup, setOpenGroup] = useState<string | null>(null)
 
-  const groups: Partial<Record<Tab, Group[]>> = {
-    SOLID: [
-      {
-        name: 'Create',
-        cmds: [
-          { label: 'Extrude', icon: 'extrude', onClick: onExtrude },
-          { label: 'Revolve', icon: 'revolve', disabled: true },
-          { label: 'Sweep', icon: 'sweep', disabled: true },
-          { label: 'Loft', icon: 'loft', disabled: true },
-          { label: 'Rib', icon: 'rib', disabled: true }
-        ]
-      },
-      {
-        name: 'Modify',
-        cmds: [
-          { label: 'Fillet', icon: 'fillet', disabled: true },
-          { label: 'Chamfer', icon: 'chamfer', disabled: true },
-          { label: 'Shell', icon: 'shell', disabled: true },
-          { label: 'Draft', icon: 'draft', disabled: true },
-          { label: 'Combine', icon: 'combine', disabled: true }
-        ]
-      },
-      {
-        name: 'Hole',
-        cmds: [{ label: 'Hole', icon: 'hole', disabled: true }]
-      },
-      {
-        name: 'Pattern',
-        cmds: [
-          { label: 'Rectangular', icon: 'patternRect', disabled: true },
-          { label: 'Circular', icon: 'patternCirc', disabled: true },
-          { label: 'Mirror', icon: 'mirror', disabled: true }
-        ]
-      },
-      {
-        name: 'Construct',
-        cmds: [
-          { label: 'Plane', icon: 'plane', disabled: true },
-          { label: 'Axis', icon: 'axis', disabled: true },
-          { label: 'Point', icon: 'point', disabled: true }
-        ]
-      },
-      {
-        name: 'Sketch',
-        cmds: [{ label: 'Create Sketch', icon: 'sketch', disabled: true }]
+  const groups = useMemo(() => {
+    const forTab = commands.filter((c) => c.tab === tab)
+    const order: string[] = []
+    const map = new Map<string, Command[]>()
+    for (const c of forTab) {
+      if (!map.has(c.group)) {
+        map.set(c.group, [])
+        order.push(c.group)
       }
-    ]
-  }
-
-  const active = groups[tab] ?? [
-    { name: '', cmds: [{ label: 'Not wired yet', icon: 'point', disabled: true }] }
-  ]
+      map.get(c.group)!.push(c)
+    }
+    return order.map((name) => ({ name, cmds: map.get(name)! }))
+  }, [commands, tab])
 
   return (
     <div className="ribbon">
@@ -78,34 +30,73 @@ export function Ribbon({ onExtrude }: { onExtrude: () => void }): JSX.Element {
           <button
             key={t}
             className={t === tab ? 'ribbon-tab active' : 'ribbon-tab'}
-            onClick={() => setTab(t)}
+            onClick={() => {
+              setTab(t)
+              setOpenGroup(null)
+            }}
           >
             {t}
           </button>
         ))}
       </div>
       <div className="ribbon-body">
-        {active.map((g, gi) => (
-          <div className="ribbon-group" key={g.name || gi}>
+        {groups.length === 0 && <div className="ribbon-none">Nothing on this tab yet</div>}
+        {groups.map((g) => (
+          <div className="ribbon-group" key={g.name}>
             <div className="ribbon-group-cmds">
               {g.cmds.map((c) => {
                 const Glyph = Icon[c.icon]
                 return (
                   <button
-                    key={c.label}
+                    key={c.id}
                     className="ribbon-cmd"
-                    disabled={c.disabled}
-                    onClick={c.onClick}
+                    disabled={!c.run}
+                    title={c.hotkey ? `${c.title}  (${c.hotkey})` : c.title}
+                    onClick={() => c.run?.()}
                   >
                     <span className="ribbon-cmd-icon">
                       <Glyph />
                     </span>
-                    <span className="ribbon-cmd-label">{c.label}</span>
+                    <span className="ribbon-cmd-label">{c.title}</span>
                   </button>
                 )
               })}
             </div>
-            <div className="ribbon-group-name">{g.name}</div>
+            <button
+              className="ribbon-group-name"
+              onClick={() => setOpenGroup((v) => (v === g.name ? null : g.name))}
+            >
+              {g.name} <span className="ribbon-group-caret">▾</span>
+            </button>
+            {openGroup === g.name && (
+              <>
+                <div className="ribbon-dd-scrim" onClick={() => setOpenGroup(null)} />
+                <div className="ribbon-dd">
+                  {g.cmds.map((c) => {
+                    const Glyph = Icon[c.icon]
+                    return (
+                      <div
+                        key={c.id}
+                        className={c.run ? 'ribbon-dd-item' : 'ribbon-dd-item soon'}
+                        onClick={() => {
+                          if (c.run) {
+                            c.run()
+                            setOpenGroup(null)
+                          }
+                        }}
+                      >
+                        <span className="ribbon-dd-ic">
+                          <Glyph />
+                        </span>
+                        <span>{c.title}</span>
+                        {c.hotkey && <span className="ribbon-dd-key">{c.hotkey}</span>}
+                        {!c.run && <span className="ribbon-dd-soon">soon</span>}
+                      </div>
+                    )
+                  })}
+                </div>
+              </>
+            )}
           </div>
         ))}
       </div>

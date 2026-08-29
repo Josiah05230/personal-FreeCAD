@@ -11,11 +11,36 @@ interface DirListing {
   parent: string
   items: DirEntry[]
 }
+interface GitStatus {
+  isRepo: boolean
+  root?: string
+  branch?: string
+  dirty?: boolean
+  tracked?: boolean
+}
+interface GitCommit {
+  hash: string
+  short: string
+  subject: string
+  author: string
+  isoDate: string
+  relDate: string
+}
+interface GitBranch {
+  name: string
+  current: boolean
+}
 
 interface CadBridge {
   rpc<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>
   sidecarStatus(): Promise<{ started: boolean }>
   listDir(dir?: string): Promise<DirListing>
+  saveDialog(defaultPath?: string): Promise<string | null>
+  openDialog(filters?: { name: string; extensions: string[] }[]): Promise<string | null>
+  exportDialog(defaultPath?: string): Promise<string | null>
+  gitStatus(filePath: string): Promise<GitStatus>
+  gitLog(filePath: string, limit?: number): Promise<GitCommit[]>
+  gitBranches(filePath: string): Promise<GitBranch[]>
 }
 
 interface Window {

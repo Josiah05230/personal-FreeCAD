@@ -7,9 +7,10 @@ export interface BuiltScene {
   radius: number
 }
 
-// Fusion's default body appearance reads as a warm satin steel, not flat grey.
-const SOLID_COLOR = 0xc7c1b4
-const EDGE_COLOR = 0x3b3f45
+// Dark theme: graphite body with a satin sheen, edges slightly lighter so they
+// read against the body rather than the classic black-on-light CAD look.
+const SOLID_COLOR = 0x8a8f96
+const EDGE_COLOR = 0x1c1f24
 
 /** Build a display group from sidecar render buffers (mm, Z-up). */
 export function buildScene(meshes: RenderMesh[]): BuiltScene {

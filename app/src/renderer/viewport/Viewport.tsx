@@ -1,20 +1,21 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import type { RenderMesh } from '../rpc'
+import type { ViewportApi } from './types'
 import { CadControls } from './CadControls'
 import { ViewCube } from './ViewCube'
 import { buildScene } from './sceneBuilder'
 
 function gradientBackground(): THREE.Texture {
-  // Fusion's viewport ground is a light cool gradient, not a dark room.
+  // Dark theme: a deep cool gradient, lighter toward the horizon.
   const c = document.createElement('canvas')
   c.width = 2
   c.height = 256
   const ctx = c.getContext('2d')!
   const g = ctx.createLinearGradient(0, 0, 0, 256)
-  g.addColorStop(0, '#dfe4ea')
-  g.addColorStop(0.5, '#c4ccd4')
-  g.addColorStop(1, '#aab4bf')
+  g.addColorStop(0, '#20242b')
+  g.addColorStop(0.55, '#2b3038')
+  g.addColorStop(1, '#3a4048')
   ctx.fillStyle = g
   ctx.fillRect(0, 0, 2, 256)
   const tex = new THREE.CanvasTexture(c)
@@ -22,7 +23,13 @@ function gradientBackground(): THREE.Texture {
   return tex
 }
 
-export function Viewport({ meshes }: { meshes: RenderMesh[] }): JSX.Element {
+export function Viewport({
+  meshes,
+  apiRef
+}: {
+  meshes: RenderMesh[]
+  apiRef?: { current: ViewportApi | null }
+}): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   const cubeRef = useRef<HTMLDivElement>(null)
   const stateRef = useRef<{
@@ -33,6 +40,8 @@ export function Viewport({ meshes }: { meshes: RenderMesh[] }): JSX.Element {
     cube: ViewCube
     content: THREE.Group | null
     framedOnce: boolean
+    lastCenter: THREE.Vector3
+    lastRadius: number
   } | null>(null)
 
   useEffect(() => {
@@ -73,7 +82,20 @@ export function Viewport({ meshes }: { meshes: RenderMesh[] }): JSX.Element {
       controls,
       cube,
       content: null,
-      framedOnce: false
+      framedOnce: false,
+      lastCenter: new THREE.Vector3(),
+      lastRadius: 60
+    }
+
+    if (apiRef) {
+      apiRef.current = {
+        fit: () => {
+          const s = stateRef.current
+          if (s) s.controls.frame(s.lastCenter, s.lastRadius)
+        },
+        setView: (dir) =>
+          stateRef.current?.cube.goToView(new THREE.Vector3(dir[0], dir[1], dir[2]))
+      }
     }
 
     let raf = 0
@@ -129,11 +151,19 @@ export function Viewport({ meshes }: { meshes: RenderMesh[] }): JSX.Element {
     const { group, center, radius } = buildScene(meshes)
     st.scene.add(group)
     st.content = group
+    st.lastCenter = center
+    st.lastRadius = radius
     if (!st.framedOnce) {
       st.controls.frame(center, radius)
       st.framedOnce = true
     }
   }, [meshes])
+
+  useEffect(() => {
+    return () => {
+      if (apiRef) apiRef.current = null
+    }
+  }, [apiRef])
 
   return (
     <div className="viewport" ref={hostRef}>

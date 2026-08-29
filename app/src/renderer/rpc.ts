@@ -14,6 +14,7 @@ export interface Feature {
 export interface BodyTree {
   id: string
   label: string
+  visible: boolean
   features: Feature[]
 }
 
@@ -43,9 +44,25 @@ const rpc = <T,>(m: string, p: Record<string, unknown> = {}) => window.cad.rpc<T
 
 export const api = {
   ping: () => rpc<{ pong: boolean; freecad: string; build: string }>('ping'),
+  resetDocument: () => rpc<{ document: string }>('session.reset'),
   demoPad: (width: number, depth: number, height: number) =>
     rpc<{ bodies: BodyTree[] }>('demo.pad', { width, depth, height }),
   sceneGet: () => rpc<{ meshes: RenderMesh[] }>('scene.get'),
-  treeGet: () => rpc<{ bodies: BodyTree[] }>('tree.get'),
-  exportStep: (path: string) => rpc<{ path: string; bodies: number }>('io.exportStep', { path })
+  treeGet: () => rpc<{ bodies: BodyTree[]; path: string | null }>('tree.get'),
+
+  setVisibility: (id: string, visible: boolean) =>
+    rpc<{ id: string; visible: boolean }>('object.setVisibility', { id, visible }),
+  rollTo: (bodyId: string, featureId: string | null) =>
+    rpc<{ tip: string | null }>('history.rollTo', { bodyId, featureId }),
+  renameFeature: (id: string, label: string) =>
+    rpc<{ id: string; label: string }>('feature.rename', { id, label }),
+  deleteFeature: (id: string) => rpc<{ deleted: string }>('feature.delete', { id }),
+
+  save: () => rpc<{ path: string }>('document.save'),
+  saveAs: (path: string) => rpc<{ path: string }>('document.saveAs', { path }),
+  open: (path: string) => rpc<{ path: string; name: string }>('document.open', { path }),
+
+  exportStep: (path: string) => rpc<{ path: string; bodies: number }>('io.exportStep', { path }),
+  exportStl: (path: string) => rpc<{ path: string; bodies: number }>('io.exportStl', { path }),
+  importStep: (path: string) => rpc<{ path: string }>('io.importStep', { path })
 }

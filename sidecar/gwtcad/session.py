@@ -5,26 +5,52 @@ document set keyed by path.
 """
 import FreeCAD as App
 
-_DOC_NAME = "GWTCAD"
+_DEFAULT_NAME = "GWTCAD"
+_state = {"name": _DEFAULT_NAME, "path": None}
+
+
+def _find(name):
+    for d in App.listDocuments().values():
+        if d.Name == name:
+            return d
+    return None
 
 
 def doc(create=True):
-    d = App.getDocument(_DOC_NAME) if _DOC_NAME in [x.Name for x in App.listDocuments().values()] else None
+    d = _find(_state["name"])
     if d is None and create:
-        d = App.newDocument(_DOC_NAME)
+        d = App.newDocument(_DEFAULT_NAME)
+        _state["name"] = d.Name
+        _state["path"] = None
     return d
 
 
 def reset():
-    """Close the current document and open a fresh empty one."""
-    existing = None
-    for d in App.listDocuments().values():
-        if d.Name == _DOC_NAME:
-            existing = d
-            break
-    if existing is not None:
-        App.closeDocument(existing.Name)
-    return App.newDocument(_DOC_NAME)
+    d = _find(_state["name"])
+    if d is not None:
+        App.closeDocument(d.Name)
+    d = App.newDocument(_DEFAULT_NAME)
+    _state["name"] = d.Name
+    _state["path"] = None
+    return d
+
+
+def open_path(path):
+    d = _find(_state["name"])
+    if d is not None:
+        App.closeDocument(d.Name)
+    d = App.openDocument(path)
+    _state["name"] = d.Name
+    _state["path"] = path
+    return d
+
+
+def set_path(path):
+    _state["path"] = path
+
+
+def path():
+    return _state["path"]
 
 
 def active_body(d=None):

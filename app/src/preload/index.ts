@@ -11,20 +11,46 @@ export interface DirListing {
   parent: string
   items: DirEntry[]
 }
+export interface GitStatus {
+  isRepo: boolean
+  root?: string
+  branch?: string
+  dirty?: boolean
+  tracked?: boolean
+}
+export interface GitCommit {
+  hash: string
+  short: string
+  subject: string
+  author: string
+  isoDate: string
+  relDate: string
+}
+export interface GitBranch {
+  name: string
+  current: boolean
+}
 
-/** Minimal, typed bridge. The renderer never touches Node or the sidecar directly. */
 const cad = {
   rpc<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     return ipcRenderer.invoke('cad:rpc', method, params) as Promise<T>
   },
-  sidecarStatus(): Promise<{ started: boolean }> {
-    return ipcRenderer.invoke('cad:sidecarStatus') as Promise<{ started: boolean }>
-  },
-  listDir(dir?: string): Promise<DirListing> {
-    return ipcRenderer.invoke('fs:listDir', dir) as Promise<DirListing>
-  }
+  sidecarStatus: () => ipcRenderer.invoke('cad:sidecarStatus') as Promise<{ started: boolean }>,
+  listDir: (dir?: string) => ipcRenderer.invoke('fs:listDir', dir) as Promise<DirListing>,
+
+  saveDialog: (defaultPath?: string) =>
+    ipcRenderer.invoke('dialog:save', defaultPath) as Promise<string | null>,
+  openDialog: (filters?: { name: string; extensions: string[] }[]) =>
+    ipcRenderer.invoke('dialog:open', filters) as Promise<string | null>,
+  exportDialog: (defaultPath?: string) =>
+    ipcRenderer.invoke('dialog:export', defaultPath) as Promise<string | null>,
+
+  gitStatus: (filePath: string) => ipcRenderer.invoke('git:status', filePath) as Promise<GitStatus>,
+  gitLog: (filePath: string, limit?: number) =>
+    ipcRenderer.invoke('git:log', filePath, limit) as Promise<GitCommit[]>,
+  gitBranches: (filePath: string) =>
+    ipcRenderer.invoke('git:branches', filePath) as Promise<GitBranch[]>
 }
 
 contextBridge.exposeInMainWorld('cad', cad)
-
 export type CadBridge = typeof cad

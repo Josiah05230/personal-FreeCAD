@@ -136,13 +136,138 @@ def tree_get():
                     "isTip": f is tip,
                     "error": bool(getattr(f, "State", None) and "Error" in f.State),
                 })
-            bodies.append({"id": o.Name, "label": o.Label, "features": feats})
-    return {"bodies": bodies}
+            bodies.append({
+                "id": o.Name,
+                "label": o.Label,
+                "visible": bool(getattr(o, "Visibility", True)),
+                "features": feats,
+            })
+    return {"bodies": bodies, "path": session.path()}
 
 
 # --------------------------------------------------------------------------- #
-# export
+# edit: visibility, history rollback, rename, delete
 # --------------------------------------------------------------------------- #
+
+def _obj(name):
+    d = session.doc(create=False)
+    if d is None:
+        raise RpcError(APP_ERROR, "no document")
+    o = d.getObject(name)
+    if o is None:
+        raise RpcError(APP_ERROR, "no object %r" % name)
+    return d, o
+
+
+@method("object.setVisibility")
+def object_set_visibility(id, visible):
+    d, o = _obj(id)
+    o.Visibility = bool(visible)
+    d.recompute()
+    return {"id": id, "visible": bool(o.Visibility)}
+
+
+@method("history.rollTo")
+def history_roll_to(bodyId, featureId=None):
+    """Set the Body tip (Fusion's rollback marker). featureId=None -> newest."""
+    d, body = _obj(bodyId)
+    if body.TypeId != "PartDesign::Body":
+        raise RpcError(APP_ERROR, "%r is not a Body" % bodyId)
+    feats = [f for f in body.Group if f.TypeId != "App::Origin"]
+    if not feats:
+        return {"tip": None}
+    target = feats[-1] if featureId is None else d.getObject(featureId)
+    if target is None:
+        raise RpcError(APP_ERROR, "no feature %r" % featureId)
+    body.Tip = target
+    # everything after the tip is hidden; tip solid shown
+    reached = False
+    for f in feats:
+        if _kind(f.TypeId) == "solid":
+            f.Visibility = f is target or (not reached)
+        if f is target:
+            reached = True
+    d.recompute()
+    return {"tip": target.Name}
+
+
+@method("feature.rename")
+def feature_rename(id, label):
+    d, o = _obj(id)
+    o.Label = str(label)
+    d.recompute()
+    return {"id": id, "label": o.Label}
+
+
+@method("feature.delete")
+def feature_delete(id):
+    d, o = _obj(id)
+    d.removeObject(o.Name)
+    d.recompute()
+    return {"deleted": id}
+
+
+# --------------------------------------------------------------------------- #
+# document: save / open
+# --------------------------------------------------------------------------- #
+
+@method("document.saveAs")
+def document_save_as(path):
+    d = session.doc(create=False)
+    if d is None:
+        raise RpcError(APP_ERROR, "no document")
+    path = os.path.abspath(os.path.expanduser(path))
+    d.saveAs(path)
+    session.set_path(path)
+    return {"path": path}
+
+
+@method("document.save")
+def document_save():
+    d = session.doc(create=False)
+    if d is None:
+        raise RpcError(APP_ERROR, "no document")
+    p = session.path()
+    if not p:
+        raise RpcError(APP_ERROR, "document has no path yet - use saveAs")
+    d.save()
+    return {"path": p}
+
+
+@method("document.open")
+def document_open(path):
+    path = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isfile(path):
+        raise RpcError(APP_ERROR, "no such file: %s" % path)
+    d = session.open_path(path)
+    d.recompute()
+    return {"path": path, "name": d.Name}
+
+
+@method("document.info")
+def document_info():
+    d = session.doc(create=False)
+    return {
+        "path": session.path(),
+        "objects": 0 if d is None else len(d.Objects),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# import / export
+# --------------------------------------------------------------------------- #
+
+@method("io.importStep")
+def io_import_step(path):
+    """STEP / IGES / BREP import. Uses the headless-safe `Import` module."""
+    import Import
+    d = session.doc()
+    path = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isfile(path):
+        raise RpcError(APP_ERROR, "no such file: %s" % path)
+    Import.insert(path, d.Name)
+    d.recompute()
+    return {"path": path}
 
 @method("io.exportStep")
 def io_export_step(path):

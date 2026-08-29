@@ -1,12 +1,22 @@
-/** Thin application bar: Data Panel toggle (the "waffle"), file name, quick actions. */
+import { FileMenu, type FileActions } from './FileMenu'
+
+/** Thin application bar: Data Panel toggle (the "waffle"), file menu, quick actions, history toggle. */
 export function AppBar({
   onToggleData,
   dataOpen,
-  docName
+  onToggleGit,
+  gitOpen,
+  docName,
+  dirty,
+  fileActions
 }: {
   onToggleData: () => void
   dataOpen: boolean
+  onToggleGit: () => void
+  gitOpen: boolean
   docName: string
+  dirty: boolean
+  fileActions: FileActions
 }): JSX.Element {
   return (
     <div className="appbar">
@@ -22,13 +32,10 @@ export function AppBar({
         </svg>
       </button>
 
-      <div className="appbar-file">
-        <span className="appbar-docname">{docName}</span>
-        <span className="appbar-caret">▾</span>
-      </div>
+      <FileMenu docName={docName + (dirty ? ' *' : '')} actions={fileActions} />
 
       <div className="qat">
-        <button className="qat-btn" title="Save" disabled>
+        <button className="qat-btn" title="Save (Ctrl+S)" onClick={fileActions.onSave}>
           <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.3">
             <path d="M2 2 h9 l2 2 v9 h-11 z" />
             <path d="M4.5 2 v3.5 h6 V2 M4.5 13 v-4 h6 v4" />
@@ -49,6 +56,14 @@ export function AppBar({
       </div>
 
       <div className="appbar-spacer" />
+
+      <button
+        className={gitOpen ? 'appbar-gitbtn active' : 'appbar-gitbtn'}
+        title="History (Git)"
+        onClick={onToggleGit}
+      >
+        ⎇ History
+      </button>
     </div>
   )
 }
