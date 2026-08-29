@@ -17,6 +17,7 @@ from . import drawing as _drawing
 from . import assembly as _assembly
 from .tessellate import tessellate_shape
 from .vocab import op_name, next_label
+from . import expr as _expr
 
 _DATUM_TYPES = (
     "PartDesign::Plane", "PartDesign::Line", "PartDesign::Point",
@@ -155,7 +156,7 @@ def feature_extrude(sketchId, length=10.0, reversed=False, midplane=False, cut=F
 
 
 @method("feature.revolve")
-def feature_revolve(sketchId, angle=360.0, axis="V", reversed=False, cut=False):
+def feature_revolve(sketchId, angle=360.0, axis="V", axisRef=None, reversed=False, cut=False):
     d, sk = _obj(sketchId)
     body = sk.getParentGeoFeatureGroup()
     if body is None or body.TypeId != "PartDesign::Body":
@@ -164,7 +165,10 @@ def feature_revolve(sketchId, angle=360.0, axis="V", reversed=False, cut=False):
     rev = body.newObject(tid, "Revolution")
     rev.Label = next_label(body, tid)
     rev.Profile = sk
-    rev.ReferenceAxis = (sk, ["V_Axis" if str(axis).upper().startswith("V") else "H_Axis"])
+    if axisRef:
+        rev.ReferenceAxis = _resolve_ref(d, body, axisRef)
+    else:
+        rev.ReferenceAxis = (sk, ["V_Axis" if str(axis).upper().startswith("V") else "H_Axis"])
     rev.Angle = float(angle)
     if reversed:
         rev.Reversed = True
@@ -380,6 +384,22 @@ def _resolve_ref(d, body, ref):
             raise RpcError(APP_ERROR, "no object %r" % ref.get("bodyId"))
         base = src.Tip if src.TypeId == "PartDesign::Body" else src
         return (base, [ref["sub"]])
+    if k == "sketch":
+        o = d.getObject(ref.get("id") or ref.get("sketchId"))
+        if o is None:
+            raise RpcError(APP_ERROR, "no sketch %r" % ref.get("id"))
+        sub = ref.get("sub")
+        if not sub:
+            # prefer a construction line, else the first edge
+            sub = "Edge1"
+            try:
+                for i, g in enumerate(o.Geometry):
+                    if o.getConstruction(i) and g.TypeId == "Part::GeomLineSegment":
+                        sub = "Edge%d" % (i + 1)
+                        break
+            except Exception:
+                pass
+        return (o, [sub])
     raise RpcError(APP_ERROR, "bad reference kind %r" % k)
 
 
@@ -953,6 +973,57 @@ def canvas_update(id, w=None, h=None, offset=None, rot=None):
 def canvas_delete(id):
     session.remove_canvas(id)
     return {"deleted": id}
+
+
+# --------------------------------------------------------------------------- #
+# named parameters + unit-aware expression evaluation for dimension inputs
+# --------------------------------------------------------------------------- #
+
+import re as _re
+
+
+def _params_payload():
+    out = []
+    for name, e in session.params().items():
+        try:
+            v = _expr.evaluate(e, "length", session.params())
+        except Exception:
+            v = None
+        out.append({"name": name, "expr": e, "value": v})
+    return {"params": out}
+
+
+@method("params.list")
+def params_list():
+    return _params_payload()
+
+
+@method("params.set")
+def params_set(name, expr):
+    if not _re.match(r"^[A-Za-z_]\w*$", str(name or "")):
+        raise RpcError(APP_ERROR, "parameter name must be a plain identifier")
+    try:
+        _expr.evaluate(str(expr), "length", {**session.params(), str(name): "0"})
+    except Exception as ex:
+        raise RpcError(APP_ERROR, "bad expression: %s" % ex)
+    session.set_param(str(name), str(expr))
+    return _params_payload()
+
+
+@method("params.delete")
+def params_delete(name):
+    session.del_param(str(name))
+    return _params_payload()
+
+
+@method("expr.eval")
+def expr_eval(text, kind="length"):
+    """Evaluate a dimension expression. kind='length' -> mm, 'angle' -> deg."""
+    try:
+        value = _expr.evaluate(str(text), kind, session.params())
+    except Exception as ex:
+        raise RpcError(APP_ERROR, str(ex))
+    return {"value": value, "expr": str(text), "kind": kind}
 
 
 @method("tree.get")

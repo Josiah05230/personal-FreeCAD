@@ -144,6 +144,13 @@ export type GeomRef =
   | { kind: 'plane'; id: string }
   | { kind: 'face'; bodyId: string; sub: string }
   | { kind: 'edge'; bodyId: string; sub: string }
+  | { kind: 'sketch'; id: string; sub?: string }
+
+export interface Param {
+  name: string
+  expr: string
+  value: number | null
+}
 
 export function selectionToRef(s: Selection): GeomRef | null {
   if (s.kind === 'plane') {
@@ -294,8 +301,13 @@ export const api = {
       'sketch.finish',
       { sketchId, elements, constraints }
     ),
-  revolve: (sketchId: string, angle: number, axis = 'V', cut = false) =>
-    rpc<{ bodies: BodyTree[] }>('feature.revolve', { sketchId, angle, axis, cut }),
+  revolve: (
+    sketchId: string,
+    angle: number,
+    axis = 'V',
+    cut = false,
+    axisRef: GeomRef | null = null
+  ) => rpc<{ bodies: BodyTree[] }>('feature.revolve', { sketchId, angle, axis, cut, axisRef }),
   sweep: (profileId: string, pathId: string, cut = false) =>
     rpc<{ bodies: BodyTree[] }>('feature.sweep', { profileId, pathId, cut }),
   loft: (sketchIds: string[], cut = false) =>
@@ -313,6 +325,13 @@ export const api = {
 
   measure: (refs: { bodyId: string; sub: string }[]) =>
     rpc<MeasureResult>('measure.compute', { refs }),
+
+  exprEval: (text: string, kind: 'length' | 'angle' = 'length') =>
+    rpc<{ value: number; expr: string; kind: string }>('expr.eval', { text, kind }),
+  paramsList: () => rpc<{ params: Param[] }>('params.list'),
+  paramsSet: (name: string, expr: string) =>
+    rpc<{ params: Param[] }>('params.set', { name, expr }),
+  paramsDelete: (name: string) => rpc<{ params: Param[] }>('params.delete', { name }),
 
   drawingAddView: (bodyId: string | null, direction: string, scale = 1) =>
     rpc<DrawingView>('drawing.addView', { bodyId, direction, scale }),

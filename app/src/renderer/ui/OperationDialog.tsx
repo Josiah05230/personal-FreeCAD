@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react'
-import type { Selection } from '../rpc'
+import { api, type Selection } from '../rpc'
 
 export type OpKind =
-  | 'box'
-  | 'cylinder'
   | 'extrude'
   | 'revolve'
   | 'loft'
@@ -34,26 +32,10 @@ interface OpSpec {
   title: string
   needs: 'none' | 'edges' | 'faces' | 'sketch' | 'sketches2' | 'planeFace' | 'plane' | 'axis'
   fields: FieldSpec[]
+  hint?: string
 }
 
 const SPECS: Record<OpKind, OpSpec> = {
-  box: {
-    title: 'Box',
-    needs: 'none',
-    fields: [
-      { key: 'width', label: 'Width', type: 'number', default: 40, min: 0.01, step: 1 },
-      { key: 'depth', label: 'Depth', type: 'number', default: 40, min: 0.01, step: 1 },
-      { key: 'height', label: 'Height', type: 'number', default: 40, min: 0.01, step: 1 }
-    ]
-  },
-  cylinder: {
-    title: 'Cylinder',
-    needs: 'none',
-    fields: [
-      { key: 'diameter', label: 'Diameter', type: 'number', default: 40, min: 0.01, step: 1 },
-      { key: 'height', label: 'Height', type: 'number', default: 40, min: 0.01, step: 1 }
-    ]
-  },
   extrude: {
     title: 'Extrude',
     needs: 'sketch',
@@ -67,9 +49,9 @@ const SPECS: Record<OpKind, OpSpec> = {
   revolve: {
     title: 'Revolve',
     needs: 'sketch',
+    hint: 'Axis: also select an edge / sketch line / datum axis (else the sketch’s vertical)',
     fields: [
       { key: 'angle', label: 'Angle', type: 'number', default: 360, step: 15 },
-      { key: 'axis', label: 'Axis', type: 'select', default: 'V', options: ['V', 'H'] },
       { key: 'cut', label: 'Cut', type: 'checkbox', default: false }
     ]
   },
@@ -178,16 +160,54 @@ export function OperationDialog({
 }): JSX.Element | null {
   const spec = kind ? SPECS[kind] : null
   const [values, setValues] = useState<OpValues>({})
+  const [preview, setPreview] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     if (spec) {
       const init: OpValues = {}
       for (const f of spec.fields) init[f.key] = f.default
       setValues(init)
+      setPreview({})
     }
   }, [kind]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!kind || !spec) return null
+
+  const numberFields = spec.fields.filter((f) => f.type === 'number')
+  const kindOf = (key: string): 'length' | 'angle' => (key === 'angle' ? 'angle' : 'length')
+
+  const evalField = async (key: string): Promise<void> => {
+    const raw = String(values[key] ?? '')
+    if (!raw.trim() || !isNaN(Number(raw))) {
+      setPreview((p) => ({ ...p, [key]: '' }))
+      return
+    }
+    try {
+      const r = await api.exprEval(raw, kindOf(key))
+      setPreview((p) => ({ ...p, [key]: `= ${Number(r.value.toFixed(4))}` }))
+    } catch (e) {
+      setPreview((p) => ({ ...p, [key]: (e as Error).message }))
+    }
+  }
+
+  const submit = async (): Promise<void> => {
+    setBusy(true)
+    try {
+      const out: OpValues = { ...values }
+      for (const f of numberFields) {
+        const raw = String(values[f.key] ?? f.default)
+        out[f.key] = isNaN(Number(raw))
+          ? (await api.exprEval(raw, kindOf(f.key))).value
+          : Number(raw)
+      }
+      onApply(kind, out)
+    } catch (e) {
+      window.alert((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const edges = selection.filter((s) => s.kind === 'edge')
   const faces = selection.filter((s) => s.kind === 'face')
@@ -231,18 +251,23 @@ export function OperationDialog({
       {needMsg && (
         <div className={ready ? 'opdlg-need ok' : 'opdlg-need'}>{needMsg}</div>
       )}
+      {spec.hint && <div className="opdlg-hint">{spec.hint}</div>}
       <div className="opdlg-body">
         {spec.fields.map((f) => (
           <label key={f.key} className="opdlg-field">
             <span>{f.label}</span>
             {f.type === 'number' && (
               <input
-                type="number"
-                value={Number(values[f.key] ?? f.default)}
-                min={f.min}
-                step={f.step}
-                onChange={(e) => setValues((v) => ({ ...v, [f.key]: Number(e.target.value) }))}
+                type="text"
+                inputMode="text"
+                value={String(values[f.key] ?? f.default)}
+                title="number or expression, e.g. 15in + 2.4mm, width/2"
+                onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                onBlur={() => void evalField(f.key)}
               />
+            )}
+            {f.type === 'number' && preview[f.key] && (
+              <span className="opdlg-eval">{preview[f.key]}</span>
             )}
             {f.type === 'checkbox' && (
               <input
@@ -270,12 +295,8 @@ export function OperationDialog({
         <button className="opdlg-cancel" onClick={onCancel}>
           Cancel
         </button>
-        <button
-          className="opdlg-ok"
-          disabled={!ready}
-          onClick={() => onApply(kind, values)}
-        >
-          OK
+        <button className="opdlg-ok" disabled={!ready || busy} onClick={() => void submit()}>
+          {busy ? '…' : 'OK'}
         </button>
       </div>
     </div>

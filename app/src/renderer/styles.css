@@ -2140,3 +2140,116 @@ code {
 .dp-row.file {
   align-items: center;
 }
+
+/* ---- Batch 12: parameters panel + expression fields ---- */
+.opdlg-hint {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin: 2px 0 6px;
+  line-height: 1.4;
+}
+.opdlg-eval {
+  font-size: 10px;
+  color: var(--accent);
+  margin-left: 6px;
+}
+
+.params-panel {
+  position: absolute;
+  right: 16px;
+  top: 60px;
+  width: 380px;
+  z-index: 12;
+  background: #23262ae8;
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 16px 44px #0009;
+  font-size: 11px;
+}
+.params-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.params-head button {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 15px;
+  cursor: pointer;
+}
+.params-list {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.params-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 64px 20px;
+  gap: 6px;
+  align-items: center;
+  padding: 3px 10px;
+}
+.params-row.params-hd {
+  color: var(--text-dim);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.params-row input {
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line-soft);
+  background: var(--chrome-3);
+  color: var(--text);
+  font-size: 11px;
+}
+.params-name {
+  font-family: ui-monospace, monospace;
+  color: var(--accent);
+}
+.params-val {
+  text-align: right;
+  color: var(--text-dim);
+}
+.params-del {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.params-add {
+  display: grid;
+  grid-template-columns: 90px 1fr auto;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line-soft);
+}
+.params-add input {
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line-soft);
+  background: var(--chrome-3);
+  color: var(--text);
+  font-size: 11px;
+}
+.params-add button {
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+.params-empty,
+.params-err {
+  padding: 8px 10px;
+  color: var(--text-dim);
+}
+.params-err {
+  color: #e0774a;
+}

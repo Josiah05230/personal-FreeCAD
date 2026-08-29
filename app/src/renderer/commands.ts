@@ -37,6 +37,7 @@ export interface CommandContext {
   toggleSection: () => void
   scale: () => Promise<void>
   insertCanvas: () => Promise<void>
+  toggleParams: () => void
   selectFilterNode: ReactNode
 }
 
@@ -49,8 +50,6 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'solid.revolve', title: 'Revolve', group: 'Create', tab: 'SOLID', icon: 'revolve', run: op('revolve') },
     { id: 'solid.loft', title: 'Loft', group: 'Create', tab: 'SOLID', icon: 'loft', run: op('loft') },
     { id: 'solid.sweep', title: 'Sweep', group: 'Create', tab: 'SOLID', icon: 'sweep', run: () => ctx.sweep() },
-    { id: 'prim.box', title: 'Box', group: 'Create', tab: 'SOLID', icon: 'extrude', run: op('box') },
-    { id: 'prim.cyl', title: 'Cylinder', group: 'Create', tab: 'SOLID', icon: 'revolve', run: op('cylinder') },
     // --- surface ---
     { id: 'surf.split', title: 'Split Body', group: 'Modify', tab: 'SURFACE', icon: 'plane', run: op('splitBody') },
     // --- sheet metal ---
@@ -83,6 +82,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     // --- inspect (a group on SOLID, F360-style) ---
     { id: 'insp.measure', title: 'Measure', group: 'Inspect', tab: 'SOLID', icon: 'axis', hotkey: 'm', run: () => ctx.startMeasure() },
     { id: 'insp.section', title: 'Section', group: 'Inspect', tab: 'SOLID', icon: 'plane', run: () => ctx.toggleSection() },
+    { id: 'mod.params', title: 'Parameters', group: 'Modify', tab: 'SOLID', icon: 'patternRect', run: () => ctx.toggleParams() },
     // --- drawing ---
     { id: 'draw.fromDesign', title: 'Drawing from Design', group: 'Drawing', tab: 'TOOLS', icon: 'sketch', run: () => ctx.startDrawing() },
     // --- file / view ---

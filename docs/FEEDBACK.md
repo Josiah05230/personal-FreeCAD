@@ -47,20 +47,23 @@ Running checklist of user feedback from live testing. `[x]` done, `[~]` partial,
 
 ## Batch 11 - scrubber caching / open-into-tab
 
-- [ ] Timeline scrubber is slow to move; cache tessellation per rollback
-      position so scrubbing back and forth is instant
+- [x] Scrubber caches scene+tree per rollback position (rollCacheRef) so
+      revisiting a spot is instant; drag is rAF-throttled + de-duped; cache
+      clears on any edit
 - [x] Open resets the sidecar doc and lands in a fresh tab; boot no longer
       creates a demo body (that was the "cube on top of my part")
 
 ## Batch 12 - revolve axis / no primitives / parameters / equation dimensions
 
-- [ ] Revolve axis is a selection (sketch line / body edge / datum axis), not a
-      dropdown
-- [ ] Drop the Box and Cylinder tools (F360 has no primitives - sketch + extrude)
-- [ ] Parameter table: named user parameters referenceable from feature and
-      sketch dimensions
-- [ ] Dimension inputs accept unit equations ("15in + 2.4mm"): evaluate to a
-      value but keep the expression for later editing
+- [x] Revolve axis is a selection (body edge / sketch line / datum axis); no
+      dropdown, falls back to the sketch's vertical when nothing is picked
+- [x] Box and Cylinder tools removed (sketch + extrude/revolve instead)
+- [x] Parameter table (Modify > Parameters): named params, unit expressions,
+      cross-references, persisted in the doc sidecar json
+- [x] Feature dimension inputs accept unit equations ("15in + 2.4mm", "bore/2");
+      live "= value" preview, evaluated on OK via expr.eval
+- [~] Sketch dimensions do not exist yet as a numeric tool, so equation input
+      there is still pending (the 2D editor has no dimension entry)
 
 ## Deferred / not done
 

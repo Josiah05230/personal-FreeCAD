@@ -54,6 +54,27 @@ def clear_markers():
     _rolled_empty.clear()
 
 
+# Named user parameters: {name: expression string}. Referenceable from any
+# dimension input. Session-scoped; persisted with the document sidecar json.
+_params = {}
+
+
+def params():
+    return dict(_params)
+
+
+def set_param(name, expr):
+    _params[name] = expr
+
+
+def del_param(name):
+    _params.pop(name, None)
+
+
+def clear_params():
+    _params.clear()
+
+
 def set_rolled_empty(body_name, empty):
     if empty:
         _rolled_empty.add(body_name)
@@ -101,6 +122,8 @@ def load_state(blob):
         _canvases[c["id"]] = c
     _colors.clear()
     _colors.update(blob.get("colors", {}))
+    _params.clear()
+    _params.update(blob.get("params", {}))
     mx = 0
     for cid in _canvases:
         try:
@@ -111,7 +134,8 @@ def load_state(blob):
 
 
 def dump_state():
-    return {"canvases": list(_canvases.values()), "colors": dict(_colors)}
+    return {"canvases": list(_canvases.values()), "colors": dict(_colors),
+            "params": dict(_params)}
 
 
 def canvases():
@@ -154,6 +178,7 @@ def reset():
     _state["path"] = None
     _shown_datums.clear()
     clear_markers()
+    clear_params()
     return d
 
 

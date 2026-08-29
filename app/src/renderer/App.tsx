@@ -32,6 +32,7 @@ import { AssemblyPanel } from './ui/AssemblyPanel'
 import { SketchRibbon } from './ui/SketchRibbon'
 import { MeasurePanel, SectionPanel, type SectionState } from './ui/InspectPanels'
 import { PromptHost, promptText, promptForm } from './ui/PromptDialog'
+import { ParametersPanel } from './ui/ParametersPanel'
 import type { MeasureResult, SketchRefGeom, SketchConstraint } from './rpc'
 import type { SketchTool, SketchConstraintType } from './viewport/SketchController'
 import type { SketchFrameDTO } from './rpc'
@@ -79,6 +80,7 @@ export function App(): JSX.Element {
   const [op, setOp] = useState<OpKind | null>(null)
 
   const [showDrawing, setShowDrawing] = useState(false)
+  const [paramsOpen, setParamsOpen] = useState(false)
 
   const [asmTree, setAsmTree] = useState<AssemblyTree | null>(null)
   const [jointType, setJointType] = useState('Revolute')
@@ -117,22 +119,40 @@ export function App(): JSX.Element {
     [activeTab]
   )
 
+  // scrubber cache: scene+tree snapshots keyed by rollback position, so moving
+  // the timeline marker back over a spot you have already visited is instant
+  const rollCacheRef = useRef<
+    Map<string, { scene: Awaited<ReturnType<typeof api.sceneGet>>; tree: Awaited<ReturnType<typeof api.treeGet>> }>
+  >(new Map())
+  const rollSeqRef = useRef(0)
+
+  const applySceneTree = useCallback(
+    (
+      scene: Awaited<ReturnType<typeof api.sceneGet>>,
+      tree: Awaited<ReturnType<typeof api.treeGet>>
+    ) => {
+      setMeshes(scene.meshes)
+      setSketches(scene.sketches ?? [])
+      setDatums(scene.datums ?? [])
+      setPickPlanes(scene.pickPlanes ?? [])
+      setCanvases(scene.canvases ?? [])
+      setBodies(tree.bodies)
+      setDocPath(tree.path)
+      setVisOverride({})
+    },
+    []
+  )
+
   const refreshScene = useCallback(async () => {
+    rollCacheRef.current.clear()
     const [scene, tree, asm] = await Promise.all([
       api.sceneGet(),
       api.treeGet(),
       api.assemblyTree().catch(() => null)
     ])
-    setMeshes(scene.meshes)
-    setSketches(scene.sketches ?? [])
-    setDatums(scene.datums ?? [])
-    setPickPlanes(scene.pickPlanes ?? [])
-    setCanvases(scene.canvases ?? [])
-    setBodies(tree.bodies)
-    setDocPath(tree.path)
-    setVisOverride({})
+    applySceneTree(scene, tree)
     setAsmTree(asm && asm.assembly ? asm : null)
-  }, [])
+  }, [applySceneTree])
 
   const refreshMeshesOnly = useCallback(async () => {
     const [scene, tree] = await Promise.all([api.sceneGet(), api.treeGet()])
@@ -264,6 +284,7 @@ export function App(): JSX.Element {
     const id = sketchSession.sketchId
     // one round trip: geometry + constraints + recompute happen server-side
     await api.sketchFinish(id, ents, cons)
+    rollCacheRef.current.clear()
     setSketchSession(null)
     setSketchInitial([])
     resetSketchUi()
@@ -302,12 +323,6 @@ export function App(): JSX.Element {
         .map((s) => (s as { sketchId: string }).sketchId)
       try {
         switch (kind) {
-          case 'box':
-            await api.box(Number(v.width), Number(v.depth), Number(v.height))
-            break
-          case 'cylinder':
-            await api.cylinder(Number(v.diameter), Number(v.height))
-            break
           case 'extrude':
             await api.extrude(
               sketchIds[0],
@@ -317,9 +332,28 @@ export function App(): JSX.Element {
               Boolean(v.reversed)
             )
             break
-          case 'revolve':
-            await api.revolve(sketchIds[0], Number(v.angle), String(v.axis), Boolean(v.cut))
+          case 'revolve': {
+            // axis: first non-profile edge / sketch line / datum axis in the selection
+            let axisRef: import('./rpc').GeomRef | null = null
+            for (const s of selection) {
+              if (s.kind === 'edge') {
+                axisRef = { kind: 'edge', bodyId: s.bodyId, sub: s.sub }
+                break
+              }
+              if (s.kind === 'plane') {
+                axisRef = s.role
+                  ? { kind: 'origin', role: s.role }
+                  : { kind: 'plane', id: s.planeId }
+                break
+              }
+              if (s.kind === 'sketch' && s.sketchId !== sketchIds[0]) {
+                axisRef = { kind: 'sketch', id: s.sketchId }
+                break
+              }
+            }
+            await api.revolve(sketchIds[0], Number(v.angle), 'V', Boolean(v.cut), axisRef)
             break
+          }
           case 'loft':
             await api.loft(sketchIds, Boolean(v.cut))
             break
@@ -397,10 +431,19 @@ export function App(): JSX.Element {
   const rollTo = useCallback(
     async (featureId: string | null) => {
       if (!bodyId) return
+      const key = `${bodyId}:${featureId ?? 'TIP'}`
+      const seq = ++rollSeqRef.current
+      const cached = rollCacheRef.current.get(key)
+      if (cached) applySceneTree(cached.scene, cached.tree) // instant
+
       await api.rollTo(bodyId, featureId)
-      await refreshScene()
+      if (rollSeqRef.current !== seq) return // a newer roll supersedes this one
+      const [scene, tree] = await Promise.all([api.sceneGet(), api.treeGet()])
+      if (rollSeqRef.current !== seq) return
+      rollCacheRef.current.set(key, { scene, tree })
+      if (!cached) applySceneTree(scene, tree)
     },
-    [bodyId, refreshScene]
+    [bodyId, applySceneTree]
   )
 
   const renameFeature = useCallback(
@@ -676,6 +719,7 @@ export function App(): JSX.Element {
         toggleSection,
         scale: scaleBody,
         insertCanvas,
+        toggleParams: () => setParamsOpen((v) => !v),
         selectFilterNode: (
           <SelectFilterMenu
             mode={selectMode}
@@ -955,6 +999,7 @@ export function App(): JSX.Element {
                       onClose={() => setSection(null)}
                     />
                   )}
+                  {paramsOpen && <ParametersPanel onClose={() => setParamsOpen(false)} />}
                   <Timeline
                     bodies={bodies}
                     handlers={{

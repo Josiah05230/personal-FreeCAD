@@ -66,16 +66,29 @@ export function Timeline({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playing])
 
-  // drag the marker
+  // drag the marker (throttled + de-duped so scrubbing does not flood the engine)
   useEffect(() => {
     if (!dragging) return
+    let last = -1
+    let raf = 0
     const onMove = (e: PointerEvent): void => {
       const el = trackRef.current
       if (!el) return
       const x = e.clientX - el.getBoundingClientRect().left + el.scrollLeft
-      rollToIndex(Math.round(x / CHIP_W) - 1)
+      const idx = Math.max(0, Math.min(Math.round(x / CHIP_W) - 1, feats.length - 1))
+      if (idx === last) return
+      if (raf) return
+      raf = window.requestAnimationFrame(() => {
+        raf = 0
+        if (idx === last) return
+        last = idx
+        rollToIndex(idx)
+      })
     }
-    const onUp = (): void => setDragging(false)
+    const onUp = (): void => {
+      if (raf) window.cancelAnimationFrame(raf)
+      setDragging(false)
+    }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
     return () => {
