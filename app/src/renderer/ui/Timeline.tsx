@@ -13,6 +13,7 @@ const KIND_ICON: Record<string, IconName> = {
 export interface TimelineHandlers {
   onRollTo: (featureId: string | null) => void
   onEdit: (featureId: string) => void
+  onEditDim: (featureId: string) => void
   onRename: (featureId: string) => void
   onDelete: (featureId: string) => void
   onSuppress: (featureId: string, suppressed: boolean) => void
@@ -102,7 +103,9 @@ export function Timeline({
   const menuItems = (id: string): MenuItem[] => {
     const f = feats.find((x) => x.id === id)
     return [
-      { label: 'Edit Feature', onClick: () => handlers.onEdit(id) },
+      f?.kind === 'sketch'
+        ? { label: 'Edit Sketch', onClick: () => handlers.onEdit(id) }
+        : { label: 'Edit Value…', onClick: () => handlers.onEditDim(id) },
       { label: 'Rename…', onClick: () => handlers.onRename(id) },
       { label: 'Move timeline here', onClick: () => handlers.onRollTo(id) },
       {
@@ -155,7 +158,9 @@ export function Timeline({
                 (f.suppressed ? ' suppressed' : '')
               }
               title={`${f.label}  ·  ${f.opType}`}
-              onDoubleClick={() => handlers.onEdit(f.id)}
+              onDoubleClick={() =>
+                f.kind === 'sketch' ? handlers.onEdit(f.id) : handlers.onEditDim(f.id)
+              }
               onContextMenu={(e) => {
                 e.preventDefault()
                 setMenu({ x: e.clientX, y: e.clientY, id: f.id })

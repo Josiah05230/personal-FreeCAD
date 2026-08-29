@@ -5,7 +5,13 @@ import { api, type Param } from '../rpc'
  * Named user parameters. Any dimension input (feature dialogs today) accepts a
  * parameter name or an expression referencing one, e.g. `bore/2 + 1mm`.
  */
-export function ParametersPanel({ onClose }: { onClose: () => void }): JSX.Element {
+export function ParametersPanel({
+  onClose,
+  onModelChanged
+}: {
+  onClose: () => void
+  onModelChanged: () => void
+}): JSX.Element {
   const [params, setParams] = useState<Param[]>([])
   const [name, setName] = useState('')
   const [expr, setExpr] = useState('')
@@ -27,6 +33,7 @@ export function ParametersPanel({ onClose }: { onClose: () => void }): JSX.Eleme
       setName('')
       setExpr('')
       setErr(null)
+      if (r.rebuilt) onModelChanged()
     } catch (e) {
       setErr((e as Error).message)
     }
@@ -34,15 +41,19 @@ export function ParametersPanel({ onClose }: { onClose: () => void }): JSX.Eleme
 
   const edit = async (n: string, e: string): Promise<void> => {
     try {
-      setParams((await api.paramsSet(n, e)).params)
+      const r = await api.paramsSet(n, e)
+      setParams(r.params)
       setErr(null)
+      if (r.rebuilt) onModelChanged()
     } catch (ex) {
       setErr((ex as Error).message)
     }
   }
 
   const remove = async (n: string): Promise<void> => {
-    setParams((await api.paramsDelete(n)).params)
+    const r = await api.paramsDelete(n)
+    setParams(r.params)
+    if (r.rebuilt) onModelChanged()
   }
 
   return (

@@ -8,6 +8,7 @@ export interface BrowserHandlers {
   onRename: (id: string) => void
   onDelete: (id: string) => void
   onEdit: (id: string) => void
+  onEditDim: (id: string) => void
   onSelect: (sel: Selection, additive: boolean) => void
 }
 
@@ -128,7 +129,9 @@ export function Browser({
     ids.some((id) => vis(id, fb(id)))
 
   const featMenu = (id: string, kind?: 'sketch'): MenuItem[] => [
-    { label: kind === 'sketch' ? 'Edit Sketch' : 'Edit', onClick: () => handlers.onEdit(id) },
+    kind === 'sketch'
+      ? { label: 'Edit Sketch', onClick: () => handlers.onEdit(id) }
+      : { label: 'Edit Value…', onClick: () => handlers.onEditDim(id) },
     { label: 'Rename…', onClick: () => handlers.onRename(id) },
     { separator: true, label: '' },
     { label: 'Delete', danger: true, onClick: () => handlers.onDelete(id) }

@@ -75,6 +75,35 @@ def clear_params():
     _params.clear()
 
 
+# Per-feature dimension expressions: {featureName: {prop: "1in + 2mm"}}.
+# The feature's numeric property is kept in sync; this remembers the formula so
+# editing shows it again, and lets a parameter change re-drive the model.
+_feature_exprs = {}
+
+
+def feature_exprs(name):
+    return dict(_feature_exprs.get(name, {}))
+
+
+def feature_expr(name, prop):
+    return _feature_exprs.get(name, {}).get(prop)
+
+
+def set_feature_expr(name, prop, expr):
+    if not expr:
+        _feature_exprs.get(name, {}).pop(prop, None)
+        return
+    _feature_exprs.setdefault(name, {})[prop] = expr
+
+
+def all_feature_exprs():
+    return {n: dict(m) for n, m in _feature_exprs.items()}
+
+
+def clear_feature_exprs():
+    _feature_exprs.clear()
+
+
 def set_rolled_empty(body_name, empty):
     if empty:
         _rolled_empty.add(body_name)
@@ -124,6 +153,8 @@ def load_state(blob):
     _colors.update(blob.get("colors", {}))
     _params.clear()
     _params.update(blob.get("params", {}))
+    _feature_exprs.clear()
+    _feature_exprs.update(blob.get("featureExprs", {}))
     mx = 0
     for cid in _canvases:
         try:
@@ -135,7 +166,7 @@ def load_state(blob):
 
 def dump_state():
     return {"canvases": list(_canvases.values()), "colors": dict(_colors),
-            "params": dict(_params)}
+            "params": dict(_params), "featureExprs": all_feature_exprs()}
 
 
 def canvases():
@@ -179,6 +210,7 @@ def reset():
     _shown_datums.clear()
     clear_markers()
     clear_params()
+    clear_feature_exprs()
     return d
 
 

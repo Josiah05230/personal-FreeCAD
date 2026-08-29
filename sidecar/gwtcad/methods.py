@@ -1272,13 +1272,19 @@ def params_set(name, expr):
     except Exception as ex:
         raise RpcError(APP_ERROR, "bad expression: %s" % ex)
     session.set_param(str(name), str(expr))
-    return _params_payload()
+    _reapply_feature_exprs()
+    out = _params_payload()
+    out["rebuilt"] = True
+    return out
 
 
 @method("params.delete")
 def params_delete(name):
     session.del_param(str(name))
-    return _params_payload()
+    _reapply_feature_exprs()
+    out = _params_payload()
+    out["rebuilt"] = True
+    return out
 
 
 @method("expr.eval")
@@ -1289,6 +1295,97 @@ def expr_eval(text, kind="length"):
     except Exception as ex:
         raise RpcError(APP_ERROR, str(ex))
     return {"value": value, "expr": str(text), "kind": kind}
+
+
+# main driven dimension per feature type: the one the UI edits by expression
+_PRIMARY_DIM = {
+    "PartDesign::Pad": "Length",
+    "PartDesign::Pocket": "Length",
+    "PartDesign::Revolution": "Angle",
+    "PartDesign::Groove": "Angle",
+    "PartDesign::Hole": "Depth",
+    "PartDesign::Fillet": "Radius",
+    "PartDesign::Chamfer": "Size",
+    "PartDesign::Thickness": "Value",
+    "PartDesign::LinearPattern": "Length",
+    "PartDesign::PolarPattern": "Angle",
+}
+_ANGLE_PROPS = {"Angle"}
+
+
+def _prop_value(o, prop):
+    q = getattr(o, prop, None)
+    if q is None:
+        return None
+    return float(q.Value) if hasattr(q, "Value") else float(q)
+
+
+def _reapply_feature_exprs():
+    """Re-evaluate every stored feature expression against the current params and
+    push the value back onto the feature; recompute once."""
+    d = session.doc(create=False)
+    if d is None:
+        return
+    touched = False
+    for fname, props in session.all_feature_exprs().items():
+        o = d.getObject(fname)
+        if o is None:
+            continue
+        for prop, e in props.items():
+            if not hasattr(o, prop):
+                continue
+            kind = "angle" if prop in _ANGLE_PROPS else "length"
+            try:
+                setattr(o, prop, _expr.evaluate(str(e), kind, session.params()))
+                touched = True
+            except Exception:
+                pass
+    if touched:
+        d.recompute()
+
+
+@method("feature.primaryDim")
+def feature_primary_dim(id):
+    """The feature's main editable dimension: prop, current value, stored expr."""
+    d, o = _obj(id)
+    prop = _PRIMARY_DIM.get(o.TypeId)
+    if prop is None or not hasattr(o, prop):
+        return {"id": id, "prop": None}
+    return {
+        "id": id,
+        "prop": prop,
+        "value": _prop_value(o, prop),
+        "expr": session.feature_expr(id, prop),
+        "kind": "angle" if prop in _ANGLE_PROPS else "length",
+    }
+
+
+@method("feature.exprs")
+def feature_exprs_get(id):
+    return {"id": id, "exprs": session.feature_exprs(id)}
+
+
+@method("feature.setExpr")
+def feature_set_expr(id, prop, expr):
+    """Set a feature property from an expression and remember the expression."""
+    d, o = _obj(id)
+    if not hasattr(o, prop):
+        raise RpcError(APP_ERROR, "%s has no property %r" % (o.Label, prop))
+    kind = "angle" if prop in _ANGLE_PROPS else "length"
+    text = str(expr).strip()
+    try:
+        val = _expr.evaluate(text, kind, session.params())
+    except Exception as ex:
+        raise RpcError(APP_ERROR, str(ex))
+    setattr(o, prop, val)
+    # store only if it is a real expression (not just a plain number)
+    try:
+        float(text)
+        session.set_feature_expr(id, prop, None)
+    except ValueError:
+        session.set_feature_expr(id, prop, text)
+    d.recompute()
+    return tree_get()
 
 
 @method("tree.get")

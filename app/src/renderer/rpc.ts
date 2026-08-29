@@ -404,8 +404,21 @@ export const api = {
     rpc<{ value: number; expr: string; kind: string }>('expr.eval', { text, kind }),
   paramsList: () => rpc<{ params: Param[] }>('params.list'),
   paramsSet: (name: string, expr: string) =>
-    rpc<{ params: Param[] }>('params.set', { name, expr }),
-  paramsDelete: (name: string) => rpc<{ params: Param[] }>('params.delete', { name }),
+    rpc<{ params: Param[]; rebuilt?: boolean }>('params.set', { name, expr }),
+  paramsDelete: (name: string) =>
+    rpc<{ params: Param[]; rebuilt?: boolean }>('params.delete', { name }),
+  featurePrimaryDim: (id: string) =>
+    rpc<{
+      id: string
+      prop: string | null
+      value?: number
+      expr?: string | null
+      kind?: 'length' | 'angle'
+    }>('feature.primaryDim', { id }),
+  featureExprs: (id: string) =>
+    rpc<{ id: string; exprs: Record<string, string> }>('feature.exprs', { id }),
+  featureSetExpr: (id: string, prop: string, expr: string) =>
+    rpc<{ bodies: BodyTree[] }>('feature.setExpr', { id, prop, expr }),
 
   drawingAddView: (bodyId: string | null, direction: string, scale = 1) =>
     rpc<DrawingView>('drawing.addView', { bodyId, direction, scale }),

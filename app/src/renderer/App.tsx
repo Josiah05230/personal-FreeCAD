@@ -324,7 +324,7 @@ export function App(): JSX.Element {
   }, [sketchSession, refreshScene])
 
   const applyOp = useCallback(
-    async (kind: OpKind, v: OpValues) => {
+    async (kind: OpKind, v: OpValues, exprs: Record<string, string> = {}) => {
       const edges = selection.filter((s) => s.kind === 'edge').map((s) => (s as { sub: string }).sub)
       const faces = selection.filter((s) => s.kind === 'face') as Array<{
         sub: string
@@ -489,6 +489,34 @@ export function App(): JSX.Element {
             break
           }
         }
+        // persist any dimension expressions against the feature just created
+        const exprKeys = Object.keys(exprs)
+        if (exprKeys.length) {
+          const propByField: Record<string, Record<string, string>> = {
+            extrude: { length: 'Length' },
+            revolve: { angle: 'Angle' },
+            fillet: { radius: 'Radius' },
+            chamfer: { size: 'Size' },
+            shell: { thickness: 'Value' },
+            hole: { diameter: 'Diameter', depth: 'Depth' }
+          }
+          const map = propByField[kind]
+          if (map) {
+            const tree = await api.treeGet()
+            const tip = tree.bodies.flatMap((b) => b.features).find((f) => f.isTip)
+            if (tip) {
+              for (const k of exprKeys) {
+                if (map[k]) {
+                  try {
+                    await api.featureSetExpr(tip.id, map[k], exprs[k])
+                  } catch {
+                    /* keep the numeric value already applied */
+                  }
+                }
+              }
+            }
+          }
+        }
         setOp(null)
         await afterEdit()
       } catch (e) {
@@ -543,6 +571,34 @@ export function App(): JSX.Element {
       await afterEdit()
     },
     [afterEdit]
+  )
+
+  const editFeatureDim = useCallback(
+    async (id: string) => {
+      let pd
+      try {
+        pd = await api.featurePrimaryDim(id)
+      } catch (e) {
+        window.alert((e as Error).message)
+        return
+      }
+      if (!pd.prop) {
+        window.alert('This feature has no editable dimension.')
+        return
+      }
+      const cur = pd.expr ?? String(pd.value ?? '')
+      const next = await promptText(`${pd.prop} (number or expression)`, cur)
+      if (next == null || next === cur) return
+      try {
+        await api.featureSetExpr(id, pd.prop, next)
+        rollCacheRef.current.clear()
+        await refreshScene()
+        markDirty()
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [refreshScene, markDirty]
   )
 
   const toggleVisibility = useCallback(
@@ -1095,6 +1151,7 @@ export function App(): JSX.Element {
                       onRename: renameFeature,
                       onDelete: deleteFeature,
                       onEdit: (id) => void editSketch(id),
+                      onEditDim: (id) => void editFeatureDim(id),
                       onSelect: (sel, add) => onSelect(sel, add)
                     }}
                   />
@@ -1133,12 +1190,21 @@ export function App(): JSX.Element {
                       onClose={() => setSection(null)}
                     />
                   )}
-                  {paramsOpen && <ParametersPanel onClose={() => setParamsOpen(false)} />}
+                  {paramsOpen && (
+                    <ParametersPanel
+                      onClose={() => setParamsOpen(false)}
+                      onModelChanged={() => {
+                        rollCacheRef.current.clear()
+                        void refreshScene()
+                      }}
+                    />
+                  )}
                   <Timeline
                     bodies={bodies}
                     handlers={{
                       onRollTo: rollTo,
                       onEdit: (id) => void editSketch(id),
+                      onEditDim: (id) => void editFeatureDim(id),
                       onRename: renameFeature,
                       onDelete: deleteFeature,
                       onSuppress: (id, s) => void suppressFeature(id, s)

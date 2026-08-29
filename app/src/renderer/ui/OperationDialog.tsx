@@ -212,7 +212,7 @@ export function OperationDialog({
 }: {
   kind: OpKind | null
   selection: Selection[]
-  onApply: (kind: OpKind, values: OpValues) => void
+  onApply: (kind: OpKind, values: OpValues, exprs: Record<string, string>) => void
   onCancel: () => void
 }): JSX.Element | null {
   const spec = kind ? SPECS[kind] : null
@@ -252,13 +252,17 @@ export function OperationDialog({
     setBusy(true)
     try {
       const out: OpValues = { ...values }
+      const exprs: Record<string, string> = {}
       for (const f of numberFields) {
-        const raw = String(values[f.key] ?? f.default)
-        out[f.key] = isNaN(Number(raw))
-          ? (await api.exprEval(raw, kindOf(f.key))).value
-          : Number(raw)
+        const raw = String(values[f.key] ?? f.default).trim()
+        if (isNaN(Number(raw))) {
+          out[f.key] = (await api.exprEval(raw, kindOf(f.key))).value
+          exprs[f.key] = raw // remember the formula for this dimension
+        } else {
+          out[f.key] = Number(raw)
+        }
       }
-      onApply(kind, out)
+      onApply(kind, out, exprs)
     } catch (e) {
       window.alert((e as Error).message)
     } finally {
