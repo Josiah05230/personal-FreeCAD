@@ -84,8 +84,12 @@ working first version. `docs/FEEDBACK.md` tracks the live-test checklist.
 - Real PartDesign::Hole with counterbore / countersink. Move / Rotate Body
   (body.transform). Suppress vs Delete (feature.suppress) with struck-through
   timeline chips.
+- Vertex selection (pickable per-body points); Construction Point attaches to a
+  picked vertex / edge / face centre. Rib (real PartDesign::Rib or an offset-
+  wire + symmetric-pad fallback). Copy Body (independent duplicate). Combine
+  "keep tool bodies".
 - Canvas drag-a-line calibration (INSERT > Calibrate Canvas).
-- ~67 sidecar RPC methods.
+- ~69 sidecar RPC methods.
 
 ## Batches 7-8 additions
 
@@ -110,8 +114,9 @@ working first version. `docs/FEEDBACK.md` tracks the live-test checklist.
   round-trip; the MbD solver is GUI-coupled, so parts don't move yet).
 - Drawings: dimension tool is linear only; no GD&T / section / detail views.
 - Git panel is read-only (no commit / checkout / diff from the UI).
-- Sheet metal beyond Base Flange; surface modelling (Thicken / offset).
-- Rib / Web feature; Copy body; Combine keep-tool; Construction Point on a
-  picked vertex (needs vertex selection in the Picker).
+- Sheet metal beyond Base Flange; surface modelling / Thicken (no surface bodies
+  in this shell yet).
+- PartDesign::Rib is absent from the bundled FreeCAD 1.1.1, so Rib runs on an
+  offset-wire + symmetric-pad fallback.
 - Packaged build not run end to end with a real bundled FreeCAD (needs the ~1GB
   copy; `scripts/package.sh` does it).
