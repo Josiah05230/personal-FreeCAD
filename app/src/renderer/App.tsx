@@ -162,13 +162,12 @@ export function App(): JSX.Element {
     setDatums(scene.datums ?? [])
     setPickPlanes(scene.pickPlanes ?? [])
     setBodies(tree.bodies)
-    setVisOverride({}) // engine state is authoritative again
+    // keep the user's client-side hide/show across a mesh refresh
   }, [])
 
   const toggleGroup = useCallback(
     (group: 'bodies' | 'sketches' | 'origin', visible: boolean) => {
-      // optimistic: paint the change now, reconcile with the engine after
-      setBodies((bs) => bs) // no-op keeps deps honest
+      // pure client-side paint - the viewport flips .visible flags, no rebuild
       setVisOverride((m) => {
         const next = { ...m }
         if (group === 'bodies') for (const mm of meshes) next[mm.id] = visible
@@ -177,9 +176,11 @@ export function App(): JSX.Element {
           for (const b of bodies) for (const o of b.origin) next[o.id] = visible
         return next
       })
+      // keep the engine roughly in sync for save, but never block or refetch;
+      // only datums/finished sketches need a refetch to reappear at all
       void api
         .setVisibilityGroup(group, visible)
-        .then(() => (visible ? refreshMeshesOnly() : undefined))
+        .then(() => (visible && group !== 'bodies' ? refreshMeshesOnly() : undefined))
         .catch(() => undefined)
     },
     [meshes, sketches, bodies, refreshMeshesOnly]
@@ -903,18 +904,11 @@ export function App(): JSX.Element {
   const activeName = tabs.find((t) => t.id === activeTab)?.name ?? 'Untitled'
   const activeDirty = tabs.find((t) => t.id === activeTab)?.dirty ?? false
 
-  // client-side visibility: hide instantly, without waiting on the engine
-  const shownMeshes = useMemo(
-    () => meshes.filter((m) => visOverride[m.id] !== false),
-    [meshes, visOverride]
-  )
-  const shownSketches = useMemo(
-    () => sketches.filter((s) => visOverride[s.id] !== false),
-    [sketches, visOverride]
-  )
-  const shownDatums = useMemo(
-    () => datums.filter((dm) => visOverride[dm.id] !== false),
-    [datums, visOverride]
+  // client-side visibility: the viewport just flips object .visible flags on
+  // this set, so hiding / showing never rebuilds any geometry
+  const hiddenIds = useMemo(
+    () => new Set(Object.entries(visOverride).filter(([, v]) => v === false).map(([k]) => k)),
+    [visOverride]
   )
 
   const onSketchChange = useCallback(() => {
@@ -1048,9 +1042,10 @@ export function App(): JSX.Element {
               ) : (
                 <>
                   <Viewport
-                    meshes={shownMeshes}
-                    sketches={shownSketches}
-                    datums={shownDatums}
+                    meshes={meshes}
+                    sketches={sketches}
+                    datums={datums}
+                    hiddenIds={hiddenIds}
                     selection={selection}
                     onSelect={onSelect}
                     section={section}

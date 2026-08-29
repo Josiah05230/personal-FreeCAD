@@ -9,6 +9,20 @@ done, remove its line entirely rather than leaving a checked box.
 - [~] Sheet metal: only Base Flange (SheetMetal addon or pad fallback). Richer
       flange / unfold / bend features deferred (low priority).
 
+## Batch 14 - ribbon customisation + persisted expression dimensions
+
+- [ ] Ribbon shows fewer commands up front; the rest live only in the group
+      fold-out (like Modify). A slim default set + everything reachable via the
+      dropdown.
+- [ ] Right-click a command (ribbon button or dropdown item) to pin / unpin it
+      from the ribbon face; pinned set persists.
+- [ ] Set / change hotkeys per command; persists.
+- [ ] Feature dimensions must PERSIST the expression, not just the value: type
+      "1in + 2mm * 3mm", it evaluates to the model's units now, and re-opening
+      the feature shows the expression again (not the number).
+- [ ] Parameter references in those dimensions ("Bearing OD + 0.4mm") persist
+      the same way and re-evaluate when the parameter changes.
+
 ## Deferred / not done
 
 - Assembly joint SOLVING (joints recorded + round-trip; MbD solver is GUI-coupled
@@ -30,4 +44,4 @@ Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
 
-(none pending)
+(none pending - folded into Batch 14)

@@ -74,6 +74,8 @@ export interface RenderMesh {
   color?: [number, number, number]
   needsNormals?: boolean
   component?: boolean
+  /** cheap shape signature from the sidecar; unchanged => skip client rebuild */
+  sig?: string | null
 }
 
 export interface PickPlane {

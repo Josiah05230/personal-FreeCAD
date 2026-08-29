@@ -24,6 +24,21 @@ _DATUM_TYPES = (
     "PartDesign::CoordinateSystem",
 )
 
+# Tessellation cache: body name -> (signature, render buffer). OCCT meshing is
+# the slow part of scene.get; skip it when a body's shape is unchanged.
+_TESS_CACHE = {}
+
+
+def _shape_sig(shape):
+    try:
+        bb = shape.BoundBox
+        return "%d|%d|%.5f|%.5f|%.3f,%.3f,%.3f,%.3f,%.3f,%.3f" % (
+            len(shape.Faces), len(shape.Edges), shape.Area, shape.Volume,
+            bb.XMin, bb.YMin, bb.ZMin, bb.XMax, bb.YMax, bb.ZMax,
+        )
+    except Exception:
+        return None
+
 
 def _kind(type_id):
     if type_id == "Sketcher::SketchObject":
@@ -58,6 +73,8 @@ def ping():
 @method("session.reset")
 def session_reset():
     d = session.reset()
+    _TESS_CACHE.clear()
+    _ensure_starter_body(d)
     return {"document": d.Name}
 
 
@@ -104,6 +121,20 @@ def _require_body():
     if b is None:
         raise RpcError(APP_ERROR, "no active body - create a solid first")
     return b
+
+
+def _ensure_starter_body(d):
+    """Fusion always has one component with an origin (3 planes + 3 axes + point),
+    even in an empty design. Guarantee an empty Body exists so the browser's
+    Origin section is never blank."""
+    if d is None:
+        return None
+    for o in d.Objects:
+        if o.TypeId == "PartDesign::Body":
+            return o
+    body = d.addObject("PartDesign::Body", "Body")
+    d.recompute()  # materialises the Origin child (planes / axes / point)
+    return body
 
 
 def _solid_tip(body):
@@ -1092,10 +1123,9 @@ def _suppressed_names(d):
 @method("scene.get")
 def scene_get():
     """Render buffers for visible bodies, sketches, and datum geometry."""
-    d = session.doc(create=False)
+    d = session.doc()
+    _ensure_starter_body(d)
     meshes, sketches, datums = [], [], []
-    if d is None:
-        return {"meshes": meshes, "sketches": sketches, "datums": datums, "pickPlanes": []}
 
     suppressed = _suppressed_names(d)
     for o in d.Objects:
@@ -1116,7 +1146,15 @@ def scene_get():
                 shape = getattr(o, "Shape", None)
                 if shape is None or shape.isNull():
                     continue
-                buf = tessellate_shape(shape)
+                sig = _shape_sig(shape)
+                cached = _TESS_CACHE.get(o.Name)
+                if sig is not None and cached is not None and cached[0] == sig:
+                    buf = dict(cached[1])  # reuse the heavy positions/normals lists
+                else:
+                    buf = tessellate_shape(shape)
+                    if sig is not None:
+                        _TESS_CACHE[o.Name] = (sig, buf)
+                buf["sig"] = sig
             buf["id"] = o.Name
             buf["label"] = o.Label
             if tid == "App::Link":
@@ -1256,7 +1294,8 @@ def expr_eval(text, kind="length"):
 @method("tree.get")
 def tree_get():
     """Feature tree for the timeline + browser."""
-    d = session.doc(create=False)
+    d = session.doc()
+    _ensure_starter_body(d)
     bodies = []
     if d is not None:
         # a create/edit advances body.Tip past where it was at rollback; when that
@@ -1490,6 +1529,7 @@ def document_open(path):
     path = os.path.abspath(os.path.expanduser(path))
     if not os.path.isfile(path):
         raise RpcError(APP_ERROR, "no such file: %s" % path)
+    _TESS_CACHE.clear()
     d = session.open_path(path)
     try:
         sj = _sidecar_json(path)

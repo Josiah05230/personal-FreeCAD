@@ -50,6 +50,7 @@ export function Viewport({
   selectMode = 'paint',
   onWindowSelect,
   canvases = [],
+  hiddenIds,
   calibrateCanvas = null,
   onCalibrate,
   sketchFrame = null,
@@ -72,6 +73,7 @@ export function Viewport({
   selectMode?: 'paint' | 'window'
   onWindowSelect?: (sels: Selection[]) => void
   canvases?: CanvasDTO[]
+  hiddenIds?: Set<string>
   calibrateCanvas?: CanvasDTO | null
   onCalibrate?: (measuredMm: number) => void
   sketchFrame?: SketchFrame | null
@@ -392,10 +394,23 @@ export function Viewport({
     }
   }, [apiRef])
 
-  // rebuild content
+  // rebuild content - only when the geometry itself changed (a cheap signature
+  // guards against rebuilds from unrelated refreshes / visibility toggles)
+  const lastSigRef = useRef('')
   useEffect(() => {
     const st = stateRef.current
     if (!st) return
+    const sig =
+      meshes.map((m) => `${m.id}#${m.sig ?? m.positions.length}`).join(',') +
+      '|' +
+      sketches.map((s) => `${s.id}:${s.polys.reduce((n, p) => n + p.length, 0)}`).join(',') +
+      '|' +
+      datums.map((dm) => `${dm.id}:${dm.kind}:${dm.origin.join('/')}`).join(',') +
+      '|' +
+      canvases.map((c) => `${c.id}:${c.w}x${c.h}:${c.offset.join('/')}`).join(',')
+    if (sig === lastSigRef.current && st.content) return
+    lastSigRef.current = sig
+
     st.picker.clear()
     if (st.content) {
       st.scene.remove(st.content)
@@ -421,6 +436,18 @@ export function Viewport({
       st.framedOnce = true
     }
   }, [meshes, sketches, datums, canvases])
+
+  // visibility: just flip .visible on the built objects - no geometry work
+  useEffect(() => {
+    const st = stateRef.current
+    if (!st?.content) return
+    const hidden = hiddenIds ?? new Set<string>()
+    for (const c of st.content.children) {
+      const ud = c.userData
+      const id = ud.bodyId ?? ud.sketchId ?? ud.datumId ?? ud.canvasId
+      if (id != null) c.visible = !hidden.has(id)
+    }
+  }, [hiddenIds, meshes, sketches, datums, canvases])
 
   // reflect selection
   useEffect(() => {
