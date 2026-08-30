@@ -15,7 +15,7 @@ const AXIS_COLOR: Record<string, number> = {
 
 function buildDatum(d: DatumDTO): THREE.Object3D {
   const g = new THREE.Group()
-  g.userData = { pick: 'datum', datumId: d.id, kind: d.kind }
+  g.userData = { pick: 'datum', datumId: d.id, kind: d.kind, role: d.role, label: d.label }
   const O = new THREE.Vector3(...d.origin)
   if (d.kind === 'plane' && d.x && d.y) {
     const X = new THREE.Vector3(...d.x)

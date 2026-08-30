@@ -60,6 +60,7 @@ export function Viewport({
   sketchFrame = null,
   sketchRefGeom = null,
   sketchInitialEntities,
+  sketchInitialConstraints,
   sketchTool = 'line',
   onSketchChange,
   onSketchDimensionRequest,
@@ -96,6 +97,7 @@ export function Viewport({
   sketchFrame?: SketchFrame | null
   sketchRefGeom?: SketchRefGeom | null
   sketchInitialEntities?: unknown[]
+  sketchInitialConstraints?: unknown[]
   sketchTool?: SketchTool
   onSketchChange?: () => void
   onSketchDimensionRequest?: (entityIndex: number, kind: 'linear' | 'radius') => void
@@ -117,8 +119,7 @@ export function Viewport({
   onSketchNoticeRef.current = onSketchNotice
   const planePickRef = useRef<{ mode: boolean; cb?: (r: SketchRef) => void }>({ mode: false })
   planePickRef.current = { mode: planePickMode, cb: onPickPlane }
-  const pickPlanesRef = useRef<PickPlane[]>([])
-  pickPlanesRef.current = pickPlanes
+  void pickPlanes // retained as a prop for compatibility; planes are real datums now
   const winSelRef = useRef<{ mode: string; cb?: (s: Selection[]) => void }>({ mode: 'paint' })
   winSelRef.current = { mode: selectMode, cb: onWindowSelect }
   const selFilterRef = useRef<string[] | undefined>(selFilter)
@@ -220,9 +221,11 @@ export function Viewport({
         setView: (dir) => stateRef.current?.cube.goToView(new THREE.Vector3(...dir)),
         getSketchEntities: () => stateRef.current?.sketch?.getEntities() ?? [],
         getNewSketchEntities: () => stateRef.current?.sketch?.getNewEntities() ?? [],
-        loadSketchEntities: (ents) => stateRef.current?.sketch?.loadExisting(ents),
+        loadSketchEntities: (ents, cons) =>
+          stateRef.current?.sketch?.loadExisting(ents, (cons ?? []) as never[]),
         sketchUndo: () => stateRef.current?.sketch?.undo(),
         getSketchConstraints: () => stateRef.current?.sketch?.getConstraints() ?? [],
+        getNewSketchConstraints: () => stateRef.current?.sketch?.getNewConstraints() ?? [],
         applySketchConstraint: (t) => stateRef.current?.sketch?.applyConstraint(t) ?? false,
         startSketchConstraint: (t) => stateRef.current?.sketch?.beginConstraint(t),
         pendingSketchConstraint: () =>
@@ -410,24 +413,21 @@ export function Viewport({
         return
       }
 
-      // sketch-plane pick mode: ghosts first, then a body face
+      // sketch-plane pick mode: hit the real origin / construction planes (shown
+      // for the duration), else a flat body face
       if (planePickRef.current.mode) {
-        const gp = st.picker.pick(e, st.ghosts)
-        if (gp && gp.kind === 'sketch') {
-          const pp = pickPlanesRef.current.find((p) => p.id === (gp as { sketchId: string }).sketchId)
-          if (pp) {
+        if (st.content) {
+          const hit = st.picker.pick(e, st.content)
+          if (hit && hit.kind === 'plane') {
             planePickRef.current.cb?.(
-              pp.ptype === 'origin' && pp.role
-                ? { kind: 'origin', role: pp.role }
-                : { kind: 'plane', id: pp.id }
+              hit.role
+                ? { kind: 'origin', role: hit.role }
+                : { kind: 'plane', id: hit.planeId }
             )
             return
           }
-        }
-        if (st.content) {
-          const fp = st.picker.pick(e, st.content)
-          if (fp && fp.kind === 'face') {
-            planePickRef.current.cb?.({ kind: 'face', bodyId: fp.bodyId, sub: fp.sub })
+          if (hit && hit.kind === 'face') {
+            planePickRef.current.cb?.({ kind: 'face', bodyId: hit.bodyId, sub: hit.sub })
             return
           }
         }
@@ -482,6 +482,13 @@ export function Viewport({
         return
       }
       if (!st || st.sketch || !st.content || e.buttons !== 0) return
+      // sketch-plane pick: highlight the plane / face under the cursor
+      if (planePickRef.current.mode) {
+        const ph = st.picker.pick(e, st.content)
+        st.picker.setHover(ph && (ph.kind === 'plane' || ph.kind === 'face') ? ph : null, st.content)
+        renderer.domElement.style.cursor = ph ? 'pointer' : ''
+        return
+      }
       const hit = st.picker.pick(e, st.content)
       const allow = selFilterRef.current
       st.picker.setHover(hit && (!allow || allow.includes(hit.kind)) ? hit : null, st.content)
@@ -634,7 +641,10 @@ export function Viewport({
         (msg) => onSketchNoticeRef.current?.(msg)
       )
       if (sketchInitialEntities && sketchInitialEntities.length) {
-        st.sketch.loadExisting(sketchInitialEntities as never[])
+        st.sketch.loadExisting(
+          sketchInitialEntities as never[],
+          (sketchInitialConstraints ?? []) as never[]
+        )
       }
       st.sketch.setTool(sketchTool)
       // look straight at the plane
@@ -671,7 +681,9 @@ export function Viewport({
     }
   }, [calibrateCanvas])
 
-  // ghost planes for the sketch-plane picker
+  // the sketch-plane picker now toggles the real origin / construction planes
+  // (App drives their visibility); nothing to render here. Keep the ghosts group
+  // clear in case an older build left something in it.
   useEffect(() => {
     const st = stateRef.current
     if (!st) return
@@ -681,39 +693,7 @@ export function Viewport({
       ;(c as THREE.Mesh).geometry?.dispose?.()
       mm?.dispose?.()
     }
-    if (!planePickMode) return
-    for (const p of pickPlanes) {
-      const O = new THREE.Vector3(...p.origin)
-      const X = new THREE.Vector3(...p.x).normalize()
-      const Y = new THREE.Vector3(...p.y).normalize()
-      const s = (p.size ?? 40) * 1.4
-      const c = [
-        O.clone().addScaledVector(X, -s).addScaledVector(Y, -s),
-        O.clone().addScaledVector(X, s).addScaledVector(Y, -s),
-        O.clone().addScaledVector(X, s).addScaledVector(Y, s),
-        O.clone().addScaledVector(X, -s).addScaledVector(Y, s)
-      ]
-      const g = new THREE.BufferGeometry().setFromPoints([c[0], c[1], c[2], c[0], c[2], c[3]])
-      const isOrigin = p.ptype === 'origin'
-      const mesh = new THREE.Mesh(
-        g,
-        new THREE.MeshBasicMaterial({
-          color: isOrigin ? 0x4a90d9 : 0xd8a24a,
-          transparent: true,
-          opacity: 0.16,
-          side: THREE.DoubleSide,
-          depthWrite: false
-        })
-      )
-      mesh.userData = { pick: 'sketch', sketchId: p.id }
-      st.ghosts.add(mesh)
-      const border = new THREE.LineLoop(
-        new THREE.BufferGeometry().setFromPoints(c),
-        new THREE.LineBasicMaterial({ color: isOrigin ? 0x6aa9dd : 0xe0b877 })
-      )
-      st.ghosts.add(border)
-    }
-  }, [planePickMode, pickPlanes])
+  }, [planePickMode])
 
   // live Offset-Plane ghost
   useEffect(() => {

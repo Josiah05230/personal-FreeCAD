@@ -63,5 +63,18 @@ Batch 19 - addressed:
   rectangle drawn as four lines gets one filled, pickable, hover-highlighted
   face - a proper Extrude target.
 
--If I finish a sketch and go back in, it needs to save/remember all of the constraints and dimensions. If I cancel/go back out of a sketch (without saving) it needs to perfectly revert to before I made those edits.
--When creating a sketch, hovering the planes doesn't highlight which one I'm about to click; and it should toggle the real origin planes' visibility, not spawn new ghost planes.
+Batch 20 - addressed:
+- Reopen a sketch and its constraints + dimensions come back: `sketch.reopen`
+  now serializes the sketch's constraints into the editor's format (keyed by
+  entity index), the editor loads them (shown as dims / symbols / DoF colour),
+  and only constraints added in the session are re-sent on Finish.
+- Cancelling a re-opened sketch no longer deletes it - the edits only lived in
+  the editor and were never sent, so backing out reverts perfectly. A
+  brand-new sketch is still discarded on Cancel.
+- The sketch-plane picker shows the real origin (and construction) planes for
+  the duration and highlights the one under the cursor; it no longer spawns
+  separate ghost planes. `_datum_dto` carries role + ptype; the picker returns
+  the plane's role so it attaches as an origin plane.
+- The scratch solver now sees the whole sketch (base + new) with refs resolved
+  to absolute indices, so DoF colouring and the over-constraint veto are
+  accurate on a reopened sketch too.

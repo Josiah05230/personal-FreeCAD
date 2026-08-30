@@ -11,10 +11,12 @@ export interface ViewportApi {
   setView: (dir: [number, number, number]) => void
   getSketchEntities: () => SketchEntity[]
   getNewSketchEntities: () => SketchEntity[]
-  loadSketchEntities: (ents: SketchEntity[]) => void
+  loadSketchEntities: (ents: SketchEntity[], cons?: RecordedSketchConstraint[]) => void
   sketchUndo: () => void
   /** manual sketch constraints recorded in the 2D editor */
   getSketchConstraints: () => RecordedSketchConstraint[]
+  /** constraints added this session (reopen keeps the originals server-side) */
+  getNewSketchConstraints: () => RecordedSketchConstraint[]
   applySketchConstraint: (type: SketchConstraintType) => boolean
   /** enter "pick the geometry" mode for a constraint (no live selection) */
   startSketchConstraint: (type: SketchConstraintType) => void

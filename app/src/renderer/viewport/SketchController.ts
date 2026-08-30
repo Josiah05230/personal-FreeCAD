@@ -132,6 +132,8 @@ export class SketchController {
   } | null = null
   private snapKind: SnapKind = 'grid'
   private constraints: RecordedConstraint[] = []
+  /** constraints present at reopen - never re-sent on finish */
+  private baseConstraintCount = 0
   /** index in `constraints` of the last one the user explicitly added, so the
    *  solver can veto it if it over-constrains; -1 once cleared */
   private lastUserConstraint = -1
@@ -263,6 +265,11 @@ export class SketchController {
     return this.constraints
   }
 
+  /** Constraints added this session (reopen -> only push the new ones). */
+  getNewConstraints(): RecordedConstraint[] {
+    return this.constraints.slice(this.baseConstraintCount)
+  }
+
   get constraintCount(): number {
     return this.constraints.length
   }
@@ -271,9 +278,11 @@ export class SketchController {
     return this.selected.length
   }
 
-  loadExisting(ents: SketchEntity[]): void {
+  loadExisting(ents: SketchEntity[], cons: RecordedConstraint[] = []): void {
     this.entities = ents.slice()
     this.baseCount = this.entities.length
+    this.constraints = cons.map((c) => ({ ...c, refs: c.refs.map((r) => ({ ...r })) }))
+    this.baseConstraintCount = this.constraints.length
     this.geomV++
     this.redraw()
     this.scheduleSolve()
@@ -1197,10 +1206,20 @@ export class SketchController {
   private async runSolve(): Promise<void> {
     if (!this.onSolve || this.drag || this.band) return
     const seq = ++this.solveSeq
-    const news = this.entities.slice(this.baseCount)
+    // send the whole sketch to the scratch solver (base + new), with every ref
+    // resolved to an absolute geo index so the mapping is 1:1
+    const allEnts = this.entities.slice()
+    const cons = this.constraints.map((c) => ({
+      ...c,
+      refs: c.refs.map((r) =>
+        r.new != null
+          ? { geo: r.new + this.baseCount, ...(r.pt != null ? { pt: r.pt } : {}) }
+          : r
+      )
+    }))
     let res: SketchSolveResult | null = null
     try {
-      res = await this.onSolve(news, this.constraints)
+      res = await this.onSolve(allEnts, cons)
     } catch {
       return
     }
@@ -1230,9 +1249,9 @@ export class SketchController {
     }
     this.lastUserConstraint = -1
 
-    // reconcile: adopt the solved coordinates for entities we are not editing
-    res.geometry.forEach((g, e) => {
-      const ent = this.entities[this.baseCount + e]
+    // reconcile: adopt the solved coordinates (indices are absolute now)
+    res.geometry.forEach((g, i) => {
+      const ent = this.entities[i]
       if (!ent || !g || ent.type !== g.type || ent.construction) return
       if (g.type === 'line' && ent.type === 'line') {
         ent.a = [g.a[0], g.a[1]]
@@ -1244,9 +1263,8 @@ export class SketchController {
     })
     const free = new Set(res.free)
     this.constrainedSet = new Set()
-    for (let e = 0; e < news.length; e++)
-      if (!free.has(e)) this.constrainedSet.add(this.baseCount + e)
-    for (let i = 0; i < this.baseCount; i++) this.constrainedSet.add(i)
+    for (let i = 0; i < this.entities.length; i++)
+      if (!free.has(i)) this.constrainedSet.add(i)
     this.geomV++
     this.redraw()
   }

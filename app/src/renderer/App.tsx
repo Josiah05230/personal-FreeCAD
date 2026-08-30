@@ -125,10 +125,13 @@ export function App(): JSX.Element {
     bodyId: string
     frame: SketchFrameDTO
     refGeom: SketchRefGeom | null
+    /** true when re-entering an existing sketch (cancel must NOT delete it) */
+    isEdit?: boolean
   } | null>(null)
   const [sketchTool, setSketchTool] = useState<SketchTool>('line')
   const [sketchCount, setSketchCount] = useState(0)
   const [sketchInitial, setSketchInitial] = useState<unknown[]>([])
+  const [sketchInitialCons, setSketchInitialCons] = useState<SketchConstraint[]>([])
   const [sketchConstruction, setSketchConstruction] = useState(false)
   const [sketchAvail, setSketchAvail] = useState<SketchConstraintType[]>([])
   const [sketchConstraintCount, setSketchConstraintCount] = useState(0)
@@ -324,6 +327,7 @@ export function App(): JSX.Element {
       | { bodyId: string; sub: string }
       | undefined
     setSketchInitial([])
+    setSketchInitialCons([])
     if (face) {
       void beginSketch({ kind: 'face', bodyId: face.bodyId, sub: face.sub })
     } else {
@@ -331,15 +335,51 @@ export function App(): JSX.Element {
     }
   }, [selection, beginSketch])
 
+  // While picking a sketch plane, show the real origin (and construction)
+  // planes; restore their prior visibility when the pick ends.
+  const datumsRef = useRef(datums)
+  datumsRef.current = datums
+  const planeVisSaved = useRef<Record<string, boolean | undefined>>({})
+  useEffect(() => {
+    const planeIds = datumsRef.current.filter((d) => d.kind === 'plane').map((d) => d.id)
+    if (planePickMode) {
+      if (Object.keys(planeVisSaved.current).length) return
+      const saved: Record<string, boolean | undefined> = {}
+      setVisOverride((prev) => {
+        const next = { ...prev }
+        for (const id of planeIds) {
+          saved[id] = prev[id]
+          next[id] = true
+        }
+        return next
+      })
+      planeVisSaved.current = saved
+    } else {
+      const saved = planeVisSaved.current
+      if (!Object.keys(saved).length) return
+      setVisOverride((prev) => {
+        const next = { ...prev }
+        for (const [id, was] of Object.entries(saved)) {
+          if (was === undefined) delete next[id]
+          else next[id] = was
+        }
+        return next
+      })
+      planeVisSaved.current = {}
+    }
+  }, [planePickMode])
+
   const editSketch = useCallback(
     async (sketchId: string) => {
       const r = await api.sketchReopen(sketchId)
       setSketchInitial(r.entities)
+      setSketchInitialCons(r.constraints ?? [])
       setSketchSession({
         sketchId,
         bodyId: r.bodyId ?? '',
         frame: r.frame,
-        refGeom: r.refGeom
+        refGeom: r.refGeom,
+        isEdit: true
       })
       resetSketchUi()
       setSketchTool('select')
@@ -352,7 +392,7 @@ export function App(): JSX.Element {
     if (!sketchSession) return
     const newEnts = vpApi.current?.getNewSketchEntities() ?? []
     const allEnts = vpApi.current?.getSketchEntities() ?? []
-    const cons = (vpApi.current?.getSketchConstraints() ?? []) as SketchConstraint[]
+    const cons = (vpApi.current?.getNewSketchConstraints() ?? []) as SketchConstraint[]
     const { frame } = sketchSession
     // optimistic origin-plane entry may not have the real id back yet
     let id = sketchSession.sketchId
@@ -375,6 +415,7 @@ export function App(): JSX.Element {
     setSketches((prev) => [...prev.filter((s) => s.id !== id), optimistic])
     setSketchSession(null)
     setSketchInitial([])
+    setSketchInitialCons([])
     resetSketchUi()
     setSelection([{ kind: 'sketch', sketchId: id }])
     markDirty()
@@ -404,7 +445,9 @@ export function App(): JSX.Element {
           /* never got created */
         }
       }
-      if (id) {
+      // a re-opened sketch is left exactly as it was - the edits only ever lived
+      // in the editor and were never sent. Only a brand-new sketch is discarded.
+      if (id && !sketchSession.isEdit) {
         try {
           await api.deleteFeature(id)
         } catch {
@@ -413,6 +456,8 @@ export function App(): JSX.Element {
       }
     }
     setSketchSession(null)
+    setSketchInitial([])
+    setSketchInitialCons([])
     sketchOnRef.current = null
     await refreshScene()
   }, [sketchSession, refreshScene])
@@ -1538,6 +1583,7 @@ export function App(): JSX.Element {
                     sketchFrame={sketchSession?.frame ?? null}
                     sketchRefGeom={sketchSession?.refGeom ?? null}
                     sketchInitialEntities={sketchInitial}
+                    sketchInitialConstraints={sketchInitialCons}
                     sketchTool={sketchTool}
                     onSketchChange={onSketchChange}
                     onSketchDimensionRequest={(i, k) => void onSketchDimensionRequest(i, k)}

@@ -54,7 +54,7 @@ export class Picker {
       while (owner && owner.userData?.pick == null && owner !== content) owner = owner.parent
       const ud = owner?.userData ?? h.object.userData
       if (ud.pick === 'datum') {
-        return { kind: 'plane', planeId: ud.datumId, label: ud.label }
+        return { kind: 'plane', planeId: ud.datumId, role: ud.role || undefined, label: ud.label }
       }
       if (ud.pick === 'sketch') {
         return { kind: 'sketch', sketchId: ud.sketchId }

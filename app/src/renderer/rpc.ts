@@ -43,6 +43,7 @@ export interface DatumDTO {
   dir?: [number, number, number]
   length?: number
   role?: string
+  ptype?: 'origin' | 'construction'
   visible?: boolean
 }
 
@@ -432,6 +433,7 @@ export const api = {
       bodyId: string | null
       frame: SketchFrameDTO
       entities: unknown[]
+      constraints: SketchConstraint[]
       refGeom: SketchRefGeom | null
     }>('sketch.reopen', { sketchId }),
   sketchFinish: (sketchId: string, elements?: unknown[], constraints?: SketchConstraint[]) =>

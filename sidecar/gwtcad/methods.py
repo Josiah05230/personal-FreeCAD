@@ -940,31 +940,80 @@ def sketch_on(ref):
             "refGeom": None}
 
 
+_REOPEN_CONSTRAINTS = {
+    "Horizontal", "Vertical", "Parallel", "Perpendicular", "Equal", "Tangent",
+    "Coincident", "PointOnObject", "Symmetric", "Distance", "DistanceX",
+    "DistanceY", "Radius", "Diameter",
+}
+
+
+def _reopen_constraints(sk, geo_to_ent):
+    """The sketch's constraints in the 2D editor's recorded format, addressing
+    geometry by the editor entity index (`geo`). geoIds the editor does not know
+    (datum axes: -1/-2, or filtered geometry) pass straight through as `geo`."""
+    def ref(gid, pos):
+        r = {"geo": geo_to_ent.get(gid, gid)}  # datum ids (<0) pass straight through
+        if pos:
+            r["pt"] = int(pos)
+        return r
+
+    def real(g):  # -1/-2 are the datum axes; anything past that is "unset"
+        return g is not None and g >= -2
+
+    out = []
+    for c in sk.Constraints:
+        t = c.Type
+        if t not in _REOPEN_CONSTRAINTS:
+            continue
+        et = ("Distance" if t in ("Distance", "DistanceX", "DistanceY")
+              else "Radius" if t in ("Radius", "Diameter") else t)
+        refs = [ref(c.First, c.FirstPos)]
+        if et not in ("Distance", "Radius") and real(getattr(c, "Second", None)):
+            refs.append(ref(c.Second, c.SecondPos))
+        if t == "Symmetric" and real(getattr(c, "Third", None)):
+            refs.append(ref(c.Third, c.ThirdPos))
+        item = {"type": et, "refs": refs}
+        if et in ("Distance", "Radius"):
+            item["value"] = float(c.Value)
+        out.append(item)
+    return out
+
+
 @method("sketch.reopen")
 def sketch_reopen(sketchId):
-    """Re-enter an existing sketch for editing. Returns its plane frame and its
-    current geometry as editor entities."""
+    """Re-enter an existing sketch for editing. Returns its plane frame, its
+    geometry as editor entities, and its constraints (so dimensions / relations
+    survive the round trip)."""
     d, sk = _obj(sketchId)
     if sk.TypeId != "Sketcher::SketchObject":
         raise RpcError(APP_ERROR, "%r is not a sketch" % sketchId)
     sk.Visibility = True
     ents = []
-    for g in sk.Geometry:
+    geo_to_ent = {}
+    for gid, g in enumerate(sk.Geometry):
         t = g.TypeId
         if t == "Part::GeomLineSegment":
-            ents.append({"type": "line",
-                         "a": [g.StartPoint.x, g.StartPoint.y],
-                         "b": [g.EndPoint.x, g.EndPoint.y]})
+            ent = {"type": "line",
+                   "a": [g.StartPoint.x, g.StartPoint.y],
+                   "b": [g.EndPoint.x, g.EndPoint.y]}
         elif t == "Part::GeomCircle":
-            ents.append({"type": "circle", "c": [g.Center.x, g.Center.y], "r": g.Radius})
+            ent = {"type": "circle", "c": [g.Center.x, g.Center.y], "r": g.Radius}
         elif t == "Part::GeomArcOfCircle":
-            ents.append({"type": "arc", "c": [g.Center.x, g.Center.y], "r": g.Radius,
-                         "a0": g.FirstParameter, "a1": g.LastParameter})
+            ent = {"type": "arc", "c": [g.Center.x, g.Center.y], "r": g.Radius,
+                   "a0": g.FirstParameter, "a1": g.LastParameter}
+        else:
+            continue
+        if getattr(g, "Construction", False):
+            ent["construction"] = True
+        geo_to_ent[gid] = len(ents)
+        ents.append(ent)
     d.recompute()
     body = sk.getParentGeoFeatureGroup()
     fr = _frame(sk)
     return {"sketchId": sketchId, "bodyId": body.Name if body else None,
-            "frame": fr, "entities": ents, "refGeom": _face_ref_geom(sk, fr)}
+            "frame": fr, "entities": ents,
+            "constraints": _reopen_constraints(sk, geo_to_ent),
+            "refGeom": _face_ref_geom(sk, fr)}
 
 
 @method("sketch.clear")
