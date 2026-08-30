@@ -1,8 +1,8 @@
 # Status
 
-Updated 2026-08-29. Live-test feedback batches 1-15 all addressed. All roadmap milestones now have a
-working first version. `docs/FEEDBACK.md` tracks the live-test checklist. Next queued epic: KiCad
-interop (StepUp-style PCB <-> assembly, connector-driven joints).
+Updated 2026-08-29. Live-test feedback batches 1-16 all addressed. All roadmap milestones now have a
+working first version. `docs/FEEDBACK.md` tracks the live-test checklist. KiCad interop has a first
+slice (board import + placeholders); next: component STEP models + connector->joint mapping.
 
 ## Working (verified: headless engine tests + app boots clean each pass)
 
@@ -56,6 +56,36 @@ interop (StepUp-style PCB <-> assembly, connector-driven joints).
 ### Packaging
 - electron-builder: AppImage + NSIS, FreeCAD bundled as extraResources, runtime
   path resolution, `scripts/package.sh`. `--dir` build verified.
+
+## Batch 16 additions
+
+- Orbit / pan pivot around the geometry under the cursor (raycast on press),
+  model centre over empty space. This fixed "orbit feels wrong".
+- Sketch: the rectangle tool commits four constrained lines (not one opaque
+  rect); dimensions are only shown once assigned; a dimensioned entity locks
+  (drag slides, does not resize); placing / dragging a point onto the origin
+  or an axis auto-records the constraint; closed profiles get a light-blue
+  fill and are pickable; constraint symbols are outlined ribbon glyphs with
+  no box, and hovering one lights only its partner symbols + the edges they
+  constrain.
+- Hidden objects are no longer hover / click / window selectable (three's
+  raycaster ignores .visible; Picker now walks the parent chain).
+- Datum-plane hover overlay lights the outline + face (a LineLoop was being
+  cloned as a Line, drawing an open "C").
+- View cube: 90-degree screen-roll arrows (persistent rollAngle, reset by Fit
+  and named views).
+- Section plane gets the Offset Plane's draggable ghost + arrow handle; the
+  Offset Plane handle was rebuilt (camera-sized arrow, the whole plane is
+  grabbable).
+- Calibrate Canvas is no longer a ribbon tool - inserting a canvas enters
+  calibrate, and canvases have a browser row with Calibrate / Delete. Canvas
+  icon is a camera.
+- SURFACE tab: Ruled Surface, Boundary Fill, Stitch, Offset Surface (real
+  Part / Surface ops); Split Body moved to the SOLID tab.
+- KiCad: headless .kicad_pcb import (gwtcad/kicad.py) - Edge.Cuts -> board
+  solid, footprints -> labelled placeholders; kicad.import / reimport /
+  status; link persists in the doc sidecar json.
+- ~82 sidecar RPC methods.
 
 ## Batches 14-15 additions
 
