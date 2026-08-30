@@ -826,6 +826,31 @@ export function App(): JSX.Element {
     }
   }, [afterEdit])
 
+  const importKicad = useCallback(async () => {
+    const p = await window.cad.openDialog([{ name: 'KiCad PCB', extensions: ['kicad_pcb'] }])
+    if (!p) return
+    try {
+      const r = await api.kicadImport(p)
+      await afterEdit()
+      vpApi.current?.fit()
+      window.alert(
+        `PCB imported: ${r.kicad.components} components, ` +
+          `${r.kicad.size[0]} x ${r.kicad.size[1]} x ${r.kicad.size[2]} mm`
+      )
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
+  }, [afterEdit])
+
+  const reimportKicad = useCallback(async () => {
+    try {
+      await api.kicadReimport()
+      await afterEdit()
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
+  }, [afterEdit])
+
   const scaleBody = useCallback(async () => {
     const target = selection.find((s) => s.kind === 'face' || s.kind === 'body') as
       | { bodyId: string }
@@ -1049,6 +1074,8 @@ export function App(): JSX.Element {
         insertCanvas,
         calibrateCanvas: startCalibrate,
         toggleParams: () => setParamsOpen((v) => !v),
+        importKicad,
+        reimportKicad,
         selectFilterNode: <SelectModeToggle mode={selectMode} onMode={setSelectMode} />,
         selectFilterMenuNode: <SelectKindList active={selFilter} onActive={setSelFilter} />
       }),
@@ -1061,6 +1088,8 @@ export function App(): JSX.Element {
       saveAs,
       exportModel,
       importStep,
+      importKicad,
+      reimportKicad,
       fitView,
       startDrawing,
       startMeasure,

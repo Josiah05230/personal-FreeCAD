@@ -130,6 +130,19 @@ def body_color(name):
     return _colors.get(name)
 
 
+# Linked KiCad board: {"path": ..., "placements": {ref: [x, y, rot, side]}}
+_kicad = {}
+
+
+def set_kicad_link(path, placements):
+    _kicad.clear()
+    _kicad.update({"path": path, "placements": placements})
+
+
+def kicad_link():
+    return dict(_kicad) if _kicad else None
+
+
 # Inserted 2D canvases (image underlays). Session-scoped for now; the renderer
 # holds the pixels, the sidecar holds placement + real-world size.
 _canvases = {}
@@ -155,6 +168,8 @@ def load_state(blob):
     _params.update(blob.get("params", {}))
     _feature_exprs.clear()
     _feature_exprs.update(blob.get("featureExprs", {}))
+    _kicad.clear()
+    _kicad.update(blob.get("kicad", {}) or {})
     mx = 0
     for cid in _canvases:
         try:
@@ -166,7 +181,8 @@ def load_state(blob):
 
 def dump_state():
     return {"canvases": list(_canvases.values()), "colors": dict(_colors),
-            "params": dict(_params), "featureExprs": all_feature_exprs()}
+            "params": dict(_params), "featureExprs": all_feature_exprs(),
+            "kicad": dict(_kicad)}
 
 
 def canvases():
@@ -218,6 +234,7 @@ def reset():
     _state["name"] = d.Name
     _state["path"] = None
     _shown_datums.clear()
+    _kicad.clear()
     clear_markers()
     clear_params()
     clear_feature_exprs()

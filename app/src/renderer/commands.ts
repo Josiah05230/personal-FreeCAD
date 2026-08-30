@@ -41,6 +41,8 @@ export interface CommandContext {
   insertCanvas: () => Promise<void>
   calibrateCanvas: () => void
   toggleParams: () => void
+  importKicad: () => Promise<void>
+  reimportKicad: () => Promise<void>
   selectFilterNode: ReactNode
   selectFilterMenuNode: ReactNode
 }
@@ -83,6 +85,8 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'ins.canvas', title: 'Canvas', group: 'Insert', tab: 'SOLID', icon: 'sketch', run: () => ctx.insertCanvas() },
     { id: 'ins.calibrate', title: 'Calibrate Canvas', group: 'Insert', tab: 'SOLID', icon: 'sketch', run: () => ctx.calibrateCanvas() },
     { id: 'ins.model', title: 'Insert 3D Model', group: 'Insert', tab: 'SOLID', icon: 'extrude', run: () => ctx.importStep() },
+    { id: 'ins.kicad', title: 'Import KiCad PCB', group: 'Insert', tab: 'SOLID', icon: 'combine', run: () => ctx.importKicad() },
+    { id: 'ins.kicadSync', title: 'Re-sync KiCad PCB', group: 'Insert', tab: 'SOLID', icon: 'combine', run: () => ctx.reimportKicad() },
     // --- assemble ---
     { id: 'asm.newComponent', title: 'New Component', group: 'Assemble', tab: 'ASSEMBLE', icon: 'combine' },
     { id: 'asm.joint', title: 'Joint', group: 'Assemble', tab: 'ASSEMBLE', icon: 'axis' },

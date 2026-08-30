@@ -2164,3 +2164,7 @@ def body_convert_units(id, fromUnit, toUnit):
     if src is None or dst is None:
         raise RpcError(APP_ERROR, "unknown unit (use %s)" % ", ".join(_UNIT_MM))
     return body_scale(id, src / dst)
+
+
+# KiCad .kicad_pcb import (registers kicad.* RPC methods on import)
+from gwtcad import kicad as _kicad_methods  # noqa: E402,F401

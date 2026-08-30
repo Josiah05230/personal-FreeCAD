@@ -298,6 +298,15 @@ export const api = {
     }>('sketch.on', { ref }),
   importModel: (path: string) =>
     rpc<{ path: string; imported: string[]; count: number }>('io.importModel', { path }),
+  kicadImport: (path: string) =>
+    rpc<{
+      bodies: BodyTree[]
+      kicad: { path: string; thickness: number; components: number; size: [number, number, number] }
+    }>('kicad.import', { path }),
+  kicadReimport: () =>
+    rpc<{ kicad: { path: string; components: number } }>('kicad.reimport', {}),
+  kicadStatus: () =>
+    rpc<{ path?: string; placements?: Record<string, unknown> }>('kicad.status', {}),
   exportModel2: (path: string) => rpc<{ path: string; objects: number }>('io.export', { path }),
   bodyScale: (id: string, factor: number) =>
     rpc<{ id: string; factor: number }>('body.scale', { id, factor }),
