@@ -1491,7 +1491,9 @@ code {
   top: 16px;
   right: 160px;
   z-index: 5;
-  width: 220px;
+  width: 244px;
+  max-width: calc(100vw - 200px);
+  box-sizing: border-box;
   background: #2b2b2fee;
   backdrop-filter: blur(8px);
   border: 1px solid var(--line-soft);
@@ -1521,6 +1523,7 @@ code {
   display: flex;
   flex-direction: column;
   gap: 7px;
+  min-width: 0;
 }
 
 .opdlg-field {
@@ -1529,16 +1532,41 @@ code {
   justify-content: space-between;
   gap: 10px;
   font-size: 11px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+/* stacked variant: label on its own line, control spans the dialog */
+.opdlg-field.col {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.opdlg-field > span {
+  min-width: 0;
 }
 
 .opdlg-field input[type='number'],
+.opdlg-field input[type='text'],
 .opdlg-field select {
-  width: 92px;
+  flex: 0 1 96px;
+  min-width: 0;
+  max-width: 118px;
+  box-sizing: border-box;
   background: var(--chrome-1);
   border: 1px solid var(--line-soft);
   color: var(--text);
   border-radius: 4px;
   padding: 3px 6px;
+}
+
+.opdlg-field.col input[type='number'],
+.opdlg-field.col input[type='text'],
+.opdlg-field.col select {
+  flex: 1 1 auto;
+  max-width: none;
+  width: 100%;
 }
 
 .opdlg-field input[type='checkbox'] {

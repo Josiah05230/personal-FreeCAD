@@ -61,7 +61,8 @@ def circle_sketch(body, radius, plane="XY"):
     return sk
 
 
-def pad(body, sketch, length, reversed_=False, midplane=False, name="Pad", up_to=None):
+def pad(body, sketch, length, reversed_=False, midplane=False, name="Pad",
+        up_to=None, offset=0.0):
     p = body.newObject("PartDesign::Pad", name)
     p.Label = next_label(body, "PartDesign::Pad")
     p.Profile = sketch
@@ -70,6 +71,8 @@ def pad(body, sketch, length, reversed_=False, midplane=False, name="Pad", up_to
         try:
             p.Type = "UpToFace"
             p.UpToFace = up_to  # (obj, [sub])
+            if offset and hasattr(p, "Offset"):
+                p.Offset = float(offset)  # extra distance past the face
         except Exception:
             p.Type = "Length"
     if reversed_:
@@ -84,7 +87,8 @@ def pad(body, sketch, length, reversed_=False, midplane=False, name="Pad", up_to
     return p
 
 
-def pocket(body, sketch, length, through_all=False, name="Pocket", up_to=None):
+def pocket(body, sketch, length, through_all=False, name="Pocket", up_to=None,
+           offset=0.0):
     p = body.newObject("PartDesign::Pocket", name)
     p.Label = next_label(body, "PartDesign::Pocket")
     p.Profile = sketch
@@ -92,6 +96,8 @@ def pocket(body, sketch, length, through_all=False, name="Pocket", up_to=None):
         try:
             p.Type = "UpToFace"
             p.UpToFace = up_to
+            if offset and hasattr(p, "Offset"):
+                p.Offset = float(offset)
         except Exception:
             p.Length = float(length)
     elif through_all:

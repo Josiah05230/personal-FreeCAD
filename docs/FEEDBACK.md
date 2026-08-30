@@ -35,16 +35,22 @@ Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
 
-Batch 17 (part 1) - all addressed: window (box) select in the sketch (L-to-R
-contain, R-to-L crossing); rectangle sides stay welded on drag and resize
-instead of tearing (local relaxation solver: coincident welds + H/V + length
-dims + axis anchors); drawing a point onto another entity's point records a
-Coincident; fully-constrained geometry is drawn grey (new headless
-`sketch.solve` in a throwaway doc reports per-element free DoF); Delete /
-Backspace removes selected sketch geometry and reindexes its constraints;
-constraint buttons work click-first ("pick the constraint, then the geometry")
-when there is no live selection; Midpoint constraint (Symmetric about a line's
-endpoints) + midpoint snapping while drawing.
-
--I can't seem to actually extrude a face from a sketch?? Also, I need the same 'to-object' (with optional offset thing) for the extrude distance. I also need extrude to not just have a 'cut' check box but a 'join', 'cut', 'intersect', etc. drop-down. The textbox currently also seems to extend off the side of the window... (the textbox extending off the window seems to be prevelent in a LOT of places)
--when I rename a sketch it also takes forever to load?? Again. Anytime you can handle something client-side first and, have responsiveness and then load it to/from FCAD, that's the best and only choice. It needs to be fast (or, at least feel it)
+Batch 17 - all addressed.
+Part 1 (sketcher): window (box) select in the sketch (L-to-R contain, R-to-L
+crossing); rectangle sides stay welded on drag and resize instead of tearing
+(local relaxation solver: coincident welds + H/V + length dims + axis anchors);
+drawing a point onto another entity's point records a Coincident;
+fully-constrained geometry is drawn grey (new headless `sketch.solve` in a
+throwaway doc reports per-element free DoF); Delete / Backspace removes selected
+sketch geometry and reindexes its constraints; constraint buttons work
+click-first ("pick the constraint, then the geometry") when there is no live
+selection; Midpoint constraint (Symmetric about a line's endpoints) + midpoint
+snapping while drawing.
+Part 2 (extrude + dialogs): Extrude gained an Operation select (New body / Join
+/ Cut) replacing the bare Cut checkbox, plus an Extent select (Blind / To
+object) with an Offset field (extra distance past the face). `feature.extrude`
+takes `operation` + `offset`; `pad`/`pocket` set `.Offset` on UpToFace. The
+operation dialog no longer overflows: it is wider, `box-sizing` fixed, fields
+wrap, and long selects render label-above-control (`.opdlg-field.col`). Rename
+is now instant - it updates the tree in place and persists on the quiet path;
+`feature.rename` no longer recomputes.

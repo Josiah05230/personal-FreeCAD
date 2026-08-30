@@ -344,7 +344,9 @@ export const api = {
     cut = false,
     midplane = false,
     reversed = false,
-    upToFaceRef: GeomRef | null = null
+    upToFaceRef: GeomRef | null = null,
+    operation: 'join' | 'cut' | 'newBody' = 'join',
+    offset = 0
   ) =>
     rpc<{ bodies: BodyTree[] }>('feature.extrude', {
       sketchId,
@@ -352,7 +354,9 @@ export const api = {
       cut,
       midplane,
       reversed,
-      upToFaceRef
+      upToFaceRef,
+      operation,
+      offset
     }),
   fillet: (edges: string[], radius: number) =>
     rpc<{ bodies: BodyTree[] }>('feature.fillet', { edges, radius }),

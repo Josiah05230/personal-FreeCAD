@@ -31,6 +31,10 @@ interface FieldSpec {
   min?: number
   step?: number
   options?: string[]
+  /** render label on its own line, control full-width (for long selects) */
+  wide?: boolean
+  /** only show this field when the predicate passes for the current values */
+  showIf?: (v: Record<string, number | string | boolean>) => boolean
 }
 
 interface OpSpec {
@@ -44,11 +48,47 @@ const SPECS: Record<OpKind, OpSpec> = {
   extrude: {
     title: 'Extrude',
     needs: 'sketch',
-    hint: 'Also select a face to extrude up to it instead of a blind distance',
+    hint: 'For "To object", also select the face to stop at',
     fields: [
-      { key: 'length', label: 'Distance', type: 'number', default: 10, step: 1 },
-      { key: 'cut', label: 'Cut', type: 'checkbox', default: false },
-      { key: 'midplane', label: 'Symmetric', type: 'checkbox', default: false },
+      {
+        key: 'operation',
+        label: 'Operation',
+        type: 'select',
+        default: 'Join',
+        options: ['New body', 'Join', 'Cut'],
+        wide: true
+      },
+      {
+        key: 'mode',
+        label: 'Extent',
+        type: 'select',
+        default: 'Blind',
+        options: ['Blind', 'To object'],
+        wide: true
+      },
+      {
+        key: 'length',
+        label: 'Distance',
+        type: 'number',
+        default: 10,
+        step: 1,
+        showIf: (v) => v.mode !== 'To object'
+      },
+      {
+        key: 'offset',
+        label: 'Offset',
+        type: 'number',
+        default: 0,
+        step: 1,
+        showIf: (v) => v.mode === 'To object'
+      },
+      {
+        key: 'midplane',
+        label: 'Symmetric',
+        type: 'checkbox',
+        default: false,
+        showIf: (v) => v.mode !== 'To object'
+      },
       { key: 'reversed', label: 'Flip', type: 'checkbox', default: false }
     ]
   },
@@ -326,6 +366,7 @@ export function OperationDialog({
   const edges = selection.filter((s) => s.kind === 'edge')
   const faces = selection.filter((s) => s.kind === 'face')
   const sketchesSel = selection.filter((s) => s.kind === 'sketch')
+  const extrudeToObj = kind === 'extrude' && values.mode === 'To object'
   const planeSel = selection.filter((s) => s.kind === 'plane' || s.kind === 'face')
   const datumPlaneToObj = kind === 'datumPlane' && values.mode === 'To object'
   const datumPlaneMsg = datumPlaneToObj
@@ -341,9 +382,11 @@ export function OperationDialog({
       : spec.needs === 'faces' || spec.needs === 'planeFace'
         ? `${faces.length} face${faces.length === 1 ? '' : 's'} selected`
         : spec.needs === 'sketch'
-          ? sketchesSel.length
-            ? 'sketch selected'
-            : 'select a sketch'
+          ? !sketchesSel.length
+            ? 'select a sketch'
+            : extrudeToObj && faces.length === 0
+              ? 'now select the face to extrude up to'
+              : 'sketch selected'
           : spec.needs === 'sketches2'
             ? `${sketchesSel.length} sketches selected (need 2+)`
             : spec.needs === 'plane'
@@ -363,7 +406,9 @@ export function OperationDialog({
     (spec.needs === 'edges' && edges.length > 0) ||
     (spec.needs === 'faces' && faces.length > 0) ||
     (spec.needs === 'planeFace' && faces.length === 1) ||
-    (spec.needs === 'sketch' && sketchesSel.length === 1) ||
+    (spec.needs === 'sketch' &&
+      sketchesSel.length === 1 &&
+      (!extrudeToObj || faces.length >= 1)) ||
     (spec.needs === 'sketches2' && sketchesSel.length >= 2) ||
     (spec.needs === 'plane' && planeSel.length >= 1) ||
     (spec.needs === 'axis' && axisSel.length >= 1)
@@ -376,8 +421,10 @@ export function OperationDialog({
       )}
       {spec.hint && <div className="opdlg-hint">{spec.hint}</div>}
       <div className="opdlg-body">
-        {spec.fields.map((f) => (
-          <label key={f.key} className="opdlg-field">
+        {spec.fields
+          .filter((f) => !f.showIf || f.showIf(values))
+          .map((f) => (
+          <label key={f.key} className={f.wide ? 'opdlg-field col' : 'opdlg-field'}>
             <span>{f.label}</span>
             {f.type === 'number' && (
               <input

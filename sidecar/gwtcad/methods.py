@@ -172,20 +172,44 @@ def primitive_cylinder(diameter=40.0, height=40.0, name=None):
 
 @method("feature.extrude")
 def feature_extrude(sketchId, length=10.0, reversed=False, midplane=False, cut=False,
-                    upToFaceRef=None):
+                    upToFaceRef=None, operation=None, offset=0.0):
+    """operation: 'join' (add) | 'cut' (remove) | 'newBody' (separate solid).
+    `cut=True` is kept as a shorthand for operation='cut'. When upToFaceRef is
+    given, `offset` is the extra distance past that face."""
     d, sk = _obj(sketchId)
     if sk.TypeId != "Sketcher::SketchObject":
         raise RpcError(APP_ERROR, "%r is not a sketch" % sketchId)
     body = sk.getParentGeoFeatureGroup()
     if body is None or body.TypeId != "PartDesign::Body":
         raise RpcError(APP_ERROR, "sketch is not inside a Body")
+    op = (operation or ("cut" if cut else "join")).lower()
     up = _resolve_ref(d, body, upToFaceRef) if upToFaceRef else None
-    if cut:
-        build.pocket(body, sk, float(length), up_to=up)
-    else:
-        build.pad(body, sk, float(length), reversed_=reversed, midplane=midplane, up_to=up)
+    off = float(offset or 0.0)
+
+    if op == "cut":
+        build.pocket(body, sk, float(length), up_to=up, offset=off)
+        target = body
+    elif op == "newbody":
+        tip = getattr(body, "Tip", None)
+        if tip is not None and _kind(tip.TypeId) == "solid":
+            # body already has a solid - pad a copy of the sketch in a fresh body
+            nb = build.new_body(d, next_label(None, "PartDesign::Body"))
+            skc = d.copyObject(sk, False)
+            nb.addObject(skc)
+            build.pad(nb, skc, float(length), reversed_=reversed,
+                      midplane=midplane, up_to=up, offset=off)
+            target = nb
+        else:
+            build.pad(body, sk, float(length), reversed_=reversed,
+                      midplane=midplane, up_to=up, offset=off)
+            target = body
+    else:  # join
+        build.pad(body, sk, float(length), reversed_=reversed,
+                  midplane=midplane, up_to=up, offset=off)
+        target = body
+
     d.recompute()
-    if not body.Shape.isValid():
+    if not target.Shape.isValid():
         raise RpcError(APP_ERROR, "extrude produced an invalid shape")
     return tree_get()
 
@@ -1786,9 +1810,9 @@ def history_roll_to(bodyId, featureId=None):
 
 @method("feature.rename")
 def feature_rename(id, label):
-    d, o = _obj(id)
+    # a label change touches no geometry - skip the recompute so the UI is snappy
+    _d, o = _obj(id)
     o.Label = str(label)
-    d.recompute()
     return {"id": id, "label": o.Label}
 
 

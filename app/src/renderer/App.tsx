@@ -423,17 +423,26 @@ export function App(): JSX.Element {
       try {
         switch (kind) {
           case 'extrude': {
+            const toObject = String(v.mode) === 'To object'
             const upTo =
-              (faces[0]
+              (toObject && faces[0]
                 ? { kind: 'face', bodyId: (faces[0] as unknown as { bodyId: string }).bodyId, sub: faces[0].sub }
                 : null) as import('./rpc').GeomRef | null
+            const opMap: Record<string, 'join' | 'cut' | 'newBody'> = {
+              Join: 'join',
+              Cut: 'cut',
+              'New body': 'newBody'
+            }
+            const operation = opMap[String(v.operation)] ?? 'join'
             await api.extrude(
               sketchIds[0],
               Number(v.length),
-              Boolean(v.cut),
+              operation === 'cut',
               Boolean(v.midplane),
               Boolean(v.reversed),
-              upTo
+              upTo,
+              operation,
+              toObject ? Number(v.offset ?? 0) : 0
             )
             break
           }
@@ -686,12 +695,27 @@ export function App(): JSX.Element {
     async (id: string) => {
       const cur = bodies.flatMap((b) => b.features).find((f) => f.id === id)
       const next = await promptText('Rename', cur?.label ?? '')
-      if (next && next.trim()) {
-        await api.renameFeature(id, next.trim())
-        await afterEdit()
+      const label = next?.trim()
+      if (!label) return
+      // a rename is pure metadata - update the tree in place, persist quietly,
+      // and never round-trip the scene / recompute (that was the slow part)
+      setBodies((bs) =>
+        bs.map((b) => ({
+          ...b,
+          label: b.id === id ? label : b.label,
+          features: b.features.map((f) => (f.id === id ? { ...f, label } : f))
+        }))
+      )
+      setSketches((ss) => ss.map((s) => (s.id === id ? { ...s, label } : s)))
+      markDirty()
+      try {
+        await api.renameFeature(id, label)
+      } catch (e) {
+        window.alert((e as Error).message)
+        await refreshScene()
       }
     },
-    [bodies, afterEdit]
+    [bodies, markDirty, refreshScene]
   )
 
   const deleteFeature = useCallback(
