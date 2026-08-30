@@ -1330,6 +1330,7 @@ export function App(): JSX.Element {
                     pickPlanes={pickPlanes}
                     onPickPlane={(ref) => void beginSketch(ref)}
                     selectMode={selectMode}
+                    selFilter={selFilter}
                     onWindowSelect={(sels) =>
                       setSelection((cur) => {
                         const keys = new Set(cur.map(selKey))

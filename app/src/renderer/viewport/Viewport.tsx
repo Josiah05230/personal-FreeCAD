@@ -49,6 +49,7 @@ export function Viewport({
   pickPlanes = [],
   onPickPlane,
   selectMode = 'paint',
+  selFilter,
   onWindowSelect,
   canvases = [],
   hiddenIds,
@@ -72,6 +73,8 @@ export function Viewport({
   pickPlanes?: PickPlane[]
   onPickPlane?: (ref: SketchRef) => void
   selectMode?: 'paint' | 'window'
+  /** which entity kinds are currently selectable - hover pre-highlight honours it */
+  selFilter?: string[]
   onWindowSelect?: (sels: Selection[]) => void
   canvases?: CanvasDTO[]
   hiddenIds?: Set<string>
@@ -99,6 +102,8 @@ export function Viewport({
   pickPlanesRef.current = pickPlanes
   const winSelRef = useRef<{ mode: string; cb?: (s: Selection[]) => void }>({ mode: 'paint' })
   winSelRef.current = { mode: selectMode, cb: onWindowSelect }
+  const selFilterRef = useRef<string[] | undefined>(selFilter)
+  selFilterRef.current = selFilter
   const bandRef = useRef<HTMLDivElement>(null)
   const calibRef = useRef<{
     canvas: CanvasDTO | null
@@ -352,7 +357,9 @@ export function Viewport({
         return
       }
       if (!st || st.sketch || !st.content || e.buttons !== 0) return
-      st.picker.setHover(st.picker.pick(e, st.content), st.content)
+      const hit = st.picker.pick(e, st.content)
+      const allow = selFilterRef.current
+      st.picker.setHover(hit && (!allow || allow.includes(hit.kind)) ? hit : null, st.content)
     }
     renderer.domElement.addEventListener('pointerdown', onDown)
     renderer.domElement.addEventListener('pointerup', onUp)

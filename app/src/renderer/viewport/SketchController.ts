@@ -12,6 +12,7 @@ import * as THREE from 'three'
 export type SketchTool = 'select' | 'line' | 'rect' | 'circle' | 'arc' | 'dimension'
 
 type SnapKind = 'grid' | 'origin' | 'point' | 'edge' | 'axis'
+type DragHandle = 'a' | 'b' | 'ab' | 'ba' | 'c' | 'r' | 'whole'
 
 export type SketchConstraintType =
   | 'Horizontal'
@@ -75,6 +76,11 @@ export class SketchController {
   private refPoints: [number, number][] = []
   private selected: number[] = []
   private hoverIdx = -1
+  private drag: {
+    idx: number
+    handle: DragHandle
+    last: [number, number]
+  } | null = null
   private snapKind: SnapKind = 'grid'
   private constraints: RecordedConstraint[] = []
   private construction = false
@@ -115,6 +121,7 @@ export class SketchController {
     this.dom.addEventListener('pointerdown', this.onDown)
     this.dom.addEventListener('pointermove', this.onMove)
     this.dom.addEventListener('dblclick', this.onDblClick)
+    window.addEventListener('pointerup', this.onUp)
     window.addEventListener('keydown', this.onKey)
   }
 
@@ -143,6 +150,7 @@ export class SketchController {
     this.tool = t
     this.pending = []
     this.hoverIdx = -1
+    this.drag = null
     this.dom.style.cursor = ''
     if (t !== 'select') this.selected = []
     this.redraw()
@@ -376,6 +384,7 @@ export class SketchController {
           : [...this.selected, idx]
       } else {
         this.selected = [idx]
+        if (idx >= 0) this.drag = { idx, handle: this.grabHandle(idx, uv), last: uv }
       }
       this.redraw()
       this.onChange()
@@ -389,12 +398,94 @@ export class SketchController {
     this.redraw()
   }
 
+  /** Which part of an entity the cursor grabbed, for free-dragging. */
+  private grabHandle(idx: number, uv: [number, number]): DragHandle {
+    const e = this.entities[idx]
+    const tol = SNAP_PX / Math.max(this.pxPerMm(), 0.001)
+    const near = (p: [number, number]): boolean => Math.hypot(p[0] - uv[0], p[1] - uv[1]) < tol
+    if (e.type === 'line' || e.type === 'rect') {
+      if (near(e.a)) return 'a'
+      if (near(e.b)) return 'b'
+      if (e.type === 'rect') {
+        if (near([e.a[0], e.b[1]])) return 'ab'
+        if (near([e.b[0], e.a[1]])) return 'ba'
+      }
+      return 'whole'
+    }
+    if (near(e.c)) return 'c'
+    if (Math.abs(Math.hypot(uv[0] - e.c[0], uv[1] - e.c[1]) - e.r) < tol) return 'r'
+    return 'whole'
+  }
+
+  /** Move the dragged entity to follow the cursor. No solver - this is the
+   *  "drag whatever is still free" behaviour; the sidecar re-solves on finish. */
+  private applyDrag(uv: [number, number]): void {
+    if (!this.drag) return
+    const e = this.entities[this.drag.idx]
+    const dx = uv[0] - this.drag.last[0]
+    const dy = uv[1] - this.drag.last[1]
+    const move = (p: [number, number]): [number, number] => [p[0] + dx, p[1] + dy]
+    switch (this.drag.handle) {
+      case 'whole':
+        if (e.type === 'line' || e.type === 'rect') {
+          e.a = move(e.a)
+          e.b = move(e.b)
+        } else e.c = move(e.c)
+        break
+      case 'a':
+        if (e.type === 'line' || e.type === 'rect') e.a = [uv[0], uv[1]]
+        break
+      case 'b':
+        if (e.type === 'line' || e.type === 'rect') e.b = [uv[0], uv[1]]
+        break
+      case 'ab':
+        if (e.type === 'rect') {
+          e.a = [uv[0], e.a[1]]
+          e.b = [e.b[0], uv[1]]
+        }
+        break
+      case 'ba':
+        if (e.type === 'rect') {
+          e.b = [uv[0], e.b[1]]
+          e.a = [e.a[0], uv[1]]
+        }
+        break
+      case 'c':
+        if (e.type === 'circle' || e.type === 'arc') e.c = [uv[0], uv[1]]
+        break
+      case 'r':
+        if (e.type === 'circle' || e.type === 'arc')
+          (e as { r: number }).r = Math.max(0.1, Math.hypot(uv[0] - e.c[0], uv[1] - e.c[1]))
+        break
+    }
+    this.drag.last = uv
+    this.geomV++
+    this.redraw()
+  }
+
+  private onUp = (ev: PointerEvent): void => {
+    if (!this.drag) return
+    this.drag = null
+    ev.stopPropagation()
+    this.onChange()
+  }
+
   private onMove = (ev: PointerEvent): void => {
+    if (this.drag && (ev.buttons & 1) === 1) {
+      this.applyDrag(this.pointerUV(ev))
+      return
+    }
+    // constraint-symbol hover works in any tool mode
+    const symKey = this.pickSym(ev)
+    if (symKey !== this.hoverSymKey) {
+      this.hoverSymKey = symKey
+      this.applySymHighlight()
+    }
     if (this.tool === 'select' || this.tool === 'dimension') {
-      const idx = this.pickEntity(this.rawPointerUV(ev))
+      const idx = symKey ? -1 : this.pickEntity(this.rawPointerUV(ev))
       if (idx !== this.hoverIdx) {
         this.hoverIdx = idx
-        this.dom.style.cursor = idx >= 0 ? 'pointer' : ''
+        this.dom.style.cursor = idx >= 0 || symKey ? 'pointer' : ''
         this.redraw()
       }
       return
@@ -717,9 +808,160 @@ export class SketchController {
   }
 
   private dimGroup = new THREE.Group()
+  private symGroup = new THREE.Group()
+  private symV = -1
+  private hoverSymKey: string | null = null
 
   private fmt(v: number): string {
     return String(Number(v.toFixed(2)))
+  }
+
+  // --- constraint symbols ------------------------------------------------- //
+  private static readonly SYM_BASE = 0x8fa0b0
+  private static readonly SYM_HOT = 0x7fe0ff
+  private symTexCache = new Map<string, THREE.CanvasTexture>()
+
+  private symTex(glyph: string): THREE.CanvasTexture {
+    let t = this.symTexCache.get(glyph)
+    if (t) return t
+    const dpr = 2
+    const c = document.createElement('canvas')
+    c.width = c.height = 30 * dpr
+    const g = c.getContext('2d')!
+    g.scale(dpr, dpr)
+    g.fillStyle = 'rgba(16,18,22,0.82)'
+    g.beginPath()
+    g.roundRect(3, 3, 24, 24, 5)
+    g.fill()
+    g.strokeStyle = 'rgba(255,255,255,0.28)'
+    g.lineWidth = 1
+    g.stroke()
+    g.fillStyle = '#ffffff'
+    g.font = '700 15px ui-sans-serif, system-ui, sans-serif'
+    g.textAlign = 'center'
+    g.textBaseline = 'middle'
+    g.fillText(glyph, 15, 16)
+    t = new THREE.CanvasTexture(c)
+    t.colorSpace = THREE.SRGBColorSpace
+    this.symTexCache.set(glyph, t)
+    return t
+  }
+
+  private symSprite(glyph: string, at: [number, number], key: string): THREE.Sprite {
+    const s = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: this.symTex(glyph),
+        color: SketchController.SYM_BASE,
+        depthTest: false,
+        transparent: true
+      })
+    )
+    s.position.copy(this.toWorld(at[0], at[1]))
+    const h = this.mmForPx(15)
+    s.scale.set(h, h, 1)
+    s.renderOrder = 44
+    s.userData = { symKey: key }
+    return s
+  }
+
+  /** a point a little to one side of an entity, for placing its glyph */
+  private symAnchor(e: SketchEntity, k = 0): [number, number] {
+    const nudge = this.mmForPx(9)
+    if (e.type === 'line') {
+      const mx = (e.a[0] + e.b[0]) / 2
+      const my = (e.a[1] + e.b[1]) / 2
+      const dx = e.b[0] - e.a[0]
+      const dy = e.b[1] - e.a[1]
+      const L = Math.hypot(dx, dy) || 1
+      return [mx - (dy / L) * nudge, my + (dx / L) * nudge]
+    }
+    if (e.type === 'rect') {
+      return [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2]
+    }
+    const ang = Math.PI / 4 + k
+    return [e.c[0] + Math.cos(ang) * (e.r + nudge), e.c[1] + Math.sin(ang) * (e.r + nudge)]
+  }
+
+  private static readonly SYM_GLYPH: Record<string, string> = {
+    Horizontal: 'H',
+    Vertical: 'V',
+    Parallel: '∥',
+    Perpendicular: '⟂',
+    Equal: '=',
+    Tangent: 'T',
+    Coincident: '•',
+    Concentric: '◎',
+    PointOnObject: '+'
+  }
+
+  private rebuildSyms(): void {
+    if (this.symV === this.geomV) return
+    this.symV = this.geomV
+    for (const c of [...this.symGroup.children]) {
+      this.symGroup.remove(c)
+      ;(c as THREE.Sprite).material.dispose()
+    }
+
+    // implied rectangle constraints (the editor stores a rect as one entity but
+    // the sidecar builds it as 4 constrained lines - show what will be there)
+    for (let i = 0; i < this.entities.length; i++) {
+      const e = this.entities[i]
+      if (e.construction) continue
+      if (e.type === 'rect') {
+        const x0 = Math.min(e.a[0], e.b[0])
+        const x1 = Math.max(e.a[0], e.b[0])
+        const y0 = Math.min(e.a[1], e.b[1])
+        const y1 = Math.max(e.a[1], e.b[1])
+        const corners: [number, number][] = [
+          [x0, y0],
+          [x1, y0],
+          [x1, y1],
+          [x0, y1]
+        ]
+        corners.forEach((p, ci) =>
+          this.symGroup.add(this.symSprite('•', p, `rect${i}-corner${ci}`))
+        )
+        this.symGroup.add(this.symSprite('H', [(x0 + x1) / 2, y0 - this.mmForPx(7)], `rect${i}-h`))
+        this.symGroup.add(this.symSprite('H', [(x0 + x1) / 2, y1 + this.mmForPx(7)], `rect${i}-h`))
+        this.symGroup.add(this.symSprite('V', [x0 - this.mmForPx(7), (y0 + y1) / 2], `rect${i}-v`))
+        this.symGroup.add(this.symSprite('V', [x1 + this.mmForPx(7), (y0 + y1) / 2], `rect${i}-v`))
+      }
+    }
+
+    // recorded constraints
+    this.constraints.forEach((con, ci) => {
+      if (con.type === 'Distance' || con.type === 'Radius') return // shown as dims
+      const glyph = SketchController.SYM_GLYPH[con.type]
+      if (!glyph) return
+      const key = `con${ci}`
+      for (const r of con.refs) {
+        if (r.geo != null && r.geo < 0) {
+          // anchored to origin / an axis - mark it at the origin
+          this.symGroup.add(this.symSprite(glyph, [0, 0], key))
+          continue
+        }
+        const ei = r.geo != null ? r.geo : (r.new ?? 0) + this.baseCount
+        const e = this.entities[ei]
+        if (e) this.symGroup.add(this.symSprite(glyph, this.symAnchor(e, ci), key))
+      }
+    })
+
+    this.applySymHighlight()
+  }
+
+  private applySymHighlight(): void {
+    for (const c of this.symGroup.children) {
+      const sp = c as THREE.Sprite
+      const hot = this.hoverSymKey != null && sp.userData.symKey === this.hoverSymKey
+      sp.material.color.setHex(hot ? SketchController.SYM_HOT : SketchController.SYM_BASE)
+    }
+  }
+
+  private pickSym(ev: { clientX: number; clientY: number }): string | null {
+    if (!this.symGroup.children.length) return null
+    this.ray.setFromCamera(this.ndcFor(ev.clientX, ev.clientY), this.camera)
+    const hits = this.ray.intersectObjects(this.symGroup.children, false)
+    return hits.length ? ((hits[0].object.userData.symKey as string) ?? null) : null
   }
 
   /** world mm that a given on-screen pixel size maps to at the sketch plane */
@@ -922,6 +1164,7 @@ export class SketchController {
 
   private drawRefGeom(): void {
     this.group.add(this.dimGroup)
+    this.group.add(this.symGroup)
     for (const poly of this.refPolys) {
       if (poly.length >= 2) this.refGroup.add(this.polyToObj(poly, this.refMat))
     }
@@ -957,6 +1200,7 @@ export class SketchController {
       this.entGroup.add(this.entityObj(this.entities[i], mat))
     }
     this.redrawDims()
+    this.rebuildSyms()
 
     const drawTool =
       this.tool === 'line' || this.tool === 'rect' || this.tool === 'circle' || this.tool === 'arc'
@@ -995,7 +1239,11 @@ export class SketchController {
     this.dom.removeEventListener('pointerdown', this.onDown)
     this.dom.removeEventListener('pointermove', this.onMove)
     this.dom.removeEventListener('dblclick', this.onDblClick)
+    window.removeEventListener('pointerup', this.onUp)
     window.removeEventListener('keydown', this.onKey)
+    for (const c of this.symGroup.children) (c as THREE.Sprite).material.dispose()
+    for (const t of this.symTexCache.values()) t.dispose()
+    this.symTexCache.clear()
     this.group.removeFromParent()
     this.preview.removeFromParent()
     this.refGroup.removeFromParent()

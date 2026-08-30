@@ -36,9 +36,15 @@ export class Picker {
   pick(ev: PointerEvent | MouseEvent, content: THREE.Object3D): Selection | null {
     this.setPointer(ev)
     this.ray.setFromCamera(this.pointer, this.camera)
-    const hits = this.ray.intersectObjects(content.children, false)
+    const hits = this.ray.intersectObjects(content.children, true)
     for (const h of hits) {
-      const ud = h.object.userData
+      // walk up to the object that carries the pick tag (datums nest a group)
+      let owner: THREE.Object3D | null = h.object
+      while (owner && owner.userData?.pick == null && owner !== content) owner = owner.parent
+      const ud = owner?.userData ?? h.object.userData
+      if (ud.pick === 'datum') {
+        return { kind: 'plane', planeId: ud.datumId, label: ud.label }
+      }
       if (ud.pick === 'sketch') {
         return { kind: 'sketch', sketchId: ud.sketchId }
       }
@@ -85,6 +91,7 @@ export class Picker {
         new THREE.PointsMaterial({ color, size: 11, sizeAttenuation: false, depthTest: false })
       )
       p.renderOrder = 12
+      p.userData.ownGeom = true
       return p
     }
     if (sel.kind === 'edge') {
@@ -98,6 +105,22 @@ export class Picker {
       )
       line.renderOrder = 10
       return line
+    }
+    if (sel.kind === 'plane') {
+      const grp = content.children.find(
+        (c) => c.userData.pick === 'datum' && c.userData.datumId === sel.planeId
+      )
+      if (!grp) return null
+      const out = new THREE.Group()
+      grp.traverse((o) => {
+        const ln = o as THREE.Line
+        if ((ln.isLine || (ln as unknown as THREE.LineSegments).isLineSegments) && ln.geometry) {
+          const c = new THREE.Line(ln.geometry, new THREE.LineBasicMaterial({ color, depthTest: false }))
+          c.renderOrder = 11
+          out.add(c)
+        }
+      })
+      return out.children.length ? out : null
     }
     if (sel.kind !== 'face') return null
     // face overlay: slice the body geometry to that face group's triangles
@@ -132,6 +155,7 @@ export class Picker {
       })
     )
     ov.renderOrder = 9
+    ov.userData.ownGeom = true
     return ov
   }
 
@@ -166,13 +190,15 @@ export class Picker {
   }
 
   private disposeObj(o: THREE.Object3D): void {
-    const any = o as THREE.Mesh
-    if (any.geometry && any.geometry !== (any.userData.shared as unknown)) {
-      // edge overlays reuse source geometry; only dispose our own slices
-    }
-    const mat = (any as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined
-    if (Array.isArray(mat)) mat.forEach((m) => m.dispose())
-    else mat?.dispose()
+    // some overlays reuse source geometry (edge / datum lines) - those are not
+    // ours to dispose; ones we build tag userData.ownGeom. Recurse for groups.
+    o.traverse((n) => {
+      const m = n as THREE.Mesh
+      if (m.userData?.ownGeom) m.geometry?.dispose?.()
+      const mat = m.material as THREE.Material | THREE.Material[] | undefined
+      if (Array.isArray(mat)) mat.forEach((x) => x.dispose())
+      else mat?.dispose()
+    })
   }
 
   /** Faces whose centroid projects inside the screen rect (window select). */
