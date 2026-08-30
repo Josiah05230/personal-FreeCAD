@@ -67,6 +67,7 @@ code {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  position: relative;
 }
 
 /* ---------- app bar ---------- */
@@ -2291,4 +2292,48 @@ code {
   font-size: 11px;
   padding: 12px 6px 0;
   opacity: 0.5;
+}
+
+/* ---- boot / engine-not-ready scrim over the whole main column ---- */
+.boot-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  background: rgba(20, 22, 26, 0.72);
+  backdrop-filter: blur(2px);
+  display: grid;
+  place-items: center;
+}
+.boot-scrim-msg {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-direction: column;
+  padding: 20px 26px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--chrome-2, #23262a);
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: 0 18px 50px #000a;
+}
+.boot-scrim-msg b {
+  color: #e0774a;
+}
+.boot-scrim-msg span {
+  color: var(--text-dim);
+  font-size: 11px;
+  max-width: 380px;
+  text-align: center;
+}
+.boot-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2.5px solid var(--line-soft);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: boot-spin 0.8s linear infinite;
+}
+@keyframes boot-spin {
+  to { transform: rotate(360deg); }
 }

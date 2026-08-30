@@ -122,6 +122,9 @@ export function Browser({
 
   const b0 = bodies[0]
   const origin = b0?.origin ?? []
+  // an empty starter body exists so the Origin is always there (Fusion-style),
+  // but don't surface it as a "Body" until it actually has geometry
+  const realBodies = bodies.filter((b) => b.features.length > 0)
   const sketches = bodies.flatMap((b) => b.features.filter((f) => f.kind === 'sketch'))
   const datums = bodies.flatMap((b) => b.features.filter((f) => f.kind === 'datum'))
 
@@ -170,31 +173,33 @@ export function Browser({
           ))}
         </Row>
 
-        <Row
-          depth={1}
-          label="Bodies"
-          glyph="▨"
-          visible={anyOn(
-            bodies.map((b) => b.id),
-            (id) => bodies.find((b) => b.id === id)?.visible ?? true
-          )}
-          onToggle={(v) => handlers.onToggleGroup('bodies', v)}
-        >
-          {bodies.map((b) => (
-            <Row
-              key={b.id}
-              depth={2}
-              label={b.label}
-              glyph="▬"
-              visible={vis(b.id, b.visible)}
-              onToggle={(v) => handlers.onToggleVisibility(b.id, v)}
-              onPick={(add) => handlers.onSelect({ kind: 'body', bodyId: b.id }, add)}
-              selected={isSel((s) => s.kind === 'body' && s.bodyId === b.id)}
-              menu={featMenu(b.id)}
-              onEditDbl={() => handlers.onEdit(b.id)}
-            />
-          ))}
-        </Row>
+        {realBodies.length > 0 && (
+          <Row
+            depth={1}
+            label="Bodies"
+            glyph="▨"
+            visible={anyOn(
+              realBodies.map((b) => b.id),
+              (id) => realBodies.find((b) => b.id === id)?.visible ?? true
+            )}
+            onToggle={(v) => handlers.onToggleGroup('bodies', v)}
+          >
+            {realBodies.map((b) => (
+              <Row
+                key={b.id}
+                depth={2}
+                label={b.label}
+                glyph="▬"
+                visible={vis(b.id, b.visible)}
+                onToggle={(v) => handlers.onToggleVisibility(b.id, v)}
+                onPick={(add) => handlers.onSelect({ kind: 'body', bodyId: b.id }, add)}
+                selected={isSel((s) => s.kind === 'body' && s.bodyId === b.id)}
+                menu={featMenu(b.id)}
+                onEditDbl={() => handlers.onEdit(b.id)}
+              />
+            ))}
+          </Row>
+        )}
 
         {sketches.length > 0 && (
           <Row

@@ -31,3 +31,11 @@ done, remove its line entirely rather than leaving a checked box.
 Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
+
+-when I enter a sketch, there should be an origin point and, lines representing the 2 perpendicular planes shown
+-dimensions still are not shown when I draw something in a sketch (like a rectangle)
+-it should highlight an edge, face, or point in a sketch when I am hovering over it so that, I know what I am about to click.
+-dimensions should look like where they have the lines down showing 'from here to here'. Whatever that is called. Not just a box.
+-you need to handle simple logic better like, if there is only one part/body, don't show the assemble tab...
+-the 'select' section should just have the paint/window toggle and then, all of the other 'checkbox' style stuff underneath when you hit 'select'
+-the 'inspect' tools, should just be right in the ribbon by default. There is only 2.

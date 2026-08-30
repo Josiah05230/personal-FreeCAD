@@ -276,9 +276,29 @@ export function App(): JSX.Element {
     setSelection([])
   }, [])
 
+  const sketchOnRef = useRef<Promise<{ sketchId: string; bodyId: string }> | null>(null)
+
   const beginSketch = useCallback(
     async (ref: SketchRef) => {
       setPlanePickMode(false)
+      // origin planes have a known frame - enter the sketcher instantly and let
+      // the engine create the sketch object in the background
+      const ORIGIN_FRAMES: Record<string, SketchFrameDTO> = {
+        XY_Plane: { origin: [0, 0, 0], x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] },
+        XZ_Plane: { origin: [0, 0, 0], x: [1, 0, 0], y: [0, 0, 1], z: [0, -1, 0] },
+        YZ_Plane: { origin: [0, 0, 0], x: [0, 1, 0], y: [0, 0, 1], z: [1, 0, 0] }
+      }
+      if (ref.kind === 'origin' && ORIGIN_FRAMES[ref.role]) {
+        setSketchSession({ sketchId: '', bodyId: bodyId ?? '', frame: ORIGIN_FRAMES[ref.role], refGeom: null })
+        resetSketchUi()
+        sketchOnRef.current = api
+          .sketchOn(ref)
+          .then((r) => {
+            setSketchSession((s) => (s ? { ...s, sketchId: r.sketchId, bodyId: r.bodyId } : s))
+            return { sketchId: r.sketchId, bodyId: r.bodyId }
+          })
+        return
+      }
       const r = await api.sketchOn(ref)
       setSketchSession({
         sketchId: r.sketchId,
@@ -288,7 +308,7 @@ export function App(): JSX.Element {
       })
       resetSketchUi()
     },
-    [resetSketchUi]
+    [resetSketchUi, bodyId]
   )
 
   const createSketch = useCallback(async () => {
@@ -325,7 +345,21 @@ export function App(): JSX.Element {
     const newEnts = vpApi.current?.getNewSketchEntities() ?? []
     const allEnts = vpApi.current?.getSketchEntities() ?? []
     const cons = (vpApi.current?.getSketchConstraints() ?? []) as SketchConstraint[]
-    const { sketchId: id, frame } = sketchSession
+    const { frame } = sketchSession
+    // optimistic origin-plane entry may not have the real id back yet
+    let id = sketchSession.sketchId
+    if (!id && sketchOnRef.current) {
+      try {
+        id = (await sketchOnRef.current).sketchId
+      } catch {
+        /* handled below */
+      }
+    }
+    if (!id) {
+      window.alert('The sketch is still being created - try Finish again in a moment.')
+      return
+    }
+    sketchOnRef.current = null
 
     // 1. leave sketch mode and paint the finished sketch immediately from the
     //    entities we already have - no waiting on the engine.
@@ -354,13 +388,24 @@ export function App(): JSX.Element {
 
   const cancelSketch = useCallback(async () => {
     if (sketchSession) {
-      try {
-        await api.deleteFeature(sketchSession.sketchId)
-      } catch {
-        /* fresh sketch may already be gone */
+      let id = sketchSession.sketchId
+      if (!id && sketchOnRef.current) {
+        try {
+          id = (await sketchOnRef.current).sketchId
+        } catch {
+          /* never got created */
+        }
+      }
+      if (id) {
+        try {
+          await api.deleteFeature(id)
+        } catch {
+          /* fresh sketch may already be gone */
+        }
       }
     }
     setSketchSession(null)
+    sketchOnRef.current = null
     await refreshScene()
   }, [sketchSession, refreshScene])
 
@@ -1193,6 +1238,23 @@ export function App(): JSX.Element {
         />
 
         <div className="maincol">
+          {status.phase !== 'ready' && (
+            <div className="boot-scrim">
+              <div className="boot-scrim-msg">
+                {status.phase === 'error' ? (
+                  <>
+                    <b>Engine offline</b>
+                    <span>{status.message}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="boot-spinner" />
+                    Starting the FreeCAD engine…
+                  </>
+                )}
+              </div>
+            </div>
+          )}
           <Ribbon
             commands={commands}
             pins={pins}
