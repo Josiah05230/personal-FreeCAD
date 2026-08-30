@@ -367,8 +367,25 @@ export const api = {
   ) => rpc<{ bodies: BodyTree[] }>('pattern.linear', { direction, count, spacing, directionRef }),
   mirror: (planeRef: GeomRef | null, plane = 'YZ') =>
     rpc<{ bodies: BodyTree[] }>('feature.mirror', { planeRef, plane }),
-  datumPlane: (baseRef: GeomRef | null, offset: number, basePlane = 'XY') =>
-    rpc<{ bodies: BodyTree[] }>('datum.plane', { baseRef, offset, basePlane }),
+  datumPlane: (
+    baseRef: GeomRef | null,
+    offset: number,
+    basePlane = 'XY',
+    targetRef: GeomRef | null = null
+  ) => rpc<{ bodies: BodyTree[] }>('datum.plane', { baseRef, offset, basePlane, targetRef }),
+  datumPlanePreview: (
+    baseRef: GeomRef | null,
+    offset: number,
+    targetRef: GeomRef | null = null
+  ) =>
+    rpc<{
+      origin: [number, number, number]
+      x: [number, number, number]
+      y: [number, number, number]
+      z: [number, number, number]
+      size: number
+      distance: number
+    }>('datum.planePreview', { baseRef, offset, basePlane: 'XY', targetRef }),
   sketchOnPlane: (plane: string) =>
     rpc<{ sketchId: string; bodyId: string; frame: SketchFrameDTO }>('sketch.onPlane', { plane }),
   sketchOnFace: (bodyId: string, face: string) =>

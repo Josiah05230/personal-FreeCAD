@@ -50,6 +50,7 @@ export function Viewport({
   onPickPlane,
   selectMode = 'paint',
   selFilter,
+  previewPlane = null,
   onWindowSelect,
   canvases = [],
   hiddenIds,
@@ -75,6 +76,13 @@ export function Viewport({
   selectMode?: 'paint' | 'window'
   /** which entity kinds are currently selectable - hover pre-highlight honours it */
   selFilter?: string[]
+  /** live ghost for the Offset Plane dialog */
+  previewPlane?: {
+    origin: [number, number, number]
+    x: [number, number, number]
+    y: [number, number, number]
+    size: number
+  } | null
   onWindowSelect?: (sels: Selection[]) => void
   canvases?: CanvasDTO[]
   hiddenIds?: Set<string>
@@ -124,6 +132,7 @@ export function Viewport({
     content: THREE.Group | null
     overlay: THREE.Group
     ghosts: THREE.Group
+    preview: THREE.Group
     sketch: SketchController | null
     framedOnce: boolean
     lastCenter: THREE.Vector3
@@ -156,8 +165,10 @@ export function Viewport({
 
     const overlay = new THREE.Group()
     const ghosts = new THREE.Group()
+    const preview = new THREE.Group()
     scene.add(overlay)
     scene.add(ghosts)
+    scene.add(preview)
 
     const controls = new CadControls(camera, renderer.domElement)
     const cube = new ViewCube(cubeRef.current!, camera, controls)
@@ -173,6 +184,7 @@ export function Viewport({
       content: null,
       overlay,
       ghosts,
+      preview,
       sketch: null,
       framedOnce: false,
       lastCenter: new THREE.Vector3(),
@@ -584,6 +596,55 @@ export function Viewport({
       st.ghosts.add(border)
     }
   }, [planePickMode, pickPlanes])
+
+  // live Offset-Plane ghost
+  useEffect(() => {
+    const st = stateRef.current
+    if (!st) return
+    for (const c of [...st.preview.children]) {
+      st.preview.remove(c)
+      const m = c as THREE.Mesh
+      m.geometry?.dispose?.()
+      const mm = m.material as THREE.Material | undefined
+      mm?.dispose?.()
+    }
+    if (!previewPlane) return
+    const O = new THREE.Vector3(...previewPlane.origin)
+    const X = new THREE.Vector3(...previewPlane.x).normalize()
+    const Y = new THREE.Vector3(...previewPlane.y).normalize()
+    const N = new THREE.Vector3().crossVectors(X, Y).normalize()
+    const s = previewPlane.size
+    const c = [
+      O.clone().addScaledVector(X, -s).addScaledVector(Y, -s),
+      O.clone().addScaledVector(X, s).addScaledVector(Y, -s),
+      O.clone().addScaledVector(X, s).addScaledVector(Y, s),
+      O.clone().addScaledVector(X, -s).addScaledVector(Y, s)
+    ]
+    const quad = new THREE.Mesh(
+      new THREE.BufferGeometry().setFromPoints([c[0], c[1], c[2], c[0], c[2], c[3]]),
+      new THREE.MeshBasicMaterial({
+        color: 0x4a90d9,
+        transparent: true,
+        opacity: 0.18,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      })
+    )
+    quad.renderOrder = 8
+    st.preview.add(quad)
+    st.preview.add(
+      new THREE.LineLoop(
+        new THREE.BufferGeometry().setFromPoints(c),
+        new THREE.LineBasicMaterial({ color: 0x6aa9dd })
+      )
+    )
+    st.preview.add(
+      new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([O, O.clone().addScaledVector(N, s * 0.4)]),
+        new THREE.LineBasicMaterial({ color: 0x9fd0f0 })
+      )
+    )
+  }, [previewPlane])
 
   return (
     <div className="viewport" ref={hostRef}>

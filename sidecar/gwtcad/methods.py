@@ -628,8 +628,29 @@ def feature_mirror(planeRef=None, plane="YZ"):
     return tree_get()
 
 
+def _ref_point(d, body, ref):
+    """A representative world point for a UI reference (vertex / edge / face /
+    plane / origin) - used to place a datum 'to' that object."""
+    from FreeCAD import Vector
+    k = ref.get("kind")
+    obj, subs = _resolve_ref(d, body, ref)
+    sub = subs[0] if isinstance(subs, (list, tuple)) and subs else subs
+    try:
+        if sub:
+            shp = obj.Shape.getElement(sub)
+            if k == "vertex":
+                return Vector(shp.Point)
+            return Vector(shp.CenterOfMass)
+        p = getattr(obj, "Placement", None)
+        if p is not None:
+            return Vector(p.Base)
+    except Exception:
+        pass
+    return Vector(0, 0, 0)
+
+
 @method("datum.plane")
-def datum_plane(baseRef=None, basePlane="XY", offset=10.0):
+def datum_plane(baseRef=None, basePlane="XY", offset=10.0, targetRef=None):
     body = _require_body()
     d = body.Document
     pl = body.newObject("PartDesign::Plane", "DatumPlane")
@@ -640,11 +661,67 @@ def datum_plane(baseRef=None, basePlane="XY", offset=10.0):
         pl.AttachmentSupport = [(build.origin_plane(body, basePlane), [""])]
     pl.MapMode = "FlatFace"
     from FreeCAD import Placement, Vector, Rotation
-    pl.AttachmentOffset = Placement(Vector(0, 0, float(offset)), Rotation())
+    d.recompute()  # so pl.Placement reflects the attachment before we measure
+    dist = float(offset)
+    if targetRef:
+        # offset the plane along its own normal so it passes through the target
+        # object, then add the extra user offset on top
+        base = pl.Placement
+        n = base.Rotation.multVec(Vector(0, 0, 1))
+        tp = _ref_point(d, body, targetRef)
+        dist = (tp - base.Base).dot(n) + float(offset)
+    pl.AttachmentOffset = Placement(Vector(0, 0, dist), Rotation())
     session.set_datum_shown(pl.Name, True)  # new datums are shown, like Fusion
     pl.Visibility = True
     d.recompute()
     return tree_get()
+
+
+@method("datum.planePreview")
+def datum_plane_preview(baseRef=None, basePlane="XY", offset=10.0, targetRef=None):
+    """Where an Offset Plane would land, as a world frame for a viewport ghost.
+    Builds a throwaway PartDesign::Plane, reads its placement, removes it."""
+    body = _require_body()
+    d = body.Document
+    from FreeCAD import Placement, Vector, Rotation
+    pl = body.newObject("PartDesign::Plane", "__preview_plane")
+    try:
+        if baseRef:
+            pl.AttachmentSupport = [_resolve_ref(d, body, baseRef)]
+        else:
+            pl.AttachmentSupport = [(build.origin_plane(body, basePlane), [""])]
+        pl.MapMode = "FlatFace"
+        d.recompute()
+        dist = float(offset)
+        if targetRef:
+            base = pl.Placement
+            n = base.Rotation.multVec(Vector(0, 0, 1))
+            tp = _ref_point(d, body, targetRef)
+            dist = (tp - base.Base).dot(n) + float(offset)
+        pl.AttachmentOffset = Placement(Vector(0, 0, dist), Rotation())
+        d.recompute()
+        p = pl.Placement
+        ox = p.multVec(Vector(1, 0, 0)).sub(p.Base)
+        oy = p.multVec(Vector(0, 1, 0)).sub(p.Base)
+        oz = p.multVec(Vector(0, 0, 1)).sub(p.Base)
+        try:
+            size = max(20.0, body.Shape.BoundBox.DiagonalLength * 0.35)
+        except Exception:
+            size = 40.0
+        return {
+            "origin": [p.Base.x, p.Base.y, p.Base.z],
+            "x": [ox.x, ox.y, ox.z],
+            "y": [oy.x, oy.y, oy.z],
+            "z": [oz.x, oz.y, oz.z],
+            "size": size,
+            "distance": dist,
+        }
+    finally:
+        try:
+            d.removeObject(pl.Name)
+            d.recompute()
+        except Exception:
+            pass
 
 
 @method("datum.axis")

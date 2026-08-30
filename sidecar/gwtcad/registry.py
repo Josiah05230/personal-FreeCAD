@@ -52,6 +52,7 @@ _NO_TXN = {
     "history.undo", "history.redo",
     "io.export", "io.exportStep", "io.exportStl",
     "object.setVisibility", "visibility.setGroup",
+    "datum.planePreview",
 }
 
 

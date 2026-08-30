@@ -543,8 +543,12 @@ export function App(): JSX.Element {
             break
           }
           case 'datumPlane': {
-            const ref = selection.map(selectionToRef).find(Boolean) ?? null
-            await api.datumPlane(ref, Number(v.offset))
+            const refs = selection
+              .map(selectionToRef)
+              .filter(Boolean) as import('./rpc').GeomRef[]
+            const base = refs[0] ?? null
+            const target = v.mode === 'To object' ? refs[1] ?? null : null
+            await api.datumPlane(base, Number(v.offset), 'XY', target)
             break
           }
           case 'datumAxis': {
@@ -1166,6 +1170,40 @@ export function App(): JSX.Element {
     setSketchConstraintCount(vpApi.current?.getSketchConstraints().length ?? 0)
   }, [])
 
+  // --- Offset Plane live preview ---
+  const [previewPlane, setPreviewPlane] = useState<{
+    origin: [number, number, number]
+    x: [number, number, number]
+    y: [number, number, number]
+    size: number
+  } | null>(null)
+  const previewTok = useRef(0)
+  const onDatumPlanePreview = useCallback(
+    async (info: { mode: string; offset: number } | null) => {
+      const tok = ++previewTok.current
+      if (!info) {
+        setPreviewPlane(null)
+        return
+      }
+      const refs = selection.map(selectionToRef).filter(Boolean) as import('./rpc').GeomRef[]
+      const base = refs[0] ?? null
+      const target = info.mode === 'To object' ? refs[1] ?? null : null
+      if (info.mode === 'To object' && !target) {
+        setPreviewPlane(null)
+        return
+      }
+      try {
+        const r = await api.datumPlanePreview(base, info.offset, target)
+        if (tok === previewTok.current) {
+          setPreviewPlane({ origin: r.origin, x: r.x, y: r.y, size: r.size })
+        }
+      } catch {
+        if (tok === previewTok.current) setPreviewPlane(null)
+      }
+    },
+    [selection]
+  )
+
   const onSketchDimensionRequest = useCallback(
     async (entityIndex: number, kind: 'linear' | 'radius') => {
       const label = kind === 'radius' ? 'Radius' : 'Length'
@@ -1331,6 +1369,7 @@ export function App(): JSX.Element {
                     onPickPlane={(ref) => void beginSketch(ref)}
                     selectMode={selectMode}
                     selFilter={selFilter}
+                    previewPlane={previewPlane}
                     onWindowSelect={(sels) =>
                       setSelection((cur) => {
                         const keys = new Set(cur.map(selKey))
@@ -1394,6 +1433,7 @@ export function App(): JSX.Element {
                       selection={selection}
                       onApply={applyOp}
                       onCancel={() => setOp(null)}
+                      onPreview={onDatumPlanePreview}
                     />
                   )}
                   {measureMode && (

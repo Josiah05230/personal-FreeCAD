@@ -174,7 +174,17 @@ const SPECS: Record<OpKind, OpSpec> = {
   datumPlane: {
     title: 'Offset Plane',
     needs: 'plane',
-    fields: [{ key: 'offset', label: 'Offset', type: 'number', default: 10, step: 1 }]
+    hint: 'Pick a base plane / face. In "To object" mode also pick a point / edge / face to reach, with an optional extra offset.',
+    fields: [
+      {
+        key: 'mode',
+        label: 'Type',
+        type: 'select',
+        default: 'Distance',
+        options: ['Distance', 'To object']
+      },
+      { key: 'offset', label: 'Offset', type: 'number', default: 10, step: 1 }
+    ]
   },
   datumAxis: {
     title: 'Construction Axis',
@@ -208,12 +218,14 @@ export function OperationDialog({
   kind,
   selection,
   onApply,
-  onCancel
+  onCancel,
+  onPreview
 }: {
   kind: OpKind | null
   selection: Selection[]
   onApply: (kind: OpKind, values: OpValues, exprs: Record<string, string>) => void
   onCancel: () => void
+  onPreview?: (info: { mode: string; offset: number } | null) => void
 }): JSX.Element | null {
   const spec = kind ? SPECS[kind] : null
   const [values, setValues] = useState<OpValues>({})
@@ -228,6 +240,35 @@ export function OperationDialog({
       setPreview({})
     }
   }, [kind]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Offset Plane: picking a second piece of geometry while in Distance mode
+  // means "put the plane there" - switch to To object and start the extra
+  // offset at 0, like Fusion.
+  useEffect(() => {
+    if (kind !== 'datumPlane') return
+    if (values.mode === 'Distance' && selection.length >= 2) {
+      setValues((v) => ({ ...v, mode: 'To object', offset: '0' }))
+    }
+  }, [kind, selection, values.mode])
+
+  // push a live ghost of where the Offset Plane will land
+  useEffect(() => {
+    if (!onPreview) return
+    if (kind !== 'datumPlane') {
+      onPreview(null)
+      return
+    }
+    const off = Number(String(values.offset ?? 0))
+    if (isNaN(off)) return
+    const t = setTimeout(
+      () => onPreview({ mode: String(values.mode ?? 'Distance'), offset: off }),
+      120
+    )
+    return () => clearTimeout(t)
+  }, [kind, values.mode, values.offset, selection, onPreview])
+
+  // drop the ghost when the dialog unmounts
+  useEffect(() => () => onPreview?.(null), []) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!kind || !spec) return null
 
@@ -274,9 +315,16 @@ export function OperationDialog({
   const faces = selection.filter((s) => s.kind === 'face')
   const sketchesSel = selection.filter((s) => s.kind === 'sketch')
   const planeSel = selection.filter((s) => s.kind === 'plane' || s.kind === 'face')
+  const datumPlaneToObj = kind === 'datumPlane' && values.mode === 'To object'
+  const datumPlaneMsg = datumPlaneToObj
+    ? selection.length >= 2
+      ? 'base + target selected'
+      : `pick a base plane / face, then a point / edge / face to reach (${selection.length}/2)`
+    : null
   const axisSel = selection.filter((s) => s.kind === 'plane' || s.kind === 'edge' || s.kind === 'face')
   const needMsg =
-    spec.needs === 'edges'
+    datumPlaneMsg ??
+    (spec.needs === 'edges'
       ? `${edges.length} edge${edges.length === 1 ? '' : 's'} selected`
       : spec.needs === 'faces' || spec.needs === 'planeFace'
         ? `${faces.length} face${faces.length === 1 ? '' : 's'} selected`
@@ -294,9 +342,11 @@ export function OperationDialog({
                 ? axisSel.length
                   ? 'axis selected'
                   : 'click an axis / edge / plane / face'
-                : null
+                : null)
 
   const ready =
+    (datumPlaneToObj && selection.length >= 2) ||
+    (kind === 'datumPlane' && !datumPlaneToObj && planeSel.length >= 1) ||
     spec.needs === 'none' ||
     (spec.needs === 'edges' && edges.length > 0) ||
     (spec.needs === 'faces' && faces.length > 0) ||
