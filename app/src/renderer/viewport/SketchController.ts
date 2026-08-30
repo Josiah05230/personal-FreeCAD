@@ -599,10 +599,64 @@ export class SketchController {
     }
     // keep coincident corners welded and honour H / V while dragging - a
     // rectangle side stays a rectangle side (the sidecar still re-solves later)
-    this.solveLocal(this.draggedKeys())
+    this.solveLocal(this.draggedKeys(), this.rectHoldKeys())
     this.drag.last = uv
     this.geomV++
     this.redraw()
+  }
+
+  /** The 4 line-entity indices of a closed rectangle-ish loop through `startIdx`,
+   *  in loop order, or null. Uses the recorded Coincident welds. */
+  private rectLoopOf(startIdx: number): number[] | null {
+    const e0 = this.entities[startIdx]
+    if (!e0 || e0.type !== 'line') return null
+    const groups = this.weldGroups()
+    const at = (ent: number, pt: number): { ent: number; pt: number } | null => {
+      const g = groups.find((s) => s.has(`${ent}:${pt}`))
+      if (!g) return null
+      for (const k of g) {
+        const [ei, p] = k.split(':').map(Number)
+        if (ei !== ent && this.entities[ei]?.type === 'line') return { ent: ei, pt: p }
+      }
+      return null
+    }
+    const loop = [startIdx]
+    let cur = startIdx
+    let enterPt = 1
+    for (let i = 0; i < 4; i++) {
+      const nx = at(cur, enterPt === 1 ? 2 : 1)
+      if (!nx) return null
+      if (nx.ent === startIdx) return loop.length === 4 ? loop : null
+      if (loop.includes(nx.ent)) return null
+      loop.push(nx.ent)
+      cur = nx.ent
+      enterPt = nx.pt
+    }
+    return null
+  }
+
+  /** While dragging inside a rectangle loop, pin the far side so it resizes
+   *  cleanly rather than shearing: opposite edge for an edge drag, opposite
+   *  corner for a corner drag. */
+  private rectHoldKeys(): Set<string> {
+    const out = new Set<string>()
+    if (!this.drag) return out
+    const loop = this.rectLoopOf(this.drag.idx)
+    if (!loop) return out
+    const opp = loop[(loop.indexOf(this.drag.idx) + 2) % 4]
+    const oe = this.entities[opp]
+    if (!oe || oe.type !== 'line') return out
+    const de = this.entities[this.drag.idx] as { a: [number, number]; b: [number, number] }
+    if (this.drag.handle === 'a' || this.drag.handle === 'b') {
+      const dp = this.drag.handle === 'a' ? de.a : de.b
+      const d1 = Math.hypot(oe.a[0] - dp[0], oe.a[1] - dp[1])
+      const d2 = Math.hypot(oe.b[0] - dp[0], oe.b[1] - dp[1])
+      out.add(d1 >= d2 ? `${opp}:1` : `${opp}:2`)
+    } else {
+      out.add(`${opp}:1`)
+      out.add(`${opp}:2`)
+    }
+    return out
   }
 
   /** point keys ("idx:pt") the current drag handle directly controls */
@@ -1020,13 +1074,14 @@ export class SketchController {
 
   /** Gauss-Seidel relaxation so a drag looks rigid: snap axis anchors, weld
    *  coincident points (a directly-dragged point wins), hold H / V lines flat,
-   *  keep midpoints centred and length dims exact. The headless solver still
-   *  runs the exact solve afterwards. */
-  private solveLocal(pinned: Set<string>): void {
+   *  keep midpoints centred and length dims exact. `held` points stay where
+   *  they are (used to pin the far side of a rectangle so it resizes cleanly
+   *  instead of shearing). The headless solver still runs the exact solve. */
+  private solveLocal(pinned: Set<string>, held: Set<string> = new Set()): void {
     const groups = this.weldGroups()
 
-    // points hard-anchored to the origin / an axis
-    const anchored = new Set<string>()
+    // points hard-anchored to the origin / an axis, plus caller-held points
+    const anchored = new Set<string>(held)
     for (const c of this.constraints) {
       if (c.type === 'Coincident' && c.refs[1]?.geo === -1) {
         const k = this.keyOfRef(c.refs[0])
@@ -1507,7 +1562,7 @@ export class SketchController {
     return t
   }
 
-  private symSprite(glyph: string, at: [number, number], key: string): THREE.Sprite {
+  private symSprite(glyph: string, at: [number, number], key: string, px = 15): THREE.Sprite {
     const s = new THREE.Sprite(
       new THREE.SpriteMaterial({
         map: this.symTex(glyph),
@@ -1517,7 +1572,7 @@ export class SketchController {
       })
     )
     s.position.copy(this.toWorld(at[0], at[1]))
-    const h = this.mmForPx(15)
+    const h = this.mmForPx(px)
     s.scale.set(h, h, 1)
     s.renderOrder = 44
     s.userData = { symKey: key }
@@ -1549,17 +1604,18 @@ export class SketchController {
     return [e.c[0] + Math.cos(ang) * (e.r + nudge), e.c[1] + Math.sin(ang) * (e.r + nudge)]
   }
 
-  // glyphs mirror the SKETCH ribbon's constraint buttons. Coincident /
-  // PointOnObject / Symmetric carry no glyph on purpose - the geometry already
-  // shows the join, and dotting every corner just clutters the sketch.
+  // glyphs mirror the SKETCH ribbon's constraint buttons
   private static readonly SYM_GLYPH: Record<string, string> = {
     Horizontal: '—',
     Vertical: '|',
     Parallel: '∥',
     Perpendicular: '⟂',
     Equal: '=',
-    Tangent: '◡',
-    Concentric: '◎'
+    Tangent: '◟',
+    Coincident: '○',
+    Concentric: '◎',
+    PointOnObject: '⌐',
+    Symmetric: '⋈'
   }
 
   private rebuildSyms(): void {
@@ -1578,22 +1634,46 @@ export class SketchController {
       const key = `con${ci}`
       const ents = this.symEnts.get(key) ?? new Set<number>()
       this.symEnts.set(key, ents)
-      // point-type constraints sit right at the point; others beside the entity
-      const pointType = con.type === 'Coincident' || con.type === 'Concentric'
-      con.refs.forEach((r, ri) => {
-        if (r.geo != null && r.geo < 0) {
-          this.symGroup.add(this.symSprite(glyph, [0, 0], key)) // anchored to origin / axis
-          return
-        }
-        const ei = r.geo != null ? r.geo : (r.new ?? 0) + this.baseCount
+
+      // Coincident / PointOnObject: one small marker, exactly on the point
+      if (con.type === 'Coincident' || con.type === 'PointOnObject') {
+        const r0 = con.refs[0]
+        const ei = this.entIdxOfRef(r0)
         const e = this.entities[ei]
         if (!e) return
         ents.add(ei)
-        const at =
-          pointType && r.pt != null
-            ? this.endpointOf(e, r.pt)
-            : this.symAnchor(e, ci + ri)
-        this.symGroup.add(this.symSprite(glyph, at, key))
+        const r1 = con.refs[1]
+        if (r1 && r1.geo != null && r1.geo >= 0) ents.add(r1.geo)
+        else if (r1 && r1.new != null) ents.add(r1.new + this.baseCount)
+        this.symGroup.add(this.symSprite(glyph, this.endpointOf(e, r0.pt ?? 1), key, 10))
+        return
+      }
+      // Symmetric (midpoint): one marker at the middle of the symmetry line
+      if (con.type === 'Symmetric') {
+        const la = this.entIdxOfRef(con.refs[0])
+        const le = this.entities[la]
+        const pj = this.entIdxOfRef(con.refs[2])
+        if (!le || le.type !== 'line') return
+        ents.add(la)
+        if (pj >= 0) ents.add(pj)
+        this.symGroup.add(
+          this.symSprite(
+            glyph,
+            [(le.a[0] + le.b[0]) / 2, (le.a[1] + le.b[1]) / 2],
+            key,
+            11
+          )
+        )
+        return
+      }
+      // line-type constraints: a glyph beside each referenced entity
+      con.refs.forEach((r, ri) => {
+        if (r.geo != null && r.geo < 0) return // axis / origin ref - no glyph
+        const ei = this.entIdxOfRef(r)
+        const e = this.entities[ei]
+        if (!e) return
+        ents.add(ei)
+        this.symGroup.add(this.symSprite(glyph, this.symAnchor(e, ci + ri), key))
       })
     })
 

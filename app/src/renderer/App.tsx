@@ -427,9 +427,13 @@ export function App(): JSX.Element {
       const sketchIds = selection
         .filter((s) => s.kind === 'sketch')
         .map((s) => (s as { sketchId: string }).sketchId)
+      // extrude / revolve / rib work on "the sketch" - if none is selected but
+      // the doc has exactly one, use it (matches "finish sketch, then Extrude")
+      if (!sketchIds.length && sketches.length === 1) sketchIds.push(sketches[0].id)
       try {
         switch (kind) {
           case 'extrude': {
+            if (!sketchIds[0]) throw new Error('Select a sketch (or its filled face) to extrude.')
             const toObject = String(v.mode) === 'To object'
             const upTo =
               (toObject && faces[0]
@@ -630,7 +634,7 @@ export function App(): JSX.Element {
         window.alert((e as Error).message)
       }
     },
-    [selection, afterEdit]
+    [selection, sketches, afterEdit]
   )
 
   const cachePut = useCallback(
@@ -1601,6 +1605,7 @@ export function App(): JSX.Element {
                     <OperationDialog
                       kind={op}
                       selection={selection}
+                      sketchCount={sketches.length}
                       onApply={applyOp}
                       onCancel={() => setOp(null)}
                       onPreview={onDatumPlanePreview}

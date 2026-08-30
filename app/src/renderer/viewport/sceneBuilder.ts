@@ -188,24 +188,24 @@ export function buildScene(
       line.userData = { pick: 'sketch', sketchId: s.id }
       line.renderOrder = 2
       group.add(line)
+    }
 
-      // a closed profile gets a faint fill and is pickable as a region
-      const fill = fillClosedPoly(poly)
-      if (fill) {
-        const face = new THREE.Mesh(
-          fill,
-          new THREE.MeshBasicMaterial({
-            color: 0x5b8fd6,
-            transparent: true,
-            opacity: 0.15,
-            side: THREE.DoubleSide,
-            depthWrite: false
-          })
-        )
-        face.userData = { pick: 'sketch', sketchId: s.id }
-        face.renderOrder = 1
-        group.add(face)
-      }
+    // fill every closed region the sketch's edges enclose (a rectangle drawn as
+    // four separate lines still gets one filled, pickable face)
+    for (const fill of fillSketchRegions(s.polys)) {
+      const face = new THREE.Mesh(
+        fill,
+        new THREE.MeshBasicMaterial({
+          color: 0x5b8fd6,
+          transparent: true,
+          opacity: 0.15,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        })
+      )
+      face.userData = { pick: 'sketch', sketchId: s.id }
+      face.renderOrder = 1
+      group.add(face)
     }
   }
 
@@ -214,18 +214,67 @@ export function buildScene(
   return { group, center, radius }
 }
 
-/** Triangulate a closed planar polyline (flat x,y,z,...) for a sketch fill.
- *  Returns null if it is not closed or too small to matter. */
-function fillClosedPoly(poly: number[]): THREE.BufferGeometry | null {
-  const n = Math.floor(poly.length / 3)
-  if (n < 4) return null
-  const P = (i: number): THREE.Vector3 =>
-    new THREE.Vector3(poly[i * 3], poly[i * 3 + 1], poly[i * 3 + 2])
-  if (P(0).distanceTo(P(n - 1)) > 1e-3) return null // open
-  const pts: THREE.Vector3[] = []
-  for (let i = 0; i < n - 1; i++) pts.push(P(i))
-  if (pts.length < 3) return null
+/** Chain a sketch's edge polylines into closed loops and triangulate each, so a
+ *  profile made of separate line segments still fills. */
+function fillSketchRegions(polys: number[][]): THREE.BufferGeometry[] {
+  // already-closed polylines fill directly
+  const out: THREE.BufferGeometry[] = []
+  const open: THREE.Vector3[][] = []
+  for (const poly of polys) {
+    const n = Math.floor(poly.length / 3)
+    if (n < 2) continue
+    const pts: THREE.Vector3[] = []
+    for (let i = 0; i < n; i++)
+      pts.push(new THREE.Vector3(poly[i * 3], poly[i * 3 + 1], poly[i * 3 + 2]))
+    if (pts[0].distanceTo(pts[n - 1]) < 1e-4) {
+      const g = fillLoop(pts.slice(0, -1))
+      if (g) out.push(g)
+    } else {
+      open.push(pts)
+    }
+  }
+  // greedily stitch open polylines end-to-end into closed loops
+  const key = (v: THREE.Vector3): string =>
+    `${Math.round(v.x * 1e3)},${Math.round(v.y * 1e3)},${Math.round(v.z * 1e3)}`
+  const used = new Set<number>()
+  for (let start = 0; start < open.length; start++) {
+    if (used.has(start)) continue
+    const chain = [...open[start]]
+    used.add(start)
+    for (let guard = 0; guard < open.length + 1; guard++) {
+      if (key(chain[0]) === key(chain[chain.length - 1]) && chain.length > 3) break
+      const tail = chain[chain.length - 1]
+      let hit = -1
+      let rev = false
+      for (let j = 0; j < open.length; j++) {
+        if (used.has(j)) continue
+        if (key(open[j][0]) === key(tail)) {
+          hit = j
+          rev = false
+          break
+        }
+        if (key(open[j][open[j].length - 1]) === key(tail)) {
+          hit = j
+          rev = true
+          break
+        }
+      }
+      if (hit < 0) break
+      used.add(hit)
+      const seg = rev ? [...open[hit]].reverse() : open[hit]
+      chain.push(...seg.slice(1))
+    }
+    if (key(chain[0]) === key(chain[chain.length - 1]) && chain.length > 3) {
+      const g = fillLoop(chain.slice(0, -1))
+      if (g) out.push(g)
+    }
+  }
+  return out
+}
 
+/** Triangulate an ordered ring of coplanar points. */
+function fillLoop(pts: THREE.Vector3[]): THREE.BufferGeometry | null {
+  if (pts.length < 3) return null
   const o = pts[0]
   let nrm = new THREE.Vector3()
   for (let i = 1; i + 1 < pts.length; i++) {
@@ -240,8 +289,7 @@ function fillClosedPoly(poly: number[]): THREE.BufferGeometry | null {
   const xa = new THREE.Vector3().crossVectors(nrm, ref).normalize()
   const ya = new THREE.Vector3().crossVectors(nrm, xa).normalize()
   const uv = pts.map(
-    (p) =>
-      new THREE.Vector2(p.clone().sub(o).dot(xa), p.clone().sub(o).dot(ya))
+    (p) => new THREE.Vector2(p.clone().sub(o).dot(xa), p.clone().sub(o).dot(ya))
   )
   let tris: number[][]
   try {

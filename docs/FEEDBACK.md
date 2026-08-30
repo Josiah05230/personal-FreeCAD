@@ -44,13 +44,24 @@ Batch 18 - addressed:
 - Dragging a rectangle side stays a rectangle the whole way - the local
   relaxation now anchors welds to the directly-dragged point (and then to axis
   anchors) instead of any "fixed" key, so it no longer skews then snaps back.
-- The little dots on the rectangle are gone: Coincident / PointOnObject /
-  Symmetric no longer draw a glyph (the geometry already shows the join).
 - Snapping a line's endpoint to another line's midpoint while drawing now
   records a real Midpoint (Symmetric) constraint, and the relaxation keeps it
   centred through drags.
-- A finished sketch's fill + outline highlight on hover / selection, so the
-  filled face is an obvious Extrude / Revolve target.
 
--Extrude still needs a proper re-test after the closed-profile + selection-
- highlight fixes; if a specific case still fails, note the exact steps.
+Batch 19 - addressed:
+- Constraint glyphs are back, placed AT where the constraint acts: Coincident /
+  PointOnObject sit exactly on the point (small), Symmetric sits at the middle
+  of the symmetry line; H/V/parallel/etc. still sit beside the edge. Hovering
+  one still lights its partner geometry.
+- Rectangle drag: the far side is now pinned while you drag (opposite edge for
+  an edge drag, opposite corner for a corner drag) so it resizes cleanly
+  instead of shearing / going angled.
+- Extrude: if no sketch is selected but the doc has exactly one, Extrude (and
+  Revolve / Rib) use it - "finish the sketch, hit Extrude" now works. The
+  dialog says "using the only sketch"; a real miss gives a clear message.
+- Sketch fill now chains separate edge segments into closed loops, so a
+  rectangle drawn as four lines gets one filled, pickable, hover-highlighted
+  face - a proper Extrude target.
+
+-If I finish a sketch and go back in, it needs to save/remember all of the constraints and dimensions. If I cancel/go back out of a sketch (without saving) it needs to perfectly revert to before I made those edits.
+-When creating a sketch, hovering the planes doesn't highlight which one I'm about to click; and it should toggle the real origin planes' visibility, not spawn new ghost planes.

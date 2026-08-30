@@ -1267,6 +1267,9 @@ def _datum_dto(o):
             "origin": [b.x, b.y, b.z],
             "x": [x.x, x.y, x.z], "y": [y.x, y.y, y.z],
             "size": 40.0,
+            # "" for a user construction plane; "XY_Plane" etc. for an origin plane
+            "role": getattr(o, "Role", "") or "",
+            "ptype": "origin" if getattr(o, "Role", "") else "construction",
         }
     if o.TypeId in ("App::Line", "PartDesign::Line"):
         d = p.multVec(App.Vector(1, 0, 0)).sub(b)
