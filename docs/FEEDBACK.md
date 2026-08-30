@@ -32,32 +32,22 @@ Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
 
-### Batch 15 (in progress)
+-when the 'select' stuff is in the drop-down, I meant the one at the 
 
-Done and removed: sketch origin point + in-plane axes; reference dimensions
-drawn on sketch geometry with witness lines + arrowheads (not just a box);
-hover pre-highlight in the sketch; hide ASSEMBLE tab with < 2 bodies; Select
-group trimmed to paint/window with a "Select" fold-out for the kind filters;
-Inspect tools pinned by default; turntable orbit rewrite (no roll drift / pole
-spazz, right-drag also orbits); prompt fields auto-focus so you can type + Enter.
+### Batch 15 - all addressed
 
-Still open:
-
-- [ ] hover pre-highlight should happen EVERYWHERE, not just in a sketch (main
-      3D view: edges + vertices too, not only faces)
-- [ ] Offset Plane: live preview of the plane, a Distance / To-Object mode
-      switch (To-Object picks a point / face / edge, plus an extra offset), and
-      a draggable handle (arrow/dot) to set the distance live. If in Distance
-      mode and the user picks geometry, auto-switch to To-Object with offset 0.
-- [ ] Sketch: snapping a point onto the origin / an axis should auto-add the
-      constraint (coincident to origin, point-on-object for an axis).
-- [ ] Sketch: draw the constraint symbols where they exist. A default rectangle
-      = 4 lines, coincident corners, H/V on the sides, and separate equal
-      constraints on top/bottom and left/right (so not square by default).
-- [ ] Sketch: hovering a constraint symbol highlights it AND its partners
-      (equal always comes in a pair/group).
-- [ ] Double-click a dimension to edit its value.
-- [ ] Drag under-constrained sketch geometry freely (DOF-aware dragging).
-- [ ] Sketch background: adaptive grid that rescales with zoom.
-- [ ] TOOLS tab: pin everything on it to the ribbon by default.
-- [ ] Move the Insert group onto the SOLID tab.
+sketch origin + in-plane axes; reference dimensions with witness lines +
+arrowheads ("from here to here", not a box); hover pre-highlight in the sketch
+AND the main 3D view (faces/edges/vertices/datums, filter-aware); hide ASSEMBLE
+tab with < 2 bodies; Select group = paint/window on the face + a "Select"
+fold-out for the kind filters; Inspect pinned by default; turntable orbit (no
+roll drift / pole spazz, right-drag orbits); prompt fields auto-focus so you
+type + Enter; axis/origin snapping auto-records the constraint (PointOnObject /
+Coincident-to-root); rectangles come in fully constrained (corner coincidents +
+H/V) and _auto_constrain no longer piles on redundant constraints; constraint
+symbols drawn where they exist, hovering one lights its partners; double-click a
+dimension (or its geometry) to retype the value; free-drag under-constrained
+sketch geometry (no live solver - re-solves on Finish); adaptive 1/2/5 sketch
+grid; TOOLS tab pinned by default; Insert moved onto SOLID (INSERT tab gone);
+Offset Plane Distance / To-object modes with auto-switch, a live ghost-plane
+preview, and a draggable handle on the ghost to set the distance.

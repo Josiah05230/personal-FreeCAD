@@ -219,13 +219,15 @@ export function OperationDialog({
   selection,
   onApply,
   onCancel,
-  onPreview
+  onPreview,
+  handleDrag
 }: {
   kind: OpKind | null
   selection: Selection[]
   onApply: (kind: OpKind, values: OpValues, exprs: Record<string, string>) => void
   onCancel: () => void
   onPreview?: (info: { mode: string; offset: number } | null) => void
+  handleDrag?: { delta: number; phase: 'move' | 'end'; seq: number } | null
 }): JSX.Element | null {
   const spec = kind ? SPECS[kind] : null
   const [values, setValues] = useState<OpValues>({})
@@ -269,6 +271,16 @@ export function OperationDialog({
 
   // drop the ghost when the dialog unmounts
   useEffect(() => () => onPreview?.(null), []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // apply drags of the ghost's handle to the Offset field
+  const dragBaseRef = useState<{ v: number | null }>(() => ({ v: null }))[0]
+  useEffect(() => {
+    if (!handleDrag || kind !== 'datumPlane') return
+    if (dragBaseRef.v == null) dragBaseRef.v = Number(String(values.offset ?? 0)) || 0
+    const next = Math.round((dragBaseRef.v + handleDrag.delta) * 100) / 100
+    setValues((v) => ({ ...v, offset: String(next) }))
+    if (handleDrag.phase === 'end') dragBaseRef.v = null
+  }, [handleDrag]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!kind || !spec) return null
 

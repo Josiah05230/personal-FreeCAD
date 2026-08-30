@@ -51,6 +51,7 @@ export function Viewport({
   selectMode = 'paint',
   selFilter,
   previewPlane = null,
+  onPreviewHandleDrag,
   onWindowSelect,
   canvases = [],
   hiddenIds,
@@ -83,6 +84,8 @@ export function Viewport({
     y: [number, number, number]
     size: number
   } | null
+  /** dragging the ghost's handle: delta mm along the normal, and phase */
+  onPreviewHandleDrag?: (deltaMm: number, phase: 'move' | 'end') => void
   onWindowSelect?: (sels: Selection[]) => void
   canvases?: CanvasDTO[]
   hiddenIds?: Set<string>
@@ -113,6 +116,15 @@ export function Viewport({
   const selFilterRef = useRef<string[] | undefined>(selFilter)
   selFilterRef.current = selFilter
   const bandRef = useRef<HTMLDivElement>(null)
+  const onPreviewDragRef = useRef(onPreviewHandleDrag)
+  onPreviewDragRef.current = onPreviewHandleDrag
+  const previewDragRef = useRef<{
+    handle: THREE.Mesh | null
+    O0: THREE.Vector3
+    N0: THREE.Vector3
+    t0: number
+    active: boolean
+  }>({ handle: null, O0: new THREE.Vector3(), N0: new THREE.Vector3(), t0: 0, active: false })
   const calibRef = useRef<{
     canvas: CanvasDTO | null
     cb?: (mm: number) => void
@@ -219,11 +231,58 @@ export function Viewport({
     let downY = 0
     let downBtn = -1
     let banding = false
+
+    // closest point on the ghost's normal line to the cursor ray, as mm along N0
+    const normalParam = (e: PointerEvent): number => {
+      const pv = previewDragRef.current
+      const st = stateRef.current
+      if (!st) return 0
+      const r = host.getBoundingClientRect()
+      const ndc = new THREE.Vector2(
+        ((e.clientX - r.left) / r.width) * 2 - 1,
+        -((e.clientY - r.top) / r.height) * 2 + 1
+      )
+      const rc = new THREE.Raycaster()
+      rc.setFromCamera(ndc, st.camera)
+      const ro = rc.ray.origin
+      const rd = rc.ray.direction
+      const w0 = new THREE.Vector3().subVectors(pv.O0, ro)
+      const a = pv.N0.dot(pv.N0)
+      const b = pv.N0.dot(rd)
+      const c = rd.dot(rd)
+      const d = pv.N0.dot(w0)
+      const eD = rd.dot(w0)
+      const denom = a * c - b * b
+      return Math.abs(denom) < 1e-9 ? 0 : (b * eD - c * d) / denom
+    }
+
     const onDown = (e: PointerEvent): void => {
       downX = e.clientX
       downY = e.clientY
       downBtn = e.button
       const st = stateRef.current
+      // Offset-Plane handle drag takes priority
+      const pv = previewDragRef.current
+      if (e.button === 0 && pv.handle && st) {
+        const r = host.getBoundingClientRect()
+        const ndc = new THREE.Vector2(
+          ((e.clientX - r.left) / r.width) * 2 - 1,
+          -((e.clientY - r.top) / r.height) * 2 + 1
+        )
+        const rc = new THREE.Raycaster()
+        rc.setFromCamera(ndc, st.camera)
+        if (rc.intersectObject(pv.handle, false).length) {
+          pv.active = true
+          pv.t0 = normalParam(e)
+          try {
+            renderer.domElement.setPointerCapture(e.pointerId)
+          } catch {
+            /* ignore */
+          }
+          e.stopPropagation()
+          return
+        }
+      }
       if (
         e.button === 0 &&
         winSelRef.current.mode === 'window' &&
@@ -244,6 +303,17 @@ export function Viewport({
     }
     const onUp = (e: PointerEvent): void => {
       const st = stateRef.current
+      const pv = previewDragRef.current
+      if (pv.active) {
+        pv.active = false
+        onPreviewDragRef.current?.(normalParam(e) - pv.t0, 'end')
+        try {
+          renderer.domElement.releasePointerCapture(e.pointerId)
+        } catch {
+          /* ignore */
+        }
+        return
+      }
       if (banding) {
         banding = false
         const b = bandRef.current
@@ -334,6 +404,13 @@ export function Viewport({
     }
     const onMove = (e: PointerEvent): void => {
       const st = stateRef.current
+      const pv = previewDragRef.current
+      if (pv.active && pv.handle) {
+        const t = normalParam(e)
+        pv.handle.position.copy(pv.O0).addScaledVector(pv.N0, t - pv.t0)
+        onPreviewDragRef.current?.(t - pv.t0, 'move')
+        return
+      }
       if (banding) {
         const b = bandRef.current
         const r = host.getBoundingClientRect()
@@ -601,6 +678,9 @@ export function Viewport({
   useEffect(() => {
     const st = stateRef.current
     if (!st) return
+    // while the handle is being dragged, leave the ghost + basis alone so the
+    // drag math stays in one coordinate frame; it settles on release
+    if (previewDragRef.current.active) return
     for (const c of [...st.preview.children]) {
       st.preview.remove(c)
       const m = c as THREE.Mesh
@@ -608,6 +688,7 @@ export function Viewport({
       const mm = m.material as THREE.Material | undefined
       mm?.dispose?.()
     }
+    previewDragRef.current.handle = null
     if (!previewPlane) return
     const O = new THREE.Vector3(...previewPlane.origin)
     const X = new THREE.Vector3(...previewPlane.x).normalize()
@@ -644,6 +725,21 @@ export function Viewport({
         new THREE.LineBasicMaterial({ color: 0x9fd0f0 })
       )
     )
+    // draggable handle - drag along the normal to set the distance
+    if (onPreviewDragRef.current) {
+      const hr = Math.max(1.2, s * 0.05)
+      const handle = new THREE.Mesh(
+        new THREE.SphereGeometry(hr, 16, 12),
+        new THREE.MeshBasicMaterial({ color: 0xffcf7a, depthTest: false })
+      )
+      handle.position.copy(O)
+      handle.renderOrder = 20
+      handle.userData = { previewHandle: true }
+      st.preview.add(handle)
+      previewDragRef.current.handle = handle
+      previewDragRef.current.O0 = O.clone()
+      previewDragRef.current.N0 = N.clone()
+    }
   }, [previewPlane])
 
   return (

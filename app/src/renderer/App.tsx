@@ -1178,6 +1178,15 @@ export function App(): JSX.Element {
     size: number
   } | null>(null)
   const previewTok = useRef(0)
+  const [planeHandleDrag, setPlaneHandleDrag] = useState<{
+    delta: number
+    phase: 'move' | 'end'
+    seq: number
+  } | null>(null)
+  const planeDragSeq = useRef(0)
+  const onPreviewHandleDrag = useCallback((deltaMm: number, phase: 'move' | 'end') => {
+    setPlaneHandleDrag({ delta: deltaMm, phase, seq: ++planeDragSeq.current })
+  }, [])
   const onDatumPlanePreview = useCallback(
     async (info: { mode: string; offset: number } | null) => {
       const tok = ++previewTok.current
@@ -1370,6 +1379,7 @@ export function App(): JSX.Element {
                     selectMode={selectMode}
                     selFilter={selFilter}
                     previewPlane={previewPlane}
+                    onPreviewHandleDrag={onPreviewHandleDrag}
                     onWindowSelect={(sels) =>
                       setSelection((cur) => {
                         const keys = new Set(cur.map(selKey))
@@ -1434,6 +1444,7 @@ export function App(): JSX.Element {
                       onApply={applyOp}
                       onCancel={() => setOp(null)}
                       onPreview={onDatumPlanePreview}
+                      handleDrag={planeHandleDrag}
                     />
                   )}
                   {measureMode && (
