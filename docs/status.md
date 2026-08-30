@@ -1,6 +1,6 @@
 # Status
 
-Updated 2026-08-29. Live-test feedback batches 1-16 all addressed. All roadmap milestones now have a
+Updated 2026-08-29. Live-test feedback batches 1-17 all addressed. All roadmap milestones now have a
 working first version. `docs/FEEDBACK.md` tracks the live-test checklist. KiCad interop has a first
 slice (board import + placeholders); next: component STEP models + connector->joint mapping.
 
@@ -56,6 +56,33 @@ slice (board import + placeholders); next: component STEP models + connector->jo
 ### Packaging
 - electron-builder: AppImage + NSIS, FreeCAD bundled as extraResources, runtime
   path resolution, `scripts/package.sh`. `--dir` build verified.
+
+## Batch 17 additions
+
+- Sketcher selection + editing: window (box) select inside the 2D sketch
+  (left-to-right = fully contained, right-to-left = crossing); Delete /
+  Backspace removes selected sketch geometry and reindexes constraints.
+- Welded drags: dragging a rectangle side keeps the corners coincident and
+  resizes it. A local Gauss-Seidel relaxation honours coincident welds,
+  horizontal / vertical, length dimensions and axis anchors while dragging;
+  the headless solver still runs the exact solve afterwards.
+- Drawing a point onto another entity's point auto-records a Coincident.
+- New headless `sketch.solve` (throwaway document) returns solved coordinates
+  plus which elements still have free DoF - fully-constrained geometry is drawn
+  grey and the editor reconciles to the solved shape.
+- Constraint ribbon buttons are click-first when the selection does not already
+  support them: click the constraint, then click the geometry.
+- Midpoint constraint (Symmetric about a line's two endpoints) and a midpoint
+  snap while drawing.
+- Extrude: an Operation select (New body / Join / Cut) replaces the lone Cut
+  checkbox; an Extent select (Blind / To object) with an Offset field for the
+  extra distance past the target face. `feature.extrude` takes `operation` +
+  `offset`; New body pads a copy of the sketch into a fresh Body.
+- Operation dialog no longer overflows the window (wider, box-sizing, wrapping
+  fields, long selects stacked label-over-control).
+- Rename is instant: the tree updates in place and persists on the quiet path;
+  `feature.rename` no longer recomputes.
+- ~83 sidecar RPC methods.
 
 ## Batch 16 additions
 
