@@ -23,6 +23,24 @@ export type SketchConstraintType =
   | 'Tangent'
   | 'Coincident'
   | 'Concentric'
+  | 'Midpoint'
+
+/** Result of a round-trip to the headless constraint solver. */
+export interface SketchSolveResult {
+  geometry: Array<
+    | { type: 'line'; a: [number, number]; b: [number, number] }
+    | { type: 'circle'; c: [number, number]; r: number }
+    | { type: 'arc'; c: [number, number]; r: number; a0: number; a1: number }
+    | null
+  >
+  free: number[]
+  fullyConstrained: boolean
+}
+
+export type SketchSolveFn = (
+  elements: SketchEntity[],
+  constraints: RecordedConstraint[]
+) => Promise<SketchSolveResult | null>
 
 export interface SketchFrame {
   origin: [number, number, number]
@@ -43,8 +61,8 @@ export type SketchEntity = (
   | { type: 'arc'; c: [number, number]; r: number; a0: number; a1: number }
 ) & { construction?: boolean }
 
-interface RecordedConstraint {
-  type: SketchConstraintType | 'Distance' | 'Radius' | 'PointOnObject'
+export interface RecordedConstraint {
+  type: SketchConstraintType | 'Distance' | 'Radius' | 'PointOnObject' | 'Symmetric'
   refs: Array<{ new?: number; geo?: number; sub?: number; pt?: number }>
   value?: number
 }
@@ -75,10 +93,24 @@ export class SketchController {
   private ray = new THREE.Raycaster()
   private tool: SketchTool = 'line'
   private pending: [number, number][] = []
+  /** parallel to `pending`: which existing entity point (if any) each click landed on */
+  private pendingSnaps: Array<{ idx: number; pt: number } | null> = []
   private entities: SketchEntity[] = []
   private baseCount = 0
   private cursorUV: [number, number] = [0, 0]
   private onChange: () => void
+  private onSolve?: SketchSolveFn
+
+  /** entity point the cursor is currently snapped to (endpoint of another entity) */
+  private snapRef: { idx: number; pt: number } | null = null
+  /** rubber-band window select (select tool, empty press) */
+  private band: { a: [number, number]; b: [number, number] } | null = null
+  /** "click the constraint, then click the geometry" mode */
+  private pendingCon: SketchConstraintType | null = null
+  /** entity indices the solver reports as fully constrained (drawn grey) */
+  private constrainedSet = new Set<number>()
+  private solveTimer: number | null = null
+  private solveSeq = 0
 
   private refPolys: [number, number][][] = []
   private refPoints: [number, number][] = []
@@ -103,8 +135,10 @@ export class SketchController {
     root: THREE.Object3D,
     onChange: () => void,
     refGeom?: SketchRefGeom | null,
-    private readonly onDimensionRequest?: (entityIndex: number, kind: 'linear' | 'radius') => void
+    private readonly onDimensionRequest?: (entityIndex: number, kind: 'linear' | 'radius') => void,
+    onSolve?: SketchSolveFn
   ) {
+    this.onSolve = onSolve
     this.O = new THREE.Vector3(...frame.origin)
     this.X = new THREE.Vector3(...frame.x).normalize()
     this.Y = new THREE.Vector3(...frame.y).normalize()
@@ -158,11 +192,32 @@ export class SketchController {
   setTool(t: SketchTool): void {
     this.tool = t
     this.pending = []
+    this.pendingSnaps = []
     this.hoverIdx = -1
     this.drag = null
+    this.band = null
     this.dom.style.cursor = ''
     if (t !== 'select') this.selected = []
+    if (t !== 'select') this.pendingCon = null
     this.redraw()
+  }
+
+  /** Enter "pick geometry for this constraint" mode (ribbon button, no live
+   *  selection). Clears once enough entities are picked. */
+  beginConstraint(t: SketchConstraintType): void {
+    this.pendingCon = t
+    this.tool = 'select'
+    this.selected = []
+    this.dom.style.cursor = 'crosshair'
+    this.redraw()
+  }
+
+  get pendingConstraint(): SketchConstraintType | null {
+    return this.pendingCon
+  }
+
+  private conArity(t: SketchConstraintType): number {
+    return t === 'Horizontal' || t === 'Vertical' ? 1 : 2
   }
 
   setConstruction(on: boolean): void {
@@ -206,14 +261,24 @@ export class SketchController {
     this.baseCount = this.entities.length
     this.geomV++
     this.redraw()
+    this.scheduleSolve()
   }
 
   undo(): void {
-    if (this.pending.length) this.pending.pop()
-    else if (this.constraints.length && !this.entities.length) this.constraints.pop()
-    else this.entities.pop()
+    if (this.pending.length) {
+      this.pending.pop()
+      this.pendingSnaps.pop()
+    } else if (this.constraints.length && this.entities.length <= this.baseCount) {
+      this.constraints.pop()
+    } else {
+      this.entities.pop()
+      // drop constraints that referenced the entity that just went away
+      const gone = this.entities.length - this.baseCount
+      this.constraints = this.constraints.filter((c) => !c.refs.some((r) => r.new === gone))
+    }
     this.geomV++
     this.redraw()
+    this.scheduleSolve()
     this.onChange()
   }
 
@@ -233,41 +298,50 @@ export class SketchController {
     return (Math.hypot(a.x - b.x, a.y - b.y) * this.dom.clientHeight) / 2
   }
 
-  private entityPoints(e: SketchEntity): [number, number][] {
-    if (e.type === 'line') return [e.a, e.b]
-    if (e.type === 'rect') return [e.a, e.b, [e.a[0], e.b[1]], [e.b[0], e.a[1]]]
-    return [e.c] // circle / arc centre
-  }
-
   private snap(uv: [number, number]): [number, number] {
     const tolMm = SNAP_PX / Math.max(this.pxPerMm(), 0.001)
     const origin: [number, number] = [0, 0]
-    const pts: [number, number][] = [...this.refPoints]
-    for (const e of this.entities) pts.push(...this.entityPoints(e))
-    for (const poly of this.refPolys) pts.push(...poly)
-    for (const p of this.pending) pts.push(p)
+    this.snapRef = null
+
+    // candidate points, each optionally tied to an entity point (so a click that
+    // lands on one can record a Coincident) or flagged as a midpoint
+    type Cand = { p: [number, number]; ref: { idx: number; pt: number } | null; mid?: boolean }
+    const cands: Cand[] = []
+    for (const p of this.refPoints) cands.push({ p, ref: null })
+    for (const poly of this.refPolys) for (const p of poly) cands.push({ p, ref: null })
+    for (const p of this.pending) cands.push({ p, ref: null })
+    this.entities.forEach((e, idx) => {
+      if (e.type === 'line') {
+        cands.push({ p: e.a, ref: { idx, pt: 1 } })
+        cands.push({ p: e.b, ref: { idx, pt: 2 } })
+        cands.push({ p: [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2], ref: null, mid: true })
+      } else if (e.type === 'circle' || e.type === 'arc') {
+        cands.push({ p: e.c, ref: { idx, pt: 3 } })
+      }
+    })
 
     // origin wins ties so it is easy to land on 0,0
-    let best: [number, number] | null = null
+    let best: Cand | null = null
     let bestD = tolMm
     let kind: SnapKind = 'grid'
     const dO = Math.hypot(uv[0], uv[1])
     if (dO < bestD) {
       bestD = dO
-      best = origin
+      best = { p: origin, ref: null }
       kind = 'origin'
     }
-    for (const t of pts) {
-      const d = Math.hypot(t[0] - uv[0], t[1] - uv[1])
+    for (const c of cands) {
+      const d = Math.hypot(c.p[0] - uv[0], c.p[1] - uv[1])
       if (d < bestD) {
         bestD = d
-        best = t
+        best = c
         kind = 'point'
       }
     }
     if (best) {
       this.snapKind = kind
-      return [best[0], best[1]]
+      this.snapRef = best.ref
+      return [best.p[0], best.p[1]]
     }
     // then: the sketch axes themselves (u=0 is the Y axis, v=0 the X axis)
     const onU = Math.abs(uv[0]) < tolMm
@@ -385,15 +459,32 @@ export class SketchController {
       const uv = this.rawPointerUV(ev)
       const idx = this.pickEntity(uv)
       ev.stopPropagation()
+
+      // "click the constraint, then click the geometry" mode
+      if (this.pendingCon) {
+        if (idx >= 0 && !this.selected.includes(idx)) this.selected.push(idx)
+        if (this.selected.length >= this.conArity(this.pendingCon)) {
+          const t = this.pendingCon
+          this.pendingCon = null
+          this.dom.style.cursor = ''
+          this.applyConstraint(t)
+        }
+        this.redraw()
+        this.onChange()
+        return
+      }
+
       if (idx < 0) {
         if (!ev.shiftKey) this.selected = []
+        // empty press starts a rubber-band window select
+        this.band = { a: uv, b: uv }
       } else if (ev.shiftKey) {
         this.selected = this.selected.includes(idx)
           ? this.selected.filter((i) => i !== idx)
           : [...this.selected, idx]
       } else {
         this.selected = [idx]
-        if (idx >= 0) this.drag = { idx, handle: this.grabHandle(idx, uv), last: uv }
+        this.drag = { idx, handle: this.grabHandle(idx, uv), last: uv }
       }
       this.redraw()
       this.onChange()
@@ -402,6 +493,7 @@ export class SketchController {
     ev.stopPropagation()
     const uv = this.pointerUV(ev)
     this.pending.push(uv)
+    this.pendingSnaps.push(this.snapRef)
     const need = this.tool === 'arc' ? 3 : 2
     if (this.pending.length >= need) this.commit()
     this.redraw()
@@ -479,25 +571,101 @@ export class SketchController {
           (e as { r: number }).r = Math.max(0.1, Math.hypot(uv[0] - e.c[0], uv[1] - e.c[1]))
         break
     }
+    // keep coincident corners welded and honour H / V while dragging - a
+    // rectangle side stays a rectangle side (the sidecar still re-solves later)
+    this.solveLocal(this.draggedKeys())
     this.drag.last = uv
     this.geomV++
     this.redraw()
   }
 
+  /** point keys ("idx:pt") the current drag handle directly controls */
+  private draggedKeys(): Set<string> {
+    const out = new Set<string>()
+    if (!this.drag) return out
+    const i = this.drag.idx
+    switch (this.drag.handle) {
+      case 'a':
+        out.add(`${i}:1`)
+        break
+      case 'b':
+        out.add(`${i}:2`)
+        break
+      case 'c':
+      case 'r':
+        out.add(`${i}:3`)
+        break
+      default:
+        out.add(`${i}:1`)
+        out.add(`${i}:2`)
+        out.add(`${i}:3`)
+    }
+    return out
+  }
+
   private onUp = (ev: PointerEvent): void => {
+    if (this.band) {
+      this.commitBand()
+      this.band = null
+      this.redraw()
+      ev.stopPropagation()
+      this.onChange()
+      return
+    }
     if (!this.drag) return
     const idx = this.drag.idx
     this.drag = null
     // a point dropped on the origin / an axis gets auto-constrained (snapping
     // already put the coordinate exactly on it)
     this.anchorToAxes(idx)
+    this.solveLocal(new Set())
     this.geomV++
     this.redraw()
+    this.scheduleSolve()
     ev.stopPropagation()
     this.onChange()
   }
 
+  /** Select every entity that falls inside the rubber-band box. Left-to-right =
+   *  fully contained; right-to-left = anything it touches (CAD convention). */
+  private commitBand(): void {
+    if (!this.band) return
+    const [ax, ay] = this.band.a
+    const [bx, by] = this.band.b
+    const minX = Math.min(ax, bx)
+    const maxX = Math.max(ax, bx)
+    const minY = Math.min(ay, by)
+    const maxY = Math.max(ay, by)
+    if (maxX - minX < 1e-4 && maxY - minY < 1e-4) return
+    const crossing = bx < ax
+    const inside = (p: [number, number]): boolean =>
+      p[0] >= minX && p[0] <= maxX && p[1] >= minY && p[1] <= maxY
+    const hits: number[] = []
+    this.entities.forEach((e, i) => {
+      const pts: [number, number][] =
+        e.type === 'line'
+          ? [e.a, e.b, [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2]]
+          : e.type === 'circle' || e.type === 'arc'
+            ? [
+                e.c,
+                [e.c[0] + e.r, e.c[1]],
+                [e.c[0] - e.r, e.c[1]],
+                [e.c[0], e.c[1] + e.r],
+                [e.c[0], e.c[1] - e.r]
+              ]
+            : [e.a, e.b]
+      const n = pts.filter(inside).length
+      if (crossing ? n > 0 : n === pts.length) hits.push(i)
+    })
+    this.selected = hits
+  }
+
   private onMove = (ev: PointerEvent): void => {
+    if (this.band && (ev.buttons & 1) === 1) {
+      this.band.b = this.rawPointerUV(ev)
+      this.redraw()
+      return
+    }
     if (this.drag && (ev.buttons & 1) === 1) {
       this.applyDrag(this.pointerUV(ev))
       return
@@ -530,24 +698,65 @@ export class SketchController {
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return
     if (ev.key === 'Escape') {
       this.pending = []
+      this.pendingSnaps = []
       this.selected = []
+      this.band = null
+      this.pendingCon = null
+      this.dom.style.cursor = ''
       this.redraw()
     } else if (ev.key === 'Enter' && this.tool === 'line') {
       this.pending = []
+      this.pendingSnaps = []
       this.redraw()
+    } else if (
+      (ev.key === 'Delete' || ev.key === 'Backspace') &&
+      this.tool === 'select' &&
+      this.selected.length
+    ) {
+      ev.preventDefault()
+      this.deleteSelected()
     } else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') {
       this.undo()
     }
   }
 
+  /** Delete the selected entities (only ones added this session) and drop /
+   *  reindex any constraints that referenced them. */
+  private deleteSelected(): void {
+    const rel = this.selected
+      .filter((i) => i >= this.baseCount)
+      .map((i) => i - this.baseCount)
+      .sort((a, b) => b - a)
+    if (!rel.length) {
+      this.selected = []
+      this.redraw()
+      return
+    }
+    for (const r of rel) {
+      this.entities.splice(this.baseCount + r, 1)
+      this.constraints = this.constraints.filter((c) => !c.refs.some((rf) => rf.new === r))
+      for (const c of this.constraints)
+        for (const rf of c.refs) if (rf.new != null && rf.new > r) rf.new--
+    }
+    this.selected = []
+    this.geomV++
+    this.redraw()
+    this.scheduleSolve()
+    this.onChange()
+  }
+
   private commit(): void {
     const p = this.pending
+    const snaps = this.pendingSnaps
     this.geomV++
     const k = this.construction ? { construction: true } : {}
     if (this.tool === 'line') {
       this.entities.push({ type: 'line', a: p[0], b: p[1], ...k })
-      this.anchorToAxes(this.entities.length - 1)
+      const li = this.entities.length - 1
+      this.anchorToAxes(li)
+      this.autoCoincident(li, [snaps[0] ?? null, snaps[1] ?? null])
       this.pending = [p[1]] // chain
+      this.pendingSnaps = [snaps[1] ?? null]
     } else if (this.tool === 'rect') {
       // a rectangle IS four constrained lines - build it that way so every
       // downstream path (dimensions, dragging, symbols) is uniform
@@ -583,11 +792,15 @@ export class SketchController {
         for (let s = 0; s < 4; s++) this.anchorToAxes(this.baseCount + first + s)
       }
       this.pending = []
+      this.pendingSnaps = []
     } else if (this.tool === 'circle') {
       const r = Math.hypot(p[1][0] - p[0][0], p[1][1] - p[0][1])
       this.entities.push({ type: 'circle', c: p[0], r, ...k })
-      this.anchorToAxes(this.entities.length - 1)
+      const ci = this.entities.length - 1
+      this.anchorToAxes(ci)
+      this.autoCoincident(ci, [snaps[0] ?? null])
       this.pending = []
+      this.pendingSnaps = []
     } else if (this.tool === 'arc') {
       const c = p[0]
       const r = Math.hypot(p[1][0] - c[0], p[1][1] - c[1])
@@ -596,8 +809,43 @@ export class SketchController {
       this.entities.push({ type: 'arc', c, r, a0, a1, ...k })
       this.anchorToAxes(this.entities.length - 1)
       this.pending = []
+      this.pendingSnaps = []
     }
+    this.scheduleSolve()
     this.onChange()
+  }
+
+  /** A freshly drawn point that landed on another entity's point gets a
+   *  Coincident constraint so the join survives the solve and drags together. */
+  private autoCoincident(
+    entIdx: number,
+    snaps: Array<{ idx: number; pt: number } | null>
+  ): void {
+    const e = this.entities[entIdx]
+    if (e.construction) return
+    const nw = entIdx - this.baseCount
+    if (nw < 0) return
+    // line: snaps[0] -> start (pt 1), snaps[1] -> end (pt 2); circle/arc: centre (pt 3)
+    const myPts = e.type === 'line' ? [1, 2] : [3]
+    snaps.forEach((s, k) => {
+      if (!s || s.idx === entIdx) return
+      const target = this.entities[s.idx]
+      if (!target || target.construction) return
+      const myPt = myPts[k]
+      if (myPt == null) return
+      const tref = s.idx < this.baseCount ? { geo: s.idx, pt: s.pt } : { new: s.idx - this.baseCount, sub: 0, pt: s.pt }
+      const dup = this.constraints.some(
+        (c) =>
+          c.type === 'Coincident' &&
+          c.refs.some((r) => r.new === nw && r.pt === myPt) &&
+          c.refs.some((r) => (r.new ?? r.geo) === (tref.new ?? tref.geo) && r.pt === s.pt)
+      )
+      if (dup) return
+      this.constraints.push({
+        type: 'Coincident',
+        refs: [{ new: nw, sub: 0, pt: myPt }, tref]
+      })
+    })
   }
 
   /** If an entity's point sits on the origin or an axis (snapping / dragging put
@@ -640,6 +888,193 @@ export class SketchController {
     }
   }
 
+  // --- local relaxation (keeps drags looking right; sidecar has the real solve) //
+
+  /** entity index a ref points at, or -1 for datum geometry */
+  private entIdxOfRef(r: { new?: number; geo?: number }): number {
+    if (r.geo != null) return r.geo >= 0 ? r.geo : -1
+    return r.new != null ? r.new + this.baseCount : -1
+  }
+
+  private keyOfRef(r: { new?: number; geo?: number; pt?: number }): string | null {
+    const i = this.entIdxOfRef(r)
+    if (i < 0) return null
+    return `${i}:${r.pt ?? 1}`
+  }
+
+  private ptOf(key: string): [number, number] {
+    const [i, p] = key.split(':').map(Number)
+    const e = this.entities[i]
+    if (!e) return [0, 0]
+    if (e.type === 'line') return p === 2 ? [...e.b] : [...e.a]
+    if (e.type === 'circle' || e.type === 'arc') return [...e.c]
+    return [...e.a]
+  }
+
+  private setPtOf(key: string, uv: [number, number]): void {
+    const [i, p] = key.split(':').map(Number)
+    const e = this.entities[i]
+    if (!e) return
+    if (e.type === 'line') {
+      if (p === 2) e.b = [uv[0], uv[1]]
+      else e.a = [uv[0], uv[1]]
+    } else if (e.type === 'circle' || e.type === 'arc') {
+      e.c = [uv[0], uv[1]]
+    }
+  }
+
+  /** groups of point keys tied together by Coincident constraints */
+  private weldGroups(): Array<Set<string>> {
+    const parent = new Map<string, string>()
+    const find = (a: string): string => {
+      let r = a
+      while (parent.get(r) && parent.get(r) !== r) r = parent.get(r)!
+      return r
+    }
+    const union = (a: string, b: string): void => {
+      if (!parent.has(a)) parent.set(a, a)
+      if (!parent.has(b)) parent.set(b, b)
+      parent.set(find(a), find(b))
+    }
+    for (const c of this.constraints) {
+      if (c.type !== 'Coincident' || c.refs.length < 2) continue
+      const ka = this.keyOfRef(c.refs[0])
+      const kb = this.keyOfRef(c.refs[1])
+      if (ka && kb) union(ka, kb)
+    }
+    const groups = new Map<string, Set<string>>()
+    for (const k of parent.keys()) {
+      const root = find(k)
+      ;(groups.get(root) ?? groups.set(root, new Set()).get(root)!).add(k)
+    }
+    return [...groups.values()].filter((g) => g.size > 1)
+  }
+
+  private lineHasHV(i: number, type: 'Horizontal' | 'Vertical'): boolean {
+    return this.constraints.some(
+      (c) => c.type === type && this.entIdxOfRef(c.refs[0] ?? {}) === i
+    )
+  }
+
+  /** Gauss-Seidel relaxation: weld coincident points, hold H / V lines flat,
+   *  respect axis anchors and length dims, keeping `pinned` keys fixed. */
+  private solveLocal(pinned: Set<string>): void {
+    const groups = this.weldGroups()
+    const fixed = new Set(pinned)
+    for (const g of groups) if ([...g].some((k) => pinned.has(k))) for (const k of g) fixed.add(k)
+
+    for (let it = 0; it < 24; it++) {
+      // coincident welds
+      for (const g of groups) {
+        const keys = [...g]
+        const anchor = keys.find((k) => fixed.has(k))
+        let pos: [number, number]
+        if (anchor) pos = this.ptOf(anchor)
+        else {
+          let sx = 0
+          let sy = 0
+          for (const k of keys) {
+            const p = this.ptOf(k)
+            sx += p[0]
+            sy += p[1]
+          }
+          pos = [sx / keys.length, sy / keys.length]
+        }
+        for (const k of keys) if (k !== anchor) this.setPtOf(k, pos)
+      }
+      // origin / axis anchors
+      for (const c of this.constraints) {
+        if (c.type === 'Coincident' && (c.refs[1]?.geo ?? 0) < 0 && c.refs[1]?.geo === -1) {
+          const k = this.keyOfRef(c.refs[0])
+          if (k && !pinned.has(k)) this.setPtOf(k, [0, 0])
+        } else if (c.type === 'PointOnObject') {
+          const k = this.keyOfRef(c.refs[0])
+          if (!k || pinned.has(k)) continue
+          const p = this.ptOf(k)
+          if (c.refs[1]?.geo === -1) this.setPtOf(k, [p[0], 0])
+          else if (c.refs[1]?.geo === -2) this.setPtOf(k, [0, p[1]])
+        }
+      }
+      // horizontal / vertical
+      for (let i = 0; i < this.entities.length; i++) {
+        const e = this.entities[i]
+        if (e.type !== 'line') continue
+        const hasH = this.lineHasHV(i, 'Horizontal')
+        const hasV = this.lineHasHV(i, 'Vertical')
+        if (!hasH && !hasV) continue
+        const fa = fixed.has(`${i}:1`)
+        const fb = fixed.has(`${i}:2`)
+        if (hasH) {
+          const y = fa && !fb ? e.a[1] : fb && !fa ? e.b[1] : (e.a[1] + e.b[1]) / 2
+          if (!fa) e.a = [e.a[0], y]
+          if (!fb) e.b = [e.b[0], y]
+        }
+        if (hasV) {
+          const x = fa && !fb ? e.a[0] : fb && !fa ? e.b[0] : (e.a[0] + e.b[0]) / 2
+          if (!fa) e.a = [x, e.a[1]]
+          if (!fb) e.b = [x, e.b[1]]
+        }
+      }
+      // length dimensions - keep the length, pivot on the fixed end
+      for (const c of this.constraints) {
+        if (c.type !== 'Distance' || c.value == null) continue
+        const i = this.entIdxOfRef(c.refs[0] ?? {})
+        const e = this.entities[i]
+        if (!e || e.type !== 'line') continue
+        const dx = e.b[0] - e.a[0]
+        const dy = e.b[1] - e.a[1]
+        const L = Math.hypot(dx, dy) || 1
+        const s = c.value / L
+        if (fixed.has(`${i}:1`) || !fixed.has(`${i}:2`))
+          e.b = [e.a[0] + dx * s, e.a[1] + dy * s]
+        else e.a = [e.b[0] - dx * s, e.b[1] - dy * s]
+      }
+    }
+  }
+
+  // --- headless constraint solve (fully-constrained colouring + reconcile) --- //
+
+  private scheduleSolve(): void {
+    if (!this.onSolve) return
+    if (this.solveTimer != null) window.clearTimeout(this.solveTimer)
+    this.solveTimer = window.setTimeout(() => {
+      this.solveTimer = null
+      void this.runSolve()
+    }, 240)
+  }
+
+  private async runSolve(): Promise<void> {
+    if (!this.onSolve || this.drag || this.band) return
+    const seq = ++this.solveSeq
+    const news = this.entities.slice(this.baseCount)
+    let res: SketchSolveResult | null = null
+    try {
+      res = await this.onSolve(news, this.constraints)
+    } catch {
+      return
+    }
+    if (!res || seq !== this.solveSeq || this.drag || this.band) return
+    // reconcile: adopt the solved coordinates for entities we are not editing
+    res.geometry.forEach((g, e) => {
+      const ent = this.entities[this.baseCount + e]
+      if (!ent || !g || ent.type !== g.type || ent.construction) return
+      if (g.type === 'line' && ent.type === 'line') {
+        ent.a = [g.a[0], g.a[1]]
+        ent.b = [g.b[0], g.b[1]]
+      } else if ((g.type === 'circle' || g.type === 'arc') && (ent.type === 'circle' || ent.type === 'arc')) {
+        ent.c = [g.c[0], g.c[1]]
+        ;(ent as { r: number }).r = g.r
+      }
+    })
+    const free = new Set(res.free)
+    this.constrainedSet = new Set()
+    for (let e = 0; e < news.length; e++)
+      if (!free.has(e)) this.constrainedSet.add(this.baseCount + e)
+    for (let i = 0; i < this.baseCount; i++) this.constrainedSet.add(i)
+    this.geomV++
+    this.redraw()
+  }
+
   // --- constraints -------------------------------------------------------- //
 
   /** Which constraint types are legal for the current selection. */
@@ -650,9 +1085,9 @@ export class SketchController {
     if (sel.length === 1 && isLine(sel[0])) out.push('Horizontal', 'Vertical')
     if (sel.length === 2) {
       const [a, b] = sel
-      if (isLine(a) && isLine(b)) out.push('Parallel', 'Perpendicular', 'Equal', 'Coincident')
+      if (isLine(a) && isLine(b)) out.push('Parallel', 'Perpendicular', 'Equal', 'Coincident', 'Midpoint')
       if (isCurve(a) && isCurve(b)) out.push('Equal', 'Concentric')
-      if ((isLine(a) && isCurve(b)) || (isCurve(a) && isLine(b))) out.push('Tangent')
+      if ((isLine(a) && isCurve(b)) || (isCurve(a) && isLine(b))) out.push('Tangent', 'Midpoint')
     }
     return out
   }
@@ -683,6 +1118,7 @@ export class SketchController {
     this.constraints.push({ type: kind, refs: [ref], value })
     this.geomV++
     this.redraw()
+    this.scheduleSolve()
     this.onChange()
     return true
   }
@@ -751,12 +1187,38 @@ export class SketchController {
       this.constraints.push({ type, refs: [ref(idxs[0], pa), ref(idxs[1], pb)] })
     } else if (type === 'Tangent' && ents.length === 2) {
       this.constraints.push({ type, refs: [ref(idxs[0]), ref(idxs[1])] })
+    } else if (type === 'Midpoint' && ents.length === 2) {
+      // one line + one other entity: put that entity's nearest endpoint at the
+      // line's midpoint (recorded as a Symmetric-about-the-endpoints constraint)
+      const li = isLine(ents[0]) ? idxs[0] : isLine(ents[1]) ? idxs[1] : -1
+      const oi = li === idxs[0] ? idxs[1] : idxs[0]
+      if (li < 0) return false
+      const ln = this.entities[li] as { a: [number, number]; b: [number, number] }
+      const mid: [number, number] = [(ln.a[0] + ln.b[0]) / 2, (ln.a[1] + ln.b[1]) / 2]
+      const oe = this.entities[oi]
+      let opt: 1 | 2 | 3 = 3
+      if (oe.type === 'line') {
+        opt =
+          Math.hypot(oe.a[0] - mid[0], oe.a[1] - mid[1]) <=
+          Math.hypot(oe.b[0] - mid[0], oe.b[1] - mid[1])
+            ? 1
+            : 2
+        if (opt === 1) oe.a = [...mid] as [number, number]
+        else oe.b = [...mid] as [number, number]
+      } else if (oe.type === 'circle' || oe.type === 'arc') {
+        oe.c = [...mid] as [number, number]
+      }
+      this.constraints.push({
+        type: 'Symmetric',
+        refs: [ref(li, 1), ref(li, 2), ref(oi, opt)]
+      })
     } else {
       return false
     }
     this.selected = []
     this.geomV++
     this.redraw()
+    this.scheduleSolve()
     this.onChange()
     return true
   }
@@ -769,7 +1231,10 @@ export class SketchController {
     gapSize: 1.4
   })
   private selMat = new THREE.LineBasicMaterial({ color: 0xffb020, linewidth: 2 })
+  // fully-constrained geometry reads as "done" - drawn grey like FreeCAD's green
+  private constrainedMat = new THREE.LineBasicMaterial({ color: 0x8b93a0 })
   private hoverMat = new THREE.LineBasicMaterial({ color: 0x9fe0ff })
+  private bandMat = new THREE.LineDashedMaterial({ color: 0x9fb4c8, dashSize: 2, gapSize: 1.5 })
   private conHoverMat = new THREE.LineBasicMaterial({ color: 0x7fe0ff, linewidth: 2 })
   private refMat = new THREE.LineBasicMaterial({ color: 0x6b7784, transparent: true, opacity: 0.6 })
   private refPtMat = new THREE.PointsMaterial({ color: 0x9aa7b4, size: 5, sizeAttenuation: false })
@@ -1341,7 +1806,9 @@ export class SketchController {
             ? this.hoverMat
             : this.entities[i].construction
               ? this.consMat
-              : this.lineMat
+              : this.constrainedSet.has(i)
+                ? this.constrainedMat
+                : this.lineMat
       this.entGroup.add(this.entityObj(this.entities[i], mat))
     }
     this.redrawDims()
@@ -1368,6 +1835,24 @@ export class SketchController {
       }
     }
 
+    // rubber-band window select box
+    if (this.band) {
+      const [ax, ay] = this.band.a
+      const [bx, by] = this.band.b
+      const box = this.polyToObj(
+        [
+          [ax, ay],
+          [bx, ay],
+          [bx, by],
+          [ax, by]
+        ],
+        this.bandMat,
+        true
+      )
+      box.renderOrder = 41
+      this.preview.add(box)
+    }
+
     // snap indicator so the user sees exactly where a click will land
     if (drawTool) {
       const g = new THREE.BufferGeometry().setFromPoints([
@@ -1381,6 +1866,7 @@ export class SketchController {
 
   dispose(): void {
     this.dom.style.cursor = ''
+    if (this.solveTimer != null) window.clearTimeout(this.solveTimer)
     this.dom.removeEventListener('pointerdown', this.onDown)
     this.dom.removeEventListener('pointermove', this.onMove)
     this.dom.removeEventListener('dblclick', this.onDblClick)

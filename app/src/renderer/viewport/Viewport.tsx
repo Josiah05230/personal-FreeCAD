@@ -63,6 +63,7 @@ export function Viewport({
   sketchTool = 'line',
   onSketchChange,
   onSketchDimensionRequest,
+  onSketchSolve,
   apiRef
 }: {
   meshes: RenderMesh[]
@@ -97,6 +98,7 @@ export function Viewport({
   sketchTool?: SketchTool
   onSketchChange?: () => void
   onSketchDimensionRequest?: (entityIndex: number, kind: 'linear' | 'radius') => void
+  onSketchSolve?: import('./SketchController').SketchSolveFn
   apiRef?: { current: ViewportApi | null }
 }): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -107,6 +109,8 @@ export function Viewport({
   onSketchChangeRef.current = onSketchChange
   const onDimReqRef = useRef(onSketchDimensionRequest)
   onDimReqRef.current = onSketchDimensionRequest
+  const onSketchSolveRef = useRef(onSketchSolve)
+  onSketchSolveRef.current = onSketchSolve
   const planePickRef = useRef<{ mode: boolean; cb?: (r: SketchRef) => void }>({ mode: false })
   planePickRef.current = { mode: planePickMode, cb: onPickPlane }
   const pickPlanesRef = useRef<PickPlane[]>([])
@@ -216,6 +220,9 @@ export function Viewport({
         sketchUndo: () => stateRef.current?.sketch?.undo(),
         getSketchConstraints: () => stateRef.current?.sketch?.getConstraints() ?? [],
         applySketchConstraint: (t) => stateRef.current?.sketch?.applyConstraint(t) ?? false,
+        startSketchConstraint: (t) => stateRef.current?.sketch?.beginConstraint(t),
+        pendingSketchConstraint: () =>
+          stateRef.current?.sketch?.pendingConstraint ?? null,
         availableSketchConstraints: () =>
           stateRef.current?.sketch?.availableConstraints() ?? [],
         setSketchDimension: (i, v) => stateRef.current?.sketch?.setDimension(i, v) ?? false,
@@ -615,7 +622,11 @@ export function Viewport({
         st.overlay,
         () => onSketchChangeRef.current?.(),
         sketchRefGeom,
-        (idx, kind) => onDimReqRef.current?.(idx, kind)
+        (idx, kind) => onDimReqRef.current?.(idx, kind),
+        (ents, cons) =>
+          onSketchSolveRef.current
+            ? onSketchSolveRef.current(ents, cons)
+            : Promise.resolve(null)
       )
       if (sketchInitialEntities && sketchInitialEntities.length) {
         st.sketch.loadExisting(sketchInitialEntities as never[])

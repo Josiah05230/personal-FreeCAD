@@ -132,6 +132,7 @@ export function App(): JSX.Element {
   const [sketchConstruction, setSketchConstruction] = useState(false)
   const [sketchAvail, setSketchAvail] = useState<SketchConstraintType[]>([])
   const [sketchConstraintCount, setSketchConstraintCount] = useState(0)
+  const [sketchPendingCon, setSketchPendingCon] = useState<SketchConstraintType | null>(null)
   const [planePickMode, setPlanePickMode] = useState(false)
   const [pickPlanes, setPickPlanes] = useState<PickPlane[]>([])
 
@@ -1243,6 +1244,7 @@ export function App(): JSX.Element {
     setSketchCount(vpApi.current?.getSketchEntities().length ?? 0)
     setSketchAvail(vpApi.current?.availableSketchConstraints() ?? [])
     setSketchConstraintCount(vpApi.current?.getSketchConstraints().length ?? 0)
+    setSketchPendingCon(vpApi.current?.pendingSketchConstraint() ?? null)
   }, [])
 
   // --- Offset Plane live preview ---
@@ -1422,8 +1424,13 @@ export function App(): JSX.Element {
                   setSketchConstruction(on)
                 }}
                 available={sketchAvail}
+                pendingConstraint={sketchPendingCon ?? null}
                 onConstraint={(t) => {
-                  vpApi.current?.applySketchConstraint(t)
+                  // apply straight away if the selection already supports it,
+                  // otherwise drop into "click the geometry" mode
+                  if (!vpApi.current?.applySketchConstraint(t)) {
+                    vpApi.current?.startSketchConstraint(t)
+                  }
                   onSketchChange()
                 }}
                 onUndo={() => {
@@ -1499,6 +1506,16 @@ export function App(): JSX.Element {
                     sketchTool={sketchTool}
                     onSketchChange={onSketchChange}
                     onSketchDimensionRequest={(i, k) => void onSketchDimensionRequest(i, k)}
+                    onSketchSolve={async (ents, cons) => {
+                      try {
+                        return await apiQuiet.sketchSolve(
+                          ents as unknown[],
+                          cons as unknown as SketchConstraint[]
+                        )
+                      } catch {
+                        return null
+                      }
+                    }}
                     apiRef={vpApi}
                   />
                   {planePickMode && (

@@ -1045,6 +1045,14 @@ def _apply_sketch_constraints(sk, constraints, emap):
             elif ct == "Concentric" and len(refs) >= 2:
                 sk.addConstraint(Sketcher.Constraint(
                     "Coincident", gid(refs[0]), 3, gid(refs[1]), 3))
+            elif ct in ("Symmetric", "Midpoint") and len(refs) >= 3:
+                # third point lands at the symmetry centre of the first two -
+                # i.e. the midpoint of a line when refs 0/1 are its endpoints
+                sk.addConstraint(Sketcher.Constraint(
+                    "Symmetric",
+                    gid(refs[0]), int(refs[0].get("pt", 1)),
+                    gid(refs[1]), int(refs[1].get("pt", 2)),
+                    gid(refs[2]), int(refs[2].get("pt", 1))))
         except Exception:
             pass
 
@@ -1128,6 +1136,60 @@ def _auto_constrain(sk):
                 sk.addConstraint(Sketcher.Constraint("Vertical", gid))
         except Exception:
             pass
+
+
+@method("sketch.solve")
+def sketch_solve(elements=None, constraints=None, sketchId=None):
+    """Run the editor's current geometry + constraints through the real solver
+    in a throwaway document. Returns the solved coordinates plus which elements
+    still have free degrees of freedom (so the editor can grey out the rest).
+    Never touches the live document."""
+    prev = App.ActiveDocument.Name if App.ActiveDocument else None
+    sd = App.newDocument("gwtcad_solve_scratch")
+    try:
+        sk = sd.addObject("Sketcher::SketchObject", "S")
+        emap = _add_sketch_elements(sk, elements or [])
+        if constraints:
+            _apply_sketch_constraints(sk, constraints, emap)
+        sd.recompute()
+        try:
+            free_pairs = sk.getGeometryWithDependentParameters()
+            free_geo = set(int(p[0]) for p in free_pairs)
+        except Exception:
+            free_geo = None
+        geom = []
+        free_elems = []
+        for i, ids in enumerate(emap):
+            gid0 = ids[0] if ids else None
+            g = sk.Geometry[gid0] if gid0 is not None and gid0 < sk.GeometryCount else None
+            t = g.TypeId if g is not None else None
+            if t == "Part::GeomLineSegment":
+                geom.append({"type": "line",
+                             "a": [g.StartPoint.x, g.StartPoint.y],
+                             "b": [g.EndPoint.x, g.EndPoint.y]})
+            elif t == "Part::GeomCircle":
+                geom.append({"type": "circle",
+                             "c": [g.Center.x, g.Center.y], "r": g.Radius})
+            elif t == "Part::GeomArcOfCircle":
+                geom.append({"type": "arc",
+                             "c": [g.Center.x, g.Center.y], "r": g.Radius,
+                             "a0": g.FirstParameter, "a1": g.LastParameter})
+            else:
+                geom.append(None)
+            if free_geo is None or any(x in free_geo for x in ids):
+                free_elems.append(i)
+        return {
+            "geometry": geom,
+            "free": free_elems,
+            "fullyConstrained": bool(sk.FullyConstrained),
+        }
+    finally:
+        try:
+            App.closeDocument(sd.Name)
+        except Exception:
+            pass
+        if prev and App.getDocument(prev) is not None:
+            App.setActiveDocument(prev)
 
 
 @method("sketch.addGeometry")

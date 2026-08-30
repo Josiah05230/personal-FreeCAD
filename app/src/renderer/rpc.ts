@@ -142,8 +142,22 @@ export interface SketchConstraint {
     | 'Concentric'
     | 'Distance'
     | 'Radius'
+    | 'PointOnObject'
+    | 'Symmetric'
+    | 'Midpoint'
   refs: Array<{ new?: number; geo?: number; sub?: number; pt?: number }>
   value?: number
+}
+
+export interface SketchSolveDTO {
+  geometry: Array<
+    | { type: 'line'; a: [number, number]; b: [number, number] }
+    | { type: 'circle'; c: [number, number]; r: number }
+    | { type: 'arc'; c: [number, number]; r: number; a0: number; a1: number }
+    | null
+  >
+  free: number[]
+  fullyConstrained: boolean
 }
 
 export type Selection =
@@ -252,6 +266,8 @@ export const apiQuiet = {
       'sketch.finish',
       { sketchId, elements, constraints }
     ),
+  sketchSolve: (elements: unknown[], constraints: unknown[]) =>
+    rpcQuiet<SketchSolveDTO>('sketch.solve', { elements, constraints }),
   sceneGet: () =>
     rpcQuiet<{
       meshes: RenderMesh[]
@@ -419,6 +435,8 @@ export const api = {
       'sketch.finish',
       { sketchId, elements, constraints }
     ),
+  sketchSolve: (elements: unknown[], constraints: SketchConstraint[]) =>
+    rpc<SketchSolveDTO>('sketch.solve', { elements, constraints }),
   revolve: (
     sketchId: string,
     angle: number,

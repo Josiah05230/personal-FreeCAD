@@ -1,7 +1,7 @@
 import type { SketchEntity, SketchConstraintType } from './SketchController'
 
 export interface RecordedSketchConstraint {
-  type: SketchConstraintType | 'Distance' | 'Radius' | 'PointOnObject'
+  type: SketchConstraintType | 'Distance' | 'Radius' | 'PointOnObject' | 'Symmetric'
   refs: Array<{ new?: number; geo?: number; sub?: number; pt?: number }>
   value?: number
 }
@@ -16,6 +16,9 @@ export interface ViewportApi {
   /** manual sketch constraints recorded in the 2D editor */
   getSketchConstraints: () => RecordedSketchConstraint[]
   applySketchConstraint: (type: SketchConstraintType) => boolean
+  /** enter "pick the geometry" mode for a constraint (no live selection) */
+  startSketchConstraint: (type: SketchConstraintType) => void
+  pendingSketchConstraint: () => SketchConstraintType | null
   availableSketchConstraints: () => SketchConstraintType[]
   setSketchDimension: (entityIndex: number, value: number) => boolean
   sketchSelectedCount: () => number

@@ -35,46 +35,16 @@ Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
 
-### Batch 16 - all addressed
+Batch 17 (part 1) - all addressed: window (box) select in the sketch (L-to-R
+contain, R-to-L crossing); rectangle sides stay welded on drag and resize
+instead of tearing (local relaxation solver: coincident welds + H/V + length
+dims + axis anchors); drawing a point onto another entity's point records a
+Coincident; fully-constrained geometry is drawn grey (new headless
+`sketch.solve` in a throwaway doc reports per-element free DoF); Delete /
+Backspace removes selected sketch geometry and reindexes its constraints;
+constraint buttons work click-first ("pick the constraint, then the geometry")
+when there is no live selection; Midpoint constraint (Symmetric about a line's
+endpoints) + midpoint snapping while drawing.
 
-orbit/pan now pivots around the geometry under the cursor (model centre over
-empty space); rectangle tool commits 4 constrained lines so double-clicking a
-side's dimension actually edits it; dropping / placing a point on the origin or
-an axis auto-adds the constraint (drag-end too); hidden objects are no longer
-hover/click/window selectable; closed sketch profiles get a light-blue fill and
-are pickable as a region (editor + finished sketches); a dimensioned entity
-locks - drag slides it, doesn't resize; dimensions are never shown by default,
-only once assigned; constraint symbols are plain outlined glyphs matching the
-SKETCH ribbon (no box), a "V" hover lights only the two vertical edges + their
-symbols; view cube got 90-degree roll arrows; the section plane got the Offset
-Plane's draggable ghost + arrow handle; the Offset Plane handle was rebuilt
-(camera-sized arrow, whole plane grabbable); Calibrate Canvas is no longer a
-ribbon tool - inserting a canvas drops into calibrate and canvases have a
-tree row with Calibrate/Delete; canvas icon is a camera; the plane-hover "C"
-shape was a LineLoop cloned as a Line - fixed, now lights outline + face; real
-SURFACE tab tools (Ruled Surface / Boundary Fill / Stitch / Offset Surface),
-Split Body moved to SOLID.
-
-KiCad interop got a first slice (see git / status.md): headless .kicad_pcb ->
-board solid + component placeholders, import / re-sync. Deferred: component
-STEP models, connector->joint mapping, filesystem auto-watch.
-
-### Batch 15 - all addressed
-
-sketch origin + in-plane axes; reference dimensions with witness lines +
-arrowheads ("from here to here", not a box); hover pre-highlight in the sketch
-AND the main 3D view (faces/edges/vertices/datums, filter-aware); hide ASSEMBLE
-tab with < 2 bodies; Select group = paint/window on the face + a "Select"
-fold-out for the kind filters; Inspect pinned by default; turntable orbit (no
-roll drift / pole spazz, right-drag orbits); prompt fields auto-focus so you
-type + Enter; axis/origin snapping auto-records the constraint (PointOnObject /
-Coincident-to-root); rectangles come in fully constrained (corner coincidents +
-H/V) and _auto_constrain no longer piles on redundant constraints; constraint
-symbols drawn where they exist, hovering one lights its partners; double-click a
-dimension (or its geometry) to retype the value; free-drag under-constrained
-sketch geometry (no live solver - re-solves on Finish); adaptive 1/2/5 sketch
-grid; TOOLS tab pinned by default; Insert moved onto SOLID (INSERT tab gone);
-Offset Plane Distance / To-object modes with auto-switch, a live ghost-plane
-preview, and a draggable handle on the ghost to set the distance. The Select
-kind checkboxes were then moved into the ribbon group's own fold-out (the
-"Select ▾" button at the bottom of that section), not a separate popover.
+-I can't seem to actually extrude a face from a sketch?? Also, I need the same 'to-object' (with optional offset thing) for the extrude distance. I also need extrude to not just have a 'cut' check box but a 'join', 'cut', 'intersect', etc. drop-down. The textbox currently also seems to extend off the side of the window... (the textbox extending off the window seems to be prevelent in a LOT of places)
+-when I rename a sketch it also takes forever to load?? Again. Anytime you can handle something client-side first and, have responsiveness and then load it to/from FCAD, that's the best and only choice. It needs to be fast (or, at least feel it)

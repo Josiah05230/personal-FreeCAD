@@ -17,7 +17,8 @@ const CONSTRAINTS: { id: SketchConstraintType; label: string; glyph: string }[] 
   { id: 'Equal', label: 'Equal', glyph: '=' },
   { id: 'Tangent', label: 'Tangent', glyph: '◡' },
   { id: 'Coincident', label: 'Coincident', glyph: '•' },
-  { id: 'Concentric', label: 'Concentric', glyph: '◎' }
+  { id: 'Concentric', label: 'Concentric', glyph: '◎' },
+  { id: 'Midpoint', label: 'Midpoint', glyph: '½' }
 ]
 
 /**
@@ -30,6 +31,7 @@ export function SketchRibbon({
   construction,
   onToggleConstruction,
   available,
+  pendingConstraint = null,
   onConstraint,
   onUndo,
   onFinish,
@@ -42,6 +44,7 @@ export function SketchRibbon({
   construction: boolean
   onToggleConstruction: () => void
   available: SketchConstraintType[]
+  pendingConstraint?: SketchConstraintType | null
   onConstraint: (t: SketchConstraintType) => void
   onUndo: () => void
   onFinish: () => void
@@ -87,9 +90,12 @@ export function SketchRibbon({
           {CONSTRAINTS.map((c) => (
             <button
               key={c.id}
-              className="ribbon-cmd"
-              disabled={!available.includes(c.id)}
-              title={c.label}
+              className={pendingConstraint === c.id ? 'ribbon-cmd active' : 'ribbon-cmd'}
+              title={
+                available.includes(c.id)
+                  ? c.label
+                  : `${c.label} - click, then pick the geometry`
+              }
               onClick={() => onConstraint(c.id)}
             >
               <span className="ribbon-cmd-icon">{c.glyph}</span>
