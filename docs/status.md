@@ -1,6 +1,6 @@
 # Status
 
-Updated 2026-08-29. Live-test feedback batches 1-17 all addressed. All roadmap milestones now have a
+Updated 2026-08-30. Live-test feedback batches 1-18 all addressed. All roadmap milestones now have a
 working first version. `docs/FEEDBACK.md` tracks the live-test checklist. KiCad interop has a first
 slice (board import + placeholders); next: component STEP models + connector->joint mapping.
 
@@ -56,6 +56,24 @@ slice (board import + placeholders); next: component STEP models + connector->jo
 ### Packaging
 - electron-builder: AppImage + NSIS, FreeCAD bundled as extraResources, runtime
   path resolution, `scripts/package.sh`. `--dir` build verified.
+
+## Batch 18 additions
+
+- Over-dimensioning is blocked. `sketch.solve` also returns conflicting /
+  redundant / partially-redundant / malformed constraint indices (0-based, only
+  when every passed constraint maps 1:1). The editor tracks the last
+  user-added constraint; if the solver flags it, it is removed again and an
+  orange notice bar explains why. Covers dimensions and manual constraints.
+- Dragging a rectangle side stays rectangular: the local relaxation anchors
+  each coincident weld to the directly-dragged point first, then to axis
+  anchors, so edges no longer skew mid-drag and snap back.
+- Coincident / PointOnObject / Symmetric constraints no longer draw a glyph -
+  the join is already visible, and dotting every corner was clutter.
+- Snapping a draw point to a line's midpoint records a real Midpoint
+  (Sketcher Symmetric about the line's endpoints); the relaxation keeps it
+  centred through drags.
+- A finished sketch's fill + outline highlight on hover / selection, making the
+  filled face an obvious Extrude / Revolve target.
 
 ## Batch 17 additions
 
