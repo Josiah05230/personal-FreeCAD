@@ -67,8 +67,22 @@ export function PromptHost(): JSX.Element | null {
     }
   }, [])
 
+  // Focus (and select) the first field so the user can just type and hit Enter.
+  // A single focus() call can lose the race against pointer capture from the
+  // canvas that triggered the prompt, so retry across a few frames.
   useEffect(() => {
-    if (req) firstRef.current?.focus()
+    if (!req) return
+    let tries = 0
+    const grab = (): void => {
+      const el = firstRef.current
+      if (el && document.activeElement !== el) {
+        el.focus()
+        if (el instanceof HTMLInputElement) el.select()
+      }
+      if (++tries < 6) raf = requestAnimationFrame(grab)
+    }
+    let raf = requestAnimationFrame(grab)
+    return () => cancelAnimationFrame(raf)
   }, [req])
 
   if (!req) return null
@@ -107,6 +121,7 @@ export function PromptHost(): JSX.Element | null {
               ) : (
                 <input
                   ref={i === 0 ? (firstRef as React.RefObject<HTMLInputElement>) : undefined}
+                  autoFocus={i === 0}
                   value={vals[f.key] ?? ''}
                   placeholder={f.placeholder}
                   onChange={(e) => setVals((v) => ({ ...v, [f.key]: e.target.value }))}

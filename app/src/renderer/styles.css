@@ -2040,6 +2040,71 @@ code {
   font-size: 13px;
   line-height: 1;
 }
+.selfilter {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.selfilter-toggle {
+  padding: 4px 9px;
+  font-size: 10px;
+  background: transparent;
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.selfilter-toggle:hover,
+.selfilter-toggle.on {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.selfilter-caret {
+  opacity: 0.7;
+  margin-left: 2px;
+}
+.selfilter-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  min-width: 180px;
+  padding: 5px;
+  background: var(--panel, #23272e);
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.selfilter-pop-all {
+  text-align: left;
+  padding: 6px 8px;
+  margin-bottom: 3px;
+  font-size: 10px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--accent);
+  cursor: pointer;
+}
+.selfilter-pop-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.selfilter-pop-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.selfilter-pop-row input {
+  accent-color: var(--accent);
+}
 
 /* ---- contextual SKETCH ribbon tab ---- */
 .ribbon-tab.contextual {

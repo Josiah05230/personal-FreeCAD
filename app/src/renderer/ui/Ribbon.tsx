@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Command } from '../commands'
 import { Icon } from './icons'
 import { ContextMenu, type MenuItem } from './ContextMenu'
+import { promptText } from './PromptDialog'
 import { isPinned, normaliseCombo, type PinMap, type HotkeyMap } from '../ribbonPrefs'
 
 const TABS = ['SOLID', 'SURFACE', 'MESH', 'SHEET METAL', 'ASSEMBLE', 'INSERT', 'TOOLS'] as const
@@ -15,7 +16,8 @@ export function Ribbon({
   pins,
   hotkeys,
   onSetPin,
-  onSetHotkey
+  onSetHotkey,
+  showAssemble = true
 }: {
   commands: Command[]
   rightSlot?: React.ReactNode
@@ -25,6 +27,8 @@ export function Ribbon({
   hotkeys: HotkeyMap
   onSetPin: (id: string, pinned: boolean) => void
   onSetHotkey: (id: string, combo: string | null) => void
+  /** hide the ASSEMBLE tab until there is more than one body to assemble */
+  showAssemble?: boolean
 }): JSX.Element {
   const [tab, setTab] = useState<Tab>('SOLID')
   const [menu, setMenu] = useState<{ group: string; x: number; y: number } | null>(null)
@@ -42,6 +46,14 @@ export function Ribbon({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sketchMode])
 
+  // if the ASSEMBLE tab disappears while it is active, fall back to SOLID
+  useEffect(() => {
+    if (!showAssemble && tab === 'ASSEMBLE') {
+      setTab('SOLID')
+      setMenu(null)
+    }
+  }, [showAssemble, tab])
+
   const groups = useMemo(() => {
     const forTab = commands.filter((c) => c.tab === tab)
     const order: string[] = []
@@ -58,9 +70,11 @@ export function Ribbon({
 
   const menuCmds = menu ? (groups.find((g) => g.name === menu.group)?.cmds ?? []) : []
   const hk = (c: Command): string | undefined => hotkeys[c.id] ?? c.hotkey
-  const promptHotkey = (c: Command): void => {
-    const cur = hk(c) ?? ''
-    const next = window.prompt(`Hotkey for "${c.title}" (e.g. shift+e, blank to clear)`, cur)
+  const promptHotkey = async (c: Command): Promise<void> => {
+    const next = await promptText(
+      `Hotkey for "${c.title}" (e.g. shift+e, blank to clear)`,
+      hk(c) ?? ''
+    )
     if (next === null) return
     onSetHotkey(c.id, next.trim() ? normaliseCombo(next) : null)
   }
@@ -72,7 +86,8 @@ export function Ribbon({
     ...(hk(c) ? [{ label: 'Clear hotkey', onClick: () => onSetHotkey(c.id, null) }] : [])
   ]
 
-  const tabList: Tab[] = sketchMode ? [...TABS, 'SKETCH'] : [...TABS]
+  const baseTabs = TABS.filter((t) => t !== 'ASSEMBLE' || showAssemble)
+  const tabList: Tab[] = sketchMode ? [...baseTabs, 'SKETCH'] : [...baseTabs]
 
   return (
     <div className="ribbon">

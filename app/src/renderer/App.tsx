@@ -1261,6 +1261,7 @@ export function App(): JSX.Element {
             hotkeys={hotkeys}
             onSetPin={setPin}
             onSetHotkey={setHotkey}
+            showAssemble={bodies.filter((b) => b.features.length > 0).length >= 2}
             sketchMode={!!sketchSession}
             sketchPanel={
               <SketchRibbon

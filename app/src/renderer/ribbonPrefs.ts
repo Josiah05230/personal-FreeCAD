@@ -15,7 +15,10 @@ export const DEFAULT_PINNED = new Set<string>([
   'mod.hole',
   'pat.mirror',
   'con.plane',
-  'sel.filter'
+  'sel.filter',
+  // Inspect has only two tools - keep them both on the ribbon by default
+  'insp.measure',
+  'insp.section'
 ])
 
 function readJSON<T>(key: string, fallback: T): T {

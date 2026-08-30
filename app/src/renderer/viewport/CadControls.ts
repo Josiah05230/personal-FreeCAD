@@ -8,11 +8,14 @@
  * Default mouse map (Fusion "Fusion" preset):
  *   - Middle drag ............ pan
  *   - Shift + middle drag .... orbit
+ *   - Right drag ............. orbit (no modifier needed)
  *   - Wheel .................. dolly, zoomed toward the cursor
  *
- * Orbit is free: horizontal drags stay level (yaw about world +Z) but vertical
- * drags tumble all the way over the poles without locking. Momentum continues
- * briefly on release and decays exponentially.
+ * Orbit is a constrained turntable, like Fusion's default: horizontal drags spin
+ * about world +Z, vertical drags change elevation and stop just short of the
+ * poles so the view never rolls or flips. The camera up stays world +Z, which
+ * keeps the motion rock-steady (the old free-tumble version drifted roll and
+ * spazzed near the poles). A short exponential momentum continues on release.
  */
 import * as THREE from 'three'
 
@@ -44,10 +47,10 @@ export class CadControls {
     options: CadControlsOptions = {}
   ) {
     this.opts = {
-      orbitSpeed: options.orbitSpeed ?? 0.0075,
+      orbitSpeed: options.orbitSpeed ?? 0.006,
       panSpeed: options.panSpeed ?? 1,
       zoomStep: options.zoomStep ?? 0.0015,
-      inertiaDamping: options.inertiaDamping ?? 0.82
+      inertiaDamping: options.inertiaDamping ?? 0.74
     }
     this.camera.up.copy(UP)
     this.dom.addEventListener('pointerdown', this.onPointerDown)
@@ -72,9 +75,10 @@ export class CadControls {
   private onContextMenu = (e: Event) => e.preventDefault()
 
   private onPointerDown = (e: PointerEvent) => {
-    if (e.button !== 1) return // middle only for now
+    if (e.button === 1) this.mode = e.shiftKey ? 'orbit' : 'pan'
+    else if (e.button === 2) this.mode = 'orbit' // right drag orbits, no modifier
+    else return
     e.preventDefault()
-    this.mode = e.shiftKey ? 'orbit' : 'pan'
     this.lastX = e.clientX
     this.lastY = e.clientY
     this.orbitVel.set(0, 0)
@@ -132,21 +136,30 @@ export class CadControls {
   }
 
   /**
-   * Free orbit. Yaw rotates about world +Z so horizontal drags keep the horizon
-   * level; pitch rotates about the camera's own right axis with NO pole clamp,
-   * so you can tumble straight over the top and keep going. The up vector
-   * tumbles with the pitch. Public so the ViewCube drives the identical path.
+   * Constrained turntable orbit. Yaw spins the camera about world +Z (horizon
+   * stays level); pitch changes elevation and is clamped just shy of both poles
+   * so the view can never roll or snap over. Camera up is pinned to world +Z,
+   * which is what makes this steady. Public so the ViewCube drives the same path.
    */
+  private static readonly POLE = 0.03 // rad kept clear of each pole (~1.7 deg)
+
   applyOrbit(yaw: number, pitch: number): void {
     const offset = this.camera.position.clone().sub(this.pivot)
+    const radius = offset.length()
+    if (radius < 1e-6) return
 
-    const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0).normalize()
-    const qYaw = new THREE.Quaternion().setFromAxisAngle(UP, yaw)
-    const qPitch = new THREE.Quaternion().setFromAxisAngle(right, pitch)
-    const q = qYaw.multiply(qPitch)
+    let azim = Math.atan2(offset.y, offset.x)
+    let polar = Math.acos(THREE.MathUtils.clamp(offset.z / radius, -1, 1))
+    azim += yaw
+    polar = THREE.MathUtils.clamp(
+      polar + pitch,
+      CadControls.POLE,
+      Math.PI - CadControls.POLE
+    )
+    const sp = Math.sin(polar)
+    offset.set(radius * sp * Math.cos(azim), radius * sp * Math.sin(azim), radius * Math.cos(polar))
 
-    offset.applyQuaternion(q)
-    this.camera.up.applyQuaternion(q).normalize()
+    this.camera.up.copy(UP)
     this.camera.position.copy(this.pivot).add(offset)
     this.camera.lookAt(this.pivot)
   }
@@ -168,9 +181,11 @@ export class CadControls {
   update(): void {
     if (this.disposed || this.mode !== 'none') return
     const d = this.opts.inertiaDamping
-    if (this.orbitVel.lengthSq() > 1e-9) {
+    if (this.orbitVel.lengthSq() > 4e-6) {
       this.applyOrbit(this.orbitVel.x, this.orbitVel.y)
       this.orbitVel.multiplyScalar(d)
+    } else {
+      this.orbitVel.set(0, 0)
     }
     if (this.panVel.lengthSq() > 1e-9) {
       this.camera.position.add(this.panVel)

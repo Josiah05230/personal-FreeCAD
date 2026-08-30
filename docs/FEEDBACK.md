@@ -32,10 +32,32 @@ Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
 
--when I enter a sketch, there should be an origin point and, lines representing the 2 perpendicular planes shown
--dimensions still are not shown when I draw something in a sketch (like a rectangle)
--it should highlight an edge, face, or point in a sketch when I am hovering over it so that, I know what I am about to click.
--dimensions should look like where they have the lines down showing 'from here to here'. Whatever that is called. Not just a box.
--you need to handle simple logic better like, if there is only one part/body, don't show the assemble tab...
--the 'select' section should just have the paint/window toggle and then, all of the other 'checkbox' style stuff underneath when you hit 'select'
--the 'inspect' tools, should just be right in the ribbon by default. There is only 2.
+### Batch 15 (in progress)
+
+Done and removed: sketch origin point + in-plane axes; reference dimensions
+drawn on sketch geometry with witness lines + arrowheads (not just a box);
+hover pre-highlight in the sketch; hide ASSEMBLE tab with < 2 bodies; Select
+group trimmed to paint/window with a "Select" fold-out for the kind filters;
+Inspect tools pinned by default; turntable orbit rewrite (no roll drift / pole
+spazz, right-drag also orbits); prompt fields auto-focus so you can type + Enter.
+
+Still open:
+
+- [ ] hover pre-highlight should happen EVERYWHERE, not just in a sketch (main
+      3D view: edges + vertices too, not only faces)
+- [ ] Offset Plane: live preview of the plane, a Distance / To-Object mode
+      switch (To-Object picks a point / face / edge, plus an extra offset), and
+      a draggable handle (arrow/dot) to set the distance live. If in Distance
+      mode and the user picks geometry, auto-switch to To-Object with offset 0.
+- [ ] Sketch: snapping a point onto the origin / an axis should auto-add the
+      constraint (coincident to origin, point-on-object for an axis).
+- [ ] Sketch: draw the constraint symbols where they exist. A default rectangle
+      = 4 lines, coincident corners, H/V on the sides, and separate equal
+      constraints on top/bottom and left/right (so not square by default).
+- [ ] Sketch: hovering a constraint symbol highlights it AND its partners
+      (equal always comes in a pair/group).
+- [ ] Double-click a dimension to edit its value.
+- [ ] Drag under-constrained sketch geometry freely (DOF-aware dragging).
+- [ ] Sketch background: adaptive grid that rescales with zoom.
+- [ ] TOOLS tab: pin everything on it to the ribbon by default.
+- [ ] Move the Insert group onto the SOLID tab.

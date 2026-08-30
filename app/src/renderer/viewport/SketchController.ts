@@ -11,6 +11,8 @@ import * as THREE from 'three'
 
 export type SketchTool = 'select' | 'line' | 'rect' | 'circle' | 'arc' | 'dimension'
 
+type SnapKind = 'grid' | 'origin' | 'point' | 'edge'
+
 export type SketchConstraintType =
   | 'Horizontal'
   | 'Vertical'
@@ -54,6 +56,7 @@ const isLine = (e: SketchEntity): boolean => e.type === 'line'
 
 export class SketchController {
   private group = new THREE.Group()
+  private entGroup = new THREE.Group() // committed sketch entities (cleared each redraw)
   private preview = new THREE.Group()
   private refGroup = new THREE.Group()
   private plane: THREE.Plane
@@ -71,8 +74,13 @@ export class SketchController {
   private refPolys: [number, number][][] = []
   private refPoints: [number, number][] = []
   private selected: number[] = []
+  private hoverIdx = -1
+  private snapKind: SnapKind = 'grid'
   private constraints: RecordedConstraint[] = []
   private construction = false
+  private geomV = 0 // bumped whenever committed geometry / constraints change
+  private dimV = -1 // last geomV the static dimensions were built for
+  private dimHadLive = false
 
   constructor(
     private readonly camera: THREE.PerspectiveCamera,
@@ -98,7 +106,9 @@ export class SketchController {
     root.add(this.group)
     root.add(this.preview)
     root.add(this.refGroup)
+    this.group.add(this.entGroup)
     this.addGrid()
+    this.addAxes()
     this.drawRefGeom()
     this.redraw()
 
@@ -110,6 +120,8 @@ export class SketchController {
   setTool(t: SketchTool): void {
     this.tool = t
     this.pending = []
+    this.hoverIdx = -1
+    this.dom.style.cursor = ''
     if (t !== 'select') this.selected = []
     this.redraw()
   }
@@ -120,6 +132,8 @@ export class SketchController {
 
   toggleConstruction(): boolean {
     this.construction = !this.construction
+    this.geomV++
+    this.redraw()
     return this.construction
   }
 
@@ -151,6 +165,7 @@ export class SketchController {
   loadExisting(ents: SketchEntity[]): void {
     this.entities = ents.slice()
     this.baseCount = this.entities.length
+    this.geomV++
     this.redraw()
   }
 
@@ -158,6 +173,7 @@ export class SketchController {
     if (this.pending.length) this.pending.pop()
     else if (this.constraints.length && !this.entities.length) this.constraints.pop()
     else this.entities.pop()
+    this.geomV++
     this.redraw()
     this.onChange()
   }
@@ -186,20 +202,34 @@ export class SketchController {
 
   private snap(uv: [number, number]): [number, number] {
     const tolMm = SNAP_PX / Math.max(this.pxPerMm(), 0.001)
-    const targets: [number, number][] = [[0, 0], ...this.refPoints]
-    for (const e of this.entities) targets.push(...this.entityPoints(e))
-    for (const poly of this.refPolys) targets.push(...poly)
-    for (const p of this.pending) targets.push(p)
+    const origin: [number, number] = [0, 0]
+    const pts: [number, number][] = [...this.refPoints]
+    for (const e of this.entities) pts.push(...this.entityPoints(e))
+    for (const poly of this.refPolys) pts.push(...poly)
+    for (const p of this.pending) pts.push(p)
+
+    // origin wins ties so it is easy to land on 0,0
     let best: [number, number] | null = null
     let bestD = tolMm
-    for (const t of targets) {
+    let kind: SnapKind = 'grid'
+    const dO = Math.hypot(uv[0], uv[1])
+    if (dO < bestD) {
+      bestD = dO
+      best = origin
+      kind = 'origin'
+    }
+    for (const t of pts) {
       const d = Math.hypot(t[0] - uv[0], t[1] - uv[1])
       if (d < bestD) {
         bestD = d
         best = t
+        kind = 'point'
       }
     }
-    if (best) return [best[0], best[1]]
+    if (best) {
+      this.snapKind = kind
+      return [best[0], best[1]]
+    }
     // then: nearest point along a model edge (lets you land "on" an edge)
     let onEdge: [number, number] | null = null
     let onEdgeD = tolMm
@@ -213,7 +243,11 @@ export class SketchController {
         }
       }
     }
-    if (onEdge) return onEdge
+    if (onEdge) {
+      this.snapKind = 'edge'
+      return onEdge
+    }
+    this.snapKind = 'grid'
     return [Math.round(uv[0] / GRID) * GRID, Math.round(uv[1] / GRID) * GRID]
   }
 
@@ -324,12 +358,23 @@ export class SketchController {
   }
 
   private onMove = (ev: PointerEvent): void => {
-    if (this.tool === 'select') return
+    if (this.tool === 'select' || this.tool === 'dimension') {
+      const idx = this.pickEntity(this.rawPointerUV(ev))
+      if (idx !== this.hoverIdx) {
+        this.hoverIdx = idx
+        this.dom.style.cursor = idx >= 0 ? 'pointer' : ''
+        this.redraw()
+      }
+      return
+    }
+    if (this.hoverIdx !== -1) this.hoverIdx = -1
     this.cursorUV = this.pointerUV(ev)
-    if (this.pending.length) this.redraw()
+    this.redraw() // keep the snap marker + live dimension under the cursor
   }
 
   private onKey = (ev: KeyboardEvent): void => {
+    const t = ev.target as HTMLElement | null
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return
     if (ev.key === 'Escape') {
       this.pending = []
       this.selected = []
@@ -344,6 +389,7 @@ export class SketchController {
 
   private commit(): void {
     const p = this.pending
+    this.geomV++
     const k = this.construction ? { construction: true } : {}
     if (this.tool === 'line') {
       this.entities.push({ type: 'line', a: p[0], b: p[1], ...k })
@@ -407,6 +453,7 @@ export class SketchController {
       (c) => !((c.type === 'Distance' || c.type === 'Radius') && JSON.stringify(c.refs[0]) === JSON.stringify(ref))
     )
     this.constraints.push({ type: kind, refs: [ref], value })
+    this.geomV++
     this.redraw()
     this.onChange()
     return true
@@ -480,6 +527,7 @@ export class SketchController {
       return false
     }
     this.selected = []
+    this.geomV++
     this.redraw()
     this.onChange()
     return true
@@ -493,6 +541,7 @@ export class SketchController {
     gapSize: 1.4
   })
   private selMat = new THREE.LineBasicMaterial({ color: 0xffb020, linewidth: 2 })
+  private hoverMat = new THREE.LineBasicMaterial({ color: 0x9fe0ff })
   private refMat = new THREE.LineBasicMaterial({ color: 0x6b7784, transparent: true, opacity: 0.6 })
   private refPtMat = new THREE.PointsMaterial({ color: 0x9aa7b4, size: 5, sizeAttenuation: false })
   private previewMat = new THREE.LineDashedMaterial({
@@ -500,6 +549,17 @@ export class SketchController {
     dashSize: 1.5,
     gapSize: 1
   })
+  private dimMat = new THREE.LineBasicMaterial({ color: 0x8b98a6, transparent: true, opacity: 0.9 })
+  private dimDrivenMat = new THREE.LineBasicMaterial({ color: 0xffcf7a })
+  private xAxisMat = new THREE.LineBasicMaterial({ color: 0xcf5f43, transparent: true, opacity: 0.5 })
+  private yAxisMat = new THREE.LineBasicMaterial({ color: 0x54a85f, transparent: true, opacity: 0.5 })
+  private originMat = new THREE.PointsMaterial({ color: 0xf2f4f7, size: 8, sizeAttenuation: false })
+  private snapMats: Record<SnapKind, THREE.PointsMaterial> = {
+    grid: new THREE.PointsMaterial({ color: 0xffcc44, size: 8, sizeAttenuation: false }),
+    origin: new THREE.PointsMaterial({ color: 0xff5f5f, size: 11, sizeAttenuation: false }),
+    point: new THREE.PointsMaterial({ color: 0xffe14d, size: 11, sizeAttenuation: false }),
+    edge: new THREE.PointsMaterial({ color: 0x6fe0ff, size: 10, sizeAttenuation: false })
+  }
 
   private polyToObj(uvs: [number, number][], mat: THREE.Material, close = false): THREE.Line {
     const pts = uvs.map(([u, v]) => this.toWorld(u, v))
@@ -544,7 +604,32 @@ export class SketchController {
     this.group.add(grid)
   }
 
+  /** Origin marker + the two in-plane axes (where the perpendicular planes cut
+   *  this sketch), so the user always has a visible datum to work from. */
+  private addAxes(): void {
+    const L = 5000
+    const axis = (dir: [number, number], mat: THREE.Material): void => {
+      const g = new THREE.BufferGeometry().setFromPoints([
+        this.toWorld(-L * dir[0], -L * dir[1]),
+        this.toWorld(L * dir[0], L * dir[1])
+      ])
+      const l = new THREE.Line(g, mat)
+      l.renderOrder = 6
+      this.group.add(l)
+    }
+    axis([1, 0], this.xAxisMat)
+    axis([0, 1], this.yAxisMat)
+    const og = new THREE.BufferGeometry().setFromPoints([this.toWorld(0, 0)])
+    const op = new THREE.Points(og, this.originMat)
+    op.renderOrder = 22
+    this.group.add(op)
+  }
+
   private dimGroup = new THREE.Group()
+
+  private fmt(v: number): string {
+    return String(Number(v.toFixed(2)))
+  }
 
   /** world mm that a given on-screen pixel size maps to at the sketch plane */
   private mmForPx(px: number): number {
@@ -584,63 +669,153 @@ export class SketchController {
   private clearDims(): void {
     for (const c of [...this.dimGroup.children]) {
       this.dimGroup.remove(c)
-      const sp = c as THREE.Sprite
-      sp.material.map?.dispose()
-      sp.material.dispose()
+      c.traverse((o) => {
+        const any = o as THREE.Line & THREE.Sprite
+        any.geometry?.dispose?.()
+        const m = any.material as THREE.Material | undefined
+        if (m && m !== this.dimMat && m !== this.dimDrivenMat) {
+          ;(m as THREE.SpriteMaterial).map?.dispose?.()
+          m.dispose()
+        }
+      })
     }
   }
 
+  private seg(g: THREE.Group, p: [number, number], q: [number, number], mat: THREE.Material): void {
+    const geo = new THREE.BufferGeometry().setFromPoints([
+      this.toWorld(p[0], p[1]),
+      this.toWorld(q[0], q[1])
+    ])
+    g.add(new THREE.Line(geo, mat))
+  }
+
+  /** A proper linear dimension: two witness lines, a dimension line with little
+   *  arrowheads, and the value label - "from here to here", not just a box. */
+  private makeDim(
+    a: [number, number],
+    b: [number, number],
+    side: 1 | -1,
+    text: string,
+    driven: boolean
+  ): THREE.Group {
+    const g = new THREE.Group()
+    const mat = driven ? this.dimDrivenMat : this.dimMat
+    const dx = b[0] - a[0]
+    const dy = b[1] - a[1]
+    const len = Math.hypot(dx, dy) || 1
+    const ux = dx / len
+    const uy = dy / len
+    const nx = -uy * side
+    const ny = ux * side
+    const off = this.mmForPx(24)
+    const ext = this.mmForPx(6)
+    const gap = this.mmForPx(2)
+    const a1: [number, number] = [a[0] + nx * off, a[1] + ny * off]
+    const b1: [number, number] = [b[0] + nx * off, b[1] + ny * off]
+    // witness lines (with a small gap off the geometry, overshooting the dim line)
+    this.seg(g, [a[0] + nx * gap, a[1] + ny * gap], [a[0] + nx * (off + ext), a[1] + ny * (off + ext)], mat)
+    this.seg(g, [b[0] + nx * gap, b[1] + ny * gap], [b[0] + nx * (off + ext), b[1] + ny * (off + ext)], mat)
+    this.seg(g, a1, b1, mat)
+    const ah = this.mmForPx(3.5)
+    const head = (tip: [number, number], dir: 1 | -1): void => {
+      const bx = tip[0] + ux * ah * dir
+      const by = tip[1] + uy * ah * dir
+      this.seg(g, [bx + nx * ah * 0.45, by + ny * ah * 0.45], tip, mat)
+      this.seg(g, [bx - nx * ah * 0.45, by - ny * ah * 0.45], tip, mat)
+    }
+    head(a1, 1)
+    head(b1, -1)
+    g.add(
+      this.dimLabel(
+        text,
+        this.toWorld((a1[0] + b1[0]) / 2 + nx * this.mmForPx(8), (a1[1] + b1[1]) / 2 + ny * this.mmForPx(8)),
+        driven
+      )
+    )
+    g.renderOrder = 32
+    return g
+  }
+
+  /** Radius dimension: a leader from the centre out past the rim, arrowhead at
+   *  the rim, "R value" label. */
+  private makeRadial(c: [number, number], r: number, text: string, driven: boolean): THREE.Group {
+    const g = new THREE.Group()
+    const mat = driven ? this.dimDrivenMat : this.dimMat
+    const ang = Math.PI / 4
+    const ux = Math.cos(ang)
+    const uy = Math.sin(ang)
+    const rim: [number, number] = [c[0] + ux * r, c[1] + uy * r]
+    const out: [number, number] = [c[0] + ux * (r + this.mmForPx(16)), c[1] + uy * (r + this.mmForPx(16))]
+    this.seg(g, c, out, mat)
+    const ah = this.mmForPx(3.5)
+    const nx = -uy
+    const ny = ux
+    const bx = rim[0] - ux * ah
+    const by = rim[1] - uy * ah
+    this.seg(g, [bx + nx * ah * 0.45, by + ny * ah * 0.45], rim, mat)
+    this.seg(g, [bx - nx * ah * 0.45, by - ny * ah * 0.45], rim, mat)
+    g.add(this.dimLabel(text, this.toWorld(out[0] + ux * this.mmForPx(2), out[1] + uy * this.mmForPx(2)), driven))
+    g.renderOrder = 32
+    return g
+  }
+
   private redrawDims(): void {
+    const live = this.pending.length > 0
+    if (this.geomV === this.dimV && !live && !this.dimHadLive) return
+    this.dimV = this.geomV
+    this.dimHadLive = live
     this.clearDims()
-    // committed driven dimensions
+
+    // which entities carry a user-set (driven) dimension
+    const driven = new Map<number, number>()
     for (const con of this.constraints) {
       if (con.value == null) continue
+      if (con.type !== 'Distance' && con.type !== 'Radius') continue
       const r0 = con.refs[0]
       const idx = r0.geo != null ? r0.geo : (r0.new ?? 0) + this.baseCount
-      const e = this.entities[idx]
-      if (!e) continue
-      let at: [number, number]
-      if (e.type === 'line') {
-        const dx = e.b[0] - e.a[0]
-        const dy = e.b[1] - e.a[1]
-        const len = Math.hypot(dx, dy) || 1
-        at = [(e.a[0] + e.b[0]) / 2 - (dy / len) * this.mmForPx(16), (e.a[1] + e.b[1]) / 2 + (dx / len) * this.mmForPx(16)]
-      } else if (e.type === 'circle' || e.type === 'arc') at = [e.c[0], e.c[1] + e.r]
-      else continue
-      const txt =
-        con.type === 'Radius' ? `R ${Number(con.value.toFixed(3))}` : `${Number(con.value.toFixed(3))}`
-      this.dimGroup.add(this.dimLabel(txt, this.toWorld(at[0], at[1]), true))
+      driven.set(idx, con.value)
     }
+
+    // a reference (or driven) dimension on every real entity
+    for (let i = 0; i < this.entities.length; i++) {
+      const e = this.entities[i]
+      if (e.construction) continue
+      const dv = driven.get(i)
+      if (e.type === 'line') {
+        const v = dv ?? Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1])
+        if (v > 0.01) this.dimGroup.add(this.makeDim(e.a, e.b, 1, this.fmt(v), dv != null))
+      } else if (e.type === 'rect') {
+        const x0 = Math.min(e.a[0], e.b[0])
+        const x1 = Math.max(e.a[0], e.b[0])
+        const y0 = Math.min(e.a[1], e.b[1])
+        const y1 = Math.max(e.a[1], e.b[1])
+        if (x1 - x0 > 0.01) this.dimGroup.add(this.makeDim([x0, y0], [x1, y0], -1, this.fmt(x1 - x0), false))
+        if (y1 - y0 > 0.01) this.dimGroup.add(this.makeDim([x0, y0], [x0, y1], 1, this.fmt(y1 - y0), false))
+      } else if (e.type === 'circle' || e.type === 'arc') {
+        const v = dv ?? e.r
+        this.dimGroup.add(this.makeRadial(e.c, e.r, `R ${this.fmt(v)}`, dv != null))
+      }
+    }
+
     // live readout for whatever is being drawn right now
-    if (this.pending.length) {
+    if (live) {
       const cur = this.cursorUV
       if (this.tool === 'line') {
         const a = this.pending[this.pending.length - 1]
-        const len = Math.hypot(cur[0] - a[0], cur[1] - a[1])
-        if (len > 0.01)
-          this.dimGroup.add(
-            this.dimLabel(
-              len.toFixed(2),
-              this.toWorld((a[0] + cur[0]) / 2, (a[1] + cur[1]) / 2 + this.mmForPx(14)),
-              false
-            )
-          )
+        if (Math.hypot(cur[0] - a[0], cur[1] - a[1]) > 0.01)
+          this.dimGroup.add(this.makeDim(a, cur, 1, this.fmt(Math.hypot(cur[0] - a[0], cur[1] - a[1])), false))
       } else if (this.tool === 'rect') {
         const a = this.pending[0]
-        this.dimGroup.add(
-          this.dimLabel(
-            `${Math.abs(cur[0] - a[0]).toFixed(1)} x ${Math.abs(cur[1] - a[1]).toFixed(1)}`,
-            this.toWorld((a[0] + cur[0]) / 2, Math.max(a[1], cur[1]) + this.mmForPx(14)),
-            false
-          )
-        )
+        const x0 = Math.min(a[0], cur[0])
+        const x1 = Math.max(a[0], cur[0])
+        const y0 = Math.min(a[1], cur[1])
+        const y1 = Math.max(a[1], cur[1])
+        if (x1 - x0 > 0.01) this.dimGroup.add(this.makeDim([x0, y0], [x1, y0], -1, this.fmt(x1 - x0), false))
+        if (y1 - y0 > 0.01) this.dimGroup.add(this.makeDim([x0, y0], [x0, y1], 1, this.fmt(y1 - y0), false))
       } else if (this.tool === 'circle' || this.tool === 'arc') {
         const c = this.pending[0]
         const rr = Math.hypot(cur[0] - c[0], cur[1] - c[1])
-        if (rr > 0.01)
-          this.dimGroup.add(
-            this.dimLabel(`R ${rr.toFixed(2)}`, this.toWorld(c[0], c[1] + rr + this.mmForPx(10)), false)
-          )
+        if (rr > 0.01) this.dimGroup.add(this.makeRadial(c, rr, `R ${this.fmt(rr)}`, false))
       }
     }
   }
@@ -665,21 +840,25 @@ export class SketchController {
       this.preview.remove(c)
       ;(c as THREE.Line).geometry.dispose()
     }
-    for (const c of [...this.group.children]) {
-      if ((c as THREE.Line).isLine) {
-        this.group.remove(c)
-        ;(c as THREE.Line).geometry.dispose()
-      }
+    for (const c of [...this.entGroup.children]) {
+      this.entGroup.remove(c)
+      ;(c as THREE.Line).geometry.dispose()
     }
+
     for (let i = 0; i < this.entities.length; i++) {
       const mat = this.selected.includes(i)
         ? this.selMat
-        : this.entities[i].construction
-          ? this.consMat
-          : this.lineMat
-      this.group.add(this.entityObj(this.entities[i], mat))
+        : i === this.hoverIdx
+          ? this.hoverMat
+          : this.entities[i].construction
+            ? this.consMat
+            : this.lineMat
+      this.entGroup.add(this.entityObj(this.entities[i], mat))
     }
     this.redrawDims()
+
+    const drawTool =
+      this.tool === 'line' || this.tool === 'rect' || this.tool === 'circle' || this.tool === 'arc'
 
     if (this.pending.length) {
       const p = [...this.pending, this.cursorUV]
@@ -698,9 +877,20 @@ export class SketchController {
         this.preview.add(this.entityObj({ type: 'circle', c, r }, this.previewMat))
       }
     }
+
+    // snap indicator so the user sees exactly where a click will land
+    if (drawTool) {
+      const g = new THREE.BufferGeometry().setFromPoints([
+        this.toWorld(this.cursorUV[0], this.cursorUV[1])
+      ])
+      const m = new THREE.Points(g, this.snapMats[this.snapKind])
+      m.renderOrder = 42
+      this.preview.add(m)
+    }
   }
 
   dispose(): void {
+    this.dom.style.cursor = ''
     this.dom.removeEventListener('pointerdown', this.onDown)
     this.dom.removeEventListener('pointermove', this.onMove)
     window.removeEventListener('keydown', this.onKey)
