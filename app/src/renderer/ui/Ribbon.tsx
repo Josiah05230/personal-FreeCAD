@@ -5,7 +5,7 @@ import { ContextMenu, type MenuItem } from './ContextMenu'
 import { promptText } from './PromptDialog'
 import { isPinned, normaliseCombo, type PinMap, type HotkeyMap } from '../ribbonPrefs'
 
-const TABS = ['SOLID', 'SURFACE', 'MESH', 'SHEET METAL', 'ASSEMBLE', 'INSERT', 'TOOLS'] as const
+const TABS = ['SOLID', 'SURFACE', 'MESH', 'SHEET METAL', 'ASSEMBLE', 'TOOLS'] as const
 type Tab = (typeof TABS)[number] | 'SKETCH'
 
 export function Ribbon({

@@ -11,7 +11,7 @@ import * as THREE from 'three'
 
 export type SketchTool = 'select' | 'line' | 'rect' | 'circle' | 'arc' | 'dimension'
 
-type SnapKind = 'grid' | 'origin' | 'point' | 'edge'
+type SnapKind = 'grid' | 'origin' | 'point' | 'edge' | 'axis'
 
 export type SketchConstraintType =
   | 'Horizontal'
@@ -43,7 +43,7 @@ export type SketchEntity = (
 ) & { construction?: boolean }
 
 interface RecordedConstraint {
-  type: SketchConstraintType | 'Distance' | 'Radius'
+  type: SketchConstraintType | 'Distance' | 'Radius' | 'PointOnObject'
   refs: Array<{ new?: number; geo?: number; sub?: number; pt?: number }>
   value?: number
 }
@@ -107,14 +107,36 @@ export class SketchController {
     root.add(this.preview)
     root.add(this.refGroup)
     this.group.add(this.entGroup)
-    this.addGrid()
+    this.updateGrid()
     this.addAxes()
     this.drawRefGeom()
     this.redraw()
 
     this.dom.addEventListener('pointerdown', this.onDown)
     this.dom.addEventListener('pointermove', this.onMove)
+    this.dom.addEventListener('dblclick', this.onDblClick)
     window.addEventListener('keydown', this.onKey)
+  }
+
+  /** Double-click a dimension (or the geometry it drives) to retype its value. */
+  private onDblClick = (ev: MouseEvent): void => {
+    if (!this.onDimensionRequest) return
+    this.ray.setFromCamera(this.ndcFor(ev.clientX, ev.clientY), this.camera)
+    for (const h of this.ray.intersectObjects(this.dimGroup.children, true)) {
+      let o: THREE.Object3D | null = h.object
+      while (o && o.userData?.dimOwner == null) o = o.parent
+      if (o && typeof o.userData.dimOwner === 'number') {
+        ev.stopPropagation()
+        this.onDimensionRequest(o.userData.dimOwner, o.userData.dimKind)
+        return
+      }
+    }
+    const idx = this.pickEntity(this.rawPointerUV(ev))
+    if (idx >= 0) {
+      const e = this.entities[idx]
+      ev.stopPropagation()
+      this.onDimensionRequest(idx, e.type === 'circle' || e.type === 'arc' ? 'radius' : 'linear')
+    }
   }
 
   setTool(t: SketchTool): void {
@@ -230,6 +252,13 @@ export class SketchController {
       this.snapKind = kind
       return [best[0], best[1]]
     }
+    // then: the sketch axes themselves (u=0 is the Y axis, v=0 the X axis)
+    const onU = Math.abs(uv[0]) < tolMm
+    const onV = Math.abs(uv[1]) < tolMm
+    if (onU || onV) {
+      this.snapKind = onU && onV ? 'origin' : 'axis'
+      return [onU ? 0 : uv[0], onV ? 0 : uv[1]]
+    }
     // then: nearest point along a model edge (lets you land "on" an edge)
     let onEdge: [number, number] | null = null
     let onEdgeD = tolMm
@@ -276,13 +305,16 @@ export class SketchController {
     return this.snap(this.worldToUV(hit))
   }
 
-  private rawPointerUV(ev: PointerEvent): [number, number] {
+  private ndcFor(clientX: number, clientY: number): THREE.Vector2 {
     const r = this.dom.getBoundingClientRect()
-    const ndc = new THREE.Vector2(
-      ((ev.clientX - r.left) / r.width) * 2 - 1,
-      -((ev.clientY - r.top) / r.height) * 2 + 1
+    return new THREE.Vector2(
+      ((clientX - r.left) / r.width) * 2 - 1,
+      -((clientY - r.top) / r.height) * 2 + 1
     )
-    this.ray.setFromCamera(ndc, this.camera)
+  }
+
+  private rawPointerUV(ev: { clientX: number; clientY: number }): [number, number] {
+    this.ray.setFromCamera(this.ndcFor(ev.clientX, ev.clientY), this.camera)
     const hit = new THREE.Vector3()
     if (!this.ray.ray.intersectPlane(this.plane, hit)) return this.cursorUV
     return this.worldToUV(hit)
@@ -393,6 +425,7 @@ export class SketchController {
     const k = this.construction ? { construction: true } : {}
     if (this.tool === 'line') {
       this.entities.push({ type: 'line', a: p[0], b: p[1], ...k })
+      this.anchorToAxes(this.entities.length - 1)
       this.pending = [p[1]] // chain
     } else if (this.tool === 'rect') {
       this.entities.push({ type: 'rect', a: p[0], b: p[1], ...k })
@@ -400,6 +433,7 @@ export class SketchController {
     } else if (this.tool === 'circle') {
       const r = Math.hypot(p[1][0] - p[0][0], p[1][1] - p[0][1])
       this.entities.push({ type: 'circle', c: p[0], r, ...k })
+      this.anchorToAxes(this.entities.length - 1)
       this.pending = []
     } else if (this.tool === 'arc') {
       const c = p[0]
@@ -407,9 +441,41 @@ export class SketchController {
       const a0 = Math.atan2(p[1][1] - c[1], p[1][0] - c[0])
       const a1 = Math.atan2(p[2][1] - c[1], p[2][0] - c[0])
       this.entities.push({ type: 'arc', c, r, a0, a1, ...k })
+      this.anchorToAxes(this.entities.length - 1)
       this.pending = []
     }
     this.onChange()
+  }
+
+  /** If a just-drawn entity landed a point exactly on the origin or an axis
+   *  (because snapping put it there), record the matching constraint so the
+   *  point stays anchored through the solve. */
+  private anchorToAxes(entIdx: number): void {
+    const e = this.entities[entIdx]
+    if (e.construction) return
+    const nw = entIdx - this.baseCount
+    if (nw < 0) return
+    const eps = 1e-6
+    const anchor = (uv: [number, number], pt: 1 | 2 | 3): void => {
+      const onX = Math.abs(uv[1]) < eps // on the X axis  -> geoId -1
+      const onY = Math.abs(uv[0]) < eps // on the Y axis  -> geoId -2
+      if (onX && onY) {
+        this.constraints.push({
+          type: 'Coincident',
+          refs: [{ new: nw, sub: 0, pt }, { geo: -1, pt: 1 }]
+        })
+      } else if (onX) {
+        this.constraints.push({ type: 'PointOnObject', refs: [{ new: nw, sub: 0, pt }, { geo: -1 }] })
+      } else if (onY) {
+        this.constraints.push({ type: 'PointOnObject', refs: [{ new: nw, sub: 0, pt }, { geo: -2 }] })
+      }
+    }
+    if (e.type === 'line') {
+      anchor(e.a, 1)
+      anchor(e.b, 2)
+    } else if (e.type === 'circle' || e.type === 'arc') {
+      anchor(e.c, 3)
+    }
   }
 
   // --- constraints -------------------------------------------------------- //
@@ -558,7 +624,8 @@ export class SketchController {
     grid: new THREE.PointsMaterial({ color: 0xffcc44, size: 8, sizeAttenuation: false }),
     origin: new THREE.PointsMaterial({ color: 0xff5f5f, size: 11, sizeAttenuation: false }),
     point: new THREE.PointsMaterial({ color: 0xffe14d, size: 11, sizeAttenuation: false }),
-    edge: new THREE.PointsMaterial({ color: 0x6fe0ff, size: 10, sizeAttenuation: false })
+    edge: new THREE.PointsMaterial({ color: 0x6fe0ff, size: 10, sizeAttenuation: false }),
+    axis: new THREE.PointsMaterial({ color: 0x7fd98a, size: 10, sizeAttenuation: false })
   }
 
   private polyToObj(uvs: [number, number][], mat: THREE.Material, close = false): THREE.Line {
@@ -591,16 +658,40 @@ export class SketchController {
     return this.polyToObj(this.circleUVs(e.c, e.r, e.a0, e.a1), mat)
   }
 
-  private addGrid(): void {
-    const grid = new THREE.GridHelper(400, 80, 0x3a4048, 0x2c313a)
-    grid.rotateX(Math.PI / 2)
+  private gridObj: THREE.GridHelper | null = null
+  private gridSpacing = 0
+
+  /** pick a "nice" 1/2/5 x 10^n mm grid spacing that stays ~22px on screen */
+  private niceSpacing(): number {
+    const ppm = this.pxPerMm()
+    const raw = 22 / (ppm > 1e-4 ? ppm : 8)
+    const pow = Math.pow(10, Math.floor(Math.log10(raw || 1)))
+    const n = raw / pow
+    const step = n < 1.5 ? 1 : n < 3.5 ? 2 : n < 7.5 ? 5 : 10
+    return step * pow
+  }
+
+  /** Rebuild the sketch grid only when the zoom crosses into a new spacing. */
+  private updateGrid(): void {
+    const s = this.niceSpacing()
+    if (s === this.gridSpacing && this.gridObj) return
+    this.gridSpacing = s
+    if (this.gridObj) {
+      this.group.remove(this.gridObj)
+      ;(this.gridObj.material as THREE.Material).dispose()
+      this.gridObj.geometry.dispose()
+    }
+    const divisions = Math.max(20, Math.min(400, Math.round(4000 / s)))
+    const grid = new THREE.GridHelper(s * divisions, divisions, 0x3a4048, 0x2c313a)
     grid.position.copy(this.O)
     grid.quaternion.setFromUnitVectors(
-      new THREE.Vector3(0, 0, 1),
+      new THREE.Vector3(0, 1, 0),
       new THREE.Vector3().crossVectors(this.X, this.Y).normalize()
     )
     ;(grid.material as THREE.Material).transparent = true
-    ;(grid.material as THREE.Material).opacity = 0.4
+    ;(grid.material as THREE.Material).opacity = 0.32
+    grid.renderOrder = 1
+    this.gridObj = grid
     this.group.add(grid)
   }
 
@@ -696,9 +787,11 @@ export class SketchController {
     b: [number, number],
     side: 1 | -1,
     text: string,
-    driven: boolean
+    driven: boolean,
+    owner = -1
   ): THREE.Group {
     const g = new THREE.Group()
+    g.userData = { dimOwner: owner, dimKind: 'linear' }
     const mat = driven ? this.dimDrivenMat : this.dimMat
     const dx = b[0] - a[0]
     const dy = b[1] - a[1]
@@ -738,8 +831,15 @@ export class SketchController {
 
   /** Radius dimension: a leader from the centre out past the rim, arrowhead at
    *  the rim, "R value" label. */
-  private makeRadial(c: [number, number], r: number, text: string, driven: boolean): THREE.Group {
+  private makeRadial(
+    c: [number, number],
+    r: number,
+    text: string,
+    driven: boolean,
+    owner = -1
+  ): THREE.Group {
     const g = new THREE.Group()
+    g.userData = { dimOwner: owner, dimKind: 'radius' }
     const mat = driven ? this.dimDrivenMat : this.dimMat
     const ang = Math.PI / 4
     const ux = Math.cos(ang)
@@ -783,7 +883,7 @@ export class SketchController {
       const dv = driven.get(i)
       if (e.type === 'line') {
         const v = dv ?? Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1])
-        if (v > 0.01) this.dimGroup.add(this.makeDim(e.a, e.b, 1, this.fmt(v), dv != null))
+        if (v > 0.01) this.dimGroup.add(this.makeDim(e.a, e.b, 1, this.fmt(v), dv != null, i))
       } else if (e.type === 'rect') {
         const x0 = Math.min(e.a[0], e.b[0])
         const x1 = Math.max(e.a[0], e.b[0])
@@ -793,7 +893,7 @@ export class SketchController {
         if (y1 - y0 > 0.01) this.dimGroup.add(this.makeDim([x0, y0], [x0, y1], 1, this.fmt(y1 - y0), false))
       } else if (e.type === 'circle' || e.type === 'arc') {
         const v = dv ?? e.r
-        this.dimGroup.add(this.makeRadial(e.c, e.r, `R ${this.fmt(v)}`, dv != null))
+        this.dimGroup.add(this.makeRadial(e.c, e.r, `R ${this.fmt(v)}`, dv != null, i))
       }
     }
 
@@ -836,6 +936,7 @@ export class SketchController {
   }
 
   private redraw(): void {
+    this.updateGrid()
     for (const c of [...this.preview.children]) {
       this.preview.remove(c)
       ;(c as THREE.Line).geometry.dispose()
@@ -893,6 +994,7 @@ export class SketchController {
     this.dom.style.cursor = ''
     this.dom.removeEventListener('pointerdown', this.onDown)
     this.dom.removeEventListener('pointermove', this.onMove)
+    this.dom.removeEventListener('dblclick', this.onDblClick)
     window.removeEventListener('keydown', this.onKey)
     this.group.removeFromParent()
     this.preview.removeFromParent()

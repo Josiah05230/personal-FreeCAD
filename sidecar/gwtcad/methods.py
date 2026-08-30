@@ -899,13 +899,29 @@ def _add_sketch_elements(sk, elements):
             ids.append(sk.addGeometry(
                 Part.ArcOfCircle(circ, float(el["a0"]), float(el["a1"])), cons))
         elif t == "rect":
+            import Sketcher
             a, b = el["a"], el["b"]
             x0, y0, x1, y1 = a[0], a[1], b[0], b[1]
             corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
             for i in range(4):
                 p0, p1 = corners[i], corners[(i + 1) % 4]
                 ids.append(sk.addGeometry(
-                    Part.LineSegment(Vector(p0[0], p0[1], 0), Vector(p1[0], p1[1], 0)), False))
+                    Part.LineSegment(Vector(p0[0], p0[1], 0), Vector(p1[0], p1[1], 0)), cons))
+            # give it the standard rectangle constraint set so it behaves and
+            # shows the expected symbols: corner coincidents + H/V on the sides
+            g0, g1, g2, g3 = ids
+            for cc in (
+                ("Coincident", g0, 2, g1, 1),
+                ("Coincident", g1, 2, g2, 1),
+                ("Coincident", g2, 2, g3, 1),
+                ("Coincident", g3, 2, g0, 1),
+                ("Horizontal", g0), ("Horizontal", g2),
+                ("Vertical", g1), ("Vertical", g3),
+            ):
+                try:
+                    sk.addConstraint(Sketcher.Constraint(*cc))
+                except Exception:
+                    pass
         else:
             raise RpcError(APP_ERROR, "unknown sketch element %r" % t)
         emap.append(ids)
@@ -937,6 +953,11 @@ def _apply_sketch_constraints(sk, constraints, emap):
                     sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0]), v))
             elif ct in ("Horizontal", "Vertical") and refs:
                 sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0])))
+            elif ct == "PointOnObject" and len(refs) >= 2:
+                sk.addConstraint(Sketcher.Constraint(
+                    "PointOnObject",
+                    gid(refs[0]), int(refs[0].get("pt", 1)),
+                    int(refs[1].get("geo", -1))))
             elif ct in _LINE_PAIR_CONSTRAINTS and len(refs) >= 2:
                 sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0]), gid(refs[1])))
             elif ct == "Coincident" and len(refs) >= 2:
@@ -985,10 +1006,19 @@ def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None)
 
 def _auto_constrain(sk):
     """Cheap auto-constraints: weld near-coincident endpoints, snap near-axis
-    lines to horizontal / vertical. Enough to make hand-drawn sketches behave."""
+    lines to horizontal / vertical. Enough to make hand-drawn sketches behave.
+    Skips anything already constrained so it does not pile redundant constraints
+    on geometry that arrived with its own (e.g. a rectangle)."""
     import Sketcher
-    tol = 1e-3
     n = sk.GeometryCount
+    welded = set()      # (geoId, posId) already in a Coincident
+    hv = set()          # geoId already Horizontal or Vertical
+    for c in sk.Constraints:
+        if c.Type == "Coincident":
+            welded.add((c.First, c.FirstPos))
+            welded.add((c.Second, c.SecondPos))
+        elif c.Type in ("Horizontal", "Vertical") and c.Second in (-2000, 0, None):
+            hv.add(c.First)
     pts = []  # (geoId, posId, Vector)
     for gid in range(n):
         g = sk.Geometry[gid]
@@ -999,16 +1029,18 @@ def _auto_constrain(sk):
         for j in range(i + 1, len(pts)):
             g1, p1, v1 = pts[i]
             g2, p2, v2 = pts[j]
-            if g1 == g2:
+            if g1 == g2 or (g1, p1) in welded or (g2, p2) in welded:
                 continue
             if v1.distanceToPoint(v2) < 0.05:
                 try:
                     sk.addConstraint(Sketcher.Constraint("Coincident", g1, p1, g2, p2))
+                    welded.add((g1, p1))
+                    welded.add((g2, p2))
                 except Exception:
                     pass
     for gid in range(n):
         g = sk.Geometry[gid]
-        if g.TypeId != "Part::GeomLineSegment":
+        if g.TypeId != "Part::GeomLineSegment" or gid in hv:
             continue
         dx = abs(g.StartPoint.x - g.EndPoint.x)
         dy = abs(g.StartPoint.y - g.EndPoint.y)

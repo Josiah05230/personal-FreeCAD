@@ -76,10 +76,10 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'con.point', title: 'Construction Point', group: 'Construct', tab: 'SOLID', icon: 'point', run: op('datumPoint') },
     // --- select (F360-style group on the SOLID tab) ---
     { id: 'sel.filter', title: 'Select', group: 'Select', tab: 'SOLID', icon: 'point', component: ctx.selectFilterNode },
-    // --- insert ---
-    { id: 'ins.canvas', title: 'Canvas', group: 'Insert', tab: 'INSERT', icon: 'sketch', run: () => ctx.insertCanvas() },
-    { id: 'ins.calibrate', title: 'Calibrate Canvas', group: 'Insert', tab: 'INSERT', icon: 'sketch', run: () => ctx.calibrateCanvas() },
-    { id: 'ins.model', title: 'Insert 3D Model', group: 'Insert', tab: 'INSERT', icon: 'extrude', run: () => ctx.importStep() },
+    // --- insert (lives on the SOLID tab, Fusion-style) ---
+    { id: 'ins.canvas', title: 'Canvas', group: 'Insert', tab: 'SOLID', icon: 'sketch', run: () => ctx.insertCanvas() },
+    { id: 'ins.calibrate', title: 'Calibrate Canvas', group: 'Insert', tab: 'SOLID', icon: 'sketch', run: () => ctx.calibrateCanvas() },
+    { id: 'ins.model', title: 'Insert 3D Model', group: 'Insert', tab: 'SOLID', icon: 'extrude', run: () => ctx.importStep() },
     // --- assemble ---
     { id: 'asm.newComponent', title: 'New Component', group: 'Assemble', tab: 'ASSEMBLE', icon: 'combine' },
     { id: 'asm.joint', title: 'Joint', group: 'Assemble', tab: 'ASSEMBLE', icon: 'axis' },

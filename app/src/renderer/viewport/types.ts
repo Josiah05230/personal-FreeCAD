@@ -1,7 +1,7 @@
 import type { SketchEntity, SketchConstraintType } from './SketchController'
 
 export interface RecordedSketchConstraint {
-  type: SketchConstraintType | 'Distance' | 'Radius'
+  type: SketchConstraintType | 'Distance' | 'Radius' | 'PointOnObject'
   refs: Array<{ new?: number; geo?: number; sub?: number; pt?: number }>
   value?: number
 }

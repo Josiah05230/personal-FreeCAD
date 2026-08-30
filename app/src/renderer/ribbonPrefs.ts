@@ -18,7 +18,18 @@ export const DEFAULT_PINNED = new Set<string>([
   'sel.filter',
   // Inspect has only two tools - keep them both on the ribbon by default
   'insp.measure',
-  'insp.section'
+  'insp.section',
+  // the whole TOOLS tab is pinned out of the box
+  'draw.fromDesign',
+  'file.new',
+  'file.open',
+  'file.save',
+  'file.saveAs',
+  'file.export',
+  'file.import',
+  'view.fit',
+  'panel.data',
+  'panel.git'
 ])
 
 function readJSON<T>(key: string, fallback: T): T {
