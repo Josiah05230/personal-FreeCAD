@@ -39,7 +39,6 @@ export interface CommandContext {
   toggleSection: () => void
   scale: () => Promise<void>
   insertCanvas: () => Promise<void>
-  calibrateCanvas: () => void
   toggleParams: () => void
   importKicad: () => Promise<void>
   reimportKicad: () => Promise<void>
@@ -82,8 +81,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     // --- select (F360-style group on the SOLID tab) ---
     { id: 'sel.filter', title: 'Select', group: 'Select', tab: 'SOLID', icon: 'point', component: ctx.selectFilterNode, menuComponent: ctx.selectFilterMenuNode },
     // --- insert (lives on the SOLID tab, Fusion-style) ---
-    { id: 'ins.canvas', title: 'Canvas', group: 'Insert', tab: 'SOLID', icon: 'sketch', run: () => ctx.insertCanvas() },
-    { id: 'ins.calibrate', title: 'Calibrate Canvas', group: 'Insert', tab: 'SOLID', icon: 'sketch', run: () => ctx.calibrateCanvas() },
+    { id: 'ins.canvas', title: 'Canvas', group: 'Insert', tab: 'SOLID', icon: 'canvas', run: () => ctx.insertCanvas() },
     { id: 'ins.model', title: 'Insert 3D Model', group: 'Insert', tab: 'SOLID', icon: 'extrude', run: () => ctx.importStep() },
     { id: 'ins.kicad', title: 'Import KiCad PCB', group: 'Insert', tab: 'SOLID', icon: 'combine', run: () => ctx.importKicad() },
     { id: 'ins.kicadSync', title: 'Re-sync KiCad PCB', group: 'Insert', tab: 'SOLID', icon: 'combine', run: () => ctx.reimportKicad() },

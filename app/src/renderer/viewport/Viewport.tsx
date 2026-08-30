@@ -261,7 +261,7 @@ export function Viewport({
       downY = e.clientY
       downBtn = e.button
       const st = stateRef.current
-      // Offset-Plane handle drag takes priority
+      // Offset-Plane handle drag takes priority (grab the arrow OR the plane)
       const pv = previewDragRef.current
       if (e.button === 0 && pv.handle && st) {
         const r = host.getBoundingClientRect()
@@ -271,7 +271,10 @@ export function Viewport({
         )
         const rc = new THREE.Raycaster()
         rc.setFromCamera(ndc, st.camera)
-        if (rc.intersectObject(pv.handle, false).length) {
+        const grabHit = rc
+          .intersectObjects(st.preview.children, false)
+          .some((h) => h.object.userData?.previewHandle)
+        if (grabHit) {
           pv.active = true
           pv.t0 = normalParam(e)
           try {
@@ -282,6 +285,28 @@ export function Viewport({
           e.stopPropagation()
           return
         }
+      }
+      // orbit / pan around whatever geometry is under the cursor (Fusion feel);
+      // fall back to the model centre when the cursor is over empty space
+      if ((e.button === 1 || e.button === 2) && st && !st.sketch) {
+        const r = host.getBoundingClientRect()
+        const ndc = new THREE.Vector2(
+          ((e.clientX - r.left) / r.width) * 2 - 1,
+          -((e.clientY - r.top) / r.height) * 2 + 1
+        )
+        const rc = new THREE.Raycaster()
+        rc.setFromCamera(ndc, st.camera)
+        const hit = st.content
+          ? rc.intersectObjects(st.content.children, true).find((h) => {
+              let o: THREE.Object3D | null = h.object
+              while (o && o !== st.content) {
+                if (o.visible === false) return false
+                o = o.parent
+              }
+              return true
+            })
+          : undefined
+        st.controls.pivot.copy(hit ? hit.point : st.lastCenter)
       }
       if (
         e.button === 0 &&
@@ -712,6 +737,7 @@ export function Viewport({
       })
     )
     quad.renderOrder = 8
+    quad.userData = { previewHandle: true } // the whole plane is grabbable
     st.preview.add(quad)
     st.preview.add(
       new THREE.LineLoop(
@@ -719,24 +745,37 @@ export function Viewport({
         new THREE.LineBasicMaterial({ color: 0x6aa9dd })
       )
     )
-    st.preview.add(
-      new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints([O, O.clone().addScaledVector(N, s * 0.4)]),
-        new THREE.LineBasicMaterial({ color: 0x9fd0f0 })
-      )
-    )
-    // draggable handle - drag along the normal to set the distance
+    // draggable handle - an arrow on the normal; drag it (or the plane) to set
+    // the distance. Sized from camera distance so it stays a usable target.
     if (onPreviewDragRef.current) {
-      const hr = Math.max(1.2, s * 0.05)
-      const handle = new THREE.Mesh(
-        new THREE.SphereGeometry(hr, 16, 12),
+      const camDist = st.camera.position.distanceTo(O)
+      const hl = Math.max(camDist * 0.06, s * 0.12) // arrow length
+      const hr = hl * 0.28
+      const shaft = O.clone().addScaledVector(N, hl * 0.7)
+      st.preview.add(
+        new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints([O, shaft]),
+          new THREE.LineBasicMaterial({ color: 0xffcf7a, depthTest: false })
+        )
+      )
+      const cone = new THREE.Mesh(
+        new THREE.ConeGeometry(hr, hl * 0.5, 20),
         new THREE.MeshBasicMaterial({ color: 0xffcf7a, depthTest: false })
       )
-      handle.position.copy(O)
-      handle.renderOrder = 20
-      handle.userData = { previewHandle: true }
-      st.preview.add(handle)
-      previewDragRef.current.handle = handle
+      cone.position.copy(O).addScaledVector(N, hl * 0.85)
+      cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), N)
+      cone.renderOrder = 22
+      cone.userData = { previewHandle: true }
+      st.preview.add(cone)
+      // an invisible fat sphere makes the grab target forgiving
+      const grab = new THREE.Mesh(
+        new THREE.SphereGeometry(hl * 0.6, 8, 6),
+        new THREE.MeshBasicMaterial({ visible: false })
+      )
+      grab.position.copy(cone.position)
+      grab.userData = { previewHandle: true }
+      st.preview.add(grab)
+      previewDragRef.current.handle = grab
       previewDragRef.current.O0 = O.clone()
       previewDragRef.current.N0 = N.clone()
     }

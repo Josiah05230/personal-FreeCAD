@@ -149,6 +149,13 @@ export const Icon = {
       <circle cx="10" cy="10" r="2" fill={ACCENT} stroke="none" />
       <path d="M10 3 v3 M10 14 v3 M3 10 h3 M14 10 h3" />
     </S>
+  ),
+  canvas: () => (
+    <S>
+      <rect x="3" y="5" width="14" height="11" rx="1.5" />
+      <path d="M7 5 l1.4 -2 h3.2 L16 5" />
+      <circle cx="10" cy="10.5" r="3" fill={ACCENT} fillOpacity="0.18" />
+    </S>
   )
 }
 

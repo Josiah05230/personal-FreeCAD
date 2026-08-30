@@ -900,14 +900,17 @@ export function App(): JSX.Element {
   const fitView = useCallback(() => vpApi.current?.fit(), [])
 
   const [calibrateId, setCalibrateId] = useState<string | null>(null)
-  const startCalibrate = useCallback(() => {
-    const c = canvases[canvases.length - 1]
-    if (!c) {
-      window.alert('Insert a canvas first (INSERT > Canvas).')
-      return
-    }
-    setCalibrateId(c.id)
-  }, [canvases])
+  const startCalibrate = useCallback(
+    (id?: string) => {
+      const cid = id ?? canvases[canvases.length - 1]?.id
+      if (!cid) {
+        window.alert('Insert a canvas first.')
+        return
+      }
+      setCalibrateId(cid)
+    },
+    [canvases]
+  )
 
   const onCalibrateLine = useCallback(
     async (measuredMm: number) => {
@@ -938,9 +941,10 @@ export function App(): JSX.Element {
     await img.decode().catch(() => undefined)
     const w = 100
     const h = img.naturalHeight && img.naturalWidth ? (100 * img.naturalHeight) / img.naturalWidth : 100
-    await api.canvasInsert('XY', w, h, dataUrl)
-    
+    const r = await api.canvasInsert('XY', w, h, dataUrl)
     await refreshMeshesOnly()
+    // calibration is part of placing a canvas, not a separate tool
+    if (r?.id) setCalibrateId(r.id)
   }, [refreshMeshesOnly])
 
   // ---- inspect ----
@@ -1072,7 +1076,6 @@ export function App(): JSX.Element {
         toggleSection,
         scale: scaleBody,
         insertCanvas,
-        calibrateCanvas: startCalibrate,
         toggleParams: () => setParamsOpen((v) => !v),
         importKicad,
         reimportKicad,
@@ -1207,9 +1210,36 @@ export function App(): JSX.Element {
     seq: number
   } | null>(null)
   const planeDragSeq = useRef(0)
-  const onPreviewHandleDrag = useCallback((deltaMm: number, phase: 'move' | 'end') => {
-    setPlaneHandleDrag({ delta: deltaMm, phase, seq: ++planeDragSeq.current })
-  }, [])
+  const sectionDragBase = useRef<number | null>(null)
+  const onPreviewHandleDrag = useCallback(
+    (deltaMm: number, phase: 'move' | 'end') => {
+      if (op === 'datumPlane') {
+        setPlaneHandleDrag({ delta: deltaMm, phase, seq: ++planeDragSeq.current })
+        return
+      }
+      // section plane: drag the handle to slide the cut
+      setSection((s) => {
+        if (!s) return s
+        if (sectionDragBase.current == null) sectionDragBase.current = s.offset
+        const next = Math.round((sectionDragBase.current + deltaMm) * 10) / 10
+        return { ...s, offset: next }
+      })
+      if (phase === 'end') sectionDragBase.current = null
+    },
+    [op]
+  )
+
+  // ghost plane for an active section cut (no RPC - it is just an origin plane)
+  const sectionGhost = useMemo(() => {
+    if (!section) return null
+    const o = section.offset
+    const F: Record<string, { origin: [number, number, number]; x: [number, number, number]; y: [number, number, number] }> = {
+      XY: { origin: [0, 0, o], x: [1, 0, 0], y: [0, 1, 0] },
+      XZ: { origin: [0, o, 0], x: [1, 0, 0], y: [0, 0, 1] },
+      YZ: { origin: [o, 0, 0], x: [0, 1, 0], y: [0, 0, 1] }
+    }
+    return { ...F[section.plane], size: 80 }
+  }, [section])
   const onDatumPlanePreview = useCallback(
     async (info: { mode: string; offset: number } | null) => {
       const tok = ++previewTok.current
@@ -1401,7 +1431,7 @@ export function App(): JSX.Element {
                     onPickPlane={(ref) => void beginSketch(ref)}
                     selectMode={selectMode}
                     selFilter={selFilter}
-                    previewPlane={previewPlane}
+                    previewPlane={op === 'datumPlane' ? previewPlane : sectionGhost}
                     onPreviewHandleDrag={onPreviewHandleDrag}
                     onWindowSelect={(sels) =>
                       setSelection((cur) => {
@@ -1437,6 +1467,7 @@ export function App(): JSX.Element {
                   )}
                   <Browser
                     bodies={bodies}
+                    canvases={canvases}
                     visibility={visOverride}
                     selection={selection}
                     handlers={{
@@ -1446,7 +1477,9 @@ export function App(): JSX.Element {
                       onDelete: deleteFeature,
                       onEdit: (id) => void editSketch(id),
                       onEditDim: (id) => void editFeatureDim(id),
-                      onSelect: (sel, add) => onSelect(sel, add)
+                      onSelect: (sel, add) => onSelect(sel, add),
+                      onCalibrateCanvas: (id) => startCalibrate(id),
+                      onDeleteCanvas: (id) => void api.canvasDelete(id).then(refreshMeshesOnly)
                     }}
                   />
                   {asmTree && (

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { BodyTree, Selection } from '../rpc'
+import type { BodyTree, CanvasDTO, Selection } from '../rpc'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 
 export interface BrowserHandlers {
@@ -10,6 +10,8 @@ export interface BrowserHandlers {
   onEdit: (id: string) => void
   onEditDim: (id: string) => void
   onSelect: (sel: Selection, additive: boolean) => void
+  onCalibrateCanvas: (id: string) => void
+  onDeleteCanvas: (id: string) => void
 }
 
 const Eye = ({ on }: { on: boolean }): JSX.Element =>
@@ -107,11 +109,13 @@ function Row({
 /** Floating browser panel over the top-left of the canvas. Not a docked sidebar. */
 export function Browser({
   bodies,
+  canvases = [],
   handlers,
   visibility,
   selection
 }: {
   bodies: BodyTree[]
+  canvases?: CanvasDTO[]
   handlers: BrowserHandlers
   visibility: Record<string, boolean>
   selection: Selection[]
@@ -257,6 +261,24 @@ export function Browser({
                 />
               )
             )}
+          </Row>
+        )}
+
+        {canvases.length > 0 && (
+          <Row depth={1} label="Canvases" glyph="▣" defaultOpen={false}>
+            {canvases.map((c) => (
+              <Row
+                key={c.id}
+                depth={2}
+                label={c.id}
+                glyph="▣"
+                menu={[
+                  { label: 'Calibrate…', onClick: () => handlers.onCalibrateCanvas(c.id) },
+                  { separator: true, label: '' },
+                  { label: 'Delete', danger: true, onClick: () => handlers.onDeleteCanvas(c.id) }
+                ]}
+              />
+            ))}
           </Row>
         )}
       </Row>

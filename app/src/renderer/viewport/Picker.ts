@@ -124,11 +124,31 @@ export class Picker {
       if (!grp) return null
       const out = new THREE.Group()
       grp.traverse((o) => {
-        const ln = o as THREE.Line
-        if ((ln.isLine || (ln as unknown as THREE.LineSegments).isLineSegments) && ln.geometry) {
-          const c = new THREE.Line(ln.geometry, new THREE.LineBasicMaterial({ color, depthTest: false }))
-          c.renderOrder = 11
-          out.add(c)
+        const any = o as THREE.Line & THREE.Mesh & { isLineLoop?: boolean; isLineSegments?: boolean }
+        if (!any.geometry) return
+        if (any.isLineLoop || any.isLineSegments || any.isLine) {
+          // keep the loop closed - cloning a LineLoop as a plain Line drew a "C"
+          const Ctor = any.isLineLoop
+            ? THREE.LineLoop
+            : any.isLineSegments
+              ? THREE.LineSegments
+              : THREE.Line
+          const cl = new Ctor(any.geometry, new THREE.LineBasicMaterial({ color, depthTest: false }))
+          cl.renderOrder = 11
+          out.add(cl)
+        } else if ((any as THREE.Mesh).isMesh) {
+          const m = new THREE.Mesh(
+            any.geometry,
+            new THREE.MeshBasicMaterial({
+              color,
+              transparent: true,
+              opacity: 0.14,
+              side: THREE.DoubleSide,
+              depthWrite: false
+            })
+          )
+          m.renderOrder = 10
+          out.add(m)
         }
       })
       return out.children.length ? out : null
