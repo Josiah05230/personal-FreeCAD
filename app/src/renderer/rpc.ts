@@ -455,6 +455,11 @@ export const api = {
   bodyCopy: (id: string) => rpc<{ bodies: BodyTree[] }>('body.copy', { id }),
   splitBody: (bodyId: string, planeRef: GeomRef) =>
     rpc<{ bodies: BodyTree[] }>('body.split', { bodyId, planeRef }),
+  surfaceRuled: (refs: GeomRef[]) => rpc<{ bodies: BodyTree[] }>('surface.ruled', { refs }),
+  surfaceFill: (refs: GeomRef[]) => rpc<{ bodies: BodyTree[] }>('surface.fill', { refs }),
+  surfaceStitch: (refs: GeomRef[]) => rpc<{ bodies: BodyTree[] }>('surface.stitch', { refs }),
+  surfaceOffset: (refs: GeomRef[], distance: number) =>
+    rpc<{ bodies: BodyTree[] }>('surface.offset', { refs, distance }),
   sheetBaseFlange: (sketchId: string, thickness: number) =>
     rpc<{ bodies: BodyTree[] }>('sheet.baseFlange', { sketchId, thickness }),
   patternCircular: (count: number, angle: number, axisRef: GeomRef | null, axisPlane = 'XY') =>

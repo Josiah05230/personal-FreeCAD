@@ -2013,6 +2013,146 @@ def body_split(bodyId, planeRef):
     return tree_get()
 
 
+def _sub_shape(d, ref):
+    """The exact sub-shape a UI reference points at (edge / face / wire), or the
+    whole Shape if the ref has no sub-element."""
+    body = session.active_body(d)
+    obj, subs = _resolve_ref(d, body, ref)
+    sub = subs[0] if isinstance(subs, (list, tuple)) and subs else subs
+    if sub and isinstance(sub, str) and hasattr(obj, "Shape"):
+        try:
+            return obj.Shape.getElement(sub)
+        except Exception:
+            pass
+    return getattr(obj, "Shape", None)
+
+
+def _new_surface(d, shape, label, color):
+    nf = d.addObject("Part::Feature", label.replace(" ", ""))
+    nf.Label = label
+    nf.Shape = shape
+    session.set_body_color(nf.Name, color)
+    d.recompute()
+    return nf
+
+
+_SURF_COLOR = [0.53, 0.60, 0.70]
+
+
+@method("surface.ruled")
+def surface_ruled(refs=None):
+    """A ruled surface stretched between two selected edges / wires."""
+    d = session.doc()
+    curves = []
+    for r in (refs or [])[:2]:
+        sh = _sub_shape(d, r)
+        if sh is None:
+            continue
+        if sh.ShapeType == "Edge":
+            curves.append(sh)
+        elif sh.ShapeType == "Wire":
+            curves.append(sh)
+        elif sh.ShapeType == "Face" and sh.Wires:
+            curves.append(sh.OuterWire)
+    if len(curves) < 2:
+        raise RpcError(APP_ERROR, "select two edges or wires")
+    surf = Part.makeRuledSurface(curves[0], curves[1])
+    _new_surface(d, surf, "Ruled Surface", _SURF_COLOR)
+    return tree_get()
+
+
+@method("surface.fill")
+def surface_fill(refs=None):
+    """Boundary patch - a face filling the closed loop of the selected edges."""
+    d = session.doc()
+    edges = []
+    for r in (refs or []):
+        sh = _sub_shape(d, r)
+        if sh is None:
+            continue
+        if sh.ShapeType == "Edge":
+            edges.append(sh)
+        elif sh.ShapeType == "Wire":
+            edges.extend(sh.Edges)
+    if len(edges) < 2:
+        raise RpcError(APP_ERROR, "select 2 or more boundary edges")
+    face = None
+    try:
+        chains = Part.sortEdges(edges)
+        wire = Part.Wire(chains[0])
+        try:
+            face = Part.makeFilledFace(wire.Edges)
+        except Exception:
+            face = None
+        if face is None or face.isNull():
+            face = Part.Face(wire)
+    except Exception as e:
+        raise RpcError(APP_ERROR, "could not fill that boundary: %s" % e)
+    _new_surface(d, face, "Boundary Fill", _SURF_COLOR)
+    return tree_get()
+
+
+@method("surface.stitch")
+def surface_stitch(refs=None):
+    """Sew selected faces into one shell (becomes a solid if it fully closes)."""
+    d = session.doc()
+    faces = []
+    for r in (refs or []):
+        sh = _sub_shape(d, r)
+        if sh is None:
+            continue
+        if sh.ShapeType == "Face":
+            faces.append(sh)
+        elif sh.ShapeType == "Shell":
+            faces.extend(sh.Faces)
+    if len(faces) < 2:
+        raise RpcError(APP_ERROR, "select two or more faces")
+    shell = Part.makeShell(faces)
+    try:
+        shell.sewShape()
+    except Exception:
+        pass
+    out = shell
+    try:
+        if shell.isClosed():
+            out = Part.makeSolid(shell)
+    except Exception:
+        pass
+    _new_surface(d, out, "Stitched", _SURF_COLOR)
+    return tree_get()
+
+
+@method("surface.offset")
+def surface_offset(refs=None, distance=1.0):
+    """Offset the selected face / shell by a distance to make a new surface."""
+    d = session.doc()
+    src = None
+    for r in (refs or []):
+        sh = _sub_shape(d, r)
+        if sh is not None and sh.ShapeType in ("Face", "Shell"):
+            src = sh
+            break
+    if src is None:
+        raise RpcError(APP_ERROR, "select a face or shell")
+    dist = float(distance)
+    off = None
+    try:
+        off = src.makeOffsetShape(dist, 1e-6)
+    except Exception:
+        off = None
+    if off is None or off.isNull():
+        # planar fallback: copy the face and slide it along its normal
+        try:
+            f = src.Faces[0] if src.ShapeType == "Shell" else src
+            n = f.normalAt(*f.Surface.parameter(f.CenterOfMass))
+            off = src.copy()
+            off.translate(App.Vector(n).multiply(dist))
+        except Exception as e:
+            raise RpcError(APP_ERROR, "offset failed: %s" % e)
+    _new_surface(d, off, "Offset Surface", _SURF_COLOR)
+    return tree_get()
+
+
 @method("sheet.baseFlange")
 def sheet_base_flange(sketchId, thickness=1.5):
     """Base flange from a sketch profile using the SheetMetal addon if present,

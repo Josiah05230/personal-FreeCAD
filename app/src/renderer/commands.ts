@@ -42,6 +42,10 @@ export interface CommandContext {
   toggleParams: () => void
   importKicad: () => Promise<void>
   reimportKicad: () => Promise<void>
+  surfaceRuled: () => Promise<void>
+  surfaceFill: () => Promise<void>
+  surfaceStitch: () => Promise<void>
+  surfaceOffset: () => Promise<void>
   selectFilterNode: ReactNode
   selectFilterMenuNode: ReactNode
 }
@@ -57,7 +61,13 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'solid.sweep', title: 'Sweep', group: 'Create', tab: 'SOLID', icon: 'sweep', run: () => ctx.sweep() },
     { id: 'solid.rib', title: 'Rib', group: 'Create', tab: 'SOLID', icon: 'extrude', run: op('rib') },
     // --- surface ---
-    { id: 'surf.split', title: 'Split Body', group: 'Modify', tab: 'SURFACE', icon: 'plane', run: op('splitBody') },
+    { id: 'surf.ruled', title: 'Ruled Surface', group: 'Create', tab: 'SURFACE', icon: 'loft', run: () => ctx.surfaceRuled() },
+    { id: 'surf.fill', title: 'Boundary Fill', group: 'Create', tab: 'SURFACE', icon: 'plane', run: () => ctx.surfaceFill() },
+    { id: 'surf.stitch', title: 'Stitch', group: 'Modify', tab: 'SURFACE', icon: 'combine', run: () => ctx.surfaceStitch() },
+    { id: 'surf.offset', title: 'Offset Surface', group: 'Modify', tab: 'SURFACE', icon: 'draft', run: () => ctx.surfaceOffset() },
+    { id: 'surf.split', title: 'Trim / Split', group: 'Modify', tab: 'SURFACE', icon: 'plane', run: op('splitBody') },
+    // Split Body is a solid op - it also lives on the SOLID tab
+    { id: 'mod.splitBody', title: 'Split Body', group: 'Modify', tab: 'SOLID', icon: 'plane', run: op('splitBody') },
     // --- sheet metal ---
     { id: 'sm.base', title: 'Base Flange', group: 'Create', tab: 'SHEET METAL', icon: 'extrude', run: op('baseFlange') },
     // --- modify ---

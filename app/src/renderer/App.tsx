@@ -851,6 +851,47 @@ export function App(): JSX.Element {
     }
   }, [afterEdit])
 
+  const selRefs = useCallback(
+    () => selection.map(selectionToRef).filter(Boolean) as import('./rpc').GeomRef[],
+    [selection]
+  )
+  const surfaceRuled = useCallback(async () => {
+    try {
+      await api.surfaceRuled(selRefs())
+      await afterEdit()
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
+  }, [selRefs, afterEdit])
+  const surfaceFill = useCallback(async () => {
+    try {
+      await api.surfaceFill(selRefs())
+      await afterEdit()
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
+  }, [selRefs, afterEdit])
+  const surfaceStitch = useCallback(async () => {
+    try {
+      await api.surfaceStitch(selRefs())
+      await afterEdit()
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
+  }, [selRefs, afterEdit])
+  const surfaceOffset = useCallback(async () => {
+    const txt = await promptText('Offset distance (mm)', '1')
+    if (txt == null) return
+    const n = Number(txt)
+    if (!n) return
+    try {
+      await api.surfaceOffset(selRefs(), n)
+      await afterEdit()
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
+  }, [selRefs, afterEdit])
+
   const scaleBody = useCallback(async () => {
     const target = selection.find((s) => s.kind === 'face' || s.kind === 'body') as
       | { bodyId: string }
@@ -1079,6 +1120,10 @@ export function App(): JSX.Element {
         toggleParams: () => setParamsOpen((v) => !v),
         importKicad,
         reimportKicad,
+        surfaceRuled,
+        surfaceFill,
+        surfaceStitch,
+        surfaceOffset,
         selectFilterNode: <SelectModeToggle mode={selectMode} onMode={setSelectMode} />,
         selectFilterMenuNode: <SelectKindList active={selFilter} onActive={setSelFilter} />
       }),
@@ -1093,6 +1138,10 @@ export function App(): JSX.Element {
       importStep,
       importKicad,
       reimportKicad,
+      surfaceRuled,
+      surfaceFill,
+      surfaceStitch,
+      surfaceOffset,
       fitView,
       startDrawing,
       startMeasure,
