@@ -746,6 +746,28 @@ export function Viewport({
     <div className="viewport" ref={hostRef}>
       <div className="rubber-band" ref={bandRef} style={{ display: 'none' }} />
       <div className="viewcube-wrap">
+        <div className="viewcube-roll">
+          <button
+            className="viewcube-rollbtn"
+            title="Rotate view 90° counter-clockwise"
+            onClick={() => stateRef.current?.controls.roll(-1)}
+          >
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <path d="M4 4.5 A5 5 0 1 0 8 3" />
+              <path d="M8 0.7 L8 3 L10.2 3" />
+            </svg>
+          </button>
+          <button
+            className="viewcube-rollbtn"
+            title="Rotate view 90° clockwise"
+            onClick={() => stateRef.current?.controls.roll(1)}
+          >
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <path d="M12 4.5 A5 5 0 1 1 8 3" />
+              <path d="M8 0.7 L8 3 L5.8 3" />
+            </svg>
+          </button>
+        </div>
         <div className="viewcube" ref={cubeRef} />
         <button
           className="viewcube-home"

@@ -58,8 +58,16 @@ const isLine = (e: SketchEntity): boolean => e.type === 'line'
 export class SketchController {
   private group = new THREE.Group()
   private entGroup = new THREE.Group() // committed sketch entities (cleared each redraw)
+  private fillGroup = new THREE.Group() // faint fill of closed profiles
   private preview = new THREE.Group()
   private refGroup = new THREE.Group()
+  private fillMat = new THREE.MeshBasicMaterial({
+    color: 0x5b8fd6,
+    transparent: true,
+    opacity: 0.16,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  })
   private plane: THREE.Plane
   private O: THREE.Vector3
   private X: THREE.Vector3
@@ -112,6 +120,7 @@ export class SketchController {
     root.add(this.group)
     root.add(this.preview)
     root.add(this.refGroup)
+    this.group.add(this.fillGroup)
     this.group.add(this.entGroup)
     this.updateGrid()
     this.addAxes()
@@ -1216,6 +1225,101 @@ export class SketchController {
     }
   }
 
+  private static ptKey(p: [number, number]): string {
+    return `${Math.round(p[0] * 1e3)},${Math.round(p[1] * 1e3)}`
+  }
+
+  /** Closed polygons made of the current line entities (for the fill). */
+  private lineLoops(): [number, number][][] {
+    const segs = this.entities.filter(
+      (e) => !e.construction && e.type === 'line'
+    ) as { a: [number, number]; b: [number, number] }[]
+    const adj = new Map<string, { to: [number, number]; seg: number }[]>()
+    segs.forEach((s, i) => {
+      for (const [p, q] of [
+        [s.a, s.b],
+        [s.b, s.a]
+      ] as [[number, number], [number, number]][]) {
+        const k = SketchController.ptKey(p)
+        ;(adj.get(k) ?? adj.set(k, []).get(k)!).push({ to: q, seg: i })
+      }
+    })
+    const used = new Set<number>()
+    const loops: [number, number][][] = []
+    for (let start = 0; start < segs.length; start++) {
+      if (used.has(start)) continue
+      const loop: [number, number][] = [segs[start].a]
+      let cur = segs[start].b
+      used.add(start)
+      loop.push(cur)
+      let ok = true
+      for (let guard = 0; guard <= segs.length; guard++) {
+        if (SketchController.ptKey(cur) === SketchController.ptKey(loop[0])) break
+        const cand = (adj.get(SketchController.ptKey(cur)) ?? []).find((c) => !used.has(c.seg))
+        if (!cand) {
+          ok = false
+          break
+        }
+        used.add(cand.seg)
+        cur = cand.to
+        loop.push(cur)
+      }
+      if (ok && loop.length >= 4 && SketchController.ptKey(cur) === SketchController.ptKey(loop[0])) {
+        loops.push(loop.slice(0, -1))
+      }
+    }
+    return loops
+  }
+
+  private fillV = -1
+  private rebuildFills(): void {
+    if (this.fillV === this.geomV) return
+    this.fillV = this.geomV
+    for (const c of [...this.fillGroup.children]) {
+      this.fillGroup.remove(c)
+      ;(c as THREE.Mesh).geometry.dispose()
+    }
+    // closed line loops
+    for (const loop of this.lineLoops()) {
+      const uv = loop.map(([u, v]) => new THREE.Vector2(u, v))
+      let tris: number[][] = []
+      try {
+        tris = THREE.ShapeUtils.triangulateShape(uv, [])
+      } catch {
+        tris = []
+      }
+      if (!tris.length) continue
+      const pos: number[] = []
+      for (const t of tris)
+        for (const idx of t) {
+          const w = this.toWorld(loop[idx][0], loop[idx][1])
+          pos.push(w.x, w.y, w.z)
+        }
+      const g = new THREE.BufferGeometry()
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+      const m = new THREE.Mesh(g, this.fillMat)
+      m.renderOrder = 3
+      this.fillGroup.add(m)
+    }
+    // circles are closed on their own
+    for (const e of this.entities) {
+      if (e.construction || e.type !== 'circle') continue
+      const pts = this.circleUVs(e.c, e.r)
+      const pos: number[] = []
+      for (let i = 0; i + 1 < pts.length; i++) {
+        const c = this.toWorld(e.c[0], e.c[1])
+        const p = this.toWorld(pts[i][0], pts[i][1])
+        const q = this.toWorld(pts[i + 1][0], pts[i + 1][1])
+        pos.push(c.x, c.y, c.z, p.x, p.y, p.z, q.x, q.y, q.z)
+      }
+      const g = new THREE.BufferGeometry()
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+      const m = new THREE.Mesh(g, this.fillMat)
+      m.renderOrder = 3
+      this.fillGroup.add(m)
+    }
+  }
+
   private redraw(): void {
     this.updateGrid()
     for (const c of [...this.preview.children]) {
@@ -1226,6 +1330,7 @@ export class SketchController {
       this.entGroup.remove(c)
       ;(c as THREE.Line).geometry.dispose()
     }
+    this.rebuildFills()
 
     for (let i = 0; i < this.entities.length; i++) {
       const mat = this.selected.includes(i)
@@ -1284,6 +1389,8 @@ export class SketchController {
     for (const c of this.symGroup.children) (c as THREE.Sprite).material.dispose()
     for (const t of this.symTexCache.values()) t.dispose()
     this.symTexCache.clear()
+    for (const c of this.fillGroup.children) (c as THREE.Mesh).geometry.dispose()
+    this.fillMat.dispose()
     this.group.removeFromParent()
     this.preview.removeFromParent()
     this.refGroup.removeFromParent()

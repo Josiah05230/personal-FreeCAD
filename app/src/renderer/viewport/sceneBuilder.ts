@@ -188,12 +188,78 @@ export function buildScene(
       line.userData = { pick: 'sketch', sketchId: s.id }
       line.renderOrder = 2
       group.add(line)
+
+      // a closed profile gets a faint fill and is pickable as a region
+      const fill = fillClosedPoly(poly)
+      if (fill) {
+        const face = new THREE.Mesh(
+          fill,
+          new THREE.MeshBasicMaterial({
+            color: 0x5b8fd6,
+            transparent: true,
+            opacity: 0.15,
+            side: THREE.DoubleSide,
+            depthWrite: false
+          })
+        )
+        face.userData = { pick: 'sketch', sketchId: s.id }
+        face.renderOrder = 1
+        group.add(face)
+      }
     }
   }
 
   const center = box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3())
   const radius = box.isEmpty() ? 60 : Math.max(box.getSize(new THREE.Vector3()).length() / 2, 1)
   return { group, center, radius }
+}
+
+/** Triangulate a closed planar polyline (flat x,y,z,...) for a sketch fill.
+ *  Returns null if it is not closed or too small to matter. */
+function fillClosedPoly(poly: number[]): THREE.BufferGeometry | null {
+  const n = Math.floor(poly.length / 3)
+  if (n < 4) return null
+  const P = (i: number): THREE.Vector3 =>
+    new THREE.Vector3(poly[i * 3], poly[i * 3 + 1], poly[i * 3 + 2])
+  if (P(0).distanceTo(P(n - 1)) > 1e-3) return null // open
+  const pts: THREE.Vector3[] = []
+  for (let i = 0; i < n - 1; i++) pts.push(P(i))
+  if (pts.length < 3) return null
+
+  const o = pts[0]
+  let nrm = new THREE.Vector3()
+  for (let i = 1; i + 1 < pts.length; i++) {
+    nrm = new THREE.Vector3()
+      .subVectors(pts[i], o)
+      .cross(new THREE.Vector3().subVectors(pts[i + 1], o))
+    if (nrm.lengthSq() > 1e-9) break
+  }
+  if (nrm.lengthSq() < 1e-12) return null
+  nrm.normalize()
+  const ref = Math.abs(nrm.x) > 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)
+  const xa = new THREE.Vector3().crossVectors(nrm, ref).normalize()
+  const ya = new THREE.Vector3().crossVectors(nrm, xa).normalize()
+  const uv = pts.map(
+    (p) =>
+      new THREE.Vector2(p.clone().sub(o).dot(xa), p.clone().sub(o).dot(ya))
+  )
+  let tris: number[][]
+  try {
+    tris = THREE.ShapeUtils.triangulateShape(uv, [])
+  } catch {
+    return null
+  }
+  if (!tris.length) return null
+  const pos: number[] = []
+  for (const t of tris)
+    for (const idx of t) {
+      const p = pts[idx]
+      pos.push(p.x, p.y, p.z)
+    }
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+  g.computeVertexNormals()
+  return g
 }
 
 /** Map a raytraced triangle index to the FreeCAD face sub-name. */

@@ -38,6 +38,17 @@ export class Picker {
     this.ray.setFromCamera(this.pointer, this.camera)
     const hits = this.ray.intersectObjects(content.children, true)
     for (const h of hits) {
+      // three's raycaster ignores .visible, so skip anything hidden up the chain
+      let vis: THREE.Object3D | null = h.object
+      let hidden = false
+      while (vis && vis !== content) {
+        if (vis.visible === false) {
+          hidden = true
+          break
+        }
+        vis = vis.parent
+      }
+      if (hidden) continue
       // walk up to the object that carries the pick tag (datums nest a group)
       let owner: THREE.Object3D | null = h.object
       while (owner && owner.userData?.pick == null && owner !== content) owner = owner.parent
@@ -215,7 +226,7 @@ export class Picker {
     const out: Selection[] = []
     const v = new THREE.Vector3()
     for (const c of content.children) {
-      if (c.userData.pick !== 'face') continue
+      if (c.userData.pick !== 'face' || c.visible === false) continue
       const mesh = c as THREE.Mesh
       const geom = mesh.geometry as THREE.BufferGeometry
       const idx = geom.getIndex()

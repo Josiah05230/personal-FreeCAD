@@ -284,6 +284,8 @@ export class ViewCube {
   }
 
   goToView(dir: THREE.Vector3): void {
+    // a named view resets any 90-degree screen roll
+    this.controls.resetRoll()
     // dir is in cube-label space; map it through the (possibly reoriented) frame
     const d = dir.clone().normalize().applyQuaternion(this.frameQuat).normalize()
     const pivot = this.controls.pivot

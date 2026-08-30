@@ -38,6 +38,7 @@ export class CadControls {
   private lastY = 0
   private orbitVel = new THREE.Vector2() // yaw, pitch radians/frame
   private panVel = new THREE.Vector3()
+  private rollAngle = 0 // persistent screen-roll (the view-cube 90 arrows)
   private readonly opts: Required<CadControlsOptions>
   private disposed = false
 
@@ -63,9 +64,11 @@ export class CadControls {
   /** Frame the camera on a bounding sphere. */
   frame(center: THREE.Vector3, radius: number): void {
     this.pivot.copy(center)
+    this.rollAngle = 0
     const dir = new THREE.Vector3(1, -1, 0.7).normalize()
     const dist = radius / Math.sin(THREE.MathUtils.degToRad(this.camera.fov * 0.5))
     this.camera.position.copy(center).addScaledVector(dir, dist * 1.15)
+    this.camera.up.copy(UP)
     this.camera.lookAt(center)
     this.camera.near = Math.max(radius / 500, 0.01)
     this.camera.far = radius * 200
@@ -159,9 +162,30 @@ export class CadControls {
     const sp = Math.sin(polar)
     offset.set(radius * sp * Math.cos(azim), radius * sp * Math.sin(azim), radius * Math.cos(polar))
 
-    this.camera.up.copy(UP)
     this.camera.position.copy(this.pivot).add(offset)
+    this.applyUp()
+  }
+
+  /** Set camera.up to world +Z rolled by rollAngle about the view axis, then aim. */
+  private applyUp(): void {
+    const view = new THREE.Vector3().subVectors(this.pivot, this.camera.position).normalize()
+    const up = UP.clone()
+    if (Math.abs(up.dot(view)) > 0.999) up.set(0, 1, 0) // looking straight up/down
+    if (this.rollAngle) up.applyAxisAngle(view, this.rollAngle)
+    this.camera.up.copy(up).normalize()
     this.camera.lookAt(this.pivot)
+  }
+
+  /** View-cube 90-degree roll arrows: same view direction, rotated on screen. */
+  roll(quarterTurns: 1 | -1): void {
+    this.rollAngle += (quarterTurns * Math.PI) / 2
+    const twoPi = Math.PI * 2
+    this.rollAngle = ((this.rollAngle % twoPi) + twoPi) % twoPi
+    this.applyUp()
+  }
+
+  resetRoll(): void {
+    this.rollAngle = 0
   }
 
   private panDelta(dx: number, dy: number): THREE.Vector3 {

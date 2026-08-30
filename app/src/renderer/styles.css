@@ -536,6 +536,27 @@ code {
   height: 150px;
 }
 
+.viewcube-roll {
+  display: flex;
+  gap: 6px;
+  align-self: flex-end;
+}
+.viewcube-rollbtn {
+  width: 24px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  background: #23262ac8;
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  color: var(--text);
+  cursor: pointer;
+}
+.viewcube-rollbtn:hover {
+  border-color: var(--accent);
+  color: var(--accent-hi);
+}
+
 .viewcube-home {
   width: 26px;
   height: 22px;

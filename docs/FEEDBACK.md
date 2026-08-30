@@ -44,6 +44,9 @@ stays short.
 -the section view thing, needs the same draggable stuff as the offset plane
 --that said, the offset plane interactability seems completely broken
 -calibrate canvas shouldn't be a tool under insert, it should be within importing a canvas, when I right-click the canvas in the model tree, it should let me 'calibrate'
+--canvas' thumbnail in the ribbon should be a camera/portrait style thing. Not a squiggle line.
+-split body isn't a surface feature....
+--new surface, stitch (joining surface edges), split (splits a single surface into 2/multiple using splitting tool(s)), etc. Look up what is typical and what their functions are.
 -I believe FCAD had something that, worked nice with KiCad. It would be good if, the KiCad stuff could still work and load well in this GUI stuff. Mainly, in assemblies, connections/joints/references being updated well and, updating the viewer as/when changes are being made (maybe need some push-pull process? Maybe it's just automatic?)
 -when I select/hover over a plane, it seems to highlight a 'c' shape? It should just highlight the edges and face of the plane...
 
