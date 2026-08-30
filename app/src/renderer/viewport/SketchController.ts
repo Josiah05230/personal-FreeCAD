@@ -398,9 +398,21 @@ export class SketchController {
     this.redraw()
   }
 
+  /** true if the entity carries a locked-in dimension (Distance / Radius) */
+  private entityHasDimension(idx: number): boolean {
+    return this.constraints.some((c) => {
+      if (c.type !== 'Distance' && c.type !== 'Radius') return false
+      const r0 = c.refs[0]
+      const ei = r0?.geo != null ? r0.geo : (r0?.new ?? -999) + this.baseCount
+      return ei === idx
+    })
+  }
+
   /** Which part of an entity the cursor grabbed, for free-dragging. */
   private grabHandle(idx: number, uv: [number, number]): DragHandle {
     const e = this.entities[idx]
+    // a dimensioned entity is locked: you can slide it, not resize it
+    if (this.entityHasDimension(idx)) return 'whole'
     const tol = SNAP_PX / Math.max(this.pxPerMm(), 0.001)
     const near = (p: [number, number]): boolean => Math.hypot(p[0] - uv[0], p[1] - uv[1]) < tol
     if (e.type === 'line' || e.type === 'rect') {
@@ -465,7 +477,13 @@ export class SketchController {
 
   private onUp = (ev: PointerEvent): void => {
     if (!this.drag) return
+    const idx = this.drag.idx
     this.drag = null
+    // a point dropped on the origin / an axis gets auto-constrained (snapping
+    // already put the coordinate exactly on it)
+    this.anchorToAxes(idx)
+    this.geomV++
+    this.redraw()
     ev.stopPropagation()
     this.onChange()
   }
@@ -475,11 +493,14 @@ export class SketchController {
       this.applyDrag(this.pointerUV(ev))
       return
     }
-    // constraint-symbol hover works in any tool mode
+    // constraint-symbol hover works in any tool mode; it lights the symbol,
+    // its partner symbols (same key) and the edges they constrain
     const symKey = this.pickSym(ev)
     if (symKey !== this.hoverSymKey) {
       this.hoverSymKey = symKey
+      this.hoverSymEnts = symKey ? new Set(this.symEnts.get(symKey) ?? []) : new Set()
       this.applySymHighlight()
+      this.redraw()
     }
     if (this.tool === 'select' || this.tool === 'dimension') {
       const idx = symKey ? -1 : this.pickEntity(this.rawPointerUV(ev))
@@ -519,7 +540,39 @@ export class SketchController {
       this.anchorToAxes(this.entities.length - 1)
       this.pending = [p[1]] // chain
     } else if (this.tool === 'rect') {
-      this.entities.push({ type: 'rect', a: p[0], b: p[1], ...k })
+      // a rectangle IS four constrained lines - build it that way so every
+      // downstream path (dimensions, dragging, symbols) is uniform
+      const x0 = p[0][0]
+      const y0 = p[0][1]
+      const x1 = p[1][0]
+      const y1 = p[1][1]
+      const c: [number, number][] = [
+        [x0, y0],
+        [x1, y0],
+        [x1, y1],
+        [x0, y1]
+      ]
+      const first = this.entities.length - this.baseCount
+      for (let s = 0; s < 4; s++) {
+        this.entities.push({ type: 'line', a: c[s], b: c[(s + 1) % 4], ...k })
+      }
+      if (!this.construction) {
+        const g = (s: number): number => first + s
+        for (let s = 0; s < 4; s++) {
+          this.constraints.push({
+            type: 'Coincident',
+            refs: [
+              { new: g(s), sub: 0, pt: 2 },
+              { new: g((s + 1) % 4), sub: 0, pt: 1 }
+            ]
+          })
+        }
+        this.constraints.push({ type: 'Horizontal', refs: [{ new: g(0), sub: 0 }] })
+        this.constraints.push({ type: 'Horizontal', refs: [{ new: g(2), sub: 0 }] })
+        this.constraints.push({ type: 'Vertical', refs: [{ new: g(1), sub: 0 }] })
+        this.constraints.push({ type: 'Vertical', refs: [{ new: g(3), sub: 0 }] })
+        for (let s = 0; s < 4; s++) this.anchorToAxes(this.baseCount + first + s)
+      }
       this.pending = []
     } else if (this.tool === 'circle') {
       const r = Math.hypot(p[1][0] - p[0][0], p[1][1] - p[0][1])
@@ -538,27 +591,36 @@ export class SketchController {
     this.onChange()
   }
 
-  /** If a just-drawn entity landed a point exactly on the origin or an axis
-   *  (because snapping put it there), record the matching constraint so the
-   *  point stays anchored through the solve. */
-  private anchorToAxes(entIdx: number): void {
+  /** If an entity's point sits on the origin or an axis (snapping / dragging put
+   *  it there), record the matching constraint so it stays anchored through the
+   *  solve. Dedupes, so it is safe to call again after a drag. */
+  private anchorToAxes(entIdx: number, tolMm = 1e-6): void {
     const e = this.entities[entIdx]
     if (e.construction) return
     const nw = entIdx - this.baseCount
     if (nw < 0) return
-    const eps = 1e-6
+    const has = (type: string, pt: number): boolean =>
+      this.constraints.some(
+        (c) =>
+          c.type === type &&
+          c.refs[0]?.new === nw &&
+          (c.refs[0]?.pt ?? 0) === pt
+      )
     const anchor = (uv: [number, number], pt: 1 | 2 | 3): void => {
-      const onX = Math.abs(uv[1]) < eps // on the X axis  -> geoId -1
-      const onY = Math.abs(uv[0]) < eps // on the Y axis  -> geoId -2
+      const onX = Math.abs(uv[1]) < tolMm // on the X axis  -> geoId -1
+      const onY = Math.abs(uv[0]) < tolMm // on the Y axis  -> geoId -2
       if (onX && onY) {
-        this.constraints.push({
-          type: 'Coincident',
-          refs: [{ new: nw, sub: 0, pt }, { geo: -1, pt: 1 }]
-        })
+        if (!has('Coincident', pt))
+          this.constraints.push({
+            type: 'Coincident',
+            refs: [{ new: nw, sub: 0, pt }, { geo: -1, pt: 1 }]
+          })
       } else if (onX) {
-        this.constraints.push({ type: 'PointOnObject', refs: [{ new: nw, sub: 0, pt }, { geo: -1 }] })
+        if (!has('PointOnObject', pt))
+          this.constraints.push({ type: 'PointOnObject', refs: [{ new: nw, sub: 0, pt }, { geo: -1 }] })
       } else if (onY) {
-        this.constraints.push({ type: 'PointOnObject', refs: [{ new: nw, sub: 0, pt }, { geo: -2 }] })
+        if (!has('PointOnObject', pt))
+          this.constraints.push({ type: 'PointOnObject', refs: [{ new: nw, sub: 0, pt }, { geo: -2 }] })
       }
     }
     if (e.type === 'line') {
@@ -699,6 +761,7 @@ export class SketchController {
   })
   private selMat = new THREE.LineBasicMaterial({ color: 0xffb020, linewidth: 2 })
   private hoverMat = new THREE.LineBasicMaterial({ color: 0x9fe0ff })
+  private conHoverMat = new THREE.LineBasicMaterial({ color: 0x7fe0ff, linewidth: 2 })
   private refMat = new THREE.LineBasicMaterial({ color: 0x6b7784, transparent: true, opacity: 0.6 })
   private refPtMat = new THREE.PointsMaterial({ color: 0x9aa7b4, size: 5, sizeAttenuation: false })
   private previewMat = new THREE.LineDashedMaterial({
@@ -811,6 +874,8 @@ export class SketchController {
   private symGroup = new THREE.Group()
   private symV = -1
   private hoverSymKey: string | null = null
+  private symEnts = new Map<string, Set<number>>() // symKey -> entity indices it references
+  private hoverSymEnts = new Set<number>()
 
   private fmt(v: number): string {
     return String(Number(v.toFixed(2)))
@@ -829,17 +894,15 @@ export class SketchController {
     c.width = c.height = 30 * dpr
     const g = c.getContext('2d')!
     g.scale(dpr, dpr)
-    g.fillStyle = 'rgba(16,18,22,0.82)'
-    g.beginPath()
-    g.roundRect(3, 3, 24, 24, 5)
-    g.fill()
-    g.strokeStyle = 'rgba(255,255,255,0.28)'
-    g.lineWidth = 1
-    g.stroke()
-    g.fillStyle = '#ffffff'
-    g.font = '700 15px ui-sans-serif, system-ui, sans-serif'
+    // just the glyph - no box. A dark outline keeps it readable on any colour.
+    g.font = '800 20px ui-sans-serif, system-ui, sans-serif'
     g.textAlign = 'center'
     g.textBaseline = 'middle'
+    g.lineJoin = 'round'
+    g.strokeStyle = 'rgba(8,10,13,0.92)'
+    g.lineWidth = 4
+    g.strokeText(glyph, 15, 16)
+    g.fillStyle = '#ffffff'
     g.fillText(glyph, 15, 16)
     t = new THREE.CanvasTexture(c)
     t.colorSpace = THREE.SRGBColorSpace
@@ -864,6 +927,13 @@ export class SketchController {
     return s
   }
 
+  /** a sketch point of an entity by pos id (1=start, 2=end, 3=centre) */
+  private endpointOf(e: SketchEntity, pt: number): [number, number] {
+    if (e.type === 'line') return pt === 2 ? e.b : e.a
+    if (e.type === 'rect') return pt === 2 ? e.b : e.a
+    return e.c
+  }
+
   /** a point a little to one side of an entity, for placing its glyph */
   private symAnchor(e: SketchEntity, k = 0): [number, number] {
     const nudge = this.mmForPx(9)
@@ -882,16 +952,17 @@ export class SketchController {
     return [e.c[0] + Math.cos(ang) * (e.r + nudge), e.c[1] + Math.sin(ang) * (e.r + nudge)]
   }
 
+  // glyphs mirror the SKETCH ribbon's constraint buttons
   private static readonly SYM_GLYPH: Record<string, string> = {
-    Horizontal: 'H',
-    Vertical: 'V',
+    Horizontal: '—',
+    Vertical: '|',
     Parallel: '∥',
     Perpendicular: '⟂',
     Equal: '=',
-    Tangent: 'T',
+    Tangent: '◡',
     Coincident: '•',
     Concentric: '◎',
-    PointOnObject: '+'
+    PointOnObject: '∘'
   }
 
   private rebuildSyms(): void {
@@ -901,49 +972,32 @@ export class SketchController {
       this.symGroup.remove(c)
       ;(c as THREE.Sprite).material.dispose()
     }
+    this.symEnts.clear()
 
-    // implied rectangle constraints (the editor stores a rect as one entity but
-    // the sidecar builds it as 4 constrained lines - show what will be there)
-    for (let i = 0; i < this.entities.length; i++) {
-      const e = this.entities[i]
-      if (e.construction) continue
-      if (e.type === 'rect') {
-        const x0 = Math.min(e.a[0], e.b[0])
-        const x1 = Math.max(e.a[0], e.b[0])
-        const y0 = Math.min(e.a[1], e.b[1])
-        const y1 = Math.max(e.a[1], e.b[1])
-        const corners: [number, number][] = [
-          [x0, y0],
-          [x1, y0],
-          [x1, y1],
-          [x0, y1]
-        ]
-        corners.forEach((p, ci) =>
-          this.symGroup.add(this.symSprite('•', p, `rect${i}-corner${ci}`))
-        )
-        this.symGroup.add(this.symSprite('H', [(x0 + x1) / 2, y0 - this.mmForPx(7)], `rect${i}-h`))
-        this.symGroup.add(this.symSprite('H', [(x0 + x1) / 2, y1 + this.mmForPx(7)], `rect${i}-h`))
-        this.symGroup.add(this.symSprite('V', [x0 - this.mmForPx(7), (y0 + y1) / 2], `rect${i}-v`))
-        this.symGroup.add(this.symSprite('V', [x1 + this.mmForPx(7), (y0 + y1) / 2], `rect${i}-v`))
-      }
-    }
-
-    // recorded constraints
     this.constraints.forEach((con, ci) => {
       if (con.type === 'Distance' || con.type === 'Radius') return // shown as dims
       const glyph = SketchController.SYM_GLYPH[con.type]
       if (!glyph) return
       const key = `con${ci}`
-      for (const r of con.refs) {
+      const ents = this.symEnts.get(key) ?? new Set<number>()
+      this.symEnts.set(key, ents)
+      // point-type constraints sit right at the point; others beside the entity
+      const pointType = con.type === 'Coincident' || con.type === 'Concentric'
+      con.refs.forEach((r, ri) => {
         if (r.geo != null && r.geo < 0) {
-          // anchored to origin / an axis - mark it at the origin
-          this.symGroup.add(this.symSprite(glyph, [0, 0], key))
-          continue
+          this.symGroup.add(this.symSprite(glyph, [0, 0], key)) // anchored to origin / axis
+          return
         }
         const ei = r.geo != null ? r.geo : (r.new ?? 0) + this.baseCount
         const e = this.entities[ei]
-        if (e) this.symGroup.add(this.symSprite(glyph, this.symAnchor(e, ci), key))
-      }
+        if (!e) return
+        ents.add(ei)
+        const at =
+          pointType && r.pt != null
+            ? this.endpointOf(e, r.pt)
+            : this.symAnchor(e, ci + ri)
+        this.symGroup.add(this.symSprite(glyph, at, key))
+      })
     })
 
     this.applySymHighlight()
@@ -1108,34 +1162,18 @@ export class SketchController {
     this.dimHadLive = live
     this.clearDims()
 
-    // which entities carry a user-set (driven) dimension
-    const driven = new Map<number, number>()
+    // Dimensions are only shown once the user assigns them - never by default.
     for (const con of this.constraints) {
       if (con.value == null) continue
       if (con.type !== 'Distance' && con.type !== 'Radius') continue
       const r0 = con.refs[0]
-      const idx = r0.geo != null ? r0.geo : (r0.new ?? 0) + this.baseCount
-      driven.set(idx, con.value)
-    }
-
-    // a reference (or driven) dimension on every real entity
-    for (let i = 0; i < this.entities.length; i++) {
+      const i = r0.geo != null ? r0.geo : (r0.new ?? 0) + this.baseCount
       const e = this.entities[i]
-      if (e.construction) continue
-      const dv = driven.get(i)
+      if (!e || e.construction) continue
       if (e.type === 'line') {
-        const v = dv ?? Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1])
-        if (v > 0.01) this.dimGroup.add(this.makeDim(e.a, e.b, 1, this.fmt(v), dv != null, i))
-      } else if (e.type === 'rect') {
-        const x0 = Math.min(e.a[0], e.b[0])
-        const x1 = Math.max(e.a[0], e.b[0])
-        const y0 = Math.min(e.a[1], e.b[1])
-        const y1 = Math.max(e.a[1], e.b[1])
-        if (x1 - x0 > 0.01) this.dimGroup.add(this.makeDim([x0, y0], [x1, y0], -1, this.fmt(x1 - x0), false))
-        if (y1 - y0 > 0.01) this.dimGroup.add(this.makeDim([x0, y0], [x0, y1], 1, this.fmt(y1 - y0), false))
+        this.dimGroup.add(this.makeDim(e.a, e.b, 1, this.fmt(con.value), true, i))
       } else if (e.type === 'circle' || e.type === 'arc') {
-        const v = dv ?? e.r
-        this.dimGroup.add(this.makeRadial(e.c, e.r, `R ${this.fmt(v)}`, dv != null, i))
+        this.dimGroup.add(this.makeRadial(e.c, e.r, `R ${this.fmt(con.value)}`, true, i))
       }
     }
 
@@ -1192,11 +1230,13 @@ export class SketchController {
     for (let i = 0; i < this.entities.length; i++) {
       const mat = this.selected.includes(i)
         ? this.selMat
-        : i === this.hoverIdx
-          ? this.hoverMat
-          : this.entities[i].construction
-            ? this.consMat
-            : this.lineMat
+        : this.hoverSymEnts.has(i)
+          ? this.conHoverMat
+          : i === this.hoverIdx
+            ? this.hoverMat
+            : this.entities[i].construction
+              ? this.consMat
+              : this.lineMat
       this.entGroup.add(this.entityObj(this.entities[i], mat))
     }
     this.redrawDims()
