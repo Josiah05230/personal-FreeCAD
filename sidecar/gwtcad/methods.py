@@ -1173,14 +1173,34 @@ def sketch_solve(elements=None, constraints=None, sketchId=None):
     try:
         sk = sd.addObject("Sketcher::SketchObject", "S")
         emap = _add_sketch_elements(sk, elements or [])
-        if constraints:
-            _apply_sketch_constraints(sk, constraints, emap)
+        pre = int(sk.ConstraintCount)          # constraints the rect set etc. added
+        clist = constraints or []
+        if clist:
+            _apply_sketch_constraints(sk, clist, emap)
+        added = int(sk.ConstraintCount) - pre
         sd.recompute()
         try:
             free_pairs = sk.getGeometryWithDependentParameters()
             free_geo = set(int(p[0]) for p in free_pairs)
         except Exception:
             free_geo = None
+
+        # diagnostics -> client 0-based indices into `constraints`, but only when
+        # every constraint we were handed actually made it in (1:1 mapping)
+        def _client_idx(names):
+            out = []
+            if added != len(clist):
+                return out
+            for si in names or []:
+                j = int(si) - pre - 1
+                if 0 <= j < len(clist):
+                    out.append(j)
+            return out
+
+        conflicting = _client_idx(getattr(sk, "ConflictingConstraints", ()))
+        redundant = _client_idx(getattr(sk, "RedundantConstraints", ()))
+        partial = _client_idx(getattr(sk, "PartiallyRedundantConstraints", ()))
+        malformed = _client_idx(getattr(sk, "MalformedConstraints", ()))
         geom = []
         free_elems = []
         for i, ids in enumerate(emap):
@@ -1206,6 +1226,10 @@ def sketch_solve(elements=None, constraints=None, sketchId=None):
             "geometry": geom,
             "free": free_elems,
             "fullyConstrained": bool(sk.FullyConstrained),
+            "conflicting": conflicting,
+            "redundant": redundant,
+            "partiallyRedundant": partial,
+            "malformed": malformed,
         }
     finally:
         try:

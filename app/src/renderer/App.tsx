@@ -133,6 +133,13 @@ export function App(): JSX.Element {
   const [sketchAvail, setSketchAvail] = useState<SketchConstraintType[]>([])
   const [sketchConstraintCount, setSketchConstraintCount] = useState(0)
   const [sketchPendingCon, setSketchPendingCon] = useState<SketchConstraintType | null>(null)
+  const [sketchNotice, setSketchNotice] = useState<string | null>(null)
+  const sketchNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flashSketchNotice = useCallback((msg: string) => {
+    setSketchNotice(msg)
+    if (sketchNoticeTimer.current) clearTimeout(sketchNoticeTimer.current)
+    sketchNoticeTimer.current = setTimeout(() => setSketchNotice(null), 5000)
+  }, [])
   const [planePickMode, setPlanePickMode] = useState(false)
   const [pickPlanes, setPickPlanes] = useState<PickPlane[]>([])
 
@@ -1540,8 +1547,15 @@ export function App(): JSX.Element {
                         return null
                       }
                     }}
+                    onSketchNotice={flashSketchNotice}
                     apiRef={vpApi}
                   />
+                  {sketchNotice && (
+                    <div className="hintbar warn">
+                      {sketchNotice}
+                      <button onClick={() => setSketchNotice(null)}>Dismiss</button>
+                    </div>
+                  )}
                   {planePickMode && (
                     <div className="hintbar">
                       Click an origin plane, construction plane, or a flat face to

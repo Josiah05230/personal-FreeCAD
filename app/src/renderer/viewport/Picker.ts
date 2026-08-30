@@ -153,6 +153,35 @@ export class Picker {
       })
       return out.children.length ? out : null
     }
+    if (sel.kind === 'sketch') {
+      // highlight the finished sketch's fill + outline so it is obvious it is
+      // selected (and therefore ready to Extrude / Revolve)
+      const out = new THREE.Group()
+      for (const c of content.children) {
+        const any = c as THREE.Line & THREE.Mesh
+        if (any.userData.pick !== 'sketch' || any.userData.sketchId !== sel.sketchId) continue
+        if (!any.geometry) continue
+        if ((any as THREE.Mesh).isMesh) {
+          out.add(
+            new THREE.Mesh(
+              any.geometry,
+              new THREE.MeshBasicMaterial({
+                color,
+                transparent: true,
+                opacity: 0.25,
+                side: THREE.DoubleSide,
+                depthWrite: false
+              })
+            )
+          )
+        } else {
+          const cl = new THREE.Line(any.geometry, new THREE.LineBasicMaterial({ color, depthTest: false }))
+          cl.renderOrder = 11
+          out.add(cl)
+        }
+      }
+      return out.children.length ? out : null
+    }
     if (sel.kind !== 'face') return null
     // face overlay: slice the body geometry to that face group's triangles
     const mesh = content.children.find(

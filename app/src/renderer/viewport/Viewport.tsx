@@ -64,6 +64,7 @@ export function Viewport({
   onSketchChange,
   onSketchDimensionRequest,
   onSketchSolve,
+  onSketchNotice,
   apiRef
 }: {
   meshes: RenderMesh[]
@@ -99,6 +100,7 @@ export function Viewport({
   onSketchChange?: () => void
   onSketchDimensionRequest?: (entityIndex: number, kind: 'linear' | 'radius') => void
   onSketchSolve?: import('./SketchController').SketchSolveFn
+  onSketchNotice?: (msg: string) => void
   apiRef?: { current: ViewportApi | null }
 }): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -111,6 +113,8 @@ export function Viewport({
   onDimReqRef.current = onSketchDimensionRequest
   const onSketchSolveRef = useRef(onSketchSolve)
   onSketchSolveRef.current = onSketchSolve
+  const onSketchNoticeRef = useRef(onSketchNotice)
+  onSketchNoticeRef.current = onSketchNotice
   const planePickRef = useRef<{ mode: boolean; cb?: (r: SketchRef) => void }>({ mode: false })
   planePickRef.current = { mode: planePickMode, cb: onPickPlane }
   const pickPlanesRef = useRef<PickPlane[]>([])
@@ -626,7 +630,8 @@ export function Viewport({
         (ents, cons) =>
           onSketchSolveRef.current
             ? onSketchSolveRef.current(ents, cons)
-            : Promise.resolve(null)
+            : Promise.resolve(null),
+        (msg) => onSketchNoticeRef.current?.(msg)
       )
       if (sketchInitialEntities && sketchInitialEntities.length) {
         st.sketch.loadExisting(sketchInitialEntities as never[])

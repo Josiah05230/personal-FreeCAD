@@ -35,22 +35,22 @@ Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
 
-Batch 17 - all addressed.
-Part 1 (sketcher): window (box) select in the sketch (L-to-R contain, R-to-L
-crossing); rectangle sides stay welded on drag and resize instead of tearing
-(local relaxation solver: coincident welds + H/V + length dims + axis anchors);
-drawing a point onto another entity's point records a Coincident;
-fully-constrained geometry is drawn grey (new headless `sketch.solve` in a
-throwaway doc reports per-element free DoF); Delete / Backspace removes selected
-sketch geometry and reindexes its constraints; constraint buttons work
-click-first ("pick the constraint, then the geometry") when there is no live
-selection; Midpoint constraint (Symmetric about a line's endpoints) + midpoint
-snapping while drawing.
-Part 2 (extrude + dialogs): Extrude gained an Operation select (New body / Join
-/ Cut) replacing the bare Cut checkbox, plus an Extent select (Blind / To
-object) with an Offset field (extra distance past the face). `feature.extrude`
-takes `operation` + `offset`; `pad`/`pocket` set `.Offset` on UpToFace. The
-operation dialog no longer overflows: it is wider, `box-sizing` fixed, fields
-wrap, and long selects render label-above-control (`.opdlg-field.col`). Rename
-is now instant - it updates the tree in place and persists on the quiet path;
-`feature.rename` no longer recomputes.
+Batch 18 - addressed:
+- Over-dimensioning / redundant constraints are now blocked. `sketch.solve`
+  reports conflicting / redundant / partially-redundant / malformed constraint
+  indices; the editor pulls the just-added constraint back out and shows an
+  orange notice bar ("already fully defined here - delete one first"). Applies
+  to dimensions and manual constraints alike.
+- Dragging a rectangle side stays a rectangle the whole way - the local
+  relaxation now anchors welds to the directly-dragged point (and then to axis
+  anchors) instead of any "fixed" key, so it no longer skews then snaps back.
+- The little dots on the rectangle are gone: Coincident / PointOnObject /
+  Symmetric no longer draw a glyph (the geometry already shows the join).
+- Snapping a line's endpoint to another line's midpoint while drawing now
+  records a real Midpoint (Symmetric) constraint, and the relaxation keeps it
+  centred through drags.
+- A finished sketch's fill + outline highlight on hover / selection, so the
+  filled face is an obvious Extrude / Revolve target.
+
+-Extrude still needs a proper re-test after the closed-profile + selection-
+ highlight fixes; if a specific case still fails, note the exact steps.

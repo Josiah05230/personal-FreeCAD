@@ -1998,6 +1998,13 @@ code {
   box-shadow: 0 10px 30px #0008;
 }
 
+.hintbar.warn {
+  background: #c9631ee6;
+  top: 12px;
+  max-width: 62ch;
+  line-height: 1.35;
+}
+
 .hintbar button {
   background: #ffffff26;
   border: 1px solid #ffffff44;
