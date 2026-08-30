@@ -32,7 +32,7 @@ Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
 
--when the 'select' stuff is in the drop-down, I meant the one at the 
+-I believe FCAD had something that, worked nice with KiCad. It would be good if, the KiCad stuff could still work and load well in this GUI stuff. Mainly, in assemblies, connections/joints/references being updated well and, updating the viewer as/when changes are being made
 
 ### Batch 15 - all addressed
 
@@ -50,4 +50,6 @@ dimension (or its geometry) to retype the value; free-drag under-constrained
 sketch geometry (no live solver - re-solves on Finish); adaptive 1/2/5 sketch
 grid; TOOLS tab pinned by default; Insert moved onto SOLID (INSERT tab gone);
 Offset Plane Distance / To-object modes with auto-switch, a live ghost-plane
-preview, and a draggable handle on the ghost to set the distance.
+preview, and a draggable handle on the ghost to set the distance. The Select
+kind checkboxes were then moved into the ribbon group's own fold-out (the
+"Select ▾" button at the bottom of that section), not a separate popover.

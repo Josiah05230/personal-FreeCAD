@@ -165,10 +165,17 @@ export function Ribbon({
         <>
           <div className="ribbon-dd-scrim" onClick={() => setMenu(null)} />
           <div className="ribbon-dd" style={{ left: menu.x, top: menu.y }}>
-            {menuCmds.map((c) => {
-              const Glyph = Icon[c.icon]
-              const p = isPinned(c.id, pins)
-              return (
+            {menuCmds.find((c) => c.menuComponent) && (
+              <div className="ribbon-dd-custom">
+                {menuCmds.find((c) => c.menuComponent)!.menuComponent}
+              </div>
+            )}
+            {menuCmds
+              .filter((c) => !c.menuComponent && !c.component)
+              .map((c) => {
+                const Glyph = Icon[c.icon]
+                const p = isPinned(c.id, pins)
+                return (
                 <div
                   key={c.id}
                   className={c.run ? 'ribbon-dd-item' : 'ribbon-dd-item soon'}

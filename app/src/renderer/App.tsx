@@ -15,7 +15,7 @@ import {
   type CanvasDTO,
   selectionToRef
 } from './rpc'
-import { SelectFilterMenu, type SelKind, type SelectMode } from './ui/SelectFilterMenu'
+import { SelectModeToggle, SelectKindList, type SelKind, type SelectMode } from './ui/SelectFilterMenu'
 import { buildCommands } from './commands'
 import { Viewport } from './viewport/Viewport'
 import type { ViewportApi } from './viewport/types'
@@ -1049,14 +1049,8 @@ export function App(): JSX.Element {
         insertCanvas,
         calibrateCanvas: startCalibrate,
         toggleParams: () => setParamsOpen((v) => !v),
-        selectFilterNode: (
-          <SelectFilterMenu
-            mode={selectMode}
-            onMode={setSelectMode}
-            active={selFilter}
-            onActive={setSelFilter}
-          />
-        )
+        selectFilterNode: <SelectModeToggle mode={selectMode} onMode={setSelectMode} />,
+        selectFilterMenuNode: <SelectKindList active={selFilter} onActive={setSelFilter} />
       }),
     [
       sweep,

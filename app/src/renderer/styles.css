@@ -2045,43 +2045,27 @@ code {
   display: flex;
   align-items: center;
 }
-.selfilter-toggle {
-  padding: 4px 9px;
-  font-size: 10px;
-  background: transparent;
-  border: 1px solid var(--line-soft);
-  border-radius: 5px;
-  color: var(--text-dim);
-  cursor: pointer;
+/* the kind checkboxes now live in the ribbon group's own fold-out */
+.ribbon-dd-custom {
+  padding: 2px;
 }
-.selfilter-toggle:hover,
-.selfilter-toggle.on {
-  color: var(--text);
-  border-color: var(--accent);
-}
-.selfilter-caret {
-  opacity: 0.7;
-  margin-left: 2px;
-}
-.selfilter-pop {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 60;
-  min-width: 180px;
-  padding: 5px;
-  background: var(--panel, #23272e);
-  border: 1px solid var(--line-soft);
-  border-radius: 7px;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+.selfilter-list {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  min-width: 170px;
 }
-.selfilter-pop-all {
+.selfilter-list-title {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 4px 8px 2px;
+}
+.selfilter-list-all {
   text-align: left;
   padding: 6px 8px;
-  margin-bottom: 3px;
+  margin-bottom: 2px;
   font-size: 10px;
   background: transparent;
   border: none;
@@ -2089,7 +2073,7 @@ code {
   color: var(--accent);
   cursor: pointer;
 }
-.selfilter-pop-row {
+.selfilter-list-row {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2099,10 +2083,10 @@ code {
   cursor: pointer;
   border-radius: 4px;
 }
-.selfilter-pop-row:hover {
+.selfilter-list-row:hover {
   background: rgba(255, 255, 255, 0.05);
 }
-.selfilter-pop-row input {
+.selfilter-list-row input {
   accent-color: var(--accent);
 }
 

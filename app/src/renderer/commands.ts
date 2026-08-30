@@ -17,6 +17,8 @@ export interface Command {
   run?: () => void | Promise<void>
   /** if set, the ribbon renders this instead of a button (e.g. the Select menu) */
   component?: ReactNode
+  /** if set, the group's fold-out renders this instead of command rows */
+  menuComponent?: ReactNode
 }
 
 export interface CommandContext {
@@ -40,6 +42,7 @@ export interface CommandContext {
   calibrateCanvas: () => void
   toggleParams: () => void
   selectFilterNode: ReactNode
+  selectFilterMenuNode: ReactNode
 }
 
 export function buildCommands(ctx: CommandContext): Command[] {
@@ -75,7 +78,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'con.axis', title: 'Construction Axis', group: 'Construct', tab: 'SOLID', icon: 'axis', run: op('datumAxis') },
     { id: 'con.point', title: 'Construction Point', group: 'Construct', tab: 'SOLID', icon: 'point', run: op('datumPoint') },
     // --- select (F360-style group on the SOLID tab) ---
-    { id: 'sel.filter', title: 'Select', group: 'Select', tab: 'SOLID', icon: 'point', component: ctx.selectFilterNode },
+    { id: 'sel.filter', title: 'Select', group: 'Select', tab: 'SOLID', icon: 'point', component: ctx.selectFilterNode, menuComponent: ctx.selectFilterMenuNode },
     // --- insert (lives on the SOLID tab, Fusion-style) ---
     { id: 'ins.canvas', title: 'Canvas', group: 'Insert', tab: 'SOLID', icon: 'sketch', run: () => ctx.insertCanvas() },
     { id: 'ins.calibrate', title: 'Calibrate Canvas', group: 'Insert', tab: 'SOLID', icon: 'sketch', run: () => ctx.calibrateCanvas() },
