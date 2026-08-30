@@ -1,6 +1,6 @@
 # Status
 
-Updated 2026-08-30. Live-test feedback batches 1-18 all addressed. All roadmap milestones now have a
+Updated 2026-08-30. Live-test feedback batches 1-20 all addressed. All roadmap milestones now have a
 working first version. `docs/FEEDBACK.md` tracks the live-test checklist. KiCad interop has a first
 slice (board import + placeholders); next: component STEP models + connector->joint mapping.
 
@@ -56,6 +56,27 @@ slice (board import + placeholders); next: component STEP models + connector->jo
 ### Packaging
 - electron-builder: AppImage + NSIS, FreeCAD bundled as extraResources, runtime
   path resolution, `scripts/package.sh`. `--dir` build verified.
+
+## Batches 19-20 additions
+
+- Extrude: falls back to the sole sketch when none is selected ("finish the
+  sketch, hit Extrude" works); dialog shows "using the only sketch". Sketch
+  fill chains separate edge segments into closed loops, so a rectangle drawn as
+  four lines gets one filled, pickable, hover-highlighted face.
+- Rectangle drag pins the far side (opposite edge for an edge drag, opposite
+  corner for a corner drag) so it resizes cleanly instead of shearing.
+- Constraint glyphs restored and placed where they act: Coincident /
+  PointOnObject small and exactly on the point; Symmetric at the symmetry
+  line's midpoint; line relations still beside the edge.
+- Reopen a sketch and its constraints + dimensions come back (`sketch.reopen`
+  serializes them; only session-added constraints are re-sent on Finish).
+- Cancelling a re-opened sketch leaves it exactly as it was (edits never left
+  the editor); only a brand-new sketch is discarded.
+- Sketch-plane picker shows the real origin / construction planes for the
+  duration, highlights the one under the cursor, and restores visibility after
+  - no more ghost planes.
+- The scratch solver now sees the whole sketch with absolute-index refs, so DoF
+  colouring and the over-constraint veto work on reopened sketches too.
 
 ## Batch 18 additions
 
