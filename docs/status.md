@@ -1,7 +1,8 @@
 # Status
 
-Updated 2026-08-29. Batches 1-8 of live-test feedback all addressed. All roadmap milestones now have a
-working first version. `docs/FEEDBACK.md` tracks the live-test checklist.
+Updated 2026-08-29. Live-test feedback batches 1-15 all addressed. All roadmap milestones now have a
+working first version. `docs/FEEDBACK.md` tracks the live-test checklist. Next queued epic: KiCad
+interop (StepUp-style PCB <-> assembly, connector-driven joints).
 
 ## Working (verified: headless engine tests + app boots clean each pass)
 
@@ -55,6 +56,36 @@ working first version. `docs/FEEDBACK.md` tracks the live-test checklist.
 ### Packaging
 - electron-builder: AppImage + NSIS, FreeCAD bundled as extraResources, runtime
   path resolution, `scripts/package.sh`. `--dir` build verified.
+
+## Batches 14-15 additions
+
+- Undo / redo: every mutating RPC runs in an App::Document transaction
+  (registry wraps dispatch); Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y, AppBar buttons,
+  clear-redo-on-edit. history.undo/redo clear the tessellation cache.
+- Assembly grounded flag always set on the link; drawing view direction
+  normalised (case / aliases) so Front/Top/Right/Iso actually differ.
+- Fresh doc: the empty starter Body is not shown until it has geometry;
+  blocking boot scrim while the engine starts; origin-plane sketch entry is
+  instant (known frame up front, sketch object created in the background).
+- Camera: constrained turntable orbit (yaw about +Z, elevation clamped clear
+  of the poles, up pinned to +Z) - no roll drift or pole spazz; right-drag
+  also orbits.
+- Sketch: origin marker + in-plane axes on entry; adaptive 1/2/5 x 10^n grid;
+  real linear dimensions (witness lines + arrowheads) on every entity plus a
+  live readout; hover pre-highlight + colour-coded snap marker; axis/origin
+  snapping records PointOnObject / Coincident-to-root; rectangles arrive
+  fully constrained (corner coincidents + H/V), _auto_constrain de-dupes;
+  constraint symbols with partner highlighting; double-click a dimension to
+  edit; free-drag under-constrained geometry (re-solves on Finish).
+- Main-view hover pre-highlight for faces / edges / vertices / datums
+  (recursive pick + walk-up), filter-aware.
+- Ribbon: ASSEMBLE tab hidden with < 2 bodies; Inspect + all of TOOLS pinned
+  by default; Insert group moved onto SOLID (INSERT tab removed); Select
+  group face = Paint/Window, kind checkboxes in the group fold-out.
+- Offset Plane: Distance / To-object modes (auto-switch when a 2nd object is
+  picked), datum.plane targetRef, live ghost-plane preview (datum.planePreview)
+  with a draggable handle that drives the offset.
+- ~75 sidecar RPC methods.
 
 ## Batches 9-13 additions
 

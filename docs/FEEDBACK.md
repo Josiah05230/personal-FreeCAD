@@ -32,7 +32,7 @@ Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
 
--I believe FCAD had something that, worked nice with KiCad. It would be good if, the KiCad stuff could still work and load well in this GUI stuff. Mainly, in assemblies, connections/joints/references being updated well and, updating the viewer as/when changes are being made
+-I believe FCAD had something that, worked nice with KiCad. It would be good if, the KiCad stuff could still work and load well in this GUI stuff. Mainly, in assemblies, connections/joints/references being updated well and, updating the viewer as/when changes are being made (maybe need some push-pull process? Maybe it's just automatic?)
 
 ### Batch 15 - all addressed
 
