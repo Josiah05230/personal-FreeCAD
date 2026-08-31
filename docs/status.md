@@ -1,6 +1,6 @@
 # Status
 
-Updated 2026-08-30. Live-test feedback batches 1-26 addressed (open partials: full parametric
+Updated 2026-08-31. Live-test feedback batches 1-27 addressed (open partials: full parametric
 sketch tools, section analysis tab, optimistic datum row). All 16 feature-op RPCs smoke-tested
 end-to-end headless. All roadmap milestones have a
 working first version. `docs/FEEDBACK.md` tracks the live-test checklist. KiCad interop has a first
@@ -58,6 +58,24 @@ slice (board import + placeholders); next: component STEP models + connector->jo
 ### Packaging
 - electron-builder: AppImage + NSIS, FreeCAD bundled as extraResources, runtime
   path resolution, `scripts/package.sh`. `--dir` build verified.
+
+## Batch 27 additions
+
+- Delete a sketch dimension: click the value label (amber highlight) + Delete.
+  `SketchController.selectedDim` / `deleteDimension`; reopen-era dims are queued
+  in `removedBaseConstraints` and sent to `sketch.finish(removedConstraints=)`
+  which `_remove_matching_constraints` deletes from the real sketch (rebuilds the
+  reopen entity-index -> geoId map to match).
+- Over-dimension detection made reliable: `_apply_sketch_constraints` returns a
+  per-client-constraint `applied` list (1-based sketch index or None-if-rejected);
+  `sketch.solve` maps ConflictingConstraints / RedundantConstraints through it and
+  also flags any client constraint FreeCAD rejected. Fixes the pre-prompt
+  `dimensionPrecheck` and the `runSolve` veto silently no-op'ing.
+- `onDown` refuses to start a drag on an entity in `constrainedSet` or when
+  `sketchFullyConstrained` (from `res.fullyConstrained`).
+- Blank-viewport guards: `buildScene` skips meshes / sketch polys with non-finite
+  vertices, clamps NaN centre/radius, is wrapped in try/catch in Viewport;
+  `CadControls.frame` refuses a NaN / degenerate frame.
 
 ## Batch 26 additions
 

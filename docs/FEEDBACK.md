@@ -61,25 +61,15 @@ stays short.
 
 (nothing pending)
 
-## Recently addressed - Batch 26
+## Recently addressed - Batch 27
 
-- Timeline scrubber now follows the rollback marker (body.marker), not
-  body.Tip. It was stranded at the end, which is why step forward/back seemed
-  to do nothing and the view rolled back without the scrubber. Rolled chips use
-  the afterTip flag.
-- Datum create keeps its ghost on screen from Apply until the real datum lands.
-- After an edit lands at the tip, the previous 1-2 build stages are quietly
-  cached so the first step-back is instant.
-- Timeline marker grip: higher z-index + a fat invisible hit area so it is
-  grabbable even where a feature chip overlaps it.
-- Wired the dead ASSEMBLE ribbon buttons (Insert Component, Joint).
-
-## Recently addressed - Batch 25
-
-- The "huge ball on the mouse" is gone: vertex select is OFF by default (turn it
-  on in the Select dropdown); the marker is a small screen-constant dot shown
-  only within ~8 px of a real corner.
-- Extrude accepts a flat model face as the profile, not just a sketch.
-- Live feature preview: extrude / revolve / fillet / chamfer / shell / hole /
-  draft / rib re-render in the engine as you change the value (260 ms debounce,
-  prior attempt rolled back). Apply keeps it, Cancel rolls it back.
+- Delete a sketch dimension: click its value label (it highlights), press
+  Delete. Works on this-session dimensions and reopen-era ones (sketch.finish
+  removes the matching real constraint).
+- Over-dimensioning is now actually blocked - sketch.solve maps its diagnostics
+  through a per-constraint applied list, so a redundant / conflicting / rejected
+  dimension is caught by the pre-prompt check and the post-add veto.
+- A fully-defined entity (or a fully-constrained sketch) will not start a drag.
+- Blank viewport on extrude / live preview: a non-finite tessellation vertex is
+  dropped, a NaN camera frame is refused, buildScene is wrapped - a bad vertex
+  can no longer strand the camera.
