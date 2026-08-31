@@ -35,13 +35,18 @@ Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
 
--uhh, now there is no text on the view cube?
--When I click a face in the extrude tool, there is no model or anything visible...that's a problem. It's been that way the whole time.
---when I cancel an extrude, it still says the body is there...I never extruded though...
---also, the sketch isn't visible anymore? Even after I show/hide, zoom in/out, home on the view cube, spin stuff, etc.
-
-Still open from this batch:
--when I click a face to sketch on it, it can get "stuck/locked to the same plane"; the plane / face picker only offers shown sketches, not hidden ones. Needs a concrete repro.
---no, I am WANTING it to be stuck to only allowing me to select faces on the same plane after the first one. Unless I de-select all faces.
--sections in the sketch ribbon should be a dropdown like every other ribbon group (with pin-to-ribbon support).
--more draw tools: center-point rectangle, 3-point circle, arc variants, splines.
+Batch 22 - addressed:
+- View-cube text is back (the transparent label quads did not render; they are
+  opaque face decals now, still oriented per-face so all six read relative to
+  FRONT).
+- "Nothing visible after clicking a face / finishing a sketch": the camera was
+  being left stranded on the sketch plane. It now snapshots the view on sketch
+  enter and restores it on exit. Undoing an extrude also re-shows the sketch it
+  consumed (sidecar _reshow_loose_sketches + App clears manual hide state on
+  undo/redo).
+- Multi-face pick locks to the first face's plane: once one face is selected,
+  only coplanar faces are added; clear the selection to switch planes. (Picker
+  now returns the face normal.)
+- SKETCH ribbon groups are pinnable fold-outs like every other ribbon group.
+- New draw tools: Center Rectangle, 3-Point Circle, 3-Point Arc, Spline
+  (Enter / double-click to finish a spline).

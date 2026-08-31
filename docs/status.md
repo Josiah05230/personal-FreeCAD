@@ -1,7 +1,6 @@
 # Status
 
-Updated 2026-08-30. Live-test feedback batches 1-21 all addressed (a few Batch 21 items still open:
-sketch-plane "stuck" repro, sketch-ribbon dropdown groups, more draw tools). All roadmap milestones have a
+Updated 2026-08-30. Live-test feedback batches 1-22 all addressed. All roadmap milestones have a
 working first version. `docs/FEEDBACK.md` tracks the live-test checklist. KiCad interop has a first
 slice (board import + placeholders); next: component STEP models + connector->joint mapping.
 
@@ -57,6 +56,20 @@ slice (board import + placeholders); next: component STEP models + connector->jo
 ### Packaging
 - electron-builder: AppImage + NSIS, FreeCAD bundled as extraResources, runtime
   path resolution, `scripts/package.sh`. `--dir` build verified.
+
+## Batch 22 additions
+
+- View-cube labels are opaque, per-face-oriented decals (the transparent quads
+  did not render). All six read relative to FRONT.
+- Sketch enter snapshots the camera and restores it on exit, so finishing /
+  cancelling a sketch no longer leaves you staring at the empty plane.
+- undo/redo re-shows any sketch a now-undone feature had consumed
+  (_reshow_loose_sketches) and clears the client's manual hide state.
+- Multi-face selection locks to the first face's plane (Picker returns the
+  face normal); clear the selection to pick on a different plane.
+- SKETCH ribbon groups are pinnable fold-outs like the rest of the ribbon.
+- New sketch tools: Center Rectangle, 3-Point Circle, 3-Point Arc, Spline
+  (new BSpline entity; interpolated on the sidecar; round-trips on reopen).
 
 ## Batch 21 additions
 
