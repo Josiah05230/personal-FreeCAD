@@ -34,8 +34,13 @@ export function Timeline({
 }): JSX.Element {
   const body = bodies[0]
   const feats = body?.features ?? []
+  // the scrubber follows the rollback marker (the feature it sits AFTER), not
+  // body.Tip - Tip stays at the last feature even while history is rolled back
+  const markerId = body?.marker ?? null
+  const markerIdx = markerId ? feats.findIndex((f) => f.id === markerId) : -1
   const tipIdx = feats.findIndex((f) => f.isTip)
-  const markerAt = tipIdx >= 0 ? tipIdx : feats.length - 1
+  const markerAt =
+    markerIdx >= 0 ? markerIdx : tipIdx >= 0 ? tipIdx : feats.length - 1
 
   const [playing, setPlaying] = useState(false)
   const [dragging, setDragging] = useState(false)
@@ -154,7 +159,7 @@ export function Timeline({
               className={
                 'tl-chip' +
                 (f.error ? ' error' : '') +
-                (i > markerAt ? ' rolled' : '') +
+                (f.afterTip || i > markerAt ? ' rolled' : '') +
                 (f.suppressed ? ' suppressed' : '')
               }
               title={`${f.label}  ·  ${f.opType}`}

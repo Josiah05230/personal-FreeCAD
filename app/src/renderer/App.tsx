@@ -524,6 +524,7 @@ export function App(): JSX.Element {
       }
       // close the dialog the instant the user commits - the engine rebuild and
       // scene refresh run behind the status spinner and reconcile when they land
+      if (kind === 'datumPlane') setDatumGhostHold(true) // keep the ghost until the real datum lands
       setOp(null)
       const edges = selection.filter((s) => s.kind === 'edge').map((s) => (s as { sub: string }).sub)
       const faces = selection.filter((s) => s.kind === 'face') as Array<{
@@ -747,6 +748,8 @@ export function App(): JSX.Element {
         await afterEdit()
       } catch (e) {
         window.alert((e as Error).message)
+      } finally {
+        setDatumGhostHold(false)
       }
     },
     [selection, afterEdit]
@@ -937,6 +940,39 @@ export function App(): JSX.Element {
     },
     [bodyId, bodies, applySceneTree, cachePut]
   )
+
+  // after the model changes and we are sitting at the tip, quietly cache the
+  // previous couple of build stages so the first "step back" is instant (the
+  // stage you want was rendered seconds ago). Best-effort, cancels on new edits.
+  useEffect(() => {
+    const b = bodies[0]
+    if (!bodyId || !b || b.marker) return
+    const feats = b.features
+    const wants: (string | null)[] = []
+    for (let dd = 1; dd <= Math.min(2, feats.length - 1); dd++) {
+      const j = feats.length - 1 - dd
+      const fid = feats[j]?.id ?? null
+      if (fid && !rollCacheRef.current.has(`${bodyId}:${fid}`)) wants.push(fid)
+    }
+    if (!wants.length) return
+    const seq = ++rollSeqRef.current
+    void (async () => {
+      for (const fid of wants) {
+        if (rollSeqRef.current !== seq) return
+        try {
+          await apiQuiet.rollTo(bodyId, fid)
+          if (rollSeqRef.current !== seq) return
+          const [scene, tree] = await Promise.all([apiQuiet.sceneGet(), apiQuiet.treeGet()])
+          if (rollSeqRef.current !== seq) return
+          cachePut(`${bodyId}:${fid ?? 'TIP'}`, { scene, tree })
+        } catch {
+          /* best effort */
+        }
+      }
+      if (rollSeqRef.current === seq) await apiQuiet.rollTo(bodyId, null).catch(() => undefined)
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bodies, bodyId])
 
   const renameFeature = useCallback(
     async (id: string) => {
@@ -1552,6 +1588,9 @@ export function App(): JSX.Element {
     size: number
   } | null>(null)
   const previewTok = useRef(0)
+  // keep the datum ghost on screen from the moment Apply is clicked until the
+  // real datum lands, so creating a plane feels instant
+  const [datumGhostHold, setDatumGhostHold] = useState(false)
   const [planeHandleDrag, setPlaneHandleDrag] = useState<{
     delta: number
     phase: 'move' | 'end'
@@ -1793,7 +1832,7 @@ export function App(): JSX.Element {
                     onPickPlane={(ref) => void beginSketch(ref)}
                     selectMode={selectMode}
                     selFilter={measureMode ? [...selFilter, 'vertex', 'face', 'edge'] : selFilter}
-                    previewPlane={op === 'datumPlane' ? previewPlane : sectionGhost}
+                    previewPlane={op === 'datumPlane' || datumGhostHold ? previewPlane : sectionGhost}
                     onPreviewHandleDrag={onPreviewHandleDrag}
                     onWindowSelect={(sels) =>
                       setSelection((cur) => {
