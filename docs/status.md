@@ -1,7 +1,7 @@
 # Status
 
-Updated 2026-08-30. Live-test feedback batches 1-24 addressed (24 has partials: full parametric
-sketch tools, live feature preview, section analysis tab). All roadmap milestones have a
+Updated 2026-08-30. Live-test feedback batches 1-25 addressed (open partials: full parametric
+sketch tools, section analysis tab, timeline caching - batch 26). All roadmap milestones have a
 working first version. `docs/FEEDBACK.md` tracks the live-test checklist. KiCad interop has a first
 slice (board import + placeholders); next: component STEP models + connector->joint mapping.
 

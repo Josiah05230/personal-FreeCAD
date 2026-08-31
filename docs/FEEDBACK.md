@@ -22,10 +22,10 @@ done, remove its line entirely rather than leaving a checked box.
       carries its construction diagonals. FULLY parametric versions (a real
       construction POINT entity at each pick, symmetric-about-centre) need a new
       point entity type in the sketcher - not done yet.
-- [ ] Live feature preview: extrude / fillet / chamfer / etc. should re-render
-      as the value changes in the dialog, then commit to the engine in the
-      background. Needs a preview/commit/rollback path around the op RPCs; not
-      started. (Datum plane already previews via its ghost.)
+- [~] Live feature preview works for extrude / revolve / fillet / chamfer /
+      shell / hole / draft / rib (260 ms debounce, engine builds it, previous
+      attempt rolled back first). Not yet: a "committed vs preview" visual tell,
+      and preview for pattern / mirror / combine.
 - [~] Section: cross-hatching is drawn (a hatched quad in the cut plane). "OK ->
       Analysis tab in the tree + timeline item" (a persisted section feature) is
       not done - section is still a live view-only tool.
@@ -58,23 +58,20 @@ Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
 
-(nothing pending)
+(Batch 26 - timeline / rollback - pending)
 
-## Recently addressed - Batch 24
+-what's the deal with loading after clicking ok on a construction plane? Why is that not instant to the user?
+-my scrubber in the timeline is behind the plane (by default, issue) AND I CAN STILL SEE IT. THAT SHOULD NOT BE POSSIBLE IF I AM BEHIND A FEATURE
+-when I try and step the timeline forward, it loads/buffers but, doesn't seem to actually do anything? That's a problem.
+-it seems the view window moves back to before the first extrude but, the timeline scrubber doesn't?
+--also, moving back/forth can be a little laggy. If possible, can you cache versions/stages of the model as it's built? Like, if I make an extrude or hole, and step back one step in the model tree, that should be instant because, that was the file and what was rendered genuinely seconds ago typically.
 
-- Corners no longer carry a permanent dot. The vertex point cloud is an
-  invisible raycast target; a small sphere appears ON a corner only when the
-  cursor is within ~12 px of it (blue on hover, orange when selected, held
-  until deselect). No marker on the pointer.
-- Measure: click to add a probe (face / edge / vertex - vertex was missing),
-  rolls at two, no shift and no coplanar lock; panel shows the count + Reset.
-- 3-point circle / arc pin to snapped existing geometry (PointOnObject);
-  center rectangle gets construction diagonals. (Full parametric = partial.)
-- Section: hatched quad drawn in the cut plane so it reads as a cut face.
-- Hole: dialog says to click the face to place the point (re-click to move it).
-- Coplanar-face lock is now extrude-only, so Shell / Draft can take faces on
-  different planes again. Shell + Mirror verified working headless.
-- Export: all formats (STEP / IGES / BREP / STL / OBJ / 3MF / PLY / OFF) go
-  through io.export and are verified headless - 3MF writes fine. (The old
-  3MF error was the pre-Batch-23 exportStep-only path; fixed there.)
-- Mirror / Shell dialogs now have a hint saying what to select.
+## Recently addressed - Batch 25
+
+- The "huge ball on the mouse" is gone: vertex select is OFF by default (turn it
+  on in the Select dropdown); the marker is a small screen-constant dot shown
+  only within ~8 px of a real corner.
+- Extrude accepts a flat model face as the profile, not just a sketch.
+- Live feature preview: extrude / revolve / fillet / chamfer / shell / hole /
+  draft / rib re-render in the engine as you change the value (260 ms debounce,
+  prior attempt rolled back). Apply keeps it, Cancel rolls it back.
