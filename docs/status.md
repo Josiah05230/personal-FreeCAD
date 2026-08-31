@@ -1,7 +1,8 @@
 # Status
 
-Updated 2026-08-30. Live-test feedback batches 1-25 addressed (open partials: full parametric
-sketch tools, section analysis tab, timeline caching - batch 26). All roadmap milestones have a
+Updated 2026-08-30. Live-test feedback batches 1-26 addressed (open partials: full parametric
+sketch tools, section analysis tab, optimistic datum row). All 16 feature-op RPCs smoke-tested
+end-to-end headless. All roadmap milestones have a
 working first version. `docs/FEEDBACK.md` tracks the live-test checklist. KiCad interop has a first
 slice (board import + placeholders); next: component STEP models + connector->joint mapping.
 
@@ -57,6 +58,20 @@ slice (board import + placeholders); next: component STEP models + connector->jo
 ### Packaging
 - electron-builder: AppImage + NSIS, FreeCAD bundled as extraResources, runtime
   path resolution, `scripts/package.sh`. `--dir` build verified.
+
+## Batch 26 additions
+
+- Timeline scrubber position reads body.marker (the rolled-to feature), not
+  body.Tip which never moves on rollback - step forward/back and marker
+  tracking now work. Chips grey out via the afterTip flag.
+- Datum ghost is held from Apply until the real datum lands (feels instant).
+- Tip-position edits quietly pre-cache the previous 1-2 build stages.
+- Timeline marker grip: z-index + fat invisible hit area.
+- ASSEMBLE ribbon buttons (Insert Component / Joint) wired (were dead).
+- Import / Export command + menu titles no longer name a file type.
+- Smoke test (scratch/b26_allops.py): fillet, chamfer, hole, shell, draft,
+  pattern.linear, pattern.circular, mirror, datum plane/axis/point, measure
+  (edge + distance), move, scale, export - all OK end-to-end.
 
 ## Batch 24 additions
 

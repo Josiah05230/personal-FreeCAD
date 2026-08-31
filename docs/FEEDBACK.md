@@ -14,9 +14,10 @@ done, remove its line entirely rather than leaving a checked box.
 - [~] Draw tool variants: 10 tools ship (corner + center rect, circle + 3-pt
       circle, center + 3-pt arc, spline, ...). 2-point circle, tangent arc and
       rotated 3-point rectangle still to add if wanted.
-- [~] Datum create: the dialog now dismisses instantly and the ghost previews
-      the result, but there is still a short engine gap before the real datum
-      lands in the tree / viewport (no synthesized optimistic datum yet).
+- [~] Datum create: dialog dismisses instantly and the ghost is now held on
+      screen until the real datum lands, so it reads as instant. A truly
+      synthesized optimistic datum (tree row before the engine answers) is still
+      not done.
 - [~] Parametric sketch tools: 3-point circle / arc now pin to any drawn point
       that snapped onto existing geometry (PointOnObject), and center-rectangle
       carries its construction diagonals. FULLY parametric versions (a real
@@ -58,13 +59,20 @@ Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
 
-(Batch 26 - timeline / rollback - pending)
+(nothing pending)
 
--what's the deal with loading after clicking ok on a construction plane? Why is that not instant to the user?
--my scrubber in the timeline is behind the plane (by default, issue) AND I CAN STILL SEE IT. THAT SHOULD NOT BE POSSIBLE IF I AM BEHIND A FEATURE
--when I try and step the timeline forward, it loads/buffers but, doesn't seem to actually do anything? That's a problem.
--it seems the view window moves back to before the first extrude but, the timeline scrubber doesn't?
---also, moving back/forth can be a little laggy. If possible, can you cache versions/stages of the model as it's built? Like, if I make an extrude or hole, and step back one step in the model tree, that should be instant because, that was the file and what was rendered genuinely seconds ago typically.
+## Recently addressed - Batch 26
+
+- Timeline scrubber now follows the rollback marker (body.marker), not
+  body.Tip. It was stranded at the end, which is why step forward/back seemed
+  to do nothing and the view rolled back without the scrubber. Rolled chips use
+  the afterTip flag.
+- Datum create keeps its ghost on screen from Apply until the real datum lands.
+- After an edit lands at the tip, the previous 1-2 build stages are quietly
+  cached so the first step-back is instant.
+- Timeline marker grip: higher z-index + a fat invisible hit area so it is
+  grabbable even where a feature chip overlaps it.
+- Wired the dead ASSEMBLE ribbon buttons (Insert Component, Joint).
 
 ## Recently addressed - Batch 25
 
