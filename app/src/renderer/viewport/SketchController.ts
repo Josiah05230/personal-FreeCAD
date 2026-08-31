@@ -9,7 +9,17 @@
  */
 import * as THREE from 'three'
 
-export type SketchTool = 'select' | 'line' | 'rect' | 'circle' | 'arc' | 'dimension'
+export type SketchTool =
+  | 'select'
+  | 'line'
+  | 'rect'
+  | 'rect-center'
+  | 'circle'
+  | 'circle-3p'
+  | 'arc'
+  | 'arc-3p'
+  | 'spline'
+  | 'dimension'
 
 type SnapKind = 'grid' | 'origin' | 'point' | 'edge' | 'axis'
 type DragHandle = 'a' | 'b' | 'ab' | 'ba' | 'c' | 'r' | 'whole'
@@ -64,6 +74,7 @@ export type SketchEntity = (
   | { type: 'rect'; a: [number, number]; b: [number, number] }
   | { type: 'circle'; c: [number, number]; r: number }
   | { type: 'arc'; c: [number, number]; r: number; a0: number; a1: number }
+  | { type: 'spline'; pts: [number, number][] }
 ) & { construction?: boolean }
 
 export interface RecordedConstraint {
@@ -186,6 +197,13 @@ export class SketchController {
 
   /** Double-click a dimension (or the geometry it drives) to retype its value. */
   private onDblClick = (ev: MouseEvent): void => {
+    // finish a spline on double-click
+    if (this.tool === 'spline' && this.pending.length >= 2) {
+      ev.stopPropagation()
+      this.commit()
+      this.redraw()
+      return
+    }
     if (!this.onDimensionRequest) return
     this.ray.setFromCamera(this.ndcFor(ev.clientX, ev.clientY), this.camera)
     for (const h of this.ray.intersectObjects(this.dimGroup.children, true)) {
@@ -296,11 +314,20 @@ export class SketchController {
   private dragMoved = false
   private preDragSnap: { ents: SketchEntity[]; cons: RecordedConstraint[] } | null = null
 
+  private static cloneEnt(e: SketchEntity): SketchEntity {
+    return e.type === 'spline' ? { ...e, pts: e.pts.map((p) => [p[0], p[1]] as [number, number]) } : { ...e }
+  }
+
+  private cloneEnts(): SketchEntity[] {
+    return this.entities.map((e) => SketchController.cloneEnt(e))
+  }
+
+  private cloneCons(): RecordedConstraint[] {
+    return this.constraints.map((c) => ({ ...c, refs: c.refs.map((r) => ({ ...r })) }))
+  }
+
   private snapshot(): void {
-    this.undoStack.push({
-      ents: this.entities.map((e) => ({ ...e })),
-      cons: this.constraints.map((c) => ({ ...c, refs: c.refs.map((r) => ({ ...r })) }))
-    })
+    this.undoStack.push({ ents: this.cloneEnts(), cons: this.cloneCons() })
     if (this.undoStack.length > 120) this.undoStack.shift()
   }
 
@@ -483,6 +510,15 @@ export class SketchController {
       }
       return m
     }
+    if (e.type === 'spline') {
+      const s = this.splineUVs(e.pts)
+      let m = Infinity
+      for (let i = 0; i + 1 < s.length; i++) {
+        const q = this.closestOnSeg(uv, s[i], s[i + 1])
+        m = Math.min(m, Math.hypot(q[0] - uv[0], q[1] - uv[1]))
+      }
+      return m
+    }
     // circle / arc
     return Math.abs(Math.hypot(uv[0] - e.c[0], uv[1] - e.c[1]) - e.r)
   }
@@ -543,10 +579,7 @@ export class SketchController {
         this.selected = [idx]
         this.drag = { idx, handle: this.grabHandle(idx, uv), last: uv }
         this.dragMoved = false
-        this.preDragSnap = {
-          ents: this.entities.map((e) => ({ ...e })),
-          cons: this.constraints.map((c) => ({ ...c, refs: c.refs.map((r) => ({ ...r })) }))
-        }
+        this.preDragSnap = { ents: this.cloneEnts(), cons: this.cloneCons() }
       }
       this.redraw()
       this.onChange()
@@ -557,7 +590,13 @@ export class SketchController {
     this.pending.push(uv)
     this.pendingSnaps.push(this.snapRef)
     this.pendingMids.push(this.snapMid)
-    const need = this.tool === 'arc' ? 3 : 2
+    if (this.tool === 'spline') {
+      // spline collects points until Enter / double-click
+      this.redraw()
+      return
+    }
+    const need =
+      this.tool === 'arc' || this.tool === 'arc-3p' || this.tool === 'circle-3p' ? 3 : 2
     if (this.pending.length >= need) this.commit()
     this.redraw()
   }
@@ -588,6 +627,7 @@ export class SketchController {
       }
       return 'whole'
     }
+    if (e.type === 'spline') return 'whole'
     if (near(e.c)) return 'c'
     if (Math.abs(Math.hypot(uv[0] - e.c[0], uv[1] - e.c[1]) - e.r) < tol) return 'r'
     return 'whole'
@@ -606,6 +646,8 @@ export class SketchController {
         if (e.type === 'line' || e.type === 'rect') {
           e.a = move(e.a)
           e.b = move(e.b)
+        } else if (e.type === 'spline') {
+          e.pts = e.pts.map(move)
         } else e.c = move(e.c)
         break
       case 'a':
@@ -767,18 +809,22 @@ export class SketchController {
       p[0] >= minX && p[0] <= maxX && p[1] >= minY && p[1] <= maxY
     const hits: number[] = []
     this.entities.forEach((e, i) => {
-      const pts: [number, number][] =
-        e.type === 'line'
-          ? [e.a, e.b, [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2]]
-          : e.type === 'circle' || e.type === 'arc'
-            ? [
-                e.c,
-                [e.c[0] + e.r, e.c[1]],
-                [e.c[0] - e.r, e.c[1]],
-                [e.c[0], e.c[1] + e.r],
-                [e.c[0], e.c[1] - e.r]
-              ]
-            : [e.a, e.b]
+      let pts: [number, number][]
+      if (e.type === 'line') {
+        pts = [e.a, e.b, [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2]]
+      } else if (e.type === 'circle' || e.type === 'arc') {
+        pts = [
+          e.c,
+          [e.c[0] + e.r, e.c[1]],
+          [e.c[0] - e.r, e.c[1]],
+          [e.c[0], e.c[1] + e.r],
+          [e.c[0], e.c[1] - e.r]
+        ]
+      } else if (e.type === 'spline') {
+        pts = e.pts
+      } else {
+        pts = [e.a, e.b]
+      }
       const n = pts.filter(inside).length
       if (crossing ? n > 0 : n === pts.length) hits.push(i)
     })
@@ -829,6 +875,9 @@ export class SketchController {
       this.band = null
       this.pendingCon = null
       this.dom.style.cursor = ''
+      this.redraw()
+    } else if (ev.key === 'Enter' && this.tool === 'spline' && this.pending.length >= 2) {
+      this.commit()
       this.redraw()
     } else if (ev.key === 'Enter' && this.tool === 'line') {
       this.pending = []
@@ -889,40 +938,27 @@ export class SketchController {
       this.pending = [p[1]] // chain
       this.pendingSnaps = [snaps[1] ?? null]
       this.pendingMids = [mids[1] ?? null]
-    } else if (this.tool === 'rect') {
+    } else if (this.tool === 'rect' || this.tool === 'rect-center') {
       // a rectangle IS four constrained lines - build it that way so every
       // downstream path (dimensions, dragging, symbols) is uniform
-      const x0 = p[0][0]
-      const y0 = p[0][1]
-      const x1 = p[1][0]
-      const y1 = p[1][1]
-      const c: [number, number][] = [
+      let x0: number, y0: number, x1: number, y1: number
+      if (this.tool === 'rect-center') {
+        const hw = p[1][0] - p[0][0]
+        const hh = p[1][1] - p[0][1]
+        x0 = p[0][0] - hw
+        y0 = p[0][1] - hh
+        x1 = p[0][0] + hw
+        y1 = p[0][1] + hh
+      } else {
+        ;[x0, y0] = p[0]
+        ;[x1, y1] = p[1]
+      }
+      this.pushRect([
         [x0, y0],
         [x1, y0],
         [x1, y1],
         [x0, y1]
-      ]
-      const first = this.entities.length - this.baseCount
-      for (let s = 0; s < 4; s++) {
-        this.entities.push({ type: 'line', a: c[s], b: c[(s + 1) % 4], ...k })
-      }
-      if (!this.construction) {
-        const g = (s: number): number => first + s
-        for (let s = 0; s < 4; s++) {
-          this.constraints.push({
-            type: 'Coincident',
-            refs: [
-              { new: g(s), sub: 0, pt: 2 },
-              { new: g((s + 1) % 4), sub: 0, pt: 1 }
-            ]
-          })
-        }
-        this.constraints.push({ type: 'Horizontal', refs: [{ new: g(0), sub: 0 }] })
-        this.constraints.push({ type: 'Horizontal', refs: [{ new: g(2), sub: 0 }] })
-        this.constraints.push({ type: 'Vertical', refs: [{ new: g(1), sub: 0 }] })
-        this.constraints.push({ type: 'Vertical', refs: [{ new: g(3), sub: 0 }] })
-        for (let s = 0; s < 4; s++) this.anchorToAxes(this.baseCount + first + s)
-      }
+      ])
       this.pending = []
       this.pendingSnaps = []
       this.pendingMids = []
@@ -932,6 +968,12 @@ export class SketchController {
       const ci = this.entities.length - 1
       this.anchorToAxes(ci)
       this.autoCoincident(ci, [snaps[0] ?? null])
+      this.pending = []
+      this.pendingSnaps = []
+      this.pendingMids = []
+    } else if (this.tool === 'circle-3p') {
+      const cc = SketchController.circumcircle(p[0], p[1], p[2])
+      if (cc) this.entities.push({ type: 'circle', c: cc.c, r: cc.r, ...k })
       this.pending = []
       this.pendingSnaps = []
       this.pendingMids = []
@@ -945,9 +987,79 @@ export class SketchController {
       this.pending = []
       this.pendingSnaps = []
       this.pendingMids = []
+    } else if (this.tool === 'arc-3p') {
+      // start, end, a point the arc passes through
+      const cc = SketchController.circumcircle(p[0], p[1], p[2])
+      if (cc) {
+        const ang = (q: [number, number]): number =>
+          Math.atan2(q[1] - cc.c[1], q[0] - cc.c[0])
+        let a0 = ang(p[0])
+        const aEnd = ang(p[1])
+        const aMid = ang(p[2])
+        const norm = (x: number): number => ((x % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)
+        // sweep CCW from a0; if the mid point is not inside that sweep, go CW
+        let span = norm(aEnd - a0)
+        if (norm(aMid - a0) > span) {
+          a0 = aEnd
+          span = 2 * Math.PI - span
+        }
+        this.entities.push({ type: 'arc', c: cc.c, r: cc.r, a0, a1: a0 + span, ...k })
+        this.anchorToAxes(this.entities.length - 1)
+      }
+      this.pending = []
+      this.pendingSnaps = []
+      this.pendingMids = []
+    } else if (this.tool === 'spline') {
+      if (p.length >= 2) {
+        this.entities.push({ type: 'spline', pts: p.map((q) => [q[0], q[1]] as [number, number]), ...k })
+        this.anchorToAxes(this.entities.length - 1)
+      }
+      this.pending = []
+      this.pendingSnaps = []
+      this.pendingMids = []
     }
     this.scheduleSolve()
     this.onChange()
+  }
+
+  /** Push a 4-corner loop as four coincident + H/V constrained line entities. */
+  private pushRect(c: [number, number][]): void {
+    const k = this.construction ? { construction: true } : {}
+    const first = this.entities.length - this.baseCount
+    for (let s = 0; s < 4; s++) this.entities.push({ type: 'line', a: c[s], b: c[(s + 1) % 4], ...k })
+    if (!this.construction) {
+      const g = (s: number): number => first + s
+      for (let s = 0; s < 4; s++) {
+        this.constraints.push({
+          type: 'Coincident',
+          refs: [
+            { new: g(s), sub: 0, pt: 2 },
+            { new: g((s + 1) % 4), sub: 0, pt: 1 }
+          ]
+        })
+      }
+      this.constraints.push({ type: 'Horizontal', refs: [{ new: g(0), sub: 0 }] })
+      this.constraints.push({ type: 'Horizontal', refs: [{ new: g(2), sub: 0 }] })
+      this.constraints.push({ type: 'Vertical', refs: [{ new: g(1), sub: 0 }] })
+      this.constraints.push({ type: 'Vertical', refs: [{ new: g(3), sub: 0 }] })
+      for (let s = 0; s < 4; s++) this.anchorToAxes(this.baseCount + first + s)
+    }
+  }
+
+  /** Circle through three points (circumcircle), or null if collinear. */
+  private static circumcircle(
+    a: [number, number],
+    b: [number, number],
+    c: [number, number]
+  ): { c: [number, number]; r: number } | null {
+    const d = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]))
+    if (Math.abs(d) < 1e-9) return null
+    const a2 = a[0] * a[0] + a[1] * a[1]
+    const b2 = b[0] * b[0] + b[1] * b[1]
+    const c2 = c[0] * c[0] + c[1] * c[1]
+    const ux = (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d
+    const uy = (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d
+    return { c: [ux, uy], r: Math.hypot(a[0] - ux, a[1] - uy) }
   }
 
   /** A freshly drawn point that landed on another entity's point gets a
@@ -958,6 +1070,7 @@ export class SketchController {
   ): void {
     const e = this.entities[entIdx]
     if (e.construction) return
+    if (e.type !== 'line' && e.type !== 'circle' && e.type !== 'arc') return
     const nw = entIdx - this.baseCount
     if (nw < 0) return
     // line: snaps[0] -> start (pt 1), snaps[1] -> end (pt 2); circle/arc: centre (pt 3)
@@ -1071,7 +1184,8 @@ export class SketchController {
     if (!e) return [0, 0]
     if (e.type === 'line') return p === 2 ? [...e.b] : [...e.a]
     if (e.type === 'circle' || e.type === 'arc') return [...e.c]
-    return [...e.a]
+    if (e.type === 'rect') return p === 2 ? [...e.b] : [...e.a]
+    return [0, 0]
   }
 
   private setPtOf(key: string, uv: [number, number]): void {
@@ -1556,11 +1670,36 @@ export class SketchController {
     return out
   }
 
+  /** Catmull-Rom through the spline points, for a smooth on-screen curve. */
+  private splineUVs(pts: [number, number][]): [number, number][] {
+    if (pts.length < 3) return pts
+    const out: [number, number][] = []
+    const seg = 12
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i === 0 ? 0 : i - 1]
+      const p1 = pts[i]
+      const p2 = pts[i + 1]
+      const p3 = pts[i + 2 < pts.length ? i + 2 : pts.length - 1]
+      for (let s = 0; s < seg; s++) {
+        const t = s / seg
+        const t2 = t * t
+        const t3 = t2 * t
+        const f = (a: number, b: number, c: number, d: number): number =>
+          0.5 *
+          (2 * b + (c - a) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3)
+        out.push([f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])])
+      }
+    }
+    out.push(pts[pts.length - 1])
+    return out
+  }
+
   private entityObj(e: SketchEntity, mat: THREE.Material): THREE.Line {
     if (e.type === 'line') return this.polyToObj([e.a, e.b], mat)
     if (e.type === 'rect')
       return this.polyToObj([e.a, [e.b[0], e.a[1]], e.b, [e.a[0], e.b[1]]], mat, true)
     if (e.type === 'circle') return this.polyToObj(this.circleUVs(e.c, e.r), mat, true)
+    if (e.type === 'spline') return this.polyToObj(this.splineUVs(e.pts), mat)
     return this.polyToObj(this.circleUVs(e.c, e.r, e.a0, e.a1), mat)
   }
 
@@ -1683,6 +1822,7 @@ export class SketchController {
   private endpointOf(e: SketchEntity, pt: number): [number, number] {
     if (e.type === 'line') return pt === 2 ? e.b : e.a
     if (e.type === 'rect') return pt === 2 ? e.b : e.a
+    if (e.type === 'spline') return pt === 2 ? e.pts[e.pts.length - 1] : e.pts[0]
     return e.c
   }
 
@@ -1699,6 +1839,10 @@ export class SketchController {
     }
     if (e.type === 'rect') {
       return [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2]
+    }
+    if (e.type === 'spline') {
+      const m = e.pts[Math.floor(e.pts.length / 2)]
+      return [m[0], m[1] + nudge]
     }
     const ang = Math.PI / 4 + k
     return [e.c[0] + Math.cos(ang) * (e.r + nudge), e.c[1] + Math.sin(ang) * (e.r + nudge)]
@@ -2117,24 +2261,38 @@ export class SketchController {
     this.redrawDims()
     this.rebuildSyms()
 
-    const drawTool =
-      this.tool === 'line' || this.tool === 'rect' || this.tool === 'circle' || this.tool === 'arc'
+    const drawTool = this.tool !== 'select' && this.tool !== 'dimension'
 
-    if (this.pending.length) {
+    if (this.pending.length || this.tool === 'spline') {
       const p = [...this.pending, this.cursorUV]
-      if (this.tool === 'line' || this.tool === 'rect') {
-        const e: SketchEntity =
-          this.tool === 'line'
-            ? { type: 'line', a: p[0], b: p[1] }
-            : { type: 'rect', a: p[0], b: p[1] }
-        this.preview.add(this.entityObj(e, this.previewMat))
+      if (this.tool === 'line') {
+        this.preview.add(this.entityObj({ type: 'line', a: p[0], b: p[1] }, this.previewMat))
+      } else if (this.tool === 'rect') {
+        this.preview.add(this.entityObj({ type: 'rect', a: p[0], b: p[1] }, this.previewMat))
+      } else if (this.tool === 'rect-center') {
+        const hw = p[1][0] - p[0][0]
+        const hh = p[1][1] - p[0][1]
+        this.preview.add(
+          this.entityObj(
+            { type: 'rect', a: [p[0][0] - hw, p[0][1] - hh], b: [p[0][0] + hw, p[0][1] + hh] },
+            this.previewMat
+          )
+        )
       } else if (this.tool === 'circle') {
         const r = Math.hypot(p[1][0] - p[0][0], p[1][1] - p[0][1])
         this.preview.add(this.entityObj({ type: 'circle', c: p[0], r }, this.previewMat))
+      } else if (this.tool === 'circle-3p' || this.tool === 'arc-3p') {
+        if (p.length >= 3) {
+          const cc = SketchController.circumcircle(p[0], p[1], p[2])
+          if (cc) this.preview.add(this.entityObj({ type: 'circle', c: cc.c, r: cc.r }, this.previewMat))
+        }
+        this.preview.add(this.polyToObj(p, this.previewMat))
       } else if (this.tool === 'arc' && this.pending.length >= 1) {
         const c = this.pending[0]
         const r = Math.hypot(this.cursorUV[0] - c[0], this.cursorUV[1] - c[1])
         this.preview.add(this.entityObj({ type: 'circle', c, r }, this.previewMat))
+      } else if (this.tool === 'spline' && p.length >= 2) {
+        this.preview.add(this.entityObj({ type: 'spline', pts: p }, this.previewMat))
       }
     }
 

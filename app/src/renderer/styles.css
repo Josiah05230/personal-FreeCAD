@@ -379,6 +379,13 @@ code {
   padding: 4px;
 }
 
+/* the SKETCH tab fold-outs anchor to their group instead of a click point */
+.ribbon-dd.sketch-dd {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+}
+
 .ribbon-dd-item {
   display: flex;
   align-items: center;

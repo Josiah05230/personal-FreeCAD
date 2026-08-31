@@ -9,13 +9,14 @@ interface SketchFrameLike {
   y: [number, number, number]
 }
 type Ent = {
-  type: 'line' | 'rect' | 'circle' | 'arc'
+  type: 'line' | 'rect' | 'circle' | 'arc' | 'spline'
   a?: [number, number]
   b?: [number, number]
   c?: [number, number]
   r?: number
   a0?: number
   a1?: number
+  pts?: [number, number][]
 }
 
 /**
@@ -47,6 +48,7 @@ export function sketchEntitiesToPolys(ents: Ent[], fr: SketchFrameLike): number[
   const out: number[][] = []
   for (const e of ents) {
     if (e.type === 'line' && e.a && e.b) out.push(flat([e.a, e.b]))
+    else if (e.type === 'spline' && e.pts && e.pts.length >= 2) out.push(flat(e.pts))
     else if (e.type === 'rect' && e.a && e.b)
       out.push(flat([e.a, [e.b[0], e.a[1]], e.b, [e.a[0], e.b[1]], e.a]))
     else if (e.type === 'circle' && e.c && e.r != null) out.push(flat(circ(e.c, e.r)))

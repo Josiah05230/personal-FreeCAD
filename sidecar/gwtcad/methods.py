@@ -1001,6 +1001,12 @@ def sketch_reopen(sketchId):
         elif t == "Part::GeomArcOfCircle":
             ent = {"type": "arc", "c": [g.Center.x, g.Center.y], "r": g.Radius,
                    "a0": g.FirstParameter, "a1": g.LastParameter}
+        elif t == "Part::GeomBSplineCurve":
+            try:
+                pts = [[p.x, p.y] for p in g.discretize(Number=max(4, g.NbPoles * 3))]
+            except Exception:
+                pts = [[p.x, p.y] for p in g.getPoles()]
+            ent = {"type": "spline", "pts": pts}
         else:
             continue
         if getattr(g, "Construction", False):
@@ -1048,6 +1054,15 @@ def _add_sketch_elements(sk, elements):
             circ = Part.Circle(Vector(c[0], c[1], 0), Vector(0, 0, 1), float(el["r"]))
             ids.append(sk.addGeometry(
                 Part.ArcOfCircle(circ, float(el["a0"]), float(el["a1"])), cons))
+        elif t == "spline":
+            pts = [Vector(q[0], q[1], 0) for q in el.get("pts", [])]
+            if len(pts) >= 2:
+                bs = Part.BSplineCurve()
+                try:
+                    bs.interpolate(pts)
+                except Exception:
+                    bs.buildFromPoles(pts)
+                ids.append(sk.addGeometry(bs, cons))
         elif t == "rect":
             import Sketcher
             a, b = el["a"], el["b"]

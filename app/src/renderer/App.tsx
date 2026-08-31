@@ -1566,6 +1566,8 @@ export function App(): JSX.Element {
                 onCancel={() => void cancelSketch()}
                 count={sketchCount}
                 constraintCount={sketchConstraintCount}
+                pins={pins}
+                onSetPin={setPin}
               />
             }
           />
