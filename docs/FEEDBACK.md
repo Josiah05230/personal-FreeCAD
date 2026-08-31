@@ -35,32 +35,13 @@ Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
 
-Batch 21 (part 1) - addressed:
-- Ctrl+Z in a sketch now reverts one whole action: a rectangle (4 lines + its
-  constraints) undoes in a single step, as does a drag, a dimension, a manual
-  constraint, or a delete. Full pre-action snapshots, ~120 deep.
-- Placing an over-dimension is caught BEFORE the number prompt: the dimension
-  request runs a trial solve first and, if the geometry is already fully
-  defined there, shows the orange notice and never opens the input.
-- The boot scrim now stays up until the first scene + tree have actually
-  loaded, so the app never looks "ready" while it is still populating.
-- Extrude no longer assumes "the only sketch" - you pick one (click its outline
-  or filled face); a real miss gives a clear message.
-- Sketch fill is hardened: a degenerate profile can no longer inject NaN
-  geometry (dropped the needless vertex-normal pass, added a finite-value
-  guard, wrapped the region fill + selection overlays in try/catch) - this was
-  what could blank the viewport.
-
-Batch 21 (part 2) - addressed:
-- Delete Feature is optimistic now: the feature leaves the tree + selection
-  immediately, the engine rebuild runs behind the status-bar spinner and
-  reconciles when done. Cancelling a brand-new sketch likewise leaves the
-  editor at once and deletes in the background.
-- View-cube labels are drawn on their own oriented quads (not the box UVs), so
-  every face reads relative to FRONT: the four side labels are upright with
-  +Z up, TOP / BOT align to the FRONT edge.
+-uhh, now there is no text on the view cube?
+-When I click a face in the extrude tool, there is no model or anything visible...that's a problem. It's been that way the whole time.
+--when I cancel an extrude, it still says the body is there...I never extruded though...
+--also, the sketch isn't visible anymore? Even after I show/hide, zoom in/out, home on the view cube, spin stuff, etc.
 
 Still open from this batch:
 -when I click a face to sketch on it, it can get "stuck/locked to the same plane"; the plane / face picker only offers shown sketches, not hidden ones. Needs a concrete repro.
+--no, I am WANTING it to be stuck to only allowing me to select faces on the same plane after the first one. Unless I de-select all faces.
 -sections in the sketch ribbon should be a dropdown like every other ribbon group (with pin-to-ribbon support).
 -more draw tools: center-point rectangle, 3-point circle, arc variants, splines.

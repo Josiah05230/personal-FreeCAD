@@ -81,14 +81,24 @@ export class Picker {
       }
       if (ud.pick === 'face' && h.faceIndex != null) {
         const sub = faceSubFromTriangle(ud.faceGroups, h.faceIndex)
-        if (sub)
+        if (sub) {
+          let normal: [number, number, number] | undefined
+          if (h.face) {
+            const n = h.face.normal
+              .clone()
+              .transformDirection((h.object as THREE.Mesh).matrixWorld)
+              .normalize()
+            normal = [n.x, n.y, n.z]
+          }
           return {
             kind: 'face',
             bodyId: ud.bodyId,
             index: 0,
             sub,
-            point: [h.point.x, h.point.y, h.point.z]
+            point: [h.point.x, h.point.y, h.point.z],
+            normal
           }
+        }
       }
     }
     return null

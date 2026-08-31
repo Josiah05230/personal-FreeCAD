@@ -162,7 +162,14 @@ export interface SketchSolveDTO {
 }
 
 export type Selection =
-  | { kind: 'face'; bodyId: string; index: number; sub: string; point: [number, number, number] }
+  | {
+      kind: 'face'
+      bodyId: string
+      index: number
+      sub: string
+      point: [number, number, number]
+      normal?: [number, number, number]
+    }
   | { kind: 'edge'; bodyId: string; index: number; sub: string; point: [number, number, number] }
   | { kind: 'vertex'; bodyId: string; index: number; sub: string; point: [number, number, number] }
   | { kind: 'body'; bodyId: string }

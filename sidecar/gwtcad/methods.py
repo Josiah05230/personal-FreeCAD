@@ -1802,6 +1802,28 @@ def visibility_set_group(group, visible):
     return {"group": group, "visible": visible}
 
 
+def _reshow_loose_sketches(d):
+    """A sketch not consumed by any feature (pad / pocket / revolve / loft /
+    sweep) should be visible again once that feature is undone."""
+    consumed = set()
+    for o in d.Objects:
+        for prop in ("Profile", "Sections", "Spine"):
+            v = getattr(o, prop, None)
+            if v is None:
+                continue
+            items = v if isinstance(v, (list, tuple)) else [v]
+            for it in items:
+                nm = getattr(it, "TypeId", "")
+                if nm == "Sketcher::SketchObject":
+                    consumed.add(it.Name)
+    for o in d.Objects:
+        if o.TypeId == "Sketcher::SketchObject" and o.Name not in consumed:
+            try:
+                o.Visibility = True
+            except Exception:
+                pass
+
+
 @method("history.undo")
 def history_undo():
     d = session.doc(create=False)
@@ -1809,6 +1831,7 @@ def history_undo():
     if can:
         d.undo()
         d.recompute()
+        _reshow_loose_sketches(d)
         _TESS_CACHE.clear()
     out = tree_get()
     out["undone"] = bool(can)
@@ -1824,6 +1847,7 @@ def history_redo():
     if can:
         d.redo()
         d.recompute()
+        _reshow_loose_sketches(d)
         _TESS_CACHE.clear()
     out = tree_get()
     out["redone"] = bool(can)

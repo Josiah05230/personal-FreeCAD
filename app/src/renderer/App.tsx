@@ -245,9 +245,25 @@ export function App(): JSX.Element {
       setSelection((cur) => {
         if (!additive) return [sel]
         const k = selKey(sel)
-        return cur.some((s) => selKey(s) === k)
-          ? cur.filter((s) => selKey(s) !== k)
-          : [...cur, sel]
+        if (cur.some((s) => selKey(s) === k)) return cur.filter((s) => selKey(s) !== k)
+        // multi-face pick: once one face is chosen, only add coplanar faces
+        // (clear the selection to start on a different plane)
+        if (sel.kind === 'face' && sel.normal) {
+          const first = cur.find((s) => s.kind === 'face' && s.normal) as
+            | Extract<Selection, { kind: 'face' }>
+            | undefined
+          if (first?.normal) {
+            const [nx, ny, nz] = first.normal
+            const [mx, my, mz] = sel.normal
+            const parallel = Math.abs(nx * mx + ny * my + nz * mz) > 0.999
+            const dp =
+              (sel.point[0] - first.point[0]) * nx +
+              (sel.point[1] - first.point[1]) * ny +
+              (sel.point[2] - first.point[2]) * nz
+            if (!parallel || Math.abs(dp) > 0.05) return cur // not coplanar - ignore
+          }
+        }
+        return [...cur, sel]
       })
     },
     [selFilter]
@@ -812,6 +828,9 @@ export function App(): JSX.Element {
     setCanUndo(r.canUndo)
     setCanRedo(r.canRedo)
     rollCacheRef.current.clear()
+    // history moved - drop stale manual show/hide choices and trust the engine,
+    // so e.g. undoing an extrude un-hides the sketch it had consumed
+    setVisOverride({})
     await refreshScene()
     markDirty()
   }, [canUndo, refreshScene, markDirty])
@@ -822,6 +841,7 @@ export function App(): JSX.Element {
     setCanUndo(r.canUndo)
     setCanRedo(r.canRedo)
     rollCacheRef.current.clear()
+    setVisOverride({})
     await refreshScene()
     markDirty()
   }, [canRedo, refreshScene, markDirty])

@@ -158,6 +158,7 @@ export function Viewport({
     framedOnce: boolean
     lastCenter: THREE.Vector3
     lastRadius: number
+    preSketchCam: { pos: THREE.Vector3; up: THREE.Vector3; pivot: THREE.Vector3 } | null
   } | null>(null)
 
   useEffect(() => {
@@ -209,7 +210,8 @@ export function Viewport({
       sketch: null,
       framedOnce: false,
       lastCenter: new THREE.Vector3(),
-      lastRadius: 60
+      lastRadius: 60,
+      preSketchCam: null
     }
 
     if (apiRef) {
@@ -649,11 +651,17 @@ export function Viewport({
         )
       }
       st.sketch.setTool(sketchTool)
+      // remember the view so we can drop the user right back into it on exit
+      st.preSketchCam = {
+        pos: st.camera.position.clone(),
+        up: st.camera.up.clone(),
+        pivot: st.controls.pivot.clone()
+      }
       // look straight at the plane
       const O = new THREE.Vector3(...sketchFrame.origin)
       const N = new THREE.Vector3(...sketchFrame.z).normalize()
       const up = new THREE.Vector3(...sketchFrame.y).normalize()
-      const dist = Math.max(st.lastRadius * 2.4, 160)
+      const dist = Math.max(st.lastRadius * 2.4, 120)
       st.camera.up.copy(up)
       st.camera.position.copy(O).addScaledVector(N, dist)
       st.controls.pivot.copy(O)
@@ -661,7 +669,18 @@ export function Viewport({
     } else if (!sketchFrame && st.sketch) {
       st.sketch.dispose()
       st.sketch = null
-      st.camera.up.set(0, 0, 1)
+      // restore the pre-sketch view rather than leaving the camera on the plane
+      const pc = st.preSketchCam
+      if (pc) {
+        st.camera.up.copy(pc.up)
+        st.camera.position.copy(pc.pos)
+        st.controls.pivot.copy(pc.pivot)
+        st.camera.lookAt(pc.pivot)
+        st.preSketchCam = null
+      } else {
+        st.camera.up.set(0, 0, 1)
+        st.controls.frame(st.lastCenter, st.lastRadius)
+      }
     }
   }, [sketchFrame])
 

@@ -21,7 +21,10 @@ const LABELS: Record<string, string> = {
 const S = 1.6 // cube half-extent * 2 (side length)
 const H = S / 2
 
-function faceFillTexture(): THREE.CanvasTexture {
+/** An opaque face decal: light panel, border, and upright label. It is drawn on
+ *  its own quad whose orientation (not the box UVs) decides which way the text
+ *  reads - so every face reads relative to FRONT. */
+function faceDecalTexture(text: string): THREE.CanvasTexture {
   const c = document.createElement('canvas')
   c.width = c.height = 128
   const g = c.getContext('2d')!
@@ -30,20 +33,8 @@ function faceFillTexture(): THREE.CanvasTexture {
   g.strokeStyle = '#b7bcc3'
   g.lineWidth = 4
   g.strokeRect(4, 4, 120, 120)
-  const t = new THREE.CanvasTexture(c)
-  t.colorSpace = THREE.SRGBColorSpace
-  return t
-}
-
-/** Just the label text on transparent, upright. Orientation is handled by the
- *  quad's own quaternion, not the box UVs - so every face reads relative to the
- *  FRONT face. */
-function labelTexture(text: string): THREE.CanvasTexture {
-  const c = document.createElement('canvas')
-  c.width = c.height = 128
-  const g = c.getContext('2d')!
   g.fillStyle = '#333941'
-  g.font = '600 19px "Segoe UI", system-ui, sans-serif'
+  g.font = '600 20px "Segoe UI", system-ui, sans-serif'
   g.textAlign = 'center'
   g.textBaseline = 'middle'
   g.fillText(text, 64, 66)
@@ -91,11 +82,10 @@ export class ViewCube {
     this.cube = new THREE.Group()
     this.scene.add(this.cube)
 
-    // plain shaded box + border
-    const fill = faceFillTexture()
+    // plain box body (barely seen - the decals cover the faces)
     const box = new THREE.Mesh(
       new THREE.BoxGeometry(S, S, S),
-      new THREE.MeshBasicMaterial({ map: fill })
+      new THREE.MeshBasicMaterial({ color: 0xe9ebee })
     )
     this.cube.add(box)
     this.cube.add(
@@ -105,9 +95,11 @@ export class ViewCube {
       )
     )
 
-    // label quads: one per face, oriented so its "up" is world +Z for the side
-    // faces (and toward BACK / FRONT for top / bottom), i.e. relative to FRONT
-    const labelGeo = new THREE.PlaneGeometry(S * 0.94, S * 0.94)
+    // one opaque decal quad per face. Its orientation - not the box UVs -
+    // decides which way the text reads: text-up = world +Z on the four side
+    // faces, and aligned to the FRONT edge on TOP / BOT. So every face reads
+    // relative to FRONT.
+    const decalGeo = new THREE.PlaneGeometry(S, S)
     for (const k of FACE_KEYS) {
       const d = k.split(',').map(Number) as [number, number, number]
       const normal = new THREE.Vector3(...d)
@@ -119,20 +111,15 @@ export class ViewCube {
             : new THREE.Vector3(0, -1, 0)
       const xAxis = new THREE.Vector3().crossVectors(up, normal).normalize()
       const yAxis = new THREE.Vector3().crossVectors(normal, xAxis).normalize()
-      const label = new THREE.Mesh(
-        labelGeo,
-        new THREE.MeshBasicMaterial({
-          map: labelTexture(LABELS[k]),
-          transparent: true,
-          depthWrite: false
-        })
+      const decal = new THREE.Mesh(
+        decalGeo,
+        new THREE.MeshBasicMaterial({ map: faceDecalTexture(LABELS[k]) })
       )
-      label.quaternion.setFromRotationMatrix(
+      decal.quaternion.setFromRotationMatrix(
         new THREE.Matrix4().makeBasis(xAxis, yAxis, normal)
       )
-      label.position.copy(normal).multiplyScalar(H + 0.007)
-      label.renderOrder = 2
-      this.cube.add(label)
+      decal.position.copy(normal).multiplyScalar(H + 0.004)
+      this.cube.add(decal)
     }
 
     this.buildZones()
@@ -157,9 +144,15 @@ export class ViewCube {
     ): void => {
       const m = new THREE.Mesh(
         geo,
-        new THREE.MeshBasicMaterial({ color: 0x2f9fe0, transparent: true, opacity: 0 })
+        new THREE.MeshBasicMaterial({
+          color: 0x2f9fe0,
+          transparent: true,
+          opacity: 0,
+          depthTest: false // draw the hover tint on top of the opaque face decal
+        })
       )
       m.position.set(...pos)
+      m.renderOrder = 3
       m.userData = { dir: new THREE.Vector3(...dir).normalize(), kind }
       this.cube.add(m)
       this.zones.push(m)
