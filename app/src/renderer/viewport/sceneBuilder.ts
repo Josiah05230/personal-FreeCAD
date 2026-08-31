@@ -143,7 +143,9 @@ export function buildScene(
     group.add(mesh)
     box.expandByObject(mesh)
 
-    // one pickable point per model vertex
+    // one pickable point per model vertex - INVISIBLE, a raycast target only.
+    // Corners get a marker (small sphere) purely on hover / selection, never a
+    // permanent dot on every corner.
     if (m.vertices && m.vertices.length) {
       const vpos: number[] = []
       const vsub: string[] = []
@@ -155,7 +157,7 @@ export function buildScene(
       vg.setAttribute('position', new THREE.Float32BufferAttribute(vpos, 3))
       const pts = new THREE.Points(
         vg,
-        new THREE.PointsMaterial({ color: 0xcdd3da, size: 6, sizeAttenuation: false })
+        new THREE.PointsMaterial({ size: 1, transparent: true, opacity: 0, depthWrite: false })
       )
       pts.name = `verts:${m.id}`
       pts.userData = { pick: 'vertex', bodyId: m.id, vsub }

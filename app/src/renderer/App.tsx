@@ -235,10 +235,25 @@ export function App(): JSX.Element {
   }, [refreshScene, markDirty])
 
   // ---- selection ----
+  const measureModeRef = useRef(false)
+  measureModeRef.current = measureMode
   const onSelect = useCallback(
     (sel: Selection | null, additive: boolean) => {
       if (!sel) {
         if (!additive) setSelection([])
+        return
+      }
+      // measure mode: every click adds a probe (face / edge / vertex), rolling
+      // at two, no coplanar lock, no shift needed. Click the same one to drop it.
+      if (measureModeRef.current && (sel.kind === 'face' || sel.kind === 'edge' || sel.kind === 'vertex')) {
+        setSelection((cur) => {
+          const k = selKey(sel)
+          if (cur.some((s) => selKey(s) === k)) return cur.filter((s) => selKey(s) !== k)
+          const probes = cur.filter(
+            (s) => s.kind === 'face' || s.kind === 'edge' || s.kind === 'vertex'
+          )
+          return [...probes, sel].slice(-2)
+        })
         return
       }
       if (!selFilter.includes(sel.kind as SelKind)) return // selection filter
@@ -1129,10 +1144,9 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     if (!measureMode) return
-    const picks = selection.filter((s) => s.kind === 'face' || s.kind === 'edge') as Array<{
-      bodyId: string
-      sub: string
-    }>
+    const picks = selection.filter(
+      (s) => s.kind === 'face' || s.kind === 'edge' || s.kind === 'vertex'
+    ) as Array<{ bodyId: string; sub: string }>
     if (picks.length >= 1 && picks.length <= 2) {
       void api
         .measure(picks.map((p) => ({ bodyId: p.bodyId, sub: p.sub })))
@@ -1719,9 +1733,19 @@ export function App(): JSX.Element {
                   {measureMode && (
                     <MeasurePanel
                       result={measureResult}
+                      picks={
+                        selection.filter(
+                          (s) => s.kind === 'face' || s.kind === 'edge' || s.kind === 'vertex'
+                        ).length
+                      }
+                      onReset={() => {
+                        setSelection([])
+                        setMeasureResult(null)
+                      }}
                       onClose={() => {
                         setMeasureMode(false)
                         setMeasureResult(null)
+                        setSelection([])
                       }}
                     />
                   )}

@@ -2,9 +2,13 @@ import type { MeasureResult } from '../rpc'
 
 export function MeasurePanel({
   result,
+  picks,
+  onReset,
   onClose
 }: {
   result: MeasureResult | null
+  picks: number
+  onReset: () => void
   onClose: () => void
 }): JSX.Element {
   return (
@@ -15,7 +19,17 @@ export function MeasurePanel({
           ×
         </button>
       </div>
-      {!result && <div className="inspect-hint">Pick one or two faces / edges / vertices.</div>}
+      {!result && (
+        <div className="inspect-hint">
+          Click one or two faces / edges / vertices. Two = distance (+ angle).
+        </div>
+      )}
+      <div className="inspect-row" style={{ padding: '6px 12px', alignItems: 'center' }}>
+        <span className="inspect-k">{picks} selected</span>
+        <button className="inspect-btn" disabled={!picks} onClick={onReset}>
+          Reset
+        </button>
+      </div>
       {result && (
         <div className="inspect-body">
           {result.kind === 'length' && <Row k="Length" v={`${result.length} mm`} />}

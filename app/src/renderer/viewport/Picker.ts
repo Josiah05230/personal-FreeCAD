@@ -32,6 +32,15 @@ export class Picker {
     )
   }
 
+  /** true if `world` projects to within `px` pixels of the current cursor */
+  private nearOnScreen(world: THREE.Vector3, px: number): boolean {
+    const r = this.dom.getBoundingClientRect()
+    const p = world.clone().project(this.camera)
+    const dx = ((p.x - this.pointer.x) * r.width) / 2
+    const dy = ((p.y - this.pointer.y) * r.height) / 2
+    return Math.hypot(dx, dy) <= px
+  }
+
   /** Resolve what is under the cursor within `content`. */
   pick(ev: PointerEvent | MouseEvent, content: THREE.Object3D): Selection | null {
     this.setPointer(ev)
@@ -61,7 +70,9 @@ export class Picker {
       }
       if (ud.pick === 'vertex' && h.index != null) {
         const sub = (ud.vsub as string[] | undefined)?.[h.index]
-        if (sub)
+        // only snap to a corner when the cursor is genuinely near it on screen,
+        // so corners are not a huge invisible grab target over the whole model
+        if (sub && this.nearOnScreen(h.point, 12))
           return {
             kind: 'vertex',
             bodyId: ud.bodyId,
@@ -106,14 +117,18 @@ export class Picker {
 
   private overlayFor(sel: Selection, content: THREE.Object3D, color: number): THREE.Object3D | null {
     if (sel.kind === 'vertex') {
-      const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...sel.point)])
-      const p = new THREE.Points(
-        g,
-        new THREE.PointsMaterial({ color, size: 11, sizeAttenuation: false, depthTest: false })
+      // a small sphere ON the corner (blue on hover, orange when selected),
+      // sized in screen space so it stays a modest dot at any zoom
+      const c = new THREE.Vector3(...sel.point)
+      const rad = c.distanceTo(this.camera.position) * 0.006
+      const s = new THREE.Mesh(
+        new THREE.SphereGeometry(Math.max(rad, 1e-4), 16, 12),
+        new THREE.MeshBasicMaterial({ color, depthTest: false })
       )
-      p.renderOrder = 12
-      p.userData.ownGeom = true
-      return p
+      s.position.copy(c)
+      s.renderOrder = 12
+      s.userData.ownGeom = true
+      return s
     }
     if (sel.kind === 'edge') {
       const src = content.children.find(

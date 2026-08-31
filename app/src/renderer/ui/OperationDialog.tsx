@@ -163,6 +163,7 @@ const SPECS: Record<OpKind, OpSpec> = {
   hole: {
     title: 'Hole',
     needs: 'planeFace',
+    hint: 'Click the face where the hole goes (click again to move the point), then set the size.',
     fields: [
       { key: 'diameter', label: 'Diameter', type: 'number', default: 6, min: 0.01, step: 0.5 },
       { key: 'depth', label: 'Depth', type: 'number', default: 10, min: 0.01, step: 1 },

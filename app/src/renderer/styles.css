@@ -1138,6 +1138,25 @@ code {
   color: var(--text-dim);
 }
 
+.inspect-btn {
+  font-size: 10px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--chrome-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.inspect-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.inspect-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
 .inspect-v {
   font-family: 'SF Mono', Consolas, monospace;
   color: var(--accent-hi);

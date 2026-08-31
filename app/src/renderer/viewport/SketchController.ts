@@ -1122,12 +1122,15 @@ export class SketchController {
         ;[x0, y0] = p[0]
         ;[x1, y1] = p[1]
       }
-      this.pushRect([
-        [x0, y0],
-        [x1, y0],
-        [x1, y1],
-        [x0, y1]
-      ])
+      this.pushRect(
+        [
+          [x0, y0],
+          [x1, y0],
+          [x1, y1],
+          [x0, y1]
+        ],
+        this.tool === 'rect-center'
+      )
       this.pending = []
       this.pendingSnaps = []
       this.pendingMids = []
@@ -1142,7 +1145,10 @@ export class SketchController {
       this.pendingMids = []
     } else if (this.tool === 'circle-3p') {
       const cc = SketchController.circumcircle(p[0], p[1], p[2])
-      if (cc) this.entities.push({ type: 'circle', c: cc.c, r: cc.r, ...k })
+      if (cc) {
+        this.entities.push({ type: 'circle', c: cc.c, r: cc.r, ...k })
+        this.constrainThroughSnaps(this.entities.length - 1, [snaps[0], snaps[1], snaps[2]])
+      }
       this.pending = []
       this.pendingSnaps = []
       this.pendingMids = []
@@ -1174,6 +1180,7 @@ export class SketchController {
         }
         this.entities.push({ type: 'arc', c: cc.c, r: cc.r, a0, a1: a0 + span, ...k })
         this.anchorToAxes(this.entities.length - 1)
+        this.constrainThroughSnaps(this.entities.length - 1, [snaps[0], snaps[1], snaps[2]])
       }
       this.pending = []
       this.pendingSnaps = []
@@ -1191,8 +1198,11 @@ export class SketchController {
     this.onChange()
   }
 
-  /** Push a 4-corner loop as four coincident + H/V constrained line entities. */
-  private pushRect(c: [number, number][]): void {
+  /** Push a 4-corner loop as four coincident + H/V constrained line entities.
+   *  `withDiagonals` adds the two construction diagonals (welded to the corners)
+   *  so a center-rectangle reads as one and gives the centre something to snap
+   *  to on later edits. */
+  private pushRect(c: [number, number][], withDiagonals = false): void {
     const k = this.construction ? { construction: true } : {}
     const first = this.entities.length - this.baseCount
     for (let s = 0; s < 4; s++) this.entities.push({ type: 'line', a: c[s], b: c[(s + 1) % 4], ...k })
@@ -1212,6 +1222,47 @@ export class SketchController {
       this.constraints.push({ type: 'Vertical', refs: [{ new: g(1), sub: 0 }] })
       this.constraints.push({ type: 'Vertical', refs: [{ new: g(3), sub: 0 }] })
       for (let s = 0; s < 4; s++) this.anchorToAxes(this.baseCount + first + s)
+
+      if (withDiagonals) {
+        // corner s is line s start (pt 1). Diagonals: 0-2 and 1-3.
+        const d0 = this.entities.length - this.baseCount
+        this.entities.push({ type: 'line', a: c[0], b: c[2], construction: true })
+        this.entities.push({ type: 'line', a: c[1], b: c[3], construction: true })
+        const weld = (dg: number, dp: number, cg: number): void => {
+          this.constraints.push({
+            type: 'Coincident',
+            refs: [
+              { new: dg, sub: 0, pt: dp },
+              { new: first + cg, sub: 0, pt: 1 }
+            ]
+          })
+        }
+        weld(d0, 1, 0)
+        weld(d0, 2, 2)
+        weld(d0 + 1, 1, 1)
+        weld(d0 + 1, 2, 3)
+      }
+    }
+  }
+
+  /** Constrain a just-added curve to pass through whichever of the drawn points
+   *  snapped onto existing geometry - so a 3-point circle / arc through real
+   *  corners updates when those corners move. */
+  private constrainThroughSnaps(
+    entIdx: number,
+    snaps: Array<{ idx: number; pt: number } | null>
+  ): void {
+    const nw = entIdx - this.baseCount
+    if (nw < 0) return
+    for (const s of snaps) {
+      if (!s || s.idx === entIdx) continue
+      const t = this.entities[s.idx]
+      if (!t || t.construction) continue
+      const pref =
+        s.idx < this.baseCount
+          ? { geo: s.idx, pt: s.pt }
+          : { new: s.idx - this.baseCount, sub: 0, pt: s.pt }
+      this.constraints.push({ type: 'PointOnObject', refs: [pref, { new: nw, sub: 0 }] })
     }
   }
 
