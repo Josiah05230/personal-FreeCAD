@@ -822,6 +822,31 @@ export class SketchController {
     const dx = uv[0] - this.drag.last[0]
     const dy = uv[1] - this.drag.last[1]
     const move = (p: [number, number]): [number, number] => [p[0] + dx, p[1] + dy]
+
+    // dragging a dimensioned rectangle edge should translate the WHOLE rectangle
+    // rigidly (dimensions preserved), not stretch it against a pinned far side
+    if (this.drag.handle === 'whole' && e.type === 'line') {
+      const loop = this.rectLoopOf(this.drag.idx)
+      const sized =
+        loop &&
+        loop.some((li) => this.entityHasDimension(li) && this.lineHasHV(li, 'Horizontal')) &&
+        loop.some((li) => this.entityHasDimension(li) && this.lineHasHV(li, 'Vertical'))
+      if (loop && sized) {
+        for (const li of loop) {
+          const le = this.entities[li]
+          if (le && le.type === 'line') {
+            le.a = move(le.a)
+            le.b = move(le.b)
+          }
+        }
+        this.dragMoved = true
+        this.drag.last = uv
+        this.geomV++
+        this.redraw()
+        return
+      }
+    }
+
     switch (this.drag.handle) {
       case 'whole':
         if (e.type === 'line' || e.type === 'rect') {
