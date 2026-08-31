@@ -17,6 +17,8 @@ export interface ViewportApi {
   getSketchConstraints: () => RecordedSketchConstraint[]
   /** constraints added this session (reopen keeps the originals server-side) */
   getNewSketchConstraints: () => RecordedSketchConstraint[]
+  /** reopen-era constraints the user deleted this session (removed on finish) */
+  getRemovedSketchConstraints: () => RecordedSketchConstraint[]
   applySketchConstraint: (type: SketchConstraintType) => boolean
   /** enter "pick the geometry" mode for a constraint (no live selection) */
   startSketchConstraint: (type: SketchConstraintType) => void

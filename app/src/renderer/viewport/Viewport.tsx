@@ -262,6 +262,8 @@ export function Viewport({
         sketchUndo: () => stateRef.current?.sketch?.undo(),
         getSketchConstraints: () => stateRef.current?.sketch?.getConstraints() ?? [],
         getNewSketchConstraints: () => stateRef.current?.sketch?.getNewConstraints() ?? [],
+        getRemovedSketchConstraints: () =>
+          stateRef.current?.sketch?.getRemovedConstraints() ?? [],
         applySketchConstraint: (t) => stateRef.current?.sketch?.applyConstraint(t) ?? false,
         startSketchConstraint: (t) => stateRef.current?.sketch?.beginConstraint(t),
         pendingSketchConstraint: () =>
@@ -632,7 +634,16 @@ export function Viewport({
       st.content = null
       return
     }
-    const { group, center, radius } = buildScene(meshes, sketches, datums, canvases)
+    let built
+    try {
+      built = buildScene(meshes, sketches, datums, canvases)
+    } catch (e) {
+      // never let a scene-build failure leave the viewport permanently blank
+      console.error('buildScene failed', e)
+      st.content = null
+      return
+    }
+    const { group, center, radius } = built
     st.scene.add(group)
     st.content = group
     st.lastCenter = center

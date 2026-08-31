@@ -115,12 +115,18 @@ export function buildScene(
   }
 
   for (const m of meshes) {
+    // a non-finite vertex from the tessellator would poison the bounding box and
+    // blank the viewport when the camera frames it - drop such a mesh's geometry
+    const posOk = m.positions.every((v) => Number.isFinite(v))
     const geom = new THREE.BufferGeometry()
-    geom.setAttribute('position', new THREE.Float32BufferAttribute(m.positions, 3))
-    if (m.needsNormals || m.normals.length !== m.positions.length) {
+    geom.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute(posOk ? m.positions : [], 3)
+    )
+    if (posOk && (m.needsNormals || m.normals.length !== m.positions.length)) {
       geom.setIndex(m.indices)
       geom.computeVertexNormals()
-    } else {
+    } else if (posOk) {
       geom.setAttribute('normal', new THREE.Float32BufferAttribute(m.normals, 3))
       geom.setIndex(m.indices)
     }
@@ -180,6 +186,7 @@ export function buildScene(
 
   for (const s of sketches) {
     for (const poly of s.polys) {
+      if (!poly.every((v) => Number.isFinite(v))) continue
       const g = new THREE.BufferGeometry()
       g.setAttribute('position', new THREE.Float32BufferAttribute(poly, 3))
       const line = new THREE.Line(
@@ -221,8 +228,14 @@ export function buildScene(
     }
   }
 
-  const center = box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3())
-  const radius = box.isEmpty() ? 60 : Math.max(box.getSize(new THREE.Vector3()).length() / 2, 1)
+  let center = box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3())
+  let radius = box.isEmpty() ? 60 : Math.max(box.getSize(new THREE.Vector3()).length() / 2, 1)
+  // a single bad vertex (NaN) anywhere would make the box - and then the camera
+  // frame - NaN, blanking the whole viewport. Never let that out.
+  if (!Number.isFinite(center.x) || !Number.isFinite(center.y) || !Number.isFinite(center.z)) {
+    center = new THREE.Vector3()
+  }
+  if (!Number.isFinite(radius) || radius <= 0) radius = 60
   return { group, center, radius }
 }
 

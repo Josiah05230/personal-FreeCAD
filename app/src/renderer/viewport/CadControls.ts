@@ -62,7 +62,16 @@ export class CadControls {
   }
 
   /** Frame the camera on a bounding sphere. */
-  frame(center: THREE.Vector3, radius: number): void {
+  frame(centerIn: THREE.Vector3, radiusIn: number): void {
+    // never let a NaN / degenerate frame strand the camera (blank viewport)
+    const bad =
+      !Number.isFinite(centerIn.x) ||
+      !Number.isFinite(centerIn.y) ||
+      !Number.isFinite(centerIn.z) ||
+      !Number.isFinite(radiusIn) ||
+      radiusIn <= 0
+    const center = bad ? new THREE.Vector3() : centerIn
+    const radius = bad ? 60 : radiusIn
     this.pivot.copy(center)
     this.rollAngle = 0
     const dir = new THREE.Vector3(1, -1, 0.7).normalize()

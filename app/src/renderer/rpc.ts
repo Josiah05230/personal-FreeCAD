@@ -269,10 +269,15 @@ const rpcQuiet = <T,>(m: string, p: Record<string, unknown> = {}): Promise<T> =>
 export const apiQuiet = {
   rollTo: (bodyId: string, featureId: string | null) =>
     rpcQuiet<{ tip: string | null }>('history.rollTo', { bodyId, featureId }),
-  sketchFinish: (sketchId: string, elements?: unknown[], constraints?: unknown[]) =>
+  sketchFinish: (
+    sketchId: string,
+    elements?: unknown[],
+    constraints?: unknown[],
+    removedConstraints?: unknown[]
+  ) =>
     rpcQuiet<{ sketchId: string; count: number; constrained: boolean; closed: boolean }>(
       'sketch.finish',
-      { sketchId, elements, constraints }
+      { sketchId, elements, constraints, removedConstraints }
     ),
   sketchSolve: (elements: unknown[], constraints: unknown[]) =>
     rpcQuiet<SketchSolveDTO>('sketch.solve', { elements, constraints }),
@@ -445,10 +450,15 @@ export const api = {
       constraints: SketchConstraint[]
       refGeom: SketchRefGeom | null
     }>('sketch.reopen', { sketchId }),
-  sketchFinish: (sketchId: string, elements?: unknown[], constraints?: SketchConstraint[]) =>
+  sketchFinish: (
+    sketchId: string,
+    elements?: unknown[],
+    constraints?: SketchConstraint[],
+    removedConstraints?: SketchConstraint[]
+  ) =>
     rpc<{ sketchId: string; count: number; constrained: boolean; closed: boolean }>(
       'sketch.finish',
-      { sketchId, elements, constraints }
+      { sketchId, elements, constraints, removedConstraints }
     ),
   sketchSolve: (elements: unknown[], constraints: SketchConstraint[]) =>
     rpc<SketchSolveDTO>('sketch.solve', { elements, constraints }),

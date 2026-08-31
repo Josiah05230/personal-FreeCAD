@@ -129,6 +129,8 @@ export class SketchController {
   private pendingCon: SketchConstraintType | null = null
   /** entity indices the solver reports as fully constrained (drawn grey) */
   private constrainedSet = new Set<number>()
+  /** whole-sketch DoF == 0 (from the last solve) */
+  private sketchFullyConstrained = false
   private solveTimer: number | null = null
   private solveSeq = 0
 
@@ -145,6 +147,9 @@ export class SketchController {
   private constraints: RecordedConstraint[] = []
   /** constraints present at reopen - never re-sent on finish */
   private baseConstraintCount = 0
+  /** reopen-era constraints the user deleted this session - sent to sketch.finish
+   *  so they are removed from the real sketch too */
+  private removedBaseConstraints: RecordedConstraint[] = []
   /** index in `constraints` of the last one the user explicitly added, so the
    *  solver can veto it if it over-constrains; -1 once cleared */
   private lastUserConstraint = -1
@@ -163,6 +168,8 @@ export class SketchController {
     startUV: [number, number]
     base: [number, number]
   } | null = null
+  /** constraint index of the dimension whose label is selected (Delete removes it) */
+  private selectedDim: number | null = null
 
   constructor(
     private readonly camera: THREE.PerspectiveCamera,
@@ -299,6 +306,11 @@ export class SketchController {
     return this.constraints.slice(this.baseConstraintCount)
   }
 
+  /** Reopen-era constraints the user deleted this session (for sketch.finish). */
+  getRemovedConstraints(): RecordedConstraint[] {
+    return this.removedBaseConstraints.slice()
+  }
+
   get constraintCount(): number {
     return this.constraints.length
   }
@@ -312,6 +324,7 @@ export class SketchController {
     this.baseCount = this.entities.length
     this.constraints = cons.map((c) => ({ ...c, refs: c.refs.map((r) => ({ ...r })) }))
     this.baseConstraintCount = this.constraints.length
+    this.removedBaseConstraints = []
     this.undoStack = []
     this.geomV++
     this.redraw()
@@ -631,6 +644,17 @@ export class SketchController {
   }
 
   /** Nearest dimension value-label to a uv, within a screen-sized tolerance. */
+  /** constraint index of the Distance / Radius dimension driving entity `owner` */
+  private dimConstraintIndex(owner: number): number {
+    return this.constraints.findIndex((c) => {
+      if (c.type !== 'Distance' && c.type !== 'Radius') return false
+      const r0 = c.refs[0]
+      if (!r0) return false
+      const ei = r0.geo != null ? r0.geo : (r0.new ?? -999) + this.baseCount
+      return ei === owner
+    })
+  }
+
   private pickDimLabel(uv: [number, number]): { owner: number; kind: 'linear' | 'radius' } | null {
     const tol = this.mmForPx(30)
     let best: { owner: number; kind: 'linear' | 'radius' } | null = null
@@ -670,6 +694,9 @@ export class SketchController {
       if (!this.pendingCon) {
         const dl = this.pickDimLabel(uv)
         if (dl) {
+          // select the dimension (Delete removes it) and arm a label drag
+          this.selectedDim = this.dimConstraintIndex(dl.owner)
+          this.selected = []
           this.dimDrag = {
             owner: dl.owner,
             kind: dl.kind,
@@ -677,8 +704,14 @@ export class SketchController {
             base: this.dimOffsets.get(dl.owner) ?? [0, 0]
           }
           this.dom.style.cursor = 'move'
+          this.forceDimRedraw()
+          this.onChange()
           return
         }
+      }
+      if (this.selectedDim != null) {
+        this.selectedDim = null
+        this.dimV = -1
       }
 
       const idx = this.pickEntity(uv)
@@ -707,9 +740,20 @@ export class SketchController {
           : [...this.selected, idx]
       } else {
         this.selected = [idx]
-        this.drag = { idx, handle: this.grabHandle(idx, uv), last: uv }
-        this.dragMoved = false
-        this.preDragSnap = { ents: this.cloneEnts(), cons: this.cloneCons() }
+        // a fully-constrained entity (or a fully-constrained sketch) cannot be
+        // dragged at all - do not even start a drag
+        const locked =
+          this.constrainedSet.has(idx) ||
+          (this.sketchFullyConstrained && !this.entities[idx]?.construction)
+        if (locked) {
+          this.noticeOnce(
+            'This geometry is fully defined - delete a dimension or constraint to move it.'
+          )
+        } else {
+          this.drag = { idx, handle: this.grabHandle(idx, uv), last: uv }
+          this.dragMoved = false
+          this.preDragSnap = { ents: this.cloneEnts(), cons: this.cloneCons() }
+        }
       }
       this.redraw()
       this.onChange()
@@ -1041,10 +1085,19 @@ export class SketchController {
       this.pendingSnaps = []
       this.pendingMids = []
       this.selected = []
+      this.selectedDim = null
+      this.dimV = -1
       this.band = null
       this.pendingCon = null
       this.dom.style.cursor = ''
       this.redraw()
+    } else if (
+      (ev.key === 'Delete' || ev.key === 'Backspace') &&
+      this.tool === 'select' &&
+      this.selectedDim != null
+    ) {
+      ev.preventDefault()
+      this.deleteDimension()
     } else if (ev.key === 'Enter' && this.tool === 'spline' && this.pending.length >= 2) {
       this.commit()
       this.redraw()
@@ -1063,6 +1116,31 @@ export class SketchController {
     } else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') {
       this.undo()
     }
+  }
+
+  /** Remove the dimension whose label is selected. Any Distance / Radius (base
+   *  or session) can go - that is the whole point of "delete a dimension". */
+  private deleteDimension(): void {
+    const i = this.selectedDim
+    this.selectedDim = null
+    if (i == null || i < 0 || i >= this.constraints.length) {
+      this.redraw()
+      return
+    }
+    this.snapshot()
+    if (i < this.baseConstraintCount) {
+      // a dimension that came back from a reopen - queue it for removal from the
+      // real sketch on Finish, and shift the base count so new refs stay aligned
+      this.removedBaseConstraints.push(this.constraints[i])
+      this.baseConstraintCount--
+    }
+    this.constraints.splice(i, 1)
+    if (this.lastUserConstraint === i) this.lastUserConstraint = -1
+    else if (this.lastUserConstraint > i) this.lastUserConstraint--
+    this.geomV++
+    this.redraw()
+    this.scheduleSolve()
+    this.onChange()
   }
 
   /** Delete the selected entities (only ones added this session) and drop /
@@ -1637,6 +1715,7 @@ export class SketchController {
     this.constrainedSet = new Set()
     for (let i = 0; i < this.entities.length; i++)
       if (!free.has(i)) this.constrainedSet.add(i)
+    this.sketchFullyConstrained = !!res.fullyConstrained
     this.geomV++
     this.redraw()
   }
@@ -2165,18 +2244,23 @@ export class SketchController {
     return px / (ppm > 0.05 ? ppm : 8)
   }
 
-  private dimLabel(text: string, at: THREE.Vector3, driven = true): THREE.Sprite {
+  private dimLabel(text: string, at: THREE.Vector3, driven = true, selected = false): THREE.Sprite {
     const dpr = 2
     const c = document.createElement('canvas')
     c.width = 160 * dpr
     c.height = 44 * dpr
     const g = c.getContext('2d')!
     g.scale(dpr, dpr)
-    g.fillStyle = driven ? 'rgba(18,20,24,0.9)' : 'rgba(18,20,24,0.7)'
+    g.fillStyle = selected ? 'rgba(58,42,20,0.95)' : driven ? 'rgba(18,20,24,0.9)' : 'rgba(18,20,24,0.7)'
     const r = 6
     g.beginPath()
     g.roundRect(2, 2, 156, 40, r)
     g.fill()
+    if (selected) {
+      g.strokeStyle = '#ffb020'
+      g.lineWidth = 2.5
+      g.stroke()
+    }
     g.fillStyle = driven ? '#ffd27a' : '#9fd0f0'
     g.font = '600 24px ui-sans-serif, system-ui, sans-serif'
     g.textAlign = 'center'
@@ -2226,7 +2310,8 @@ export class SketchController {
     text: string,
     driven: boolean,
     owner = -1,
-    offset: [number, number] = [0, 0]
+    offset: [number, number] = [0, 0],
+    selected = false
   ): THREE.Group {
     const g = new THREE.Group()
     g.userData = { dimOwner: owner, dimKind: 'linear' }
@@ -2262,7 +2347,7 @@ export class SketchController {
     const lu = (a1[0] + b1[0]) / 2 + ux * along + nx * this.mmForPx(8) * s
     const lv = (a1[1] + b1[1]) / 2 + uy * along + ny * this.mmForPx(8) * s
     if (owner >= 0) this.dimLabelUV.set(owner, { uv: [lu, lv], kind: 'linear' })
-    g.add(this.dimLabel(text, this.toWorld(lu, lv), driven))
+    g.add(this.dimLabel(text, this.toWorld(lu, lv), driven, selected))
     g.renderOrder = 32
     return g
   }
@@ -2275,7 +2360,8 @@ export class SketchController {
     text: string,
     driven: boolean,
     owner = -1,
-    offset: [number, number] = [0, 0]
+    offset: [number, number] = [0, 0],
+    selected = false
   ): THREE.Group {
     const g = new THREE.Group()
     g.userData = { dimOwner: owner, dimKind: 'radius' }
@@ -2301,7 +2387,7 @@ export class SketchController {
     const lu = base[0] + ux * this.mmForPx(2)
     const lv = base[1] + uy * this.mmForPx(2)
     if (owner >= 0) this.dimLabelUV.set(owner, { uv: [lu, lv], kind: 'radius' })
-    g.add(this.dimLabel(text, this.toWorld(lu, lv), driven))
+    g.add(this.dimLabel(text, this.toWorld(lu, lv), driven, selected))
     g.renderOrder = 32
     return g
   }
@@ -2315,7 +2401,8 @@ export class SketchController {
     this.dimLabelUV.clear()
 
     // Dimensions are only shown once the user assigns them - never by default.
-    for (const con of this.constraints) {
+    for (let ci = 0; ci < this.constraints.length; ci++) {
+      const con = this.constraints[ci]
       if (con.value == null) continue
       if (con.type !== 'Distance' && con.type !== 'Radius') continue
       const r0 = con.refs[0]
@@ -2323,10 +2410,11 @@ export class SketchController {
       const e = this.entities[i]
       if (!e || e.construction) continue
       const nudge = this.dimOffsets.get(i) ?? [0, 0]
+      const sel = this.selectedDim === ci
       if (e.type === 'line') {
-        this.dimGroup.add(this.makeDim(e.a, e.b, 1, this.fmt(con.value), true, i, nudge))
+        this.dimGroup.add(this.makeDim(e.a, e.b, 1, this.fmt(con.value), true, i, nudge, sel))
       } else if (e.type === 'circle' || e.type === 'arc') {
-        this.dimGroup.add(this.makeRadial(e.c, e.r, `R ${this.fmt(con.value)}`, true, i, nudge))
+        this.dimGroup.add(this.makeRadial(e.c, e.r, `R ${this.fmt(con.value)}`, true, i, nudge, sel))
       }
     }
 

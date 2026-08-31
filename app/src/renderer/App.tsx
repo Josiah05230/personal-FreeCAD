@@ -430,6 +430,7 @@ export function App(): JSX.Element {
     const newEnts = vpApi.current?.getNewSketchEntities() ?? []
     const allEnts = vpApi.current?.getSketchEntities() ?? []
     const cons = (vpApi.current?.getNewSketchConstraints() ?? []) as SketchConstraint[]
+    const removedCons = (vpApi.current?.getRemovedSketchConstraints() ?? []) as SketchConstraint[]
     const { frame } = sketchSession
     // optimistic origin-plane entry may not have the real id back yet
     let id = sketchSession.sketchId
@@ -461,7 +462,7 @@ export function App(): JSX.Element {
     // 2. commit to the engine in the background, then reconcile with the real
     //    (constraint-solved) geometry. Uses the quiet RPC path - no spinner.
     try {
-      await apiQuiet.sketchFinish(id, newEnts, cons)
+      await apiQuiet.sketchFinish(id, newEnts, cons, removedCons)
       const [scene, tree] = await Promise.all([apiQuiet.sceneGet(), apiQuiet.treeGet()])
       setMeshes(scene.meshes)
       setSketches(scene.sketches ?? [])

@@ -1126,9 +1126,14 @@ def _apply_sketch_constraints(sk, constraints, emap):
             return int(ref["geo"])
         return emap[int(ref.get("new", 0))][int(ref.get("sub", 0))]
 
+    # per client constraint: the sketch ConstraintIndex it became, or None if it
+    # was rejected / errored. Callers that care (sketch.solve) use this to tell
+    # an over-constraint apart from a mapping glitch.
+    applied = []
     for c in constraints or []:
         ct = c.get("type")
         refs = c.get("refs", [])
+        before = int(sk.ConstraintCount)
         try:
             if ct in ("Distance", "Radius", "Diameter") and refs:
                 v = float(c.get("value", 0) or 0)
@@ -1161,13 +1166,62 @@ def _apply_sketch_constraints(sk, constraints, emap):
                     gid(refs[2]), int(refs[2].get("pt", 1))))
         except Exception:
             pass
+        now = int(sk.ConstraintCount)
+        # 1-based sketch constraint index (matches ConflictingConstraints etc.),
+        # or None if this client constraint was rejected outright
+        applied.append(now if now > before else None)
+    return applied
+
+
+_REOPEN_GEO_TIDS = ("Part::GeomLineSegment", "Part::GeomCircle",
+                    "Part::GeomArcOfCircle", "Part::GeomBSplineCurve")
+
+
+def _remove_matching_constraints(sk, removed):
+    """Delete constraints from a reopened sketch that the editor dropped. The
+    editor addresses geometry by entity index; rebuild the same index->geoId map
+    sketch.reopen used. Matches on type + primary geoId (+ point); value ignored
+    so an edited-then-deleted dimension still matches."""
+    ent_to_geo = {}
+    ei = 0
+    for gid, g in enumerate(sk.Geometry):
+        if g.TypeId in _REOPEN_GEO_TIDS:
+            ent_to_geo[ei] = gid
+            ei += 1
+    for want in removed or []:
+        wt = want.get("type")
+        wrefs = want.get("refs", [])
+        if not wrefs:
+            continue
+        r0 = wrefs[0]
+        raw = int(r0["geo"]) if "geo" in r0 else None
+        if raw is None:
+            continue
+        wg = ent_to_geo.get(raw, raw)  # editor index -> geoId (datum ids pass through)
+        wp = int(r0.get("pt", 0))
+        for ci in range(int(sk.ConstraintCount) - 1, -1, -1):
+            con = sk.Constraints[ci]
+            if con.Type != wt:
+                continue
+            if int(getattr(con, "First", -2000)) != wg:
+                continue
+            if wp and int(getattr(con, "FirstPos", 0)) != wp:
+                continue
+            try:
+                sk.delConstraint(ci)
+            except Exception:
+                pass
+            break
 
 
 @method("sketch.finish")
-def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None):
+def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None,
+                  removedConstraints=None):
     """Commit geometry + manual constraints and close the sketch in one call
     (editor sends everything at once so there is a single recompute)."""
     d, sk = _obj(sketchId)
+    if removedConstraints:
+        _remove_matching_constraints(sk, removedConstraints)
     emap = _add_sketch_elements(sk, elements) if elements else []
     if constraints:
         _apply_sketch_constraints(sk, constraints, emap)
@@ -1257,9 +1311,7 @@ def sketch_solve(elements=None, constraints=None, sketchId=None):
         emap = _add_sketch_elements(sk, elements or [])
         pre = int(sk.ConstraintCount)          # constraints the rect set etc. added
         clist = constraints or []
-        if clist:
-            _apply_sketch_constraints(sk, clist, emap)
-        added = int(sk.ConstraintCount) - pre
+        applied = _apply_sketch_constraints(sk, clist, emap) if clist else []
         sd.recompute()
         try:
             free_pairs = sk.getGeometryWithDependentParameters()
@@ -1267,22 +1319,31 @@ def sketch_solve(elements=None, constraints=None, sketchId=None):
         except Exception:
             free_geo = None
 
-        # diagnostics -> client 0-based indices into `constraints`, but only when
-        # every constraint we were handed actually made it in (1:1 mapping)
+        # map a sketch ConstraintIndex back to the client's 0-based index using
+        # the per-constraint applied list (robust to extras the rect adds, and to
+        # constraints FreeCAD rejected outright)
+        _sk_to_client = {si: ci for ci, si in enumerate(applied) if si is not None}
+
         def _client_idx(names):
             out = []
-            if added != len(clist):
-                return out
             for si in names or []:
-                j = int(si) - pre - 1
-                if 0 <= j < len(clist):
-                    out.append(j)
+                ci = _sk_to_client.get(int(si))
+                if ci is not None:
+                    out.append(ci)
             return out
 
         conflicting = _client_idx(getattr(sk, "ConflictingConstraints", ()))
         redundant = _client_idx(getattr(sk, "RedundantConstraints", ()))
         partial = _client_idx(getattr(sk, "PartiallyRedundantConstraints", ()))
         malformed = _client_idx(getattr(sk, "MalformedConstraints", ()))
+
+        # a client constraint that did NOT make it in (and is not just a
+        # duplicate we would have added anyway) is itself an over-constraint
+        # signal - surface it so the editor's veto / precheck can act
+        rejected = [ci for ci, si in enumerate(applied) if si is None]
+        for ci in rejected:
+            if ci not in redundant and ci not in conflicting:
+                redundant.append(ci)
         geom = []
         free_elems = []
         for i, ids in enumerate(emap):
