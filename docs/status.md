@@ -1,6 +1,6 @@
 # Status
 
-Updated 2026-08-30. Live-test feedback batches 1-22 all addressed. All roadmap milestones have a
+Updated 2026-08-30. Live-test feedback batches 1-23 all addressed. All roadmap milestones have a
 working first version. `docs/FEEDBACK.md` tracks the live-test checklist. KiCad interop has a first
 slice (board import + placeholders); next: component STEP models + connector->joint mapping.
 
@@ -56,6 +56,29 @@ slice (board import + placeholders); next: component STEP models + connector->jo
 ### Packaging
 - electron-builder: AppImage + NSIS, FreeCAD bundled as extraResources, runtime
   path resolution, `scripts/package.sh`. `--dir` build verified.
+
+## Batch 23 additions
+
+- Drag honours constraints directionally: a fully-solved entity does not drag
+  (hint bar explains); dragging a corner of a dimensioned rectangle keeps the
+  dimensioned side rigid instead of shearing. `clampDragTarget` drops the
+  locked component(s) of the drag target.
+- SKETCH ribbon fold-outs open (were absolute-positioned and clipped by the
+  ribbon body overflow; now fixed-positioned like every other ribbon group).
+- Dimension value labels are draggable - grab the bubble, the witness / leader
+  lines re-route. Offset is client-side only for now (resets on reopen).
+- Extrude visibility fixes: the viewport re-frames the first time a solid
+  appears; sketch geometry contributes to the scene bounding box so Fit lands
+  on a sketch-only scene; finishing a sketch refreshes meshes. The browser
+  only lists a Body once it has a real solid feature (a lone sketch / datum in
+  the starter body no longer surfaces one).
+- File menu: "Import..." / "Export...". Export offers STEP / IGES / BREP / STL
+  / OBJ / 3MF / PLY / OFF through the engine's generic io.export.
+- Offset-Plane arrow highlights on hover and takes hover priority over planes
+  behind it.
+- Datum ops renamed Plane / Axis / Point. Construction browser group has a
+  visibility toggle. Delete is fully optimistic (tree + viewport + selection).
+  Operation dialogs close the instant you apply.
 
 ## Batch 22 additions
 

@@ -8,6 +8,15 @@ done, remove its line entirely rather than leaving a checked box.
 
 - [~] Sheet metal: only Base Flange (SheetMetal addon or pad fallback). Richer
       flange / unfold / bend features deferred (low priority).
+- [~] Draggable dimension labels work (drag the value bubble; witness / leader
+      lines follow). The nudge is client-side only - it resets when the sketch is
+      closed and reopened. Persist it in the recorded constraint next.
+- [~] Draw tool variants: 10 tools ship (corner + center rect, circle + 3-pt
+      circle, center + 3-pt arc, spline, ...). 2-point circle, tangent arc and
+      rotated 3-point rectangle still to add if wanted.
+- [~] Datum create: the dialog now dismisses instantly and the ghost previews
+      the result, but there is still a short engine gap before the real datum
+      lands in the tree / viewport (no synthesized optimistic datum yet).
 
 ## Deferred / not done
 
@@ -35,18 +44,30 @@ Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
 
-Batch 22 - addressed:
-- View-cube text is back (the transparent label quads did not render; they are
-  opaque face decals now, still oriented per-face so all six read relative to
-  FRONT).
-- "Nothing visible after clicking a face / finishing a sketch": the camera was
-  being left stranded on the sketch plane. It now snapshots the view on sketch
-  enter and restores it on exit. Undoing an extrude also re-shows the sketch it
-  consumed (sidecar _reshow_loose_sketches + App clears manual hide state on
-  undo/redo).
-- Multi-face pick locks to the first face's plane: once one face is selected,
-  only coplanar faces are added; clear the selection to switch planes. (Picker
-  now returns the face normal.)
-- SKETCH ribbon groups are pinnable fold-outs like every other ribbon group.
-- New draw tools: Center Rectangle, 3-Point Circle, 3-Point Arc, Spline
-  (Enter / double-click to finish a spline).
+(nothing pending)
+
+## Recently addressed - Batch 23
+
+- Drag now drops motion along already-constrained directions: a fully-solved
+  entity will not drag at all (hint bar says why), and corner-dragging a
+  dimensioned rectangle no longer shears - the dimensioned side stays rigid.
+- SKETCH ribbon fold-outs actually open now (they were position:absolute and
+  clipped by the ribbon body's overflow; now position:fixed like every other
+  ribbon group, anchored to the group button, with pin toggles).
+- Dimension value labels are draggable (see partial note above).
+- Extrude "nothing visible": the viewport now re-frames the first time a solid
+  appears, sketch-only scenes contribute to the bounding box so Fit lands on
+  them, and finishing a sketch refreshes meshes. The phantom "Body" was the
+  starter body showing up as soon as it held a sketch - the browser now only
+  lists a body once it has a real solid feature.
+- File menu says just "Import..." / "Export...". Export offers STEP / IGES /
+  BREP / STL / OBJ / 3MF / PLY / OFF and dispatches by extension through the
+  engine's generic io.export (import already accepted the same set).
+- Offset-Plane arrow highlights on hover (brightens + grows) and takes hover
+  priority so planes behind it no longer light up through it.
+- Datum features renamed: "Plane" / "Axis" / "Point" (was "Construction ...").
+- Construction group in the browser has a group visibility toggle.
+- Delete is fully optimistic now - the feature vanishes from tree, viewport
+  meshes / sketches / datums and selection immediately; engine reconciles after.
+- Operation dialogs dismiss the instant you click apply; the rebuild runs behind
+  the status spinner.
