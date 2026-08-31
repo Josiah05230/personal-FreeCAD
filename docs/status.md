@@ -1,6 +1,7 @@
 # Status
 
-Updated 2026-08-30. Live-test feedback batches 1-20 all addressed. All roadmap milestones now have a
+Updated 2026-08-30. Live-test feedback batches 1-21 all addressed (a few Batch 21 items still open:
+sketch-plane "stuck" repro, sketch-ribbon dropdown groups, more draw tools). All roadmap milestones have a
 working first version. `docs/FEEDBACK.md` tracks the live-test checklist. KiCad interop has a first
 slice (board import + placeholders); next: component STEP models + connector->joint mapping.
 
@@ -56,6 +57,22 @@ slice (board import + placeholders); next: component STEP models + connector->jo
 ### Packaging
 - electron-builder: AppImage + NSIS, FreeCAD bundled as extraResources, runtime
   path resolution, `scripts/package.sh`. `--dir` build verified.
+
+## Batch 21 additions
+
+- Sketch Ctrl+Z reverts one whole action (a rectangle = 4 lines + constraints
+  = one step); full pre-action snapshots. Drag, dimension, constraint, delete
+  are each one step.
+- An over-dimension is caught before the value prompt: the dimension request
+  trial-solves first and shows the notice if the geometry is already defined.
+- Boot scrim stays up until the first scene + tree load, so the app never looks
+  ready while still populating.
+- Delete Feature / cancel-new-sketch are optimistic - the tree updates now,
+  the engine rebuild runs behind the status spinner.
+- View-cube labels are oriented quads (not box UVs): every face reads relative
+  to FRONT.
+- Extrude no longer assumes "the only sketch"; sketch fill hardened against
+  NaN geometry that could blank the viewport.
 
 ## Batches 19-20 additions
 
