@@ -1,6 +1,6 @@
 # Status
 
-Updated 2026-08-31. Live-test feedback batches 1-27 addressed (open partials: full parametric
+Updated 2026-08-31. Live-test feedback batches 1-28 addressed (open partials: full parametric
 sketch tools, section analysis tab, optimistic datum row). All 16 feature-op RPCs smoke-tested
 end-to-end headless. All roadmap milestones have a
 working first version. `docs/FEEDBACK.md` tracks the live-test checklist. KiCad interop has a first
@@ -58,6 +58,23 @@ slice (board import + placeholders); next: component STEP models + connector->jo
 ### Packaging
 - electron-builder: AppImage + NSIS, FreeCAD bundled as extraResources, runtime
   path resolution, `scripts/package.sh`. `--dir` build verified.
+
+## Batch 28 additions
+
+- Extrude crash fixed: dimensioning opposite sides of a rect -> redundant
+  constraint -> sketch has 0 closed wires -> `build.pad` NULL shape ->
+  `feature.extrude` raised on `.Shape.isValid()` and left a broken model.
+  `sketch.finish` now `delConstraint`s the reported Redundant / PartiallyRedundant
+  and re-solves (returns `droppedRedundant`); `feature.extrude` pre-checks the
+  profile wire, null-guards the shape check, removes an invalid pad.
+- `SketchController.setDimension` and `onUp` call `runSolve()` immediately (was
+  240 ms `scheduleSolve` only) - dimensioned geometry snaps exact and the
+  over-dimension veto fires at once.
+- Live preview (`App.previewCall`) parses each field via `num()` (finite,
+  non-zero) so an expression / partial value cannot send NaN; `runLivePreview`
+  puts the engine error in `sketchNotice` instead of a silent retry loop.
+- `applyDrag`: grabbing a fully-sized rectangle edge ('whole') translates all 4
+  loop lines rigidly instead of stretching against a pinned far edge.
 
 ## Batch 27 additions
 
