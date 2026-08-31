@@ -21,7 +21,7 @@ export class Picker {
     private readonly overlayRoot: THREE.Object3D
   ) {
     this.ray.params.Line = { threshold: 1.2 }
-    this.ray.params.Points = { threshold: 3 }
+    this.ray.params.Points = { threshold: 1 }
   }
 
   private setPointer(ev: PointerEvent | MouseEvent): void {
@@ -72,7 +72,7 @@ export class Picker {
         const sub = (ud.vsub as string[] | undefined)?.[h.index]
         // only snap to a corner when the cursor is genuinely near it on screen,
         // so corners are not a huge invisible grab target over the whole model
-        if (sub && this.nearOnScreen(h.point, 12))
+        if (sub && this.nearOnScreen(h.point, 8))
           return {
             kind: 'vertex',
             bodyId: ud.bodyId,
@@ -117,12 +117,14 @@ export class Picker {
 
   private overlayFor(sel: Selection, content: THREE.Object3D, color: number): THREE.Object3D | null {
     if (sel.kind === 'vertex') {
-      // a small sphere ON the corner (blue on hover, orange when selected),
-      // sized in screen space so it stays a modest dot at any zoom
+      // a small dot ON the corner (blue on hover, orange when selected), kept to
+      // roughly a constant ~5 px on screen at any zoom, and clamped small
       const c = new THREE.Vector3(...sel.point)
-      const rad = c.distanceTo(this.camera.position) * 0.006
+      const fov = (this.camera.fov * Math.PI) / 180
+      const perPx = (2 * Math.tan(fov / 2) * c.distanceTo(this.camera.position)) / this.dom.clientHeight
+      const rad = Math.min(Math.max(perPx * 5, 1e-4), c.distanceTo(this.camera.position) * 0.02)
       const s = new THREE.Mesh(
-        new THREE.SphereGeometry(Math.max(rad, 1e-4), 16, 12),
+        new THREE.SphereGeometry(rad, 16, 12),
         new THREE.MeshBasicMaterial({ color, depthTest: false })
       )
       s.position.copy(c)

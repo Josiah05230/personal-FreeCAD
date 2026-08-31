@@ -347,14 +347,15 @@ export const api = {
   cylinder: (diameter: number, height: number) =>
     rpc<{ bodies: BodyTree[] }>('primitive.cylinder', { diameter, height }),
   extrude: (
-    sketchId: string,
+    sketchId: string | null,
     length: number,
     cut = false,
     midplane = false,
     reversed = false,
     upToFaceRef: GeomRef | null = null,
     operation: 'join' | 'cut' | 'newBody' = 'join',
-    offset = 0
+    offset = 0,
+    faceRef: { bodyId: string; sub: string } | null = null
   ) =>
     rpc<{ bodies: BodyTree[] }>('feature.extrude', {
       sketchId,
@@ -364,7 +365,8 @@ export const api = {
       reversed,
       upToFaceRef,
       operation,
-      offset
+      offset,
+      faceRef
     }),
   fillet: (edges: string[], radius: number) =>
     rpc<{ bodies: BodyTree[] }>('feature.fillet', { edges, radius }),

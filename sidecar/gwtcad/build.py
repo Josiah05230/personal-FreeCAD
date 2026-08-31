@@ -61,11 +61,19 @@ def circle_sketch(body, radius, plane="XY"):
     return sk
 
 
+def _set_profile(feature, profile):
+    """profile is either a Sketcher object or a (feature, [subnames]) tuple
+    naming a flat face of the base solid."""
+    feature.Profile = profile
+    if hasattr(profile, "Visibility"):
+        profile.Visibility = False
+
+
 def pad(body, sketch, length, reversed_=False, midplane=False, name="Pad",
         up_to=None, offset=0.0):
     p = body.newObject("PartDesign::Pad", name)
     p.Label = next_label(body, "PartDesign::Pad")
-    p.Profile = sketch
+    _set_profile(p, sketch)
     p.Length = float(length)
     if up_to is not None:
         try:
@@ -83,7 +91,6 @@ def pad(body, sketch, length, reversed_=False, midplane=False, name="Pad",
             p.SideType = "Symmetric"
         else:  # older FreeCAD
             p.Midplane = True
-    sketch.Visibility = False
     return p
 
 
@@ -91,7 +98,7 @@ def pocket(body, sketch, length, through_all=False, name="Pocket", up_to=None,
            offset=0.0):
     p = body.newObject("PartDesign::Pocket", name)
     p.Label = next_label(body, "PartDesign::Pocket")
-    p.Profile = sketch
+    _set_profile(p, sketch)
     if up_to is not None:
         try:
             p.Type = "UpToFace"
@@ -104,7 +111,6 @@ def pocket(body, sketch, length, through_all=False, name="Pocket", up_to=None,
         p.Type = "ThroughAll"
     else:
         p.Length = float(length)
-    sketch.Visibility = False
     return p
 
 

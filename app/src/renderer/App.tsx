@@ -74,10 +74,12 @@ export function App(): JSX.Element {
   const [sketches, setSketches] = useState<SketchRender[]>([])
   const [datums, setDatums] = useState<DatumDTO[]>([])
   const [bodies, setBodies] = useState<BodyTree[]>([])
+  // vertex is OFF by default - enable it in the Select dropdown when you
+  // actually need to snap to corners (Fusion-style). Faces / edges / bodies
+  // are what you click normally.
   const [selFilter, setSelFilter] = useState<SelKind[]>([
     'face',
     'edge',
-    'vertex',
     'sketch',
     'datum',
     'body',
@@ -504,15 +506,31 @@ export function App(): JSX.Element {
     sketchOnRef.current = null
   }, [sketchSession, refreshScene])
 
+  // live-preview lifecycle (defined fully below applyOp; the ref is stable)
+  const livePreviewRef = useRef({ seq: 0, applied: false, running: false })
+
   const applyOp = useCallback(
     async (kind: OpKind, v: OpValues, exprs: Record<string, string> = {}) => {
+      // discard any live-preview attempt so the real commit starts from a clean
+      // model (applyOp stays the single source of truth for the committed feature)
+      livePreviewRef.current.seq++
+      if (livePreviewRef.current.applied) {
+        livePreviewRef.current.applied = false
+        try {
+          await api.undo()
+        } catch {
+          /* nothing to roll back */
+        }
+      }
       // close the dialog the instant the user commits - the engine rebuild and
       // scene refresh run behind the status spinner and reconcile when they land
       setOp(null)
       const edges = selection.filter((s) => s.kind === 'edge').map((s) => (s as { sub: string }).sub)
       const faces = selection.filter((s) => s.kind === 'face') as Array<{
+        bodyId: string
         sub: string
         point: [number, number, number]
+        normal?: [number, number, number]
       }>
       const sketchIds = selection
         .filter((s) => s.kind === 'sketch')
@@ -520,12 +538,21 @@ export function App(): JSX.Element {
       try {
         switch (kind) {
           case 'extrude': {
-            if (!sketchIds[0])
-              throw new Error('Select a sketch (click its outline or filled face) to extrude.')
+            // extrude a sketch, OR (no sketch selected) a flat model face
+            const faceProfile =
+              !sketchIds[0] && faces[0] ? { bodyId: faces[0].bodyId, sub: faces[0].sub } : null
+            if (!sketchIds[0] && !faceProfile)
+              throw new Error(
+                'Select a sketch (its outline / filled face) or a flat face of the model to extrude.'
+              )
             const toObject = String(v.mode) === 'To object'
+            // in "to object" mode the second selected face is the target
+            const upToFace = toObject
+              ? faces[faceProfile ? 1 : 0]
+              : undefined
             const upTo =
-              (toObject && faces[0]
-                ? { kind: 'face', bodyId: (faces[0] as unknown as { bodyId: string }).bodyId, sub: faces[0].sub }
+              (upToFace
+                ? { kind: 'face', bodyId: upToFace.bodyId, sub: upToFace.sub }
                 : null) as import('./rpc').GeomRef | null
             const opMap: Record<string, 'join' | 'cut' | 'newBody'> = {
               Join: 'join',
@@ -534,14 +561,15 @@ export function App(): JSX.Element {
             }
             const operation = opMap[String(v.operation)] ?? 'join'
             await api.extrude(
-              sketchIds[0],
+              sketchIds[0] ?? null,
               Number(v.length),
               operation === 'cut',
               Boolean(v.midplane),
               Boolean(v.reversed),
               upTo,
               operation,
-              toObject ? Number(v.offset ?? 0) : 0
+              toObject ? Number(v.offset ?? 0) : 0,
+              faceProfile
             )
             break
           }
@@ -723,6 +751,127 @@ export function App(): JSX.Element {
     },
     [selection, afterEdit]
   )
+
+  // ---- live feature preview ----
+  // Builds the feature in the engine (which is transactional) as the dialog's
+  // number changes, rolling the previous attempt back first, so you see the
+  // real result while tuning. Apply keeps it; Cancel / close rolls it back.
+  const previewCall = useCallback(
+    (kind: OpKind, v: OpValues): Promise<unknown> | null => {
+      const faces = selection.filter((s) => s.kind === 'face') as Array<{
+        bodyId: string
+        sub: string
+        point: [number, number, number]
+      }>
+      const edges = selection.filter((s) => s.kind === 'edge').map((s) => (s as { sub: string }).sub)
+      const sk = selection.find((s) => s.kind === 'sketch') as { sketchId: string } | undefined
+      switch (kind) {
+        case 'extrude': {
+          const opMap: Record<string, 'join' | 'cut' | 'newBody'> = {
+            Join: 'join',
+            Cut: 'cut',
+            'New body': 'newBody'
+          }
+          const operation = opMap[String(v.operation)] ?? 'join'
+          const faceProfile = !sk && faces[0] ? { bodyId: faces[0].bodyId, sub: faces[0].sub } : null
+          if (!sk && !faceProfile) return null
+          return api.extrude(
+            sk?.sketchId ?? null,
+            Number(v.length),
+            operation === 'cut',
+            Boolean(v.midplane),
+            Boolean(v.reversed),
+            null,
+            operation,
+            0,
+            faceProfile
+          )
+        }
+        case 'revolve':
+          if (!sk) return null
+          return api.revolve(sk.sketchId, Number(v.angle), 'V', Boolean(v.cut), null)
+        case 'fillet':
+          return edges.length ? api.fillet(edges, Number(v.radius)) : null
+        case 'chamfer':
+          return edges.length ? api.chamfer(edges, Number(v.size)) : null
+        case 'shell':
+          return faces.length ? api.shell(faces.map((f) => f.sub), Number(v.thickness)) : null
+        case 'hole':
+          return faces[0]
+            ? api.hole(
+                faces[0].sub,
+                faces[0].point,
+                Number(v.diameter),
+                Number(v.depth),
+                Boolean(v.throughAll),
+                String(v.cutType || 'None') as 'None' | 'Counterbore' | 'Countersink',
+                Number(v.cutDiameter),
+                Number(v.cutDepth)
+              )
+            : null
+        case 'draft':
+          return faces.length
+            ? api.draft(faces.map((f) => f.sub), Number(v.angle), null, null)
+            : null
+        case 'rib':
+          return sk ? api.rib(sk.sketchId, Number(v.thickness), Boolean(v.reversed)) : null
+        default:
+          return null
+      }
+    },
+    [selection]
+  )
+
+  const rollbackPreview = useCallback(async () => {
+    const lp = livePreviewRef.current
+    if (!lp.applied) return
+    lp.applied = false
+    try {
+      await api.undo()
+    } catch {
+      /* nothing to undo */
+    }
+  }, [])
+
+  const runLivePreview = useCallback(
+    async (kind: OpKind, v: OpValues) => {
+      const lp = livePreviewRef.current
+      if (lp.running) return
+      lp.running = true
+      const seq = ++lp.seq
+      try {
+        await rollbackPreview()
+        const call = previewCall(kind, v)
+        if (!call) return
+        await call
+        if (seq !== lp.seq) {
+          // superseded while the engine was working - undo this attempt
+          try {
+            await api.undo()
+          } catch {
+            /* ignore */
+          }
+          return
+        }
+        lp.applied = true
+        await refreshMeshesOnly()
+      } catch {
+        // invalid params at this value - just leave the model as it was
+        livePreviewRef.current.applied = false
+      } finally {
+        lp.running = false
+      }
+    },
+    [previewCall, rollbackPreview, refreshMeshesOnly]
+  )
+
+  const endLivePreview = useCallback(async () => {
+    livePreviewRef.current.seq++
+    if (livePreviewRef.current.applied) {
+      await rollbackPreview()
+      await refreshScene()
+    }
+  }, [rollbackPreview, refreshScene])
 
   const cachePut = useCallback(
     (key: string, val: { scene: Awaited<ReturnType<typeof api.sceneGet>>; tree: Awaited<ReturnType<typeof api.treeGet>> }) => {
@@ -1643,7 +1792,7 @@ export function App(): JSX.Element {
                     pickPlanes={pickPlanes}
                     onPickPlane={(ref) => void beginSketch(ref)}
                     selectMode={selectMode}
-                    selFilter={selFilter}
+                    selFilter={measureMode ? [...selFilter, 'vertex', 'face', 'edge'] : selFilter}
                     previewPlane={op === 'datumPlane' ? previewPlane : sectionGhost}
                     onPreviewHandleDrag={onPreviewHandleDrag}
                     onWindowSelect={(sels) =>
@@ -1731,6 +1880,8 @@ export function App(): JSX.Element {
                       onApply={applyOp}
                       onCancel={() => setOp(null)}
                       onPreview={onDatumPlanePreview}
+                      onLivePreview={runLivePreview}
+                      onLivePreviewEnd={endLivePreview}
                       handleDrag={planeHandleDrag}
                     />
                   )}

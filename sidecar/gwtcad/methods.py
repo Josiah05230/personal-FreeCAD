@@ -171,17 +171,30 @@ def primitive_cylinder(diameter=40.0, height=40.0, name=None):
 
 
 @method("feature.extrude")
-def feature_extrude(sketchId, length=10.0, reversed=False, midplane=False, cut=False,
-                    upToFaceRef=None, operation=None, offset=0.0):
+def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, cut=False,
+                    upToFaceRef=None, operation=None, offset=0.0, faceRef=None):
     """operation: 'join' (add) | 'cut' (remove) | 'newBody' (separate solid).
     `cut=True` is kept as a shorthand for operation='cut'. When upToFaceRef is
-    given, `offset` is the extra distance past that face."""
-    d, sk = _obj(sketchId)
-    if sk.TypeId != "Sketcher::SketchObject":
-        raise RpcError(APP_ERROR, "%r is not a sketch" % sketchId)
-    body = sk.getParentGeoFeatureGroup()
-    if body is None or body.TypeId != "PartDesign::Body":
-        raise RpcError(APP_ERROR, "sketch is not inside a Body")
+    given, `offset` is the extra distance past that face. Instead of a sketch you
+    may pass `faceRef` ({bodyId, sub}) to extrude an existing flat model face."""
+    if faceRef and not sketchId:
+        d = session.doc(create=False)
+        if d is None:
+            raise RpcError(APP_ERROR, "no document")
+        fbody = d.getObject(faceRef["bodyId"])
+        if fbody is None:
+            raise RpcError(APP_ERROR, "no object %r" % faceRef["bodyId"])
+        body = fbody if fbody.TypeId == "PartDesign::Body" else fbody.getParentGeoFeatureGroup()
+        if body is None or body.TypeId != "PartDesign::Body":
+            raise RpcError(APP_ERROR, "that face is not on a Body")
+        sk = (body.Tip, [faceRef["sub"]])   # PartDesign accepts a base-solid face as a profile
+    else:
+        d, sk = _obj(sketchId)
+        if sk.TypeId != "Sketcher::SketchObject":
+            raise RpcError(APP_ERROR, "%r is not a sketch" % sketchId)
+        body = sk.getParentGeoFeatureGroup()
+        if body is None or body.TypeId != "PartDesign::Body":
+            raise RpcError(APP_ERROR, "sketch is not inside a Body")
     op = (operation or ("cut" if cut else "join")).lower()
     up = _resolve_ref(d, body, upToFaceRef) if upToFaceRef else None
     off = float(offset or 0.0)
@@ -191,7 +204,12 @@ def feature_extrude(sketchId, length=10.0, reversed=False, midplane=False, cut=F
         target = body
     elif op == "newbody":
         tip = getattr(body, "Tip", None)
-        if tip is not None and _kind(tip.TypeId) == "solid":
+        if isinstance(sk, tuple):
+            # a model-face profile cannot be copied into a fresh body - just pad
+            build.pad(body, sk, float(length), reversed_=reversed,
+                      midplane=midplane, up_to=up, offset=off)
+            target = body
+        elif tip is not None and _kind(tip.TypeId) == "solid":
             # body already has a solid - pad a copy of the sketch in a fresh body
             nb = build.new_body(d, next_label(None, "PartDesign::Body"))
             skc = d.copyObject(sk, False)

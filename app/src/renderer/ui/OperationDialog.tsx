@@ -48,7 +48,7 @@ const SPECS: Record<OpKind, OpSpec> = {
   extrude: {
     title: 'Extrude',
     needs: 'sketch',
-    hint: 'For "To object", also select the face to stop at',
+    hint: 'Profile: a sketch, or any flat face of the model. For "To object", also select the face to stop at.',
     fields: [
       {
         key: 'operation',
@@ -257,12 +257,26 @@ const SPECS: Record<OpKind, OpSpec> = {
 
 export type OpValues = Record<string, number | string | boolean>
 
+/** ops whose result we can re-render live as the number changes */
+const LIVE_PREVIEW: ReadonlySet<OpKind> = new Set<OpKind>([
+  'extrude',
+  'revolve',
+  'fillet',
+  'chamfer',
+  'shell',
+  'hole',
+  'draft',
+  'rib'
+])
+
 export function OperationDialog({
   kind,
   selection,
   onApply,
   onCancel,
   onPreview,
+  onLivePreview,
+  onLivePreviewEnd,
   handleDrag
 }: {
   kind: OpKind | null
@@ -270,6 +284,8 @@ export function OperationDialog({
   onApply: (kind: OpKind, values: OpValues, exprs: Record<string, string>) => void
   onCancel: () => void
   onPreview?: (info: { mode: string; offset: number } | null) => void
+  onLivePreview?: (kind: OpKind, values: OpValues) => void
+  onLivePreviewEnd?: () => void
   handleDrag?: { delta: number; phase: 'move' | 'end'; seq: number } | null
 }): JSX.Element | null {
   const spec = kind ? SPECS[kind] : null
@@ -314,6 +330,18 @@ export function OperationDialog({
 
   // drop the ghost when the dialog unmounts
   useEffect(() => () => onPreview?.(null), []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // live feature preview: debounce value / selection changes and ask the app to
+  // build the feature in the engine so it renders as you tune the number
+  useEffect(() => {
+    if (!kind || !LIVE_PREVIEW.has(kind) || !onLivePreview) return
+    if (!selection.length) return
+    const t = setTimeout(() => onLivePreview(kind, values), 260)
+    return () => clearTimeout(t)
+  }, [kind, selection, values]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // roll the live preview back when the dialog closes without applying
+  useEffect(() => () => onLivePreviewEnd?.(), []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // apply drags of the ghost's handle to the Offset field
   const dragBaseRef = useState<{ v: number | null }>(() => ({ v: null }))[0]
@@ -370,6 +398,8 @@ export function OperationDialog({
   const faces = selection.filter((s) => s.kind === 'face')
   const sketchesSel = selection.filter((s) => s.kind === 'sketch')
   const extrudeToObj = kind === 'extrude' && values.mode === 'To object'
+  // extrude accepts a sketch OR a flat model face as the profile
+  const extrudeProfileOk = kind === 'extrude' && (sketchesSel.length === 1 || faces.length >= 1)
   const planeSel = selection.filter((s) => s.kind === 'plane' || s.kind === 'face')
   const datumPlaneToObj = kind === 'datumPlane' && values.mode === 'To object'
   const datumPlaneMsg = datumPlaneToObj
@@ -385,11 +415,15 @@ export function OperationDialog({
       : spec.needs === 'faces' || spec.needs === 'planeFace'
         ? `${faces.length} face${faces.length === 1 ? '' : 's'} selected`
         : spec.needs === 'sketch'
-          ? !sketchesSel.length
-            ? 'select a sketch (click its outline or filled face)'
-            : extrudeToObj && faces.length === 0
-              ? 'now select the face to extrude up to'
-              : 'sketch selected'
+          ? kind === 'extrude' && !sketchesSel.length && !faces.length
+            ? 'select a sketch, or a flat face of the model'
+            : !sketchesSel.length && kind !== 'extrude'
+              ? 'select a sketch (click its outline or filled face)'
+              : extrudeToObj && faces.length <= (sketchesSel.length ? 0 : 1)
+                ? 'now select the face to extrude up to'
+                : sketchesSel.length
+                  ? 'sketch selected'
+                  : 'face selected'
           : spec.needs === 'sketches2'
             ? `${sketchesSel.length} sketches selected (need 2+)`
             : spec.needs === 'plane'
@@ -410,8 +444,12 @@ export function OperationDialog({
     (spec.needs === 'faces' && faces.length > 0) ||
     (spec.needs === 'planeFace' && faces.length === 1) ||
     (spec.needs === 'sketch' &&
+      kind !== 'extrude' &&
       sketchesSel.length === 1 &&
       (!extrudeToObj || faces.length >= 1)) ||
+    (kind === 'extrude' &&
+      extrudeProfileOk &&
+      (!extrudeToObj || faces.length >= (sketchesSel.length ? 1 : 2))) ||
     (spec.needs === 'sketches2' && sketchesSel.length >= 2) ||
     (spec.needs === 'plane' && planeSel.length >= 1) ||
     (spec.needs === 'axis' && axisSel.length >= 1)
