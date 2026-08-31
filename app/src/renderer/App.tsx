@@ -1379,7 +1379,12 @@ export function App(): JSX.Element {
 
   const addJoint = useCallback(async () => {
     const fs = selection.filter((s) => s.kind === 'face') as Array<{ bodyId: string; sub: string }>
-    if (fs.length !== 2) return
+    if (fs.length !== 2) {
+      window.alert(
+        'Select two faces (one on each component) to mate, then run Joint. Joint type is set in the Assembly panel.'
+      )
+      return
+    }
     const r = await api.assemblyAddJoint(jointType, fs[0].bodyId, fs[0].sub, fs[1].bodyId, fs[1].sub)
     await refreshScene()
     setSelection([])
@@ -1458,6 +1463,8 @@ export function App(): JSX.Element {
         surfaceFill,
         surfaceStitch,
         surfaceOffset,
+        addComponent,
+        addJoint,
         selectFilterNode: <SelectModeToggle mode={selectMode} onMode={setSelectMode} />,
         selectFilterMenuNode: <SelectKindList active={selFilter} onActive={setSelFilter} />
       }),
@@ -1476,6 +1483,8 @@ export function App(): JSX.Element {
       surfaceFill,
       surfaceStitch,
       surfaceOffset,
+      addComponent,
+      addJoint,
       fitView,
       startDrawing,
       startMeasure,

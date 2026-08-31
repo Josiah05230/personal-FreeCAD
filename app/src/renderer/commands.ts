@@ -46,6 +46,8 @@ export interface CommandContext {
   surfaceFill: () => Promise<void>
   surfaceStitch: () => Promise<void>
   surfaceOffset: () => Promise<void>
+  addComponent: () => Promise<void>
+  addJoint: () => Promise<void>
   selectFilterNode: ReactNode
   selectFilterMenuNode: ReactNode
 }
@@ -96,8 +98,8 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'ins.kicad', title: 'Import KiCad PCB', group: 'Insert', tab: 'SOLID', icon: 'combine', run: () => ctx.importKicad() },
     { id: 'ins.kicadSync', title: 'Re-sync KiCad PCB', group: 'Insert', tab: 'SOLID', icon: 'combine', run: () => ctx.reimportKicad() },
     // --- assemble ---
-    { id: 'asm.newComponent', title: 'New Component', group: 'Assemble', tab: 'ASSEMBLE', icon: 'combine' },
-    { id: 'asm.joint', title: 'Joint', group: 'Assemble', tab: 'ASSEMBLE', icon: 'axis' },
+    { id: 'asm.newComponent', title: 'Insert Component', group: 'Assemble', tab: 'ASSEMBLE', icon: 'combine', run: () => ctx.addComponent() },
+    { id: 'asm.joint', title: 'Joint', group: 'Assemble', tab: 'ASSEMBLE', icon: 'axis', run: () => ctx.addJoint() },
     { id: 'asm.rigidGroup', title: 'Rigid Group', group: 'Assemble', tab: 'ASSEMBLE', icon: 'combine' },
     // --- inspect (a group on SOLID, F360-style) ---
     { id: 'insp.measure', title: 'Measure', group: 'Inspect', tab: 'SOLID', icon: 'axis', hotkey: 'm', run: () => ctx.startMeasure() },
@@ -110,8 +112,8 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'file.open', title: 'Open…', group: 'File', tab: 'TOOLS', icon: 'point', hotkey: 'ctrl o', run: () => ctx.open() },
     { id: 'file.save', title: 'Save', group: 'File', tab: 'TOOLS', icon: 'point', hotkey: 'ctrl s', run: () => ctx.save() },
     { id: 'file.saveAs', title: 'Save As…', group: 'File', tab: 'TOOLS', icon: 'point', run: () => ctx.saveAs() },
-    { id: 'file.export', title: 'Export (STEP / STL)…', group: 'File', tab: 'TOOLS', icon: 'point', run: () => ctx.exportModel() },
-    { id: 'file.import', title: 'Import STEP…', group: 'File', tab: 'TOOLS', icon: 'point', run: () => ctx.importStep() },
+    { id: 'file.export', title: 'Export…', group: 'File', tab: 'TOOLS', icon: 'point', run: () => ctx.exportModel() },
+    { id: 'file.import', title: 'Import…', group: 'File', tab: 'TOOLS', icon: 'point', run: () => ctx.importStep() },
     { id: 'view.fit', title: 'Fit View', group: 'View', tab: 'TOOLS', icon: 'point', hotkey: 'f6', run: () => ctx.fitView() },
     { id: 'panel.data', title: 'Toggle Data Panel', group: 'View', tab: 'TOOLS', icon: 'point', run: () => ctx.toggleData() },
     { id: 'panel.git', title: 'Toggle History (Git)', group: 'View', tab: 'TOOLS', icon: 'point', run: () => ctx.toggleGit() }
