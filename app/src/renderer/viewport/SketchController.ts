@@ -976,6 +976,10 @@ export class SketchController {
     this.solveLocal(new Set())
     this.geomV++
     this.redraw()
+    // snap to the EXACT constrained shape now, not 240 ms later - the local
+    // relaxation is only an approximation, the real solver honours every
+    // dimension. Without this a dimensioned rectangle stays visibly off.
+    void this.runSolve()
     this.scheduleSolve()
     ev.stopPropagation()
     this.onChange()
@@ -1807,6 +1811,9 @@ export class SketchController {
     this.lastUserConstraint = this.constraints.length - 1
     this.geomV++
     this.redraw()
+    // solve now so the geometry snaps to the dimension immediately AND an
+    // over-dimension is vetoed right away instead of 240 ms later
+    void this.runSolve()
     this.scheduleSolve()
     this.onChange()
     return true

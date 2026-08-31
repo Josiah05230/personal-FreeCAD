@@ -199,6 +199,21 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
     up = _resolve_ref(d, body, upToFaceRef) if upToFaceRef else None
     off = float(offset or 0.0)
 
+    # a sketch profile has to be a closed wire before it can be padded / pocketed;
+    # give a clear message instead of a downstream OCC null-shape crash
+    if not isinstance(sk, tuple) and sk.TypeId == "Sketcher::SketchObject":
+        try:
+            wires = sk.Shape.Wires
+            if not wires or not any(w.isClosed() for w in wires):
+                raise RpcError(APP_ERROR,
+                               "the sketch profile is not a closed loop - close "
+                               "the outline (or remove a redundant constraint) "
+                               "before extruding")
+        except RpcError:
+            raise
+        except Exception:
+            pass
+
     if op == "cut":
         build.pocket(body, sk, float(length), up_to=up, offset=off)
         target = body
@@ -227,8 +242,26 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
         target = body
 
     d.recompute()
-    if not target.Shape.isValid():
-        raise RpcError(APP_ERROR, "extrude produced an invalid shape")
+
+    # if the pad failed, tear it back out so the model is not left broken (a
+    # NULL Shape here would otherwise crash every later op and blank the scene)
+    try:
+        shp = getattr(target, "Shape", None)
+        ok = shp is not None and not shp.isNull() and shp.isValid()
+    except Exception:
+        ok = False
+    if not ok:
+        try:
+            for o in list(body.Group):
+                if o.TypeId in ("PartDesign::Pad", "PartDesign::Pocket") and \
+                   (getattr(o, "State", None) and "Invalid" in o.State):
+                    d.removeObject(o.Name)
+            d.recompute()
+        except Exception:
+            pass
+        raise RpcError(APP_ERROR,
+                       "extrude produced an invalid shape - check the sketch is a "
+                       "clean closed profile and try again")
     return tree_get()
 
 
@@ -1228,6 +1261,29 @@ def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None,
     if autoConstrain:
         _auto_constrain(sk)
     d.recompute()
+
+    # a redundant constraint (e.g. dimensioning both opposite sides of a
+    # rectangle) can drop the solver into a state with NO closed wire, which
+    # then crashes the pad. Strip the redundants FreeCAD names and re-solve so
+    # the profile stays usable. Conflicting ones we leave (real user error) but
+    # still report.
+    dropped = 0
+    try:
+        red = sorted({int(i) for i in getattr(sk, "RedundantConstraints", ())} |
+                     {int(i) for i in getattr(sk, "PartiallyRedundantConstraints", ())},
+                     reverse=True)
+        for ci in red:
+            if 1 <= ci <= int(sk.ConstraintCount):
+                try:
+                    sk.delConstraint(ci - 1)
+                    dropped += 1
+                except Exception:
+                    pass
+        if dropped:
+            d.recompute()
+    except Exception:
+        pass
+
     sk.Visibility = True
     closed = False
     try:
@@ -1246,6 +1302,7 @@ def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None,
         "count": int(sk.GeometryCount),
         "constrained": bool(sk.FullyConstrained),
         "closed": closed,
+        "droppedRedundant": dropped,
     }
 
 

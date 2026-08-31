@@ -769,6 +769,12 @@ export function App(): JSX.Element {
       }>
       const edges = selection.filter((s) => s.kind === 'edge').map((s) => (s as { sub: string }).sub)
       const sk = selection.find((s) => s.kind === 'sketch') as { sketchId: string } | undefined
+      // preview only with plain finite numbers - a half-typed value or an
+      // expression ("10mm") would send NaN to the engine and blank the result
+      const num = (key: string): number | null => {
+        const n = Number(v[key])
+        return Number.isFinite(n) && n !== 0 ? n : null
+      }
       switch (kind) {
         case 'extrude': {
           const opMap: Record<string, 'join' | 'cut' | 'newBody'> = {
@@ -778,10 +784,11 @@ export function App(): JSX.Element {
           }
           const operation = opMap[String(v.operation)] ?? 'join'
           const faceProfile = !sk && faces[0] ? { bodyId: faces[0].bodyId, sub: faces[0].sub } : null
-          if (!sk && !faceProfile) return null
+          const len = num('length')
+          if ((!sk && !faceProfile) || len == null || String(v.mode) === 'To object') return null
           return api.extrude(
             sk?.sketchId ?? null,
-            Number(v.length),
+            len,
             operation === 'cut',
             Boolean(v.midplane),
             Boolean(v.reversed),
@@ -791,34 +798,48 @@ export function App(): JSX.Element {
             faceProfile
           )
         }
-        case 'revolve':
-          if (!sk) return null
-          return api.revolve(sk.sketchId, Number(v.angle), 'V', Boolean(v.cut), null)
-        case 'fillet':
-          return edges.length ? api.fillet(edges, Number(v.radius)) : null
-        case 'chamfer':
-          return edges.length ? api.chamfer(edges, Number(v.size)) : null
-        case 'shell':
-          return faces.length ? api.shell(faces.map((f) => f.sub), Number(v.thickness)) : null
-        case 'hole':
-          return faces[0]
+        case 'revolve': {
+          const ang = num('angle')
+          return sk && ang != null ? api.revolve(sk.sketchId, ang, 'V', Boolean(v.cut), null) : null
+        }
+        case 'fillet': {
+          const rad = num('radius')
+          return edges.length && rad != null ? api.fillet(edges, rad) : null
+        }
+        case 'chamfer': {
+          const sz = num('size')
+          return edges.length && sz != null ? api.chamfer(edges, sz) : null
+        }
+        case 'shell': {
+          const th = num('thickness')
+          return faces.length && th != null ? api.shell(faces.map((f) => f.sub), th) : null
+        }
+        case 'hole': {
+          const dia = num('diameter')
+          const dep = num('depth')
+          return faces[0] && dia != null && dep != null
             ? api.hole(
                 faces[0].sub,
                 faces[0].point,
-                Number(v.diameter),
-                Number(v.depth),
+                dia,
+                dep,
                 Boolean(v.throughAll),
                 String(v.cutType || 'None') as 'None' | 'Counterbore' | 'Countersink',
-                Number(v.cutDiameter),
-                Number(v.cutDepth)
+                Number(v.cutDiameter) || 0,
+                Number(v.cutDepth) || 0
               )
             : null
-        case 'draft':
-          return faces.length
-            ? api.draft(faces.map((f) => f.sub), Number(v.angle), null, null)
+        }
+        case 'draft': {
+          const ang = num('angle')
+          return faces.length && ang != null
+            ? api.draft(faces.map((f) => f.sub), ang, null, null)
             : null
-        case 'rib':
-          return sk ? api.rib(sk.sketchId, Number(v.thickness), Boolean(v.reversed)) : null
+        }
+        case 'rib': {
+          const th = num('thickness')
+          return sk && th != null ? api.rib(sk.sketchId, th, Boolean(v.reversed)) : null
+        }
         default:
           return null
       }
@@ -858,10 +879,14 @@ export function App(): JSX.Element {
           return
         }
         lp.applied = true
+        setSketchNotice(null)
         await refreshMeshesOnly()
-      } catch {
-        // invalid params at this value - just leave the model as it was
+      } catch (e) {
+        // the op itself failed at these inputs - tell the user why instead of
+        // silently showing nothing (this is what "extrude doesn't preview" was)
         livePreviewRef.current.applied = false
+        const msg = (e as Error).message || 'preview failed'
+        setSketchNotice(`Preview: ${msg.replace(/^RPC \w+\.\w+:\s*/, '')}`)
       } finally {
         lp.running = false
       }
@@ -871,6 +896,7 @@ export function App(): JSX.Element {
 
   const endLivePreview = useCallback(async () => {
     livePreviewRef.current.seq++
+    setSketchNotice(null)
     if (livePreviewRef.current.applied) {
       await rollbackPreview()
       await refreshScene()
