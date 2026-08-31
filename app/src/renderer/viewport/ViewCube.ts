@@ -21,7 +21,7 @@ const LABELS: Record<string, string> = {
 const S = 1.6 // cube half-extent * 2 (side length)
 const H = S / 2
 
-function faceTexture(text: string): THREE.CanvasTexture {
+function faceFillTexture(): THREE.CanvasTexture {
   const c = document.createElement('canvas')
   c.width = c.height = 128
   const g = c.getContext('2d')!
@@ -30,11 +30,23 @@ function faceTexture(text: string): THREE.CanvasTexture {
   g.strokeStyle = '#b7bcc3'
   g.lineWidth = 4
   g.strokeRect(4, 4, 120, 120)
+  const t = new THREE.CanvasTexture(c)
+  t.colorSpace = THREE.SRGBColorSpace
+  return t
+}
+
+/** Just the label text on transparent, upright. Orientation is handled by the
+ *  quad's own quaternion, not the box UVs - so every face reads relative to the
+ *  FRONT face. */
+function labelTexture(text: string): THREE.CanvasTexture {
+  const c = document.createElement('canvas')
+  c.width = c.height = 128
+  const g = c.getContext('2d')!
   g.fillStyle = '#333941'
   g.font = '600 19px "Segoe UI", system-ui, sans-serif'
   g.textAlign = 'center'
   g.textBaseline = 'middle'
-  g.fillText(text, 64, 68)
+  g.fillText(text, 64, 66)
   const t = new THREE.CanvasTexture(c)
   t.colorSpace = THREE.SRGBColorSpace
   t.anisotropy = 4
@@ -79,9 +91,12 @@ export class ViewCube {
     this.cube = new THREE.Group()
     this.scene.add(this.cube)
 
-    // visible textured box
-    const mats = FACE_KEYS.map((k) => new THREE.MeshBasicMaterial({ map: faceTexture(LABELS[k]) }))
-    const box = new THREE.Mesh(new THREE.BoxGeometry(S, S, S), mats)
+    // plain shaded box + border
+    const fill = faceFillTexture()
+    const box = new THREE.Mesh(
+      new THREE.BoxGeometry(S, S, S),
+      new THREE.MeshBasicMaterial({ map: fill })
+    )
     this.cube.add(box)
     this.cube.add(
       new THREE.LineSegments(
@@ -89,6 +104,36 @@ export class ViewCube {
         new THREE.LineBasicMaterial({ color: 0x8a9099 })
       )
     )
+
+    // label quads: one per face, oriented so its "up" is world +Z for the side
+    // faces (and toward BACK / FRONT for top / bottom), i.e. relative to FRONT
+    const labelGeo = new THREE.PlaneGeometry(S * 0.94, S * 0.94)
+    for (const k of FACE_KEYS) {
+      const d = k.split(',').map(Number) as [number, number, number]
+      const normal = new THREE.Vector3(...d)
+      const up =
+        d[2] === 0
+          ? new THREE.Vector3(0, 0, 1)
+          : d[2] > 0
+            ? new THREE.Vector3(0, 1, 0)
+            : new THREE.Vector3(0, -1, 0)
+      const xAxis = new THREE.Vector3().crossVectors(up, normal).normalize()
+      const yAxis = new THREE.Vector3().crossVectors(normal, xAxis).normalize()
+      const label = new THREE.Mesh(
+        labelGeo,
+        new THREE.MeshBasicMaterial({
+          map: labelTexture(LABELS[k]),
+          transparent: true,
+          depthWrite: false
+        })
+      )
+      label.quaternion.setFromRotationMatrix(
+        new THREE.Matrix4().makeBasis(xAxis, yAxis, normal)
+      )
+      label.position.copy(normal).multiplyScalar(H + 0.007)
+      label.renderOrder = 2
+      this.cube.add(label)
+    }
 
     this.buildZones()
 

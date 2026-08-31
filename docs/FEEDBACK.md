@@ -51,10 +51,16 @@ Batch 21 (part 1) - addressed:
   guard, wrapped the region fill + selection overlays in try/catch) - this was
   what could blank the viewport.
 
+Batch 21 (part 2) - addressed:
+- Delete Feature is optimistic now: the feature leaves the tree + selection
+  immediately, the engine rebuild runs behind the status-bar spinner and
+  reconciles when done. Cancelling a brand-new sketch likewise leaves the
+  editor at once and deletes in the background.
+- View-cube labels are drawn on their own oriented quads (not the box UVs), so
+  every face reads relative to FRONT: the four side labels are upright with
+  +Z up, TOP / BOT align to the FRONT edge.
+
 Still open from this batch:
 -when I click a face to sketch on it, it can get "stuck/locked to the same plane"; the plane / face picker only offers shown sketches, not hidden ones. Needs a concrete repro.
--why does delete feature have to load so long if there are no dependant features? Just hide it in the UI and process it in the background (still have the spinner at the bottom whenever you are processing anything)
---same/similar when I cancel a sketch
--sections in the sketch ribbon should be a dropdown same as everyother ribbon (also with the pin to ribbon functionality)
---you need to also add center point rectangle, 3-point circle, the different types of arcs, splines, etc.
--on the view cube, all of the text should be drawn relative to the 'front' face. Right now, all sides are wrong besides front and top.
+-sections in the sketch ribbon should be a dropdown like every other ribbon group (with pin-to-ribbon support).
+-more draw tools: center-point rectangle, 3-point circle, arc variants, splines.

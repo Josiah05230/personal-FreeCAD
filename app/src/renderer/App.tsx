@@ -446,20 +446,26 @@ export function App(): JSX.Element {
         }
       }
       // a re-opened sketch is left exactly as it was - the edits only ever lived
-      // in the editor and were never sent. Only a brand-new sketch is discarded.
+      // in the editor and were never sent. Only a brand-new sketch is discarded,
+      // and that happens in the background (leave the editor immediately).
       if (id && !sketchSession.isEdit) {
-        try {
-          await api.deleteFeature(id)
-        } catch {
-          /* fresh sketch may already be gone */
-        }
+        const deadId = id
+        void (async () => {
+          try {
+            await api.deleteFeature(deadId)
+          } catch {
+            /* fresh sketch may already be gone */
+          }
+          await refreshScene()
+        })()
+      } else {
+        void refreshScene()
       }
     }
     setSketchSession(null)
     setSketchInitial([])
     setSketchInitialCons([])
     sketchOnRef.current = null
-    await refreshScene()
   }, [sketchSession, refreshScene])
 
   const applyOp = useCallback(
@@ -775,10 +781,21 @@ export function App(): JSX.Element {
   const deleteFeature = useCallback(
     async (id: string) => {
       if (!window.confirm('Delete this feature?')) return
-      await api.deleteFeature(id)
-      await afterEdit()
+      // drop it from the tree + selection right away; the engine rebuild runs
+      // behind the status-bar spinner and reconciles when it lands
+      setBodies((bs) => bs.map((b) => ({ ...b, features: b.features.filter((f) => f.id !== id) })))
+      setSelection((cur) => cur.filter((s) => !('sketchId' in s && s.sketchId === id)))
+      markDirty()
+      try {
+        await api.deleteFeature(id)
+        const [scene, tree] = await Promise.all([api.sceneGet(), api.treeGet()])
+        applySceneTree(scene, tree)
+      } catch (e) {
+        window.alert((e as Error).message)
+        await refreshScene()
+      }
     },
-    [afterEdit]
+    [markDirty, applySceneTree, refreshScene]
   )
 
   const suppressFeature = useCallback(
