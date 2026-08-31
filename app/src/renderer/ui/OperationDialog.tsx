@@ -156,6 +156,7 @@ const SPECS: Record<OpKind, OpSpec> = {
   shell: {
     title: 'Shell',
     needs: 'faces',
+    hint: 'Select the face(s) to remove (open the shell); the rest is hollowed to the thickness.',
     fields: [
       { key: 'thickness', label: 'Thickness', type: 'number', default: 2, min: 0.01, step: 0.5 }
     ]
@@ -210,6 +211,7 @@ const SPECS: Record<OpKind, OpSpec> = {
   mirror: {
     title: 'Mirror',
     needs: 'plane',
+    hint: 'Select the mirror plane (a datum / origin plane or a flat face). The whole body is mirrored and joined.',
     fields: []
   },
   datumPlane: {

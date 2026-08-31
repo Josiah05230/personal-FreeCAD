@@ -237,6 +237,8 @@ export function App(): JSX.Element {
   // ---- selection ----
   const measureModeRef = useRef(false)
   measureModeRef.current = measureMode
+  const opRef = useRef<OpKind | null>(null)
+  opRef.current = op
   const onSelect = useCallback(
     (sel: Selection | null, additive: boolean) => {
       if (!sel) {
@@ -262,8 +264,10 @@ export function App(): JSX.Element {
         const k = selKey(sel)
         if (cur.some((s) => selKey(s) === k)) return cur.filter((s) => selKey(s) !== k)
         // multi-face pick: once one face is chosen, only add coplanar faces
-        // (clear the selection to start on a different plane)
-        if (sel.kind === 'face' && sel.normal) {
+        // (clear the selection to start on a different plane). Only for extrude
+        // / no dialog - shell, draft, etc. legitimately want faces on many planes.
+        const coplanarLock = opRef.current == null || opRef.current === 'extrude'
+        if (coplanarLock && sel.kind === 'face' && sel.normal) {
           const first = cur.find((s) => s.kind === 'face' && s.normal) as
             | Extract<Selection, { kind: 'face' }>
             | undefined

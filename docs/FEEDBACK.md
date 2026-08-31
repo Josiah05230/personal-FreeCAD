@@ -17,6 +17,20 @@ done, remove its line entirely rather than leaving a checked box.
 - [~] Datum create: the dialog now dismisses instantly and the ghost previews
       the result, but there is still a short engine gap before the real datum
       lands in the tree / viewport (no synthesized optimistic datum yet).
+- [~] Parametric sketch tools: 3-point circle / arc now pin to any drawn point
+      that snapped onto existing geometry (PointOnObject), and center-rectangle
+      carries its construction diagonals. FULLY parametric versions (a real
+      construction POINT entity at each pick, symmetric-about-centre) need a new
+      point entity type in the sketcher - not done yet.
+- [ ] Live feature preview: extrude / fillet / chamfer / etc. should re-render
+      as the value changes in the dialog, then commit to the engine in the
+      background. Needs a preview/commit/rollback path around the op RPCs; not
+      started. (Datum plane already previews via its ghost.)
+- [~] Section: cross-hatching is drawn (a hatched quad in the cut plane). "OK ->
+      Analysis tab in the tree + timeline item" (a persisted section feature) is
+      not done - section is still a live view-only tool.
+- [~] Hole: you place it by clicking the face (click again to move the point) and
+      the dialog now says so. A live on-face position marker is still to add.
 
 ## Deferred / not done
 
@@ -46,28 +60,21 @@ stays short.
 
 (nothing pending)
 
-## Recently addressed - Batch 23
+## Recently addressed - Batch 24
 
-- Drag now drops motion along already-constrained directions: a fully-solved
-  entity will not drag at all (hint bar says why), and corner-dragging a
-  dimensioned rectangle no longer shears - the dimensioned side stays rigid.
-- SKETCH ribbon fold-outs actually open now (they were position:absolute and
-  clipped by the ribbon body's overflow; now position:fixed like every other
-  ribbon group, anchored to the group button, with pin toggles).
-- Dimension value labels are draggable (see partial note above).
-- Extrude "nothing visible": the viewport now re-frames the first time a solid
-  appears, sketch-only scenes contribute to the bounding box so Fit lands on
-  them, and finishing a sketch refreshes meshes. The phantom "Body" was the
-  starter body showing up as soon as it held a sketch - the browser now only
-  lists a body once it has a real solid feature.
-- File menu says just "Import..." / "Export...". Export offers STEP / IGES /
-  BREP / STL / OBJ / 3MF / PLY / OFF and dispatches by extension through the
-  engine's generic io.export (import already accepted the same set).
-- Offset-Plane arrow highlights on hover (brightens + grows) and takes hover
-  priority so planes behind it no longer light up through it.
-- Datum features renamed: "Plane" / "Axis" / "Point" (was "Construction ...").
-- Construction group in the browser has a group visibility toggle.
-- Delete is fully optimistic now - the feature vanishes from tree, viewport
-  meshes / sketches / datums and selection immediately; engine reconciles after.
-- Operation dialogs dismiss the instant you click apply; the rebuild runs behind
-  the status spinner.
+- Corners no longer carry a permanent dot. The vertex point cloud is an
+  invisible raycast target; a small sphere appears ON a corner only when the
+  cursor is within ~12 px of it (blue on hover, orange when selected, held
+  until deselect). No marker on the pointer.
+- Measure: click to add a probe (face / edge / vertex - vertex was missing),
+  rolls at two, no shift and no coplanar lock; panel shows the count + Reset.
+- 3-point circle / arc pin to snapped existing geometry (PointOnObject);
+  center rectangle gets construction diagonals. (Full parametric = partial.)
+- Section: hatched quad drawn in the cut plane so it reads as a cut face.
+- Hole: dialog says to click the face to place the point (re-click to move it).
+- Coplanar-face lock is now extrude-only, so Shell / Draft can take faces on
+  different planes again. Shell + Mirror verified working headless.
+- Export: all formats (STEP / IGES / BREP / STL / OBJ / 3MF / PLY / OFF) go
+  through io.export and are verified headless - 3MF writes fine. (The old
+  3MF error was the pre-Batch-23 exportStep-only path; fixed there.)
+- Mirror / Shell dialogs now have a hint saying what to select.

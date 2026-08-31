@@ -1,6 +1,7 @@
 # Status
 
-Updated 2026-08-30. Live-test feedback batches 1-23 all addressed. All roadmap milestones have a
+Updated 2026-08-30. Live-test feedback batches 1-24 addressed (24 has partials: full parametric
+sketch tools, live feature preview, section analysis tab). All roadmap milestones have a
 working first version. `docs/FEEDBACK.md` tracks the live-test checklist. KiCad interop has a first
 slice (board import + placeholders); next: component STEP models + connector->joint mapping.
 
@@ -56,6 +57,26 @@ slice (board import + placeholders); next: component STEP models + connector->jo
 ### Packaging
 - electron-builder: AppImage + NSIS, FreeCAD bundled as extraResources, runtime
   path resolution, `scripts/package.sh`. `--dir` build verified.
+
+## Batch 24 additions
+
+- Model corners: the vertex point object is invisible (raycast target only);
+  a small sphere marks a corner only when the cursor is within ~12 px of it
+  (Picker.nearOnScreen), blue on hover / orange on select. No permanent dots.
+- Measure: click adds a probe (face / edge / vertex), rolls at two, no shift /
+  no coplanar lock; panel shows the count and a Reset button.
+- 3-point circle / arc add PointOnObject to any drawn point that snapped onto
+  existing geometry; center rectangle adds its two construction diagonals.
+- Section: a hatched quad is drawn in the cut plane (hatchTexture, sized to the
+  model bbox) so the section reads as a cut face.
+- Coplanar-face lock is now extrude-only (opRef); Shell / Draft can select
+  faces on multiple planes again. Shell + Mirror verified working headless.
+- Mirror / Shell / Hole dialogs gained hints describing what to select.
+- Export: all of io.export's formats verified headless including 3MF.
+
+Partials still open: fully-parametric sketch tools (need a point entity),
+live feature preview (needs preview/commit/rollback around op RPCs), section
+"OK -> Analysis tab" (persisted section feature).
 
 ## Batch 23 additions
 

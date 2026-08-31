@@ -38,6 +38,28 @@ function gradientBackground(): THREE.Texture {
   return tex
 }
 
+/** 45-degree section hatching, one 14mm tile, tiled by the caller. */
+function hatchTexture(): THREE.Texture {
+  const c = document.createElement('canvas')
+  c.width = 32
+  c.height = 32
+  const ctx = c.getContext('2d')!
+  ctx.clearRect(0, 0, 32, 32)
+  ctx.strokeStyle = 'rgba(70,80,92,0.85)'
+  ctx.lineWidth = 2
+  for (let i = -32; i < 64; i += 8) {
+    ctx.beginPath()
+    ctx.moveTo(i, 0)
+    ctx.lineTo(i + 32, 32)
+    ctx.stroke()
+  }
+  const tex = new THREE.CanvasTexture(c)
+  tex.wrapS = THREE.RepeatWrapping
+  tex.wrapT = THREE.RepeatWrapping
+  tex.colorSpace = THREE.SRGBColorSpace
+  return tex
+}
+
 export function Viewport({
   meshes,
   sketches = [],
@@ -169,6 +191,7 @@ export function Viewport({
     lastCenter: THREE.Vector3
     lastRadius: number
     preSketchCam: { pos: THREE.Vector3; up: THREE.Vector3; pivot: THREE.Vector3 } | null
+    sectionCap: THREE.Mesh | null
   } | null>(null)
 
   useEffect(() => {
@@ -221,7 +244,8 @@ export function Viewport({
       framedOnce: false,
       lastCenter: new THREE.Vector3(),
       lastRadius: 60,
-      preSketchCam: null
+      preSketchCam: null,
+      sectionCap: null
     }
 
     if (apiRef) {
@@ -641,29 +665,74 @@ export function Viewport({
     if (st?.content) st.picker.setSelection(selection, st.content)
   }, [selection, meshes])
 
-  // section clipping plane
+  // section clipping plane + hatched cut indicator
   useEffect(() => {
     const st = stateRef.current
     if (!st) return
     const planes: THREE.Plane[] = []
+    let n: THREE.Vector3 | null = null
+    let constant = 0
     if (section) {
-      const n = new THREE.Vector3(
+      n = new THREE.Vector3(
         section.plane === 'YZ' ? 1 : 0,
         section.plane === 'XZ' ? 1 : 0,
         section.plane === 'XY' ? 1 : 0
       )
       if (section.flip) n.negate()
-      planes.push(new THREE.Plane(n, -section.offset * (section.flip ? -1 : 1)))
+      constant = -section.offset * (section.flip ? -1 : 1)
+      planes.push(new THREE.Plane(n.clone(), constant))
     }
     st.scene.traverse((o) => {
       const m = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined
-      if (!m) return
+      if (!m || o === st.sectionCap) return
       for (const mat of Array.isArray(m) ? m : [m]) {
         mat.clippingPlanes = planes
         mat.clipShadows = true
         mat.needsUpdate = true
       }
     })
+
+    if (st.sectionCap) {
+      st.scene.remove(st.sectionCap)
+      st.sectionCap.geometry.dispose()
+      const cm = st.sectionCap.material as THREE.MeshBasicMaterial
+      cm.map?.dispose()
+      cm.dispose()
+      st.sectionCap = null
+    }
+    if (section && n && st.content) {
+      // a hatched quad sitting in the cut plane, sized to the model, so the
+      // section reads as a real cut face rather than just a clipped-away void
+      const box = new THREE.Box3().setFromObject(st.content)
+      if (!box.isEmpty()) {
+        const size = box.getSize(new THREE.Vector3())
+        const center = box.getCenter(new THREE.Vector3())
+        const diag = Math.max(size.length(), 1)
+        const tex = hatchTexture()
+        tex.repeat.set(diag / 14, diag / 14)
+        const cap = new THREE.Mesh(
+          new THREE.PlaneGeometry(diag, diag),
+          new THREE.MeshBasicMaterial({
+            map: tex,
+            transparent: true,
+            opacity: 0.9,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+            polygonOffset: true,
+            polygonOffsetFactor: -1
+          })
+        )
+        cap.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n)
+        // centre the quad on the model's cross-section: project the model centre
+        // onto the cut plane (n·x + constant = 0)
+        cap.position.copy(
+          center.clone().sub(n.clone().multiplyScalar(center.dot(n) + constant))
+        )
+        cap.renderOrder = 5
+        st.scene.add(cap)
+        st.sectionCap = cap
+      }
+    }
   }, [section, meshes, datums])
 
   // enter / leave sketch mode
