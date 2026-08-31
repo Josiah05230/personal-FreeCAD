@@ -191,8 +191,15 @@ export function buildScene(
     }
 
     // fill every closed region the sketch's edges enclose (a rectangle drawn as
-    // four separate lines still gets one filled, pickable face)
-    for (const fill of fillSketchRegions(s.polys)) {
+    // four separate lines still gets one filled, pickable face). Never let a bad
+    // profile take down the whole scene build.
+    let regions: THREE.BufferGeometry[] = []
+    try {
+      regions = fillSketchRegions(s.polys)
+    } catch {
+      regions = []
+    }
+    for (const fill of regions) {
       const face = new THREE.Mesh(
         fill,
         new THREE.MeshBasicMaterial({
@@ -302,11 +309,14 @@ function fillLoop(pts: THREE.Vector3[]): THREE.BufferGeometry | null {
   for (const t of tris)
     for (const idx of t) {
       const p = pts[idx]
+      if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) return null
       pos.push(p.x, p.y, p.z)
     }
+  if (!pos.length) return null
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
-  g.computeVertexNormals()
+  // MeshBasicMaterial is unlit - no normals needed, and computing them on a
+  // degenerate triangle can inject NaN that blanks the whole frame
   return g
 }
 

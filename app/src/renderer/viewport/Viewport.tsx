@@ -233,6 +233,8 @@ export function Viewport({
         availableSketchConstraints: () =>
           stateRef.current?.sketch?.availableConstraints() ?? [],
         setSketchDimension: (i, v) => stateRef.current?.sketch?.setDimension(i, v) ?? false,
+        checkSketchDimension: (i) =>
+          stateRef.current?.sketch?.dimensionPrecheck(i) ?? Promise.resolve(null),
         sketchSelectedCount: () => stateRef.current?.sketch?.selectedCount ?? 0,
         setSketchConstruction: (on) => stateRef.current?.sketch?.setConstruction(on),
         toggleSketchConstruction: () =>

@@ -257,7 +257,6 @@ export type OpValues = Record<string, number | string | boolean>
 export function OperationDialog({
   kind,
   selection,
-  sketchCount = 0,
   onApply,
   onCancel,
   onPreview,
@@ -265,8 +264,6 @@ export function OperationDialog({
 }: {
   kind: OpKind | null
   selection: Selection[]
-  /** total sketches in the doc - lets sketch ops fall back to "the only one" */
-  sketchCount?: number
   onApply: (kind: OpKind, values: OpValues, exprs: Record<string, string>) => void
   onCancel: () => void
   onPreview?: (info: { mode: string; offset: number } | null) => void
@@ -386,9 +383,7 @@ export function OperationDialog({
         ? `${faces.length} face${faces.length === 1 ? '' : 's'} selected`
         : spec.needs === 'sketch'
           ? !sketchesSel.length
-            ? sketchCount === 1
-              ? 'using the only sketch'
-              : 'select a sketch'
+            ? 'select a sketch (click its outline or filled face)'
             : extrudeToObj && faces.length === 0
               ? 'now select the face to extrude up to'
               : 'sketch selected'
@@ -412,7 +407,7 @@ export function OperationDialog({
     (spec.needs === 'faces' && faces.length > 0) ||
     (spec.needs === 'planeFace' && faces.length === 1) ||
     (spec.needs === 'sketch' &&
-      (sketchesSel.length === 1 || (sketchesSel.length === 0 && sketchCount === 1)) &&
+      sketchesSel.length === 1 &&
       (!extrudeToObj || faces.length >= 1)) ||
     (spec.needs === 'sketches2' && sketchesSel.length >= 2) ||
     (spec.needs === 'plane' && planeSel.length >= 1) ||

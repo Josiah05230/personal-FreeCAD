@@ -35,46 +35,26 @@ Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
 
-Batch 18 - addressed:
-- Over-dimensioning / redundant constraints are now blocked. `sketch.solve`
-  reports conflicting / redundant / partially-redundant / malformed constraint
-  indices; the editor pulls the just-added constraint back out and shows an
-  orange notice bar ("already fully defined here - delete one first"). Applies
-  to dimensions and manual constraints alike.
-- Dragging a rectangle side stays a rectangle the whole way - the local
-  relaxation now anchors welds to the directly-dragged point (and then to axis
-  anchors) instead of any "fixed" key, so it no longer skews then snaps back.
-- Snapping a line's endpoint to another line's midpoint while drawing now
-  records a real Midpoint (Symmetric) constraint, and the relaxation keeps it
-  centred through drags.
+Batch 21 (part 1) - addressed:
+- Ctrl+Z in a sketch now reverts one whole action: a rectangle (4 lines + its
+  constraints) undoes in a single step, as does a drag, a dimension, a manual
+  constraint, or a delete. Full pre-action snapshots, ~120 deep.
+- Placing an over-dimension is caught BEFORE the number prompt: the dimension
+  request runs a trial solve first and, if the geometry is already fully
+  defined there, shows the orange notice and never opens the input.
+- The boot scrim now stays up until the first scene + tree have actually
+  loaded, so the app never looks "ready" while it is still populating.
+- Extrude no longer assumes "the only sketch" - you pick one (click its outline
+  or filled face); a real miss gives a clear message.
+- Sketch fill is hardened: a degenerate profile can no longer inject NaN
+  geometry (dropped the needless vertex-normal pass, added a finite-value
+  guard, wrapped the region fill + selection overlays in try/catch) - this was
+  what could blank the viewport.
 
-Batch 19 - addressed:
-- Constraint glyphs are back, placed AT where the constraint acts: Coincident /
-  PointOnObject sit exactly on the point (small), Symmetric sits at the middle
-  of the symmetry line; H/V/parallel/etc. still sit beside the edge. Hovering
-  one still lights its partner geometry.
-- Rectangle drag: the far side is now pinned while you drag (opposite edge for
-  an edge drag, opposite corner for a corner drag) so it resizes cleanly
-  instead of shearing / going angled.
-- Extrude: if no sketch is selected but the doc has exactly one, Extrude (and
-  Revolve / Rib) use it - "finish the sketch, hit Extrude" now works. The
-  dialog says "using the only sketch"; a real miss gives a clear message.
-- Sketch fill now chains separate edge segments into closed loops, so a
-  rectangle drawn as four lines gets one filled, pickable, hover-highlighted
-  face - a proper Extrude target.
-
-Batch 20 - addressed:
-- Reopen a sketch and its constraints + dimensions come back: `sketch.reopen`
-  now serializes the sketch's constraints into the editor's format (keyed by
-  entity index), the editor loads them (shown as dims / symbols / DoF colour),
-  and only constraints added in the session are re-sent on Finish.
-- Cancelling a re-opened sketch no longer deletes it - the edits only lived in
-  the editor and were never sent, so backing out reverts perfectly. A
-  brand-new sketch is still discarded on Cancel.
-- The sketch-plane picker shows the real origin (and construction) planes for
-  the duration and highlights the one under the cursor; it no longer spawns
-  separate ghost planes. `_datum_dto` carries role + ptype; the picker returns
-  the plane's role so it attaches as an origin plane.
-- The scratch solver now sees the whole sketch (base + new) with refs resolved
-  to absolute indices, so DoF colouring and the over-constraint veto are
-  accurate on a reopened sketch too.
+Still open from this batch:
+-when I click a face to sketch on it, it can get "stuck/locked to the same plane"; the plane / face picker only offers shown sketches, not hidden ones. Needs a concrete repro.
+-why does delete feature have to load so long if there are no dependant features? Just hide it in the UI and process it in the background (still have the spinner at the bottom whenever you are processing anything)
+--same/similar when I cancel a sketch
+-sections in the sketch ribbon should be a dropdown same as everyother ribbon (also with the pin to ribbon functionality)
+--you need to also add center point rectangle, 3-point circle, the different types of arcs, splines, etc.
+-on the view cube, all of the text should be drawn relative to the 'front' face. Right now, all sides are wrong besides front and top.

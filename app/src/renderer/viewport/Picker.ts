@@ -226,7 +226,12 @@ export class Picker {
       this.hoverOverlay = null
     }
     if (sel) {
-      const ov = this.overlayFor(sel, content, HILITE)
+      let ov: THREE.Object3D | null = null
+      try {
+        ov = this.overlayFor(sel, content, HILITE)
+      } catch {
+        ov = null
+      }
       if (ov) {
         this.hoverOverlay = ov
         this.overlayRoot.add(ov)
@@ -241,7 +246,12 @@ export class Picker {
     }
     this.selOverlays = []
     for (const s of sels) {
-      const ov = this.overlayFor(s, content, SELECT)
+      let ov: THREE.Object3D | null = null
+      try {
+        ov = this.overlayFor(s, content, SELECT)
+      } catch {
+        ov = null
+      }
       if (ov) {
         this.selOverlays.push(ov)
         this.overlayRoot.add(ov)

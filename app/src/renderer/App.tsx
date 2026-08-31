@@ -472,13 +472,11 @@ export function App(): JSX.Element {
       const sketchIds = selection
         .filter((s) => s.kind === 'sketch')
         .map((s) => (s as { sketchId: string }).sketchId)
-      // extrude / revolve / rib work on "the sketch" - if none is selected but
-      // the doc has exactly one, use it (matches "finish sketch, then Extrude")
-      if (!sketchIds.length && sketches.length === 1) sketchIds.push(sketches[0].id)
       try {
         switch (kind) {
           case 'extrude': {
-            if (!sketchIds[0]) throw new Error('Select a sketch (or its filled face) to extrude.')
+            if (!sketchIds[0])
+              throw new Error('Select a sketch (click its outline or filled face) to extrude.')
             const toObject = String(v.mode) === 'To object'
             const upTo =
               (toObject && faces[0]
@@ -679,7 +677,7 @@ export function App(): JSX.Element {
         window.alert((e as Error).message)
       }
     },
-    [selection, sketches, afterEdit]
+    [selection, afterEdit]
   )
 
   const cachePut = useCallback(
@@ -1162,8 +1160,11 @@ export function App(): JSX.Element {
         try {
           const p = await api.ping()
           if (cancelled) return
-          setStatus({ phase: 'ready', freecad: `${p.freecad} ${p.build}` })
+          // finish the first scene / tree load BEFORE dropping the boot scrim,
+          // so the app never appears "ready" while it is still populating
           await refreshScene()
+          if (cancelled) return
+          setStatus({ phase: 'ready', freecad: `${p.freecad} ${p.build}` })
           return
         } catch (e) {
           lastErr = e
@@ -1399,6 +1400,13 @@ export function App(): JSX.Element {
 
   const onSketchDimensionRequest = useCallback(
     async (entityIndex: number, kind: 'linear' | 'radius') => {
+      // stop an over-dimensioning attempt before the user even types a number
+      const block = await (vpApi.current?.checkSketchDimension?.(entityIndex) ??
+        Promise.resolve(null))
+      if (block) {
+        flashSketchNotice(block)
+        return
+      }
       const label = kind === 'radius' ? 'Radius' : 'Length'
       const txt = await promptText(`${label} (number or expression)`, '')
       if (!txt) return
@@ -1414,7 +1422,7 @@ export function App(): JSX.Element {
       vpApi.current?.setSketchDimension(entityIndex, value)
       onSketchChange()
     },
-    [onSketchChange]
+    [onSketchChange, flashSketchNotice]
   )
 
   return (
@@ -1651,7 +1659,6 @@ export function App(): JSX.Element {
                     <OperationDialog
                       kind={op}
                       selection={selection}
-                      sketchCount={sketches.length}
                       onApply={applyOp}
                       onCancel={() => setOp(null)}
                       onPreview={onDatumPlanePreview}

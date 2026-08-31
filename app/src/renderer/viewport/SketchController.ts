@@ -283,23 +283,46 @@ export class SketchController {
     this.baseCount = this.entities.length
     this.constraints = cons.map((c) => ({ ...c, refs: c.refs.map((r) => ({ ...r })) }))
     this.baseConstraintCount = this.constraints.length
+    this.undoStack = []
     this.geomV++
     this.redraw()
     this.scheduleSolve()
   }
 
+  /** Full pre-action snapshot, so one Ctrl+Z reverts one user action (a
+   *  rectangle is 4 lines + its constraints, but still one undo step). */
+  private undoStack: Array<{ ents: SketchEntity[]; cons: RecordedConstraint[] }> = []
+
+  private dragMoved = false
+  private preDragSnap: { ents: SketchEntity[]; cons: RecordedConstraint[] } | null = null
+
+  private snapshot(): void {
+    this.undoStack.push({
+      ents: this.entities.map((e) => ({ ...e })),
+      cons: this.constraints.map((c) => ({ ...c, refs: c.refs.map((r) => ({ ...r })) }))
+    })
+    if (this.undoStack.length > 120) this.undoStack.shift()
+  }
+
   undo(): void {
+    // an in-progress polyline: drop the last placed point first
     if (this.pending.length) {
       this.pending.pop()
       this.pendingSnaps.pop()
-    } else if (this.constraints.length && this.entities.length <= this.baseCount) {
-      this.constraints.pop()
-    } else {
-      this.entities.pop()
-      // drop constraints that referenced the entity that just went away
-      const gone = this.entities.length - this.baseCount
-      this.constraints = this.constraints.filter((c) => !c.refs.some((r) => r.new === gone))
+      this.pendingMids.pop()
+      this.geomV++
+      this.redraw()
+      this.onChange()
+      return
     }
+    const s = this.undoStack.pop()
+    if (!s) return
+    this.entities = s.ents
+    this.constraints = s.cons
+    if (this.baseCount > this.entities.length) this.baseCount = this.entities.length
+    if (this.baseConstraintCount > this.constraints.length)
+      this.baseConstraintCount = this.constraints.length
+    this.selected = []
     this.geomV++
     this.redraw()
     this.scheduleSolve()
@@ -519,6 +542,11 @@ export class SketchController {
       } else {
         this.selected = [idx]
         this.drag = { idx, handle: this.grabHandle(idx, uv), last: uv }
+        this.dragMoved = false
+        this.preDragSnap = {
+          ents: this.entities.map((e) => ({ ...e })),
+          cons: this.constraints.map((c) => ({ ...c, refs: c.refs.map((r) => ({ ...r })) }))
+        }
       }
       this.redraw()
       this.onChange()
@@ -609,6 +637,7 @@ export class SketchController {
     // keep coincident corners welded and honour H / V while dragging - a
     // rectangle side stays a rectangle side (the sidecar still re-solves later)
     this.solveLocal(this.draggedKeys(), this.rectHoldKeys())
+    this.dragMoved = true
     this.drag.last = uv
     this.geomV++
     this.redraw()
@@ -704,6 +733,13 @@ export class SketchController {
     if (!this.drag) return
     const idx = this.drag.idx
     this.drag = null
+    // only a drag that actually moved something is an undo step
+    if (this.dragMoved && this.preDragSnap) {
+      this.undoStack.push(this.preDragSnap)
+      if (this.undoStack.length > 120) this.undoStack.shift()
+    }
+    this.preDragSnap = null
+    this.dragMoved = false
     // a point dropped on the origin / an axis gets auto-constrained (snapping
     // already put the coordinate exactly on it)
     this.anchorToAxes(idx)
@@ -823,6 +859,7 @@ export class SketchController {
       this.redraw()
       return
     }
+    this.snapshot()
     for (const r of rel) {
       this.entities.splice(this.baseCount + r, 1)
       this.constraints = this.constraints.filter((c) => !c.refs.some((rf) => rf.new === r))
@@ -837,6 +874,7 @@ export class SketchController {
   }
 
   private commit(): void {
+    this.snapshot() // one undo step per shape (a rectangle is 4 lines)
     const p = this.pending
     const snaps = this.pendingSnaps
     const mids = this.pendingMids
@@ -1286,11 +1324,54 @@ export class SketchController {
     return out
   }
 
+  /** Ask the solver whether a NEW dimension on this entity would over-constrain
+   *  it, so the UI can warn before even prompting for a number. Returns a
+   *  message, or null if it is fine. */
+  async dimensionPrecheck(index: number): Promise<string | null> {
+    const e = this.entities[index]
+    if (!e) return null
+    if (e.type === 'rect') return null
+    // re-typing an entity's own existing dimension is always allowed
+    if (this.entityHasDimension(index)) return null
+    if (!this.onSolve) return null
+    const cur =
+      e.type === 'line'
+        ? Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1])
+        : (e as { r: number }).r
+    if (!(cur > 0)) return null
+    const kind: RecordedConstraint['type'] = e.type === 'line' ? 'Distance' : 'Radius'
+    const cons = this.constraints.map((c) => ({
+      ...c,
+      refs: c.refs.map((r) =>
+        r.new != null
+          ? { geo: r.new + this.baseCount, ...(r.pt != null ? { pt: r.pt } : {}) }
+          : r
+      )
+    }))
+    const trial = [...cons, { type: kind, refs: [{ geo: index }], value: cur }]
+    let res: SketchSolveResult | null = null
+    try {
+      res = await this.onSolve(this.entities.slice(), trial)
+    } catch {
+      return null
+    }
+    if (!res) return null
+    const last = trial.length - 1
+    const bad =
+      (res.conflicting ?? []).includes(last) ||
+      (res.redundant ?? []).includes(last) ||
+      (res.partiallyRedundant ?? []).includes(last)
+    return bad
+      ? 'This geometry is already fully defined here - remove an existing dimension or constraint first.'
+      : null
+  }
+
   /** Set a numeric dimension on an entity (value already resolved from any
    *  expression). Line -> length; circle/arc -> radius. */
   setDimension(index: number, value: number): boolean {
     const e = this.entities[index]
     if (!e || !(value > 0)) return false
+    this.snapshot()
     if (e.type === 'line') {
       const dx = e.b[0] - e.a[0]
       const dy = e.b[1] - e.a[1]
@@ -1322,6 +1403,7 @@ export class SketchController {
     const idxs = this.selected.slice()
     const ents = idxs.map((i) => this.entities[i])
     if (ents.some((e) => !e)) return false
+    this.snapshot()
     const ref = (i: number, pt?: number): RecordedConstraint['refs'][number] =>
       i < this.baseCount ? { geo: i, pt } : { new: i - this.baseCount, sub: 0, pt }
 

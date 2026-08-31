@@ -23,6 +23,8 @@ export interface ViewportApi {
   pendingSketchConstraint: () => SketchConstraintType | null
   availableSketchConstraints: () => SketchConstraintType[]
   setSketchDimension: (entityIndex: number, value: number) => boolean
+  /** would a new dimension on this entity over-constrain it? message or null */
+  checkSketchDimension: (entityIndex: number) => Promise<string | null>
   sketchSelectedCount: () => number
   /** construction-geometry mode for newly drawn entities */
   setSketchConstruction: (on: boolean) => void
