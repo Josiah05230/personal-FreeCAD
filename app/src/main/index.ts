@@ -116,7 +116,13 @@ app.whenReady().then(async () => {
       defaultPath,
       filters: [
         { name: 'STEP', extensions: ['step', 'stp'] },
-        { name: 'STL', extensions: ['stl'] }
+        { name: 'IGES', extensions: ['iges', 'igs'] },
+        { name: 'BREP', extensions: ['brep', 'brp'] },
+        { name: 'STL', extensions: ['stl'] },
+        { name: 'OBJ', extensions: ['obj'] },
+        { name: '3MF', extensions: ['3mf'] },
+        { name: 'PLY', extensions: ['ply'] },
+        { name: 'OFF', extensions: ['off'] }
       ]
     })
     return r.canceled ? null : r.filePath

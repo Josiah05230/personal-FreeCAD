@@ -48,8 +48,8 @@ export function FileMenu({
             {item('Save', actions.onSave, 'Ctrl+S')}
             {item('Save As…', actions.onSaveAs)}
             <div className="filemenu-sep" />
-            {item('Import STEP…', actions.onImport)}
-            {item('Export (STEP / STL)…', actions.onExport)}
+            {item('Import…', actions.onImport)}
+            {item('Export…', actions.onExport)}
           </div>
         </>
       )}

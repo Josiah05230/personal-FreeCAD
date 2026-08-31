@@ -32,9 +32,13 @@ const CONSTRAINTS: { id: SketchConstraintType; label: string; glyph: string; pin
 ]
 const CON_DEFAULT = new Set(['skc.h', 'skc.v', 'skc.par', 'skc.perp', 'skc.eq', 'skc.coin'])
 
+type Row = { pin: string; glyph: string; label: string; onClick: () => void; active?: boolean }
+
 /**
  * Contextual SKETCH tab body - only mounted while a sketch is open. Groups behave
- * like the rest of the ribbon: a fold-out lists every tool with a pin toggle.
+ * like the rest of the ribbon: a fold-out lists every tool with a pin toggle. The
+ * fold-out is position:fixed (anchored to the group button) so it is not clipped
+ * by the ribbon body's overflow.
  */
 export function SketchRibbon({
   tool,
@@ -67,45 +71,30 @@ export function SketchRibbon({
   pins: PinMap
   onSetPin: (id: string, pinned: boolean) => void
 }): JSX.Element {
-  const [open, setOpen] = useState<string | null>(null)
+  const [menu, setMenu] = useState<{ group: string; x: number; y: number } | null>(null)
   const shown = (pin: string, dflt: Set<string>): boolean =>
     pin in pins ? isPinned(pin, pins) : dflt.has(pin)
 
-  const foldout = (
-    group: string,
-    rows: { pin: string; glyph: string; label: string; onClick: () => void; active?: boolean }[]
-  ): JSX.Element | null =>
-    open === group ? (
-      <>
-        <div className="ribbon-dd-scrim" onClick={() => setOpen(null)} />
-        <div className="ribbon-dd sketch-dd">
-          {rows.map((r) => {
-            const p = isPinned(r.pin, pins)
-            return (
-              <div key={r.pin} className="ribbon-dd-item">
-                <span
-                  className="ribbon-dd-body"
-                  onClick={() => {
-                    r.onClick()
-                    setOpen(null)
-                  }}
-                >
-                  <span className="ribbon-dd-ic">{r.glyph}</span>
-                  <span>{r.label}</span>
-                </span>
-                <span
-                  className={p ? 'ribbon-dd-pin on' : 'ribbon-dd-pin'}
-                  title={p ? 'Pinned - click to unpin' : 'Pin to ribbon'}
-                  onClick={() => onSetPin(r.pin, !p)}
-                >
-                  📌
-                </span>
-              </div>
-            )
-          })}
-        </div>
-      </>
-    ) : null
+  const openAt = (group: string, e: React.MouseEvent): void => {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    setMenu(menu?.group === group ? null : { group, x: r.left, y: r.bottom + 2 })
+  }
+
+  const drawRows: Row[] = DRAW.map((t) => ({
+    pin: t.pin,
+    glyph: t.glyph,
+    label: t.label,
+    active: t.id === tool,
+    onClick: () => onTool(t.id)
+  }))
+  const conRows: Row[] = CONSTRAINTS.map((c) => ({
+    pin: c.pin,
+    glyph: c.glyph,
+    label: c.label,
+    active: pendingConstraint === c.id,
+    onClick: () => onConstraint(c.id)
+  }))
+  const rows = menu?.group === 'draw' ? drawRows : menu?.group === 'con' ? conRows : []
 
   return (
     <div className="ribbon-body sketch-ribbon">
@@ -123,22 +112,9 @@ export function SketchRibbon({
             </button>
           ))}
         </div>
-        <button
-          className="ribbon-group-name"
-          onClick={() => setOpen(open === 'draw' ? null : 'draw')}
-        >
+        <button className="ribbon-group-name" onClick={(e) => openAt('draw', e)}>
           Draw <span className="ribbon-group-caret">▾</span>
         </button>
-        {foldout(
-          'draw',
-          DRAW.map((t) => ({
-            pin: t.pin,
-            glyph: t.glyph,
-            label: t.label,
-            active: t.id === tool,
-            onClick: () => onTool(t.id)
-          }))
-        )}
       </div>
 
       <div className="ribbon-group">
@@ -171,23 +147,10 @@ export function SketchRibbon({
             </button>
           ))}
         </div>
-        <button
-          className="ribbon-group-name"
-          onClick={() => setOpen(open === 'con' ? null : 'con')}
-        >
+        <button className="ribbon-group-name" onClick={(e) => openAt('con', e)}>
           Constraints{constraintCount ? ` (${constraintCount})` : ''}{' '}
           <span className="ribbon-group-caret">▾</span>
         </button>
-        {foldout(
-          'con',
-          CONSTRAINTS.map((c) => ({
-            pin: c.pin,
-            glyph: c.glyph,
-            label: c.label,
-            active: pendingConstraint === c.id,
-            onClick: () => onConstraint(c.id)
-          }))
-        )}
       </div>
 
       <div className="ribbon-group">
@@ -211,6 +174,41 @@ export function SketchRibbon({
           Finish Sketch
         </button>
       </div>
+
+      {menu && (
+        <>
+          <div className="ribbon-dd-scrim" onClick={() => setMenu(null)} />
+          <div className="ribbon-dd" style={{ left: menu.x, top: menu.y }}>
+            {rows.map((r) => {
+              const p = isPinned(r.pin, pins)
+              return (
+                <div
+                  key={r.pin}
+                  className={r.active ? 'ribbon-dd-item active' : 'ribbon-dd-item'}
+                >
+                  <span
+                    className="ribbon-dd-body"
+                    onClick={() => {
+                      r.onClick()
+                      setMenu(null)
+                    }}
+                  >
+                    <span className="ribbon-dd-ic">{r.glyph}</span>
+                    <span>{r.label}</span>
+                  </span>
+                  <span
+                    className={p ? 'ribbon-dd-pin on' : 'ribbon-dd-pin'}
+                    title={p ? 'Pinned - click to unpin' : 'Pin to ribbon'}
+                    onClick={() => onSetPin(r.pin, !p)}
+                  >
+                    📌
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
     </div>
   )
 }

@@ -152,6 +152,17 @@ export class SketchController {
   private geomV = 0 // bumped whenever committed geometry / constraints change
   private dimV = -1 // last geomV the static dimensions were built for
   private dimHadLive = false
+  /** per-owner-entity label nudge: [perp, along] mm for a linear dim, [du, dv]
+   *  mm for a radial one. Set by dragging the dimension's value label. */
+  private dimOffsets = new Map<number, [number, number]>()
+  /** where each dim label currently sits (uv) + its kind, for hit-testing */
+  private dimLabelUV = new Map<number, { uv: [number, number]; kind: 'linear' | 'radius' }>()
+  private dimDrag: {
+    owner: number
+    kind: 'linear' | 'radius'
+    startUV: [number, number]
+    base: [number, number]
+  } | null = null
 
   constructor(
     private readonly camera: THREE.PerspectiveCamera,
@@ -313,6 +324,88 @@ export class SketchController {
 
   private dragMoved = false
   private preDragSnap: { ents: SketchEntity[]; cons: RecordedConstraint[] } | null = null
+  private noticeAt = 0
+
+  /** Throttled one-liner to the hint bar, so a blocked drag does not spam. */
+  private noticeOnce(msg: string): void {
+    const now = Date.now()
+    if (now - this.noticeAt < 2500) return
+    this.noticeAt = now
+    this.onNotice?.(msg)
+  }
+
+  /** Restrict a drag target so already-constrained directions do not move.
+   *  Returns the (possibly axis-clamped) target, or null to block the drag
+   *  entirely. This is what makes a fully-constrained sketch actually rigid and
+   *  stops a dimensioned rectangle from shearing on a corner drag. */
+  private clampDragTarget(
+    idx: number,
+    handle: DragHandle,
+    target: [number, number]
+  ): [number, number] | null {
+    const e = this.entities[idx]
+    if (!e) return target
+
+    // whole-entity / body moves: only blocked when the entity is fully solved
+    if (handle === 'whole' || handle === 'ab' || handle === 'ba') {
+      if (this.constrainedSet.has(idx)) {
+        this.noticeOnce(
+          'This geometry is fully constrained - remove a dimension or constraint to move it.'
+        )
+        return null
+      }
+      return target
+    }
+    if (handle !== 'a' && handle !== 'b') return target
+    if (e.type !== 'line' && e.type !== 'rect') return target
+    const cur: [number, number] = handle === 'a' ? [...e.a] : [...e.b]
+
+    let lockX = false
+    let lockY = false
+
+    // inside a rectangle loop: a dimension on ANY horizontal side locks the X
+    // slide, on any vertical side locks the Y slide (width / height are fixed)
+    const loop = this.rectLoopOf(idx)
+    if (loop) {
+      for (const li of loop) {
+        if (!this.entityHasDimension(li)) continue
+        if (this.lineHasHV(li, 'Horizontal')) lockX = true
+        else if (this.lineHasHV(li, 'Vertical')) lockY = true
+      }
+    }
+
+    // point-level locks: origin / axis anchors, and (outside a rect) a
+    // dimensioned H / V line through this exact endpoint
+    const key = `${idx}:${handle === 'a' ? 1 : 2}`
+    const grp = this.weldGroups().find((s) => s.has(key)) ?? new Set<string>([key])
+    for (const k of grp) {
+      for (const c of this.constraints) {
+        const r0 = c.refs[0]
+        if (!r0 || this.keyOfRef(r0) !== k) continue
+        if (c.type === 'Coincident' && c.refs[1]?.geo === -1) {
+          lockX = true
+          lockY = true
+        } else if (c.type === 'PointOnObject' && c.refs[1]?.geo === -1) lockY = true
+        else if (c.type === 'PointOnObject' && c.refs[1]?.geo === -2) lockX = true
+      }
+      const ei = Number(k.split(':')[0])
+      if (!loop && this.entities[ei]?.type === 'line' && this.entityHasDimension(ei)) {
+        if (this.lineHasHV(ei, 'Horizontal')) lockX = true
+        else if (this.lineHasHV(ei, 'Vertical')) lockY = true
+        else {
+          lockX = true
+          lockY = true
+        }
+      }
+    }
+
+    if (lockX && lockY) {
+      this.noticeOnce('That point is fully constrained here.')
+      return null
+    }
+    if (!lockX && !lockY) return target
+    return [lockX ? cur[0] : target[0], lockY ? cur[1] : target[1]]
+  }
 
   private static cloneEnt(e: SketchEntity): SketchEntity {
     return e.type === 'spline' ? { ...e, pts: e.pts.map((p) => [p[0], p[1]] as [number, number]) } : { ...e }
@@ -537,6 +630,26 @@ export class SketchController {
     return best
   }
 
+  /** Nearest dimension value-label to a uv, within a screen-sized tolerance. */
+  private pickDimLabel(uv: [number, number]): { owner: number; kind: 'linear' | 'radius' } | null {
+    const tol = this.mmForPx(30)
+    let best: { owner: number; kind: 'linear' | 'radius' } | null = null
+    let bestD = tol
+    for (const [owner, v] of this.dimLabelUV) {
+      const d = Math.hypot(v.uv[0] - uv[0], v.uv[1] - uv[1])
+      if (d < bestD) {
+        bestD = d
+        best = { owner, kind: v.kind }
+      }
+    }
+    return best
+  }
+
+  private forceDimRedraw(): void {
+    this.dimV = -1
+    this.redraw()
+  }
+
   // --- input ---
   private onDown = (ev: PointerEvent): void => {
     if (ev.button !== 0) return
@@ -550,8 +663,25 @@ export class SketchController {
     }
     if (this.tool === 'select') {
       const uv = this.rawPointerUV(ev)
-      const idx = this.pickEntity(uv)
       ev.stopPropagation()
+
+      // grab a dimension's value label to reposition it (bubble + witness /
+      // leader lines follow). Checked before geometry so the label wins.
+      if (!this.pendingCon) {
+        const dl = this.pickDimLabel(uv)
+        if (dl) {
+          this.dimDrag = {
+            owner: dl.owner,
+            kind: dl.kind,
+            startUV: uv,
+            base: this.dimOffsets.get(dl.owner) ?? [0, 0]
+          }
+          this.dom.style.cursor = 'move'
+          return
+        }
+      }
+
+      const idx = this.pickEntity(uv)
 
       // "click the constraint, then click the geometry" mode
       if (this.pendingCon) {
@@ -635,9 +765,16 @@ export class SketchController {
 
   /** Move the dragged entity to follow the cursor. No solver - this is the
    *  "drag whatever is still free" behaviour; the sidecar re-solves on finish. */
-  private applyDrag(uv: [number, number]): void {
+  private applyDrag(raw: [number, number]): void {
     if (!this.drag) return
     const e = this.entities[this.drag.idx]
+    // drop movement along directions the constraints already pin down
+    const clamped = this.clampDragTarget(this.drag.idx, this.drag.handle, raw)
+    if (!clamped) {
+      this.drag.last = raw
+      return
+    }
+    const uv = clamped
     const dx = uv[0] - this.drag.last[0]
     const dy = uv[1] - this.drag.last[1]
     const move = (p: [number, number]): [number, number] => [p[0] + dx, p[1] + dy]
@@ -764,6 +901,13 @@ export class SketchController {
   }
 
   private onUp = (ev: PointerEvent): void => {
+    if (this.dimDrag) {
+      this.dimDrag = null
+      this.dom.style.cursor = ''
+      ev.stopPropagation()
+      this.onChange()
+      return
+    }
     if (this.band) {
       this.commitBand()
       this.band = null
@@ -832,6 +976,29 @@ export class SketchController {
   }
 
   private onMove = (ev: PointerEvent): void => {
+    if (this.dimDrag && (ev.buttons & 1) === 1) {
+      const cur = this.rawPointerUV(ev)
+      const dU = cur[0] - this.dimDrag.startUV[0]
+      const dV = cur[1] - this.dimDrag.startUV[1]
+      const b = this.dimDrag.base
+      if (this.dimDrag.kind === 'radius') {
+        this.dimOffsets.set(this.dimDrag.owner, [b[0] + dU, b[1] + dV])
+      } else {
+        const e = this.entities[this.dimDrag.owner]
+        if (e && e.type === 'line') {
+          const dx = e.b[0] - e.a[0]
+          const dy = e.b[1] - e.a[1]
+          const L = Math.hypot(dx, dy) || 1
+          const ux = dx / L
+          const uy = dy / L
+          const along = dU * ux + dV * uy
+          const perp = dU * -uy + dV * ux
+          this.dimOffsets.set(this.dimDrag.owner, [b[0] + perp, b[1] + along])
+        }
+      }
+      this.forceDimRedraw()
+      return
+    }
     if (this.band && (ev.buttons & 1) === 1) {
       this.band.b = this.rawPointerUV(ev)
       this.redraw()
@@ -851,12 +1018,14 @@ export class SketchController {
       this.redraw()
     }
     if (this.tool === 'select' || this.tool === 'dimension') {
-      const idx = symKey ? -1 : this.pickEntity(this.rawPointerUV(ev))
+      const raw = this.rawPointerUV(ev)
+      const onLabel = this.tool === 'select' && !symKey && this.pickDimLabel(raw)
+      const idx = symKey || onLabel ? -1 : this.pickEntity(raw)
       if (idx !== this.hoverIdx) {
         this.hoverIdx = idx
-        this.dom.style.cursor = idx >= 0 || symKey ? 'pointer' : ''
         this.redraw()
       }
+      this.dom.style.cursor = onLabel ? 'move' : idx >= 0 || symKey ? 'pointer' : ''
       return
     }
     if (this.hoverIdx !== -1) this.hoverIdx = -1
@@ -2005,7 +2174,8 @@ export class SketchController {
     side: 1 | -1,
     text: string,
     driven: boolean,
-    owner = -1
+    owner = -1,
+    offset: [number, number] = [0, 0]
   ): THREE.Group {
     const g = new THREE.Group()
     g.userData = { dimOwner: owner, dimKind: 'linear' }
@@ -2017,9 +2187,12 @@ export class SketchController {
     const uy = dy / len
     const nx = -uy * side
     const ny = ux * side
-    const off = this.mmForPx(24)
-    const ext = this.mmForPx(6)
-    const gap = this.mmForPx(2)
+    // offset[0] nudges the dim line off the geometry, offset[1] slides the label
+    const off = this.mmForPx(24) + offset[0]
+    const s = off >= 0 ? 1 : -1
+    const ext = this.mmForPx(6) * s
+    const gap = this.mmForPx(2) * s
+    const along = offset[1]
     const a1: [number, number] = [a[0] + nx * off, a[1] + ny * off]
     const b1: [number, number] = [b[0] + nx * off, b[1] + ny * off]
     // witness lines (with a small gap off the geometry, overshooting the dim line)
@@ -2035,13 +2208,10 @@ export class SketchController {
     }
     head(a1, 1)
     head(b1, -1)
-    g.add(
-      this.dimLabel(
-        text,
-        this.toWorld((a1[0] + b1[0]) / 2 + nx * this.mmForPx(8), (a1[1] + b1[1]) / 2 + ny * this.mmForPx(8)),
-        driven
-      )
-    )
+    const lu = (a1[0] + b1[0]) / 2 + ux * along + nx * this.mmForPx(8) * s
+    const lv = (a1[1] + b1[1]) / 2 + uy * along + ny * this.mmForPx(8) * s
+    if (owner >= 0) this.dimLabelUV.set(owner, { uv: [lu, lv], kind: 'linear' })
+    g.add(this.dimLabel(text, this.toWorld(lu, lv), driven))
     g.renderOrder = 32
     return g
   }
@@ -2053,17 +2223,23 @@ export class SketchController {
     r: number,
     text: string,
     driven: boolean,
-    owner = -1
+    owner = -1,
+    offset: [number, number] = [0, 0]
   ): THREE.Group {
     const g = new THREE.Group()
     g.userData = { dimOwner: owner, dimKind: 'radius' }
     const mat = driven ? this.dimDrivenMat : this.dimMat
-    const ang = Math.PI / 4
-    const ux = Math.cos(ang)
-    const uy = Math.sin(ang)
+    // default leader at 45 deg, then the label drag adds a free uv nudge and the
+    // leader / arrowhead re-aim at wherever the label ended up
+    const base: [number, number] = [
+      c[0] + Math.cos(Math.PI / 4) * (r + this.mmForPx(16)) + offset[0],
+      c[1] + Math.sin(Math.PI / 4) * (r + this.mmForPx(16)) + offset[1]
+    ]
+    const ld = Math.hypot(base[0] - c[0], base[1] - c[1]) || 1
+    const ux = (base[0] - c[0]) / ld
+    const uy = (base[1] - c[1]) / ld
     const rim: [number, number] = [c[0] + ux * r, c[1] + uy * r]
-    const out: [number, number] = [c[0] + ux * (r + this.mmForPx(16)), c[1] + uy * (r + this.mmForPx(16))]
-    this.seg(g, c, out, mat)
+    this.seg(g, c, base, mat)
     const ah = this.mmForPx(3.5)
     const nx = -uy
     const ny = ux
@@ -2071,7 +2247,10 @@ export class SketchController {
     const by = rim[1] - uy * ah
     this.seg(g, [bx + nx * ah * 0.45, by + ny * ah * 0.45], rim, mat)
     this.seg(g, [bx - nx * ah * 0.45, by - ny * ah * 0.45], rim, mat)
-    g.add(this.dimLabel(text, this.toWorld(out[0] + ux * this.mmForPx(2), out[1] + uy * this.mmForPx(2)), driven))
+    const lu = base[0] + ux * this.mmForPx(2)
+    const lv = base[1] + uy * this.mmForPx(2)
+    if (owner >= 0) this.dimLabelUV.set(owner, { uv: [lu, lv], kind: 'radius' })
+    g.add(this.dimLabel(text, this.toWorld(lu, lv), driven))
     g.renderOrder = 32
     return g
   }
@@ -2082,6 +2261,7 @@ export class SketchController {
     this.dimV = this.geomV
     this.dimHadLive = live
     this.clearDims()
+    this.dimLabelUV.clear()
 
     // Dimensions are only shown once the user assigns them - never by default.
     for (const con of this.constraints) {
@@ -2091,10 +2271,11 @@ export class SketchController {
       const i = r0.geo != null ? r0.geo : (r0.new ?? 0) + this.baseCount
       const e = this.entities[i]
       if (!e || e.construction) continue
+      const nudge = this.dimOffsets.get(i) ?? [0, 0]
       if (e.type === 'line') {
-        this.dimGroup.add(this.makeDim(e.a, e.b, 1, this.fmt(con.value), true, i))
+        this.dimGroup.add(this.makeDim(e.a, e.b, 1, this.fmt(con.value), true, i, nudge))
       } else if (e.type === 'circle' || e.type === 'arc') {
-        this.dimGroup.add(this.makeRadial(e.c, e.r, `R ${this.fmt(con.value)}`, true, i))
+        this.dimGroup.add(this.makeRadial(e.c, e.r, `R ${this.fmt(con.value)}`, true, i, nudge))
       }
     }
 

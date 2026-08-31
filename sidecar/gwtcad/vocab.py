@@ -26,10 +26,10 @@ OP_NAME = {
     "PartDesign::PolarPattern": "Circular Pattern",
     "PartDesign::Boolean": "Combine",
     "Sketcher::SketchObject": "Sketch",
-    "PartDesign::Plane": "Construction Plane",
-    "PartDesign::Line": "Construction Axis",
-    "PartDesign::Point": "Construction Point",
-    "PartDesign::CoordinateSystem": "Construction System",
+    "PartDesign::Plane": "Plane",
+    "PartDesign::Line": "Axis",
+    "PartDesign::Point": "Point",
+    "PartDesign::CoordinateSystem": "Coordinate System",
 }
 
 

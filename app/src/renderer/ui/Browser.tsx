@@ -127,8 +127,11 @@ export function Browser({
   const b0 = bodies[0]
   const origin = b0?.origin ?? []
   // an empty starter body exists so the Origin is always there (Fusion-style),
-  // but don't surface it as a "Body" until it actually has geometry
-  const realBodies = bodies.filter((b) => b.features.length > 0)
+  // but don't surface it as a "Body" until it actually has a SOLID - a lone
+  // sketch or datum living in the starter body must not read as "a body exists"
+  const realBodies = bodies.filter((b) =>
+    b.features.some((f) => f.kind !== 'sketch' && f.kind !== 'datum')
+  )
   const sketches = bodies.flatMap((b) => b.features.filter((f) => f.kind === 'sketch'))
   const datums = bodies.flatMap((b) => b.features.filter((f) => f.kind === 'datum'))
 
@@ -238,7 +241,19 @@ export function Browser({
         )}
 
         {datums.length > 0 && (
-          <Row depth={1} label="Construction" glyph="▱" defaultOpen={false}>
+          <Row
+            depth={1}
+            label="Construction"
+            glyph="▱"
+            defaultOpen={false}
+            visible={anyOn(
+              datums.map((f) => f.id),
+              (id) => datums.find((f) => f.id === id)?.visible ?? false
+            )}
+            onToggle={(v) => {
+              for (const f of datums) handlers.onToggleVisibility(f.id, v)
+            }}
+          >
             {datums.map((f) =>
               f.afterTip ? (
                 <div key={f.id} className="br-row rolled" style={{ paddingLeft: 32 }}>

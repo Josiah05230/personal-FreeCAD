@@ -442,6 +442,7 @@ export function App(): JSX.Element {
     try {
       await apiQuiet.sketchFinish(id, newEnts, cons)
       const [scene, tree] = await Promise.all([apiQuiet.sceneGet(), apiQuiet.treeGet()])
+      setMeshes(scene.meshes)
       setSketches(scene.sketches ?? [])
       setDatums(scene.datums ?? [])
       setBodies(tree.bodies)
@@ -486,6 +487,9 @@ export function App(): JSX.Element {
 
   const applyOp = useCallback(
     async (kind: OpKind, v: OpValues, exprs: Record<string, string> = {}) => {
+      // close the dialog the instant the user commits - the engine rebuild and
+      // scene refresh run behind the status spinner and reconcile when they land
+      setOp(null)
       const edges = selection.filter((s) => s.kind === 'edge').map((s) => (s as { sub: string }).sub)
       const faces = selection.filter((s) => s.kind === 'face') as Array<{
         sub: string
@@ -693,7 +697,6 @@ export function App(): JSX.Element {
             }
           }
         }
-        setOp(null)
         await afterEdit()
       } catch (e) {
         window.alert((e as Error).message)
@@ -797,9 +800,14 @@ export function App(): JSX.Element {
   const deleteFeature = useCallback(
     async (id: string) => {
       if (!window.confirm('Delete this feature?')) return
-      // drop it from the tree + selection right away; the engine rebuild runs
-      // behind the status-bar spinner and reconciles when it lands
+      // drop it from EVERY view state right away - tree, viewport meshes /
+      // sketches / datums, selection - so it disappears the instant you click.
+      // The engine rebuild runs behind the spinner and reconciles when it lands.
       setBodies((bs) => bs.map((b) => ({ ...b, features: b.features.filter((f) => f.id !== id) })))
+      setMeshes((ms) => ms.filter((m) => m.id !== id))
+      setSketches((ss) => ss.filter((s) => s.id !== id))
+      setDatums((ds) => ds.filter((dm) => dm.id !== id))
+      setVisOverride((m) => ({ ...m, [id]: false }))
       setSelection((cur) => cur.filter((s) => !('sketchId' in s && s.sketchId === id)))
       markDirty()
       try {
@@ -922,8 +930,12 @@ export function App(): JSX.Element {
       docPath ? docPath.replace(/\.FCStd$/i, '.step') : undefined
     )
     if (!p) return
-    if (/\.stl$/i.test(p)) await api.exportStl(p)
-    else await api.exportStep(p)
+    try {
+      // engine dispatches by extension: STEP/STP/IGES/IGS/BREP or STL/OBJ/3MF/PLY/OFF
+      await api.exportModel2(p)
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
   }, [docPath])
 
   const importStep = useCallback(async () => {

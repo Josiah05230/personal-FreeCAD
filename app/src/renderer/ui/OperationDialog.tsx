@@ -212,7 +212,7 @@ const SPECS: Record<OpKind, OpSpec> = {
     fields: []
   },
   datumPlane: {
-    title: 'Offset Plane',
+    title: 'Plane',
     needs: 'plane',
     hint: 'Pick a base plane / face. In "To object" mode also pick a point / edge / face to reach, with an optional extra offset.',
     fields: [
@@ -227,13 +227,13 @@ const SPECS: Record<OpKind, OpSpec> = {
     ]
   },
   datumAxis: {
-    title: 'Construction Axis',
+    title: 'Axis',
     needs: 'axis',
     hint: 'One edge, or two planes / faces for their intersection',
     fields: []
   },
   datumPoint: {
-    title: 'Construction Point',
+    title: 'Point',
     needs: 'none',
     hint: 'Select a vertex (or an edge / face centre) to place it there, else the body origin',
     fields: []

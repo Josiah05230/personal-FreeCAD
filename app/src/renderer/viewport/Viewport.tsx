@@ -129,11 +129,21 @@ export function Viewport({
   onPreviewDragRef.current = onPreviewHandleDrag
   const previewDragRef = useRef<{
     handle: THREE.Mesh | null
+    paint: THREE.Mesh[]
+    hovering: boolean
     O0: THREE.Vector3
     N0: THREE.Vector3
     t0: number
     active: boolean
-  }>({ handle: null, O0: new THREE.Vector3(), N0: new THREE.Vector3(), t0: 0, active: false })
+  }>({
+    handle: null,
+    paint: [],
+    hovering: false,
+    O0: new THREE.Vector3(),
+    N0: new THREE.Vector3(),
+    t0: 0,
+    active: false
+  })
   const calibRef = useRef<{
     canvas: CanvasDTO | null
     cb?: (mm: number) => void
@@ -485,7 +495,34 @@ export function Viewport({
         }
         return
       }
-      if (!st || st.sketch || !st.content || e.buttons !== 0) return
+      if (!st || st.sketch || e.buttons !== 0) return
+
+      // Offset-Plane dialog: the arrow / ghost handle owns hover. Light it up
+      // and DO NOT let planes behind it highlight through.
+      if (pv.handle) {
+        const r = host.getBoundingClientRect()
+        const ndc = new THREE.Vector2(
+          ((e.clientX - r.left) / r.width) * 2 - 1,
+          -((e.clientY - r.top) / r.height) * 2 + 1
+        )
+        const rc = new THREE.Raycaster()
+        rc.setFromCamera(ndc, st.camera)
+        const over = rc
+          .intersectObjects(st.preview.children, false)
+          .some((h) => h.object.userData?.previewHandle)
+        if (over !== pv.hovering) {
+          pv.hovering = over
+          for (const m of pv.paint) {
+            ;(m.material as THREE.MeshBasicMaterial).color.setHex(over ? 0xffe9b8 : 0xffcf7a)
+            m.scale.setScalar(over ? 1.25 : 1)
+          }
+          renderer.domElement.style.cursor = over ? 'grab' : ''
+        }
+        if (st.content) st.picker.setHover(null, st.content)
+        return
+      }
+
+      if (!st.content) return
       // sketch-plane pick: highlight the plane / face under the cursor
       if (planePickRef.current.mode) {
         const ph = st.picker.pick(e, st.content)
@@ -541,6 +578,7 @@ export function Viewport({
   // rebuild content - only when the geometry itself changed (a cheap signature
   // guards against rebuilds from unrelated refreshes / visibility toggles)
   const lastSigRef = useRef('')
+  const prevSolidCountRef = useRef(0)
   useEffect(() => {
     const st = stateRef.current
     if (!st) return
@@ -575,7 +613,11 @@ export function Viewport({
     st.content = group
     st.lastCenter = center
     st.lastRadius = radius
-    if (!st.framedOnce) {
+    // frame on first content, and again the first time a solid appears (an
+    // extrude / primitive / import) so the new body is actually on screen
+    const solidsAppeared = meshes.length > 0 && prevSolidCountRef.current === 0
+    prevSolidCountRef.current = meshes.length
+    if (!st.framedOnce || solidsAppeared) {
       st.controls.frame(center, radius)
       st.framedOnce = true
     }
@@ -731,6 +773,8 @@ export function Viewport({
       mm?.dispose?.()
     }
     previewDragRef.current.handle = null
+    previewDragRef.current.paint = []
+    previewDragRef.current.hovering = false
     if (!previewPlane) return
     const O = new THREE.Vector3(...previewPlane.origin)
     const X = new THREE.Vector3(...previewPlane.x).normalize()
@@ -784,6 +828,8 @@ export function Viewport({
       cone.renderOrder = 22
       cone.userData = { previewHandle: true }
       st.preview.add(cone)
+      previewDragRef.current.paint = [cone]
+      previewDragRef.current.hovering = false
       // an invisible fat sphere makes the grab target forgiving
       const grab = new THREE.Mesh(
         new THREE.SphereGeometry(hl * 0.6, 8, 6),

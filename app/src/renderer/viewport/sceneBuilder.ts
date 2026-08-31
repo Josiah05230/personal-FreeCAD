@@ -188,6 +188,9 @@ export function buildScene(
       line.userData = { pick: 'sketch', sketchId: s.id }
       line.renderOrder = 2
       group.add(line)
+      // a sketch-only scene still needs a real bounding box so Fit-to-view and
+      // the first-content framing land on the sketch instead of the origin
+      box.expandByObject(line)
     }
 
     // fill every closed region the sketch's edges enclose (a rectangle drawn as
