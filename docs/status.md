@@ -1,6 +1,6 @@
 # Status
 
-Updated 2026-08-31. Live-test feedback batches 1-28 addressed (open partials: full parametric
+Updated 2026-08-31. Live-test feedback batches 1-29 addressed (open partials: full parametric
 sketch tools, section analysis tab, optimistic datum row). All 16 feature-op RPCs smoke-tested
 end-to-end headless. All roadmap milestones have a
 working first version. `docs/FEEDBACK.md` tracks the live-test checklist. KiCad interop has a first
@@ -58,6 +58,18 @@ slice (board import + placeholders); next: component STEP models + connector->jo
 ### Packaging
 - electron-builder: AppImage + NSIS, FreeCAD bundled as extraResources, runtime
   path resolution, `scripts/package.sh`. `--dir` build verified.
+
+## Batch 29 additions
+
+- The "not a closed loop" extrude error was Batch 28's own pre-check being too
+  strict. Replaced with `_strip_redundant_constraints(sk, d)` - iterates delete
+  + re-solve over FreeCAD's Redundant / PartiallyRedundant list (removing one
+  exposes the next), up to 8 passes; conflicting left alone. `sketch.finish`
+  and `feature.extrude` both call it; the hard reject is gone.
+- `_auto_constrain` H/V dedup keys off `FirstPos == 0` (line-level) instead of
+  a fragile Second check, so it stops re-adding H/V the editor already sent.
+- Verified: rect@origin, center rect, dimension-opposite-sides all extrude
+  clean (scratch/b29_redund.py).
 
 ## Batch 28 additions
 
