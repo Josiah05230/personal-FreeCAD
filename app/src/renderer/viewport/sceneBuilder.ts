@@ -7,11 +7,50 @@ export interface BuiltScene {
   radius: number
 }
 
+/**
+ * One tracked chunk of the scene (a body, a sketch, a datum, a canvas). The
+ * viewport keeps a Map of these keyed by a stable string so an update can
+ * rebuild only what actually changed instead of tearing the whole group down.
+ */
+export interface SceneNode {
+  key: string
+  sig: string
+  objs: THREE.Object3D[]
+  box: THREE.Box3
+}
+
 const AXIS_COLOR: Record<string, number> = {
   X_Axis: 0xe0533a,
   Y_Axis: 0x5cb85c,
   Z_Axis: 0x4a90d9
 }
+
+// Dark theme: graphite body with a satin sheen; edges near-black; sketches blue.
+const SOLID_COLOR = 0x8a8f96
+const EDGE_COLOR = 0x1c1f24
+const SKETCH_COLOR = 0x2f9fe0
+
+function boxOf(objs: THREE.Object3D[]): THREE.Box3 {
+  const b = new THREE.Box3()
+  for (const o of objs) b.expandByObject(o)
+  return b
+}
+
+function disposeObjs(objs: THREE.Object3D[]): void {
+  for (const o of objs) {
+    o.traverse((n) => {
+      const any = n as THREE.Mesh
+      any.geometry?.dispose?.()
+      const mat = any.material as THREE.Material | THREE.Material[] | undefined
+      if (Array.isArray(mat)) mat.forEach((m) => m.dispose())
+      else mat?.dispose()
+    })
+  }
+}
+
+// --------------------------------------------------------------------------- //
+// per-item builders
+// --------------------------------------------------------------------------- //
 
 function buildDatum(d: DatumDTO): THREE.Object3D {
   const g = new THREE.Group()
@@ -65,11 +104,224 @@ function buildDatum(d: DatumDTO): THREE.Object3D {
   return g
 }
 
-// Dark theme: graphite body with a satin sheen; edges near-black; sketches blue.
-const SOLID_COLOR = 0x8a8f96
-const EDGE_COLOR = 0x1c1f24
-const SKETCH_COLOR = 0x2f9fe0
+function buildCanvas(c: CanvasDTO): THREE.Object3D {
+  const O = new THREE.Vector3(...(c.frame.origin as [number, number, number]))
+  const X = new THREE.Vector3(...(c.frame.x as [number, number, number])).normalize()
+  const Y = new THREE.Vector3(...(c.frame.y as [number, number, number])).normalize()
+  const pos = O.clone().addScaledVector(X, c.offset[0]).addScaledVector(Y, c.offset[1])
+  const geo = new THREE.PlaneGeometry(c.w, c.h)
+  const url = c.image ?? undefined
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: url ? 0.9 : 0.2,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  })
+  if (url) {
+    new THREE.TextureLoader().load(url, (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace
+      mat.map = tex
+      mat.needsUpdate = true
+    })
+  }
+  const quad = new THREE.Mesh(geo, mat)
+  quad.position.copy(pos.addScaledVector(X, c.w / 2).addScaledVector(Y, c.h / 2))
+  const m = new THREE.Matrix4().makeBasis(X, Y, new THREE.Vector3().crossVectors(X, Y))
+  quad.quaternion.setFromRotationMatrix(m)
+  quad.userData = { pick: 'canvas', canvasId: c.id }
+  quad.renderOrder = -1
+  return quad
+}
 
+/** mesh + per-edge lines + invisible pickable vertex points for one body */
+function buildBody(m: RenderMesh): THREE.Object3D[] {
+  const objs: THREE.Object3D[] = []
+  // a non-finite vertex from the tessellator would poison the bounding box and
+  // blank the viewport when the camera frames it - drop such a mesh's geometry
+  const posOk = m.positions.every((v) => Number.isFinite(v))
+  const geom = new THREE.BufferGeometry()
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(posOk ? m.positions : [], 3))
+  if (posOk && (m.needsNormals || m.normals.length !== m.positions.length)) {
+    geom.setIndex(m.indices)
+    geom.computeVertexNormals()
+  } else if (posOk) {
+    geom.setAttribute('normal', new THREE.Float32BufferAttribute(m.normals, 3))
+    geom.setIndex(m.indices)
+  }
+  geom.userData = { bodyId: m.id, faceGroups: m.faceGroups }
+
+  const color = m.color
+    ? new THREE.Color(m.color[0], m.color[1], m.color[2])
+    : new THREE.Color(SOLID_COLOR)
+  const mesh = new THREE.Mesh(
+    geom,
+    new THREE.MeshStandardMaterial({ color, metalness: 0.15, roughness: 0.5, side: THREE.DoubleSide })
+  )
+  mesh.name = `body:${m.id}`
+  mesh.userData = { pick: 'face', bodyId: m.id, faceGroups: m.faceGroups }
+  objs.push(mesh)
+
+  if (m.vertices && m.vertices.length) {
+    const vpos: number[] = []
+    const vsub: string[] = []
+    for (const v of m.vertices) {
+      vpos.push(v.p[0], v.p[1], v.p[2])
+      vsub.push(`Vertex${v.vertex + 1}`)
+    }
+    const vg = new THREE.BufferGeometry()
+    vg.setAttribute('position', new THREE.Float32BufferAttribute(vpos, 3))
+    const pts = new THREE.Points(
+      vg,
+      new THREE.PointsMaterial({ size: 1, transparent: true, opacity: 0, depthWrite: false })
+    )
+    pts.name = `verts:${m.id}`
+    pts.userData = { pick: 'vertex', bodyId: m.id, vsub }
+    pts.renderOrder = 3
+    objs.push(pts)
+  }
+
+  for (const e of m.edges) {
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.Float32BufferAttribute(e.points, 3))
+    const line = new THREE.Line(g, new THREE.LineBasicMaterial({ color: EDGE_COLOR }))
+    line.name = `edge:${m.id}:${e.edge}`
+    line.userData = { pick: 'edge', bodyId: m.id, sub: `Edge${e.edge + 1}` }
+    line.renderOrder = 1
+    objs.push(line)
+  }
+  return objs
+}
+
+function buildSketch(s: SketchRender): THREE.Object3D[] {
+  const objs: THREE.Object3D[] = []
+  for (const poly of s.polys) {
+    if (!poly.every((v) => Number.isFinite(v))) continue
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.Float32BufferAttribute(poly, 3))
+    const line = new THREE.Line(
+      g,
+      new THREE.LineBasicMaterial({ color: SKETCH_COLOR, linewidth: 2 })
+    )
+    line.name = `sketch:${s.id}`
+    line.userData = { pick: 'sketch', sketchId: s.id }
+    line.renderOrder = 2
+    objs.push(line)
+  }
+  let regions: THREE.BufferGeometry[] = []
+  try {
+    regions = fillSketchRegions(s.polys)
+  } catch {
+    regions = []
+  }
+  for (const fill of regions) {
+    const face = new THREE.Mesh(
+      fill,
+      new THREE.MeshBasicMaterial({
+        color: 0x5b8fd6,
+        transparent: true,
+        opacity: 0.15,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      })
+    )
+    face.userData = { pick: 'sketch', sketchId: s.id }
+    face.renderOrder = 1
+    objs.push(face)
+  }
+  return objs
+}
+
+// --------------------------------------------------------------------------- //
+// signatures - everything the visual for one item depends on
+// --------------------------------------------------------------------------- //
+
+function bodySig(m: RenderMesh): string {
+  return [
+    m.sig ?? m.positions.length,
+    m.color ? m.color.join('/') : '-',
+    m.vertices?.length ?? 0,
+    m.edges.length
+  ].join('~')
+}
+const sketchSig = (s: SketchRender): string =>
+  s.polys.map((p) => p.length).join('.') + '#' + s.polys.length
+const datumSig = (d: DatumDTO): string =>
+  [d.kind, d.origin.join('/'), (d.x ?? []).join('/'), (d.y ?? []).join('/'), (d.dir ?? []).join('/'), d.size ?? '', d.length ?? ''].join('~')
+const canvasSig = (c: CanvasDTO): string =>
+  [c.w, c.h, c.offset.join('/'), c.rot, c.image ? 'img' : 'no'].join('~')
+
+// --------------------------------------------------------------------------- //
+// incremental sync
+// --------------------------------------------------------------------------- //
+
+export interface SyncResult {
+  nodes: Map<string, SceneNode>
+  center: THREE.Vector3
+  radius: number
+}
+
+/**
+ * Reconcile `group` to the given inputs, reusing every node whose signature is
+ * unchanged and rebuilding only the ones that differ. Returns the fresh node map
+ * plus the framing box. `prev` is mutated-safe (not read after) - pass the map
+ * from the last call.
+ */
+export function syncScene(
+  group: THREE.Group,
+  prev: Map<string, SceneNode>,
+  meshes: RenderMesh[],
+  sketches: SketchRender[] = [],
+  datums: DatumDTO[] = [],
+  canvases: CanvasDTO[] = []
+): SyncResult {
+  type Desired = { key: string; sig: string; build: () => THREE.Object3D[] }
+  const desired: Desired[] = [
+    ...datums.map((d) => ({ key: `datum:${d.id}`, sig: datumSig(d), build: () => [buildDatum(d)] })),
+    ...canvases.map((c) => ({ key: `canvas:${c.id}`, sig: canvasSig(c), build: () => [buildCanvas(c)] })),
+    ...meshes.map((m) => ({ key: `body:${m.id}`, sig: bodySig(m), build: () => buildBody(m) })),
+    ...sketches.map((s) => ({ key: `sketch:${s.id}`, sig: sketchSig(s), build: () => buildSketch(s) }))
+  ]
+  const want = new Set(desired.map((d) => d.key))
+  const nodes = new Map<string, SceneNode>()
+
+  // drop nodes that are gone
+  for (const [key, node] of prev) {
+    if (!want.has(key)) {
+      for (const o of node.objs) group.remove(o)
+      disposeObjs(node.objs)
+    }
+  }
+
+  for (const d of desired) {
+    const old = prev.get(d.key)
+    if (old && old.sig === d.sig) {
+      nodes.set(d.key, old) // untouched - objects stay in the group
+      continue
+    }
+    if (old) {
+      for (const o of old.objs) group.remove(o)
+      disposeObjs(old.objs)
+    }
+    const objs = d.build()
+    for (const o of objs) group.add(o)
+    nodes.set(d.key, { key: d.key, sig: d.sig, objs, box: boxOf(objs) })
+  }
+
+  // framing box = union of every node's box
+  const box = new THREE.Box3()
+  for (const n of nodes.values()) if (!n.box.isEmpty()) box.union(n.box)
+
+  let center = box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3())
+  let radius = box.isEmpty() ? 60 : Math.max(box.getSize(new THREE.Vector3()).length() / 2, 1)
+  if (!Number.isFinite(center.x) || !Number.isFinite(center.y) || !Number.isFinite(center.z)) {
+    center = new THREE.Vector3()
+  }
+  if (!Number.isFinite(radius) || radius <= 0) radius = 60
+  return { nodes, center, radius }
+}
+
+/** Full build from scratch (kept for callers/tests that want a one-shot group). */
 export function buildScene(
   meshes: RenderMesh[],
   sketches: SketchRender[] = [],
@@ -77,172 +329,13 @@ export function buildScene(
   canvases: CanvasDTO[] = []
 ): BuiltScene {
   const group = new THREE.Group()
-  const box = new THREE.Box3()
-
-  for (const d of datums) group.add(buildDatum(d))
-
-  for (const c of canvases) {
-    const O = new THREE.Vector3(...(c.frame.origin as [number, number, number]))
-    const X = new THREE.Vector3(...(c.frame.x as [number, number, number])).normalize()
-    const Y = new THREE.Vector3(...(c.frame.y as [number, number, number])).normalize()
-    const pos = O.clone()
-      .addScaledVector(X, c.offset[0])
-      .addScaledVector(Y, c.offset[1])
-    const geo = new THREE.PlaneGeometry(c.w, c.h)
-    const url = c.image ?? undefined
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      transparent: true,
-      opacity: url ? 0.9 : 0.2,
-      side: THREE.DoubleSide,
-      depthWrite: false
-    })
-    if (url) {
-      new THREE.TextureLoader().load(url, (tex) => {
-        tex.colorSpace = THREE.SRGBColorSpace
-        mat.map = tex
-        mat.needsUpdate = true
-      })
-    }
-    const quad = new THREE.Mesh(geo, mat)
-    quad.position.copy(pos.addScaledVector(X, c.w / 2).addScaledVector(Y, c.h / 2))
-    // orient the plane's local XY onto the frame's X/Y
-    const m = new THREE.Matrix4().makeBasis(X, Y, new THREE.Vector3().crossVectors(X, Y))
-    quad.quaternion.setFromRotationMatrix(m)
-    quad.userData = { pick: 'canvas', canvasId: c.id }
-    quad.renderOrder = -1
-    group.add(quad)
-  }
-
-  for (const m of meshes) {
-    // a non-finite vertex from the tessellator would poison the bounding box and
-    // blank the viewport when the camera frames it - drop such a mesh's geometry
-    const posOk = m.positions.every((v) => Number.isFinite(v))
-    const geom = new THREE.BufferGeometry()
-    geom.setAttribute(
-      'position',
-      new THREE.Float32BufferAttribute(posOk ? m.positions : [], 3)
-    )
-    if (posOk && (m.needsNormals || m.normals.length !== m.positions.length)) {
-      geom.setIndex(m.indices)
-      geom.computeVertexNormals()
-    } else if (posOk) {
-      geom.setAttribute('normal', new THREE.Float32BufferAttribute(m.normals, 3))
-      geom.setIndex(m.indices)
-    }
-    geom.userData = { bodyId: m.id, faceGroups: m.faceGroups }
-
-    const color = m.color
-      ? new THREE.Color(m.color[0], m.color[1], m.color[2])
-      : new THREE.Color(SOLID_COLOR)
-    const mesh = new THREE.Mesh(
-      geom,
-      new THREE.MeshStandardMaterial({
-        color,
-        metalness: 0.15,
-        roughness: 0.5,
-        side: THREE.DoubleSide
-      })
-    )
-    mesh.name = `body:${m.id}`
-    mesh.userData = { pick: 'face', bodyId: m.id, faceGroups: m.faceGroups }
-    group.add(mesh)
-    box.expandByObject(mesh)
-
-    // one pickable point per model vertex - INVISIBLE, a raycast target only.
-    // Corners get a marker (small sphere) purely on hover / selection, never a
-    // permanent dot on every corner.
-    if (m.vertices && m.vertices.length) {
-      const vpos: number[] = []
-      const vsub: string[] = []
-      for (const v of m.vertices) {
-        vpos.push(v.p[0], v.p[1], v.p[2])
-        vsub.push(`Vertex${v.vertex + 1}`)
-      }
-      const vg = new THREE.BufferGeometry()
-      vg.setAttribute('position', new THREE.Float32BufferAttribute(vpos, 3))
-      const pts = new THREE.Points(
-        vg,
-        new THREE.PointsMaterial({ size: 1, transparent: true, opacity: 0, depthWrite: false })
-      )
-      pts.name = `verts:${m.id}`
-      pts.userData = { pick: 'vertex', bodyId: m.id, vsub }
-      pts.renderOrder = 3
-      group.add(pts)
-    }
-
-    // one line object per model edge, individually pickable
-    for (const e of m.edges) {
-      const p = e.points
-      const g = new THREE.BufferGeometry()
-      g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3))
-      const line = new THREE.Line(g, new THREE.LineBasicMaterial({ color: EDGE_COLOR }))
-      line.name = `edge:${m.id}:${e.edge}`
-      line.userData = { pick: 'edge', bodyId: m.id, sub: `Edge${e.edge + 1}` }
-      line.renderOrder = 1
-      group.add(line)
-    }
-  }
-
-  for (const s of sketches) {
-    for (const poly of s.polys) {
-      if (!poly.every((v) => Number.isFinite(v))) continue
-      const g = new THREE.BufferGeometry()
-      g.setAttribute('position', new THREE.Float32BufferAttribute(poly, 3))
-      const line = new THREE.Line(
-        g,
-        new THREE.LineBasicMaterial({ color: SKETCH_COLOR, linewidth: 2 })
-      )
-      line.name = `sketch:${s.id}`
-      line.userData = { pick: 'sketch', sketchId: s.id }
-      line.renderOrder = 2
-      group.add(line)
-      // a sketch-only scene still needs a real bounding box so Fit-to-view and
-      // the first-content framing land on the sketch instead of the origin
-      box.expandByObject(line)
-    }
-
-    // fill every closed region the sketch's edges enclose (a rectangle drawn as
-    // four separate lines still gets one filled, pickable face). Never let a bad
-    // profile take down the whole scene build.
-    let regions: THREE.BufferGeometry[] = []
-    try {
-      regions = fillSketchRegions(s.polys)
-    } catch {
-      regions = []
-    }
-    for (const fill of regions) {
-      const face = new THREE.Mesh(
-        fill,
-        new THREE.MeshBasicMaterial({
-          color: 0x5b8fd6,
-          transparent: true,
-          opacity: 0.15,
-          side: THREE.DoubleSide,
-          depthWrite: false
-        })
-      )
-      face.userData = { pick: 'sketch', sketchId: s.id }
-      face.renderOrder = 1
-      group.add(face)
-    }
-  }
-
-  let center = box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3())
-  let radius = box.isEmpty() ? 60 : Math.max(box.getSize(new THREE.Vector3()).length() / 2, 1)
-  // a single bad vertex (NaN) anywhere would make the box - and then the camera
-  // frame - NaN, blanking the whole viewport. Never let that out.
-  if (!Number.isFinite(center.x) || !Number.isFinite(center.y) || !Number.isFinite(center.z)) {
-    center = new THREE.Vector3()
-  }
-  if (!Number.isFinite(radius) || radius <= 0) radius = 60
+  const { center, radius } = syncScene(group, new Map(), meshes, sketches, datums, canvases)
   return { group, center, radius }
 }
 
 /** Chain a sketch's edge polylines into closed loops and triangulate each, so a
  *  profile made of separate line segments still fills. */
 function fillSketchRegions(polys: number[][]): THREE.BufferGeometry[] {
-  // already-closed polylines fill directly
   const out: THREE.BufferGeometry[] = []
   const open: THREE.Vector3[][] = []
   for (const poly of polys) {
@@ -258,7 +351,6 @@ function fillSketchRegions(polys: number[][]): THREE.BufferGeometry[] {
       open.push(pts)
     }
   }
-  // greedily stitch open polylines end-to-end into closed loops
   const key = (v: THREE.Vector3): string =>
     `${Math.round(v.x * 1e3)},${Math.round(v.y * 1e3)},${Math.round(v.z * 1e3)}`
   const used = new Set<number>()
@@ -333,8 +425,6 @@ function fillLoop(pts: THREE.Vector3[]): THREE.BufferGeometry | null {
   if (!pos.length) return null
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
-  // MeshBasicMaterial is unlit - no normals needed, and computing them on a
-  // degenerate triangle can inject NaN that blanks the whole frame
   return g
 }
 

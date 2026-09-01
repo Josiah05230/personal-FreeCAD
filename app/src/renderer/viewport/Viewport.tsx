@@ -19,7 +19,7 @@ import {
   type SketchTool,
   type SketchRefGeom
 } from './SketchController'
-import { buildScene } from './sceneBuilder'
+import { syncScene, type SceneNode } from './sceneBuilder'
 import { perfProfile } from '../perfProfile'
 
 function gradientBackground(): THREE.Texture {
@@ -601,59 +601,59 @@ export function Viewport({
     }
   }, [apiRef])
 
-  // rebuild content - only when the geometry itself changed (a cheap signature
-  // guards against rebuilds from unrelated refreshes / visibility toggles)
-  const lastSigRef = useRef('')
+  // reconcile scene content INCREMENTALLY - only nodes whose signature changed
+  // are rebuilt, so a live-preview update touches one body's geometry instead of
+  // disposing and re-triangulating the entire scene every keystroke.
+  const nodesRef = useRef<Map<string, SceneNode>>(new Map())
   const prevSolidCountRef = useRef(0)
   useEffect(() => {
     const st = stateRef.current
     if (!st) return
-    const sig =
-      meshes.map((m) => `${m.id}#${m.sig ?? m.positions.length}`).join(',') +
-      '|' +
-      sketches.map((s) => `${s.id}:${s.polys.reduce((n, p) => n + p.length, 0)}`).join(',') +
-      '|' +
-      datums.map((dm) => `${dm.id}:${dm.kind}:${dm.origin.join('/')}`).join(',') +
-      '|' +
-      canvases.map((c) => `${c.id}:${c.w}x${c.h}:${c.offset.join('/')}`).join(',')
-    if (sig === lastSigRef.current && st.content) return
-    lastSigRef.current = sig
 
-    st.picker.clear()
-    if (st.content) {
-      st.scene.remove(st.content)
-      st.content.traverse((o) => {
-        const any = o as THREE.Mesh
-        any.geometry?.dispose?.()
-        const mat = any.material as THREE.Material | THREE.Material[] | undefined
-        if (Array.isArray(mat)) mat.forEach((m) => m.dispose())
-        else mat?.dispose()
-      })
-    }
     if (!meshes.length && !sketches.length && !datums.length && !canvases.length) {
+      if (st.content) {
+        st.picker.clear()
+        st.scene.remove(st.content)
+        st.content.traverse((o) => {
+          const any = o as THREE.Mesh
+          any.geometry?.dispose?.()
+          const mat = any.material as THREE.Material | THREE.Material[] | undefined
+          if (Array.isArray(mat)) mat.forEach((m) => m.dispose())
+          else mat?.dispose()
+        })
+      }
+      nodesRef.current = new Map()
       st.content = null
       return
     }
-    let built
+
+    // make sure there is a content group to reconcile into
+    if (!st.content) {
+      st.content = new THREE.Group()
+      st.scene.add(st.content)
+      nodesRef.current = new Map()
+    }
+
+    let res
     try {
-      built = buildScene(meshes, sketches, datums, canvases)
+      res = syncScene(st.content, nodesRef.current, meshes, sketches, datums, canvases)
     } catch (e) {
-      // never let a scene-build failure leave the viewport permanently blank
-      console.error('buildScene failed', e)
-      st.content = null
+      // never let a scene-build failure wedge the viewport
+      console.error('syncScene failed', e)
       return
     }
-    const { group, center, radius } = built
-    st.scene.add(group)
-    st.content = group
-    st.lastCenter = center
-    st.lastRadius = radius
+    nodesRef.current = res.nodes
+    st.lastCenter = res.center
+    st.lastRadius = res.radius
+    // hover highlights can dangle over geometry that was just rebuilt
+    st.picker.setHover(null, st.content)
+
     // frame on first content, and again the first time a solid appears (an
     // extrude / primitive / import) so the new body is actually on screen
     const solidsAppeared = meshes.length > 0 && prevSolidCountRef.current === 0
     prevSolidCountRef.current = meshes.length
     if (!st.framedOnce || solidsAppeared) {
-      st.controls.frame(center, radius)
+      st.controls.frame(res.center, res.radius)
       st.framedOnce = true
     }
   }, [meshes, sketches, datums, canvases])
