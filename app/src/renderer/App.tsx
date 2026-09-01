@@ -513,10 +513,22 @@ export function App(): JSX.Element {
   // live-preview lifecycle (defined fully below applyOp; the ref is stable).
   // `depth` = preview features built and not yet rolled back - counted so rapid
   // value changes can never stack extrudes even if calls interleave.
-  const livePreviewRef = useRef({ seq: 0, depth: 0, running: false, pending: false })
+  // `featureId`/`kind` remember the ONE preview feature currently on the model so
+  // a follow-up value change can be pushed straight into it (feature.previewUpdate:
+  // one recompute, one body re-tessellated, no undo) instead of undo + rebuild.
+  const livePreviewRef = useRef<{
+    seq: number
+    depth: number
+    running: boolean
+    pending: boolean
+    featureId: string | null
+    kind: OpKind | null
+  }>({ seq: 0, depth: 0, running: false, pending: false, featureId: null, kind: null })
 
   const drainPreview = useCallback(async () => {
     const lp = livePreviewRef.current
+    lp.featureId = null
+    lp.kind = null
     while (lp.depth > 0) {
       lp.depth--
       try {
@@ -526,6 +538,54 @@ export function App(): JSX.Element {
       }
     }
   }, [])
+
+  // op kind -> FreeCAD property names for the in-place fast path. A kind absent
+  // here (or a mode that changes topology, e.g. extrude "To object") always
+  // takes the full rebuild path instead.
+  const previewProps = useCallback(
+    (kind: OpKind, v: OpValues): Record<string, number | boolean> | null => {
+      const n = (k: string): number | null => {
+        const x = Number(v[k])
+        return Number.isFinite(x) && x !== 0 ? x : null
+      }
+      switch (kind) {
+        case 'extrude': {
+          const len = n('length')
+          if (len == null || String(v.mode) === 'To object') return null
+          return { Length: len, Midplane: Boolean(v.midplane), Reversed: Boolean(v.reversed) }
+        }
+        case 'revolve': {
+          const a = n('angle')
+          return a == null ? null : { Angle: a }
+        }
+        case 'fillet': {
+          const r = n('radius')
+          return r == null ? null : { Radius: r }
+        }
+        case 'chamfer': {
+          const s = n('size')
+          return s == null ? null : { Size: s }
+        }
+        case 'shell': {
+          const t = n('thickness')
+          return t == null ? null : { Thickness: t }
+        }
+        case 'draft': {
+          const a = n('angle')
+          return a == null ? null : { Angle: a }
+        }
+        case 'hole': {
+          const d = n('diameter')
+          const dep = n('depth')
+          if (d == null) return null
+          return dep == null ? { Diameter: d } : { Diameter: d, Depth: dep }
+        }
+        default:
+          return null // rib (pad fallback), etc. - rebuild path
+      }
+    },
+    []
+  )
 
   const applyOp = useCallback(
     async (kind: OpKind, v: OpValues, exprs: Record<string, string> = {}) => {
@@ -876,18 +936,40 @@ export function App(): JSX.Element {
           const args = lastPreviewArgs.current!
           const seq = ++lp.seq
           try {
-            await drainPreview() // undo every earlier preview feature first
+            // FAST PATH: the preview feature already exists and only its numbers
+            // changed - push them straight in (one recompute, one body meshed).
+            const fast = previewProps(args.kind, args.v)
+            if (lp.featureId && lp.kind === args.kind && fast) {
+              const { mesh } = await apiQuiet.previewUpdate(lp.featureId, fast)
+              if (seq !== lp.seq) continue
+              setMeshes((ms) => {
+                const hit = ms.some((m) => m.id === mesh.id)
+                return hit ? ms.map((m) => (m.id === mesh.id ? mesh : m)) : [...ms, mesh]
+              })
+              setSketchNotice(null)
+              continue
+            }
+
+            // FULL PATH: first preview of this kind, or a topology change - roll
+            // back the old attempt and build a fresh one.
+            await drainPreview()
             const call = previewCall(args.kind, args.v)
             if (!call) {
               await refreshMeshesOnly(true)
               continue
             }
-            await call
+            const res = (await call) as { bodies?: BodyTree[] }
             if (seq !== lp.seq) {
               await drainPreview()
               continue
             }
             lp.depth++
+            const newest = (res?.bodies ?? [])
+              .flatMap((b) => b.features ?? [])
+              .filter((f) => f.kind !== 'sketch' && f.kind !== 'datum')
+              .at(-1)
+            lp.featureId = newest?.id ?? null
+            lp.kind = args.kind
             setSketchNotice(null)
             await refreshMeshesOnly(true)
           } catch (e) {
@@ -900,7 +982,7 @@ export function App(): JSX.Element {
         lp.running = false
       }
     },
-    [previewCall, drainPreview, refreshMeshesOnly]
+    [previewCall, previewProps, drainPreview, refreshMeshesOnly]
   )
 
   const endLivePreview = useCallback(async () => {

@@ -336,7 +336,9 @@ export function OperationDialog({
   useEffect(() => {
     if (!kind || !LIVE_PREVIEW.has(kind) || !onLivePreview) return
     if (!selection.length) return
-    const t = setTimeout(() => onLivePreview(kind, values), 350)
+    // short debounce - the app coalesces overlapping calls and the in-place
+    // fast path is a single recompute, so this can stay snappy while typing
+    const t = setTimeout(() => onLivePreview(kind, values), 130)
     return () => clearTimeout(t)
   }, [kind, selection, values]) // eslint-disable-line react-hooks/exhaustive-deps
 

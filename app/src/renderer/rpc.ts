@@ -281,6 +281,13 @@ export const apiQuiet = {
     ),
   sketchSolve: (elements: unknown[], constraints: unknown[]) =>
     rpcQuiet<SketchSolveDTO>('sketch.solve', { elements, constraints }),
+  /**
+   * Fast live-edit path: change an existing feature's params in place and get
+   * back only the affected body's mesh. Creates no undo step (see the sidecar's
+   * registry._NO_TXN), so one undo still removes the whole preview feature.
+   */
+  previewUpdate: (featureId: string, props: Record<string, number | boolean>) =>
+    rpcQuiet<{ mesh: RenderMesh }>('feature.previewUpdate', { featureId, props }),
   sceneGet: () =>
     rpcQuiet<{
       meshes: RenderMesh[]

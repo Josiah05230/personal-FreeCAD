@@ -852,6 +852,79 @@ def feature_suppress(id, suppressed=True):
     return tree_get()
 
 
+@method("feature.previewUpdate")
+def feature_preview_update(featureId=None, props=None):
+    """Fast path for live editing: mutate an EXISTING feature's parameters in
+    place and recompute once - no undo, no recreate, no full-scene rebuild.
+    Returns just the affected body's fresh mesh buffer so the shell can swap a
+    single geometry. `props` maps FreeCAD property names to values, e.g.
+    {"Length": 12.5, "Reversed": true} for a pad, {"Radius": 3} for a fillet.
+
+    Registered in registry._NO_TXN so these tweaks add no undo steps - one undo
+    of the original create still removes the whole preview feature.
+    """
+    d = session.doc(create=False)
+    if d is None:
+        raise RpcError(APP_ERROR, "no document")
+    obj = d.getObject(featureId) if featureId else None
+    if obj is None:
+        raise RpcError(APP_ERROR, "no object %r" % featureId)
+
+    for k, val in (props or {}).items():
+        if not hasattr(obj, k):
+            continue
+        try:
+            cur = getattr(obj, k)
+            if isinstance(cur, bool):
+                nv = bool(val)
+            elif isinstance(cur, int) and not isinstance(cur, bool):
+                nv = int(round(float(val)))
+            elif isinstance(cur, float):
+                nv = float(val)
+            else:
+                nv = val
+            if nv != cur:          # skip no-op writes (some are deprecation-noisy)
+                setattr(obj, k, nv)
+        except Exception:
+            pass
+
+    d.recompute()
+
+    body = None
+    try:
+        body = obj.getParentGeoFeatureGroup()
+    except Exception:
+        body = None
+    tip = getattr(body, "Tip", None) if body is not None else None
+    target = tip if tip is not None else obj
+    shape = getattr(target, "Shape", None)
+    ok = shape is not None and not shape.isNull()
+    try:
+        ok = ok and shape.isValid()
+    except Exception:
+        ok = False
+    if not ok:
+        raise RpcError(APP_ERROR,
+                       "that value produced an invalid shape - try another")
+
+    sig = _shape_sig(shape)
+    cached = _TESS_CACHE.get(target.Name)
+    if sig is not None and cached is not None and cached[0] == sig:
+        buf = dict(cached[1])
+    else:
+        buf = tessellate_shape(shape)
+        if sig is not None:
+            _TESS_CACHE[target.Name] = (sig, buf)
+    buf["sig"] = sig
+    buf["id"] = target.Name
+    buf["label"] = target.Label
+    buf["visible"] = True
+    col = session.body_color(target.Name)
+    if col:
+        buf["color"] = col
+    return {"mesh": buf}
+
+
 def _frame(sk):
     """The sketch plane's world frame: origin + x/y/z unit axes (for the 2D UI)."""
     p = sk.Placement
