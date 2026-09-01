@@ -336,7 +336,7 @@ export function OperationDialog({
   useEffect(() => {
     if (!kind || !LIVE_PREVIEW.has(kind) || !onLivePreview) return
     if (!selection.length) return
-    const t = setTimeout(() => onLivePreview(kind, values), 260)
+    const t = setTimeout(() => onLivePreview(kind, values), 350)
     return () => clearTimeout(t)
   }, [kind, selection, values]) // eslint-disable-line react-hooks/exhaustive-deps
 

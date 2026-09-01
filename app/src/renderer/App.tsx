@@ -204,8 +204,11 @@ export function App(): JSX.Element {
     setAsmTree(asm && asm.assembly ? asm : null)
   }, [applySceneTree])
 
-  const refreshMeshesOnly = useCallback(async () => {
-    const [scene, tree] = await Promise.all([api.sceneGet(), api.treeGet()])
+  const refreshMeshesOnly = useCallback(async (quiet = false) => {
+    // quiet = no busy spinner (used by the live feature preview, which fires
+    // repeatedly as a value is tuned)
+    const a = quiet ? apiQuiet : api
+    const [scene, tree] = await Promise.all([a.sceneGet(), a.treeGet()])
     setMeshes(scene.meshes)
     setSketches(scene.sketches ?? [])
     setDatums(scene.datums ?? [])
@@ -507,22 +510,29 @@ export function App(): JSX.Element {
     sketchOnRef.current = null
   }, [sketchSession, refreshScene])
 
-  // live-preview lifecycle (defined fully below applyOp; the ref is stable)
-  const livePreviewRef = useRef({ seq: 0, applied: false, running: false })
+  // live-preview lifecycle (defined fully below applyOp; the ref is stable).
+  // `depth` = preview features built and not yet rolled back - counted so rapid
+  // value changes can never stack extrudes even if calls interleave.
+  const livePreviewRef = useRef({ seq: 0, depth: 0, running: false, pending: false })
+
+  const drainPreview = useCallback(async () => {
+    const lp = livePreviewRef.current
+    while (lp.depth > 0) {
+      lp.depth--
+      try {
+        await api.undo()
+      } catch {
+        /* nothing left to roll back */
+      }
+    }
+  }, [])
 
   const applyOp = useCallback(
     async (kind: OpKind, v: OpValues, exprs: Record<string, string> = {}) => {
       // discard any live-preview attempt so the real commit starts from a clean
       // model (applyOp stays the single source of truth for the committed feature)
       livePreviewRef.current.seq++
-      if (livePreviewRef.current.applied) {
-        livePreviewRef.current.applied = false
-        try {
-          await api.undo()
-        } catch {
-          /* nothing to roll back */
-        }
-      }
+      await drainPreview()
       // close the dialog the instant the user commits - the engine rebuild and
       // scene refresh run behind the status spinner and reconcile when they land
       if (kind === 'datumPlane') setDatumGhostHold(true) // keep the ghost until the real datum lands
@@ -753,7 +763,7 @@ export function App(): JSX.Element {
         setDatumGhostHold(false)
       }
     },
-    [selection, afterEdit]
+    [selection, afterEdit, drainPreview]
   )
 
   // ---- live feature preview ----
@@ -847,61 +857,61 @@ export function App(): JSX.Element {
     [selection]
   )
 
-  const rollbackPreview = useCallback(async () => {
-    const lp = livePreviewRef.current
-    if (!lp.applied) return
-    lp.applied = false
-    try {
-      await api.undo()
-    } catch {
-      /* nothing to undo */
-    }
-  }, [])
+  const lastPreviewArgs = useRef<{ kind: OpKind; v: OpValues } | null>(null)
 
   const runLivePreview = useCallback(
     async (kind: OpKind, v: OpValues) => {
       const lp = livePreviewRef.current
-      if (lp.running) return
+      lastPreviewArgs.current = { kind, v }
+      // one in flight at a time; remember that a newer value is waiting so we
+      // run exactly once more when this finishes (no stacking, no missed edit)
+      if (lp.running) {
+        lp.pending = true
+        return
+      }
       lp.running = true
-      const seq = ++lp.seq
       try {
-        await rollbackPreview()
-        const call = previewCall(kind, v)
-        if (!call) return
-        await call
-        if (seq !== lp.seq) {
-          // superseded while the engine was working - undo this attempt
+        do {
+          lp.pending = false
+          const args = lastPreviewArgs.current!
+          const seq = ++lp.seq
           try {
-            await api.undo()
-          } catch {
-            /* ignore */
+            await drainPreview() // undo every earlier preview feature first
+            const call = previewCall(args.kind, args.v)
+            if (!call) {
+              await refreshMeshesOnly(true)
+              continue
+            }
+            await call
+            if (seq !== lp.seq) {
+              await drainPreview()
+              continue
+            }
+            lp.depth++
+            setSketchNotice(null)
+            await refreshMeshesOnly(true)
+          } catch (e) {
+            await drainPreview()
+            const msg = (e as Error).message || 'preview failed'
+            setSketchNotice(`Preview: ${msg.replace(/^RPC \w+\.\w+:\s*/, '')}`)
           }
-          return
-        }
-        lp.applied = true
-        setSketchNotice(null)
-        await refreshMeshesOnly()
-      } catch (e) {
-        // the op itself failed at these inputs - tell the user why instead of
-        // silently showing nothing (this is what "extrude doesn't preview" was)
-        livePreviewRef.current.applied = false
-        const msg = (e as Error).message || 'preview failed'
-        setSketchNotice(`Preview: ${msg.replace(/^RPC \w+\.\w+:\s*/, '')}`)
+        } while (lp.pending)
       } finally {
         lp.running = false
       }
     },
-    [previewCall, rollbackPreview, refreshMeshesOnly]
+    [previewCall, drainPreview, refreshMeshesOnly]
   )
 
   const endLivePreview = useCallback(async () => {
     livePreviewRef.current.seq++
+    livePreviewRef.current.pending = false
     setSketchNotice(null)
-    if (livePreviewRef.current.applied) {
-      await rollbackPreview()
+    if (livePreviewRef.current.depth > 0) {
+      await drainPreview()
       await refreshScene()
     }
-  }, [rollbackPreview, refreshScene])
+  }, [drainPreview, refreshScene])
 
   const cachePut = useCallback(
     (key: string, val: { scene: Awaited<ReturnType<typeof api.sceneGet>>; tree: Awaited<ReturnType<typeof api.treeGet>> }) => {
@@ -1325,7 +1335,7 @@ export function App(): JSX.Element {
       const n = Number(real)
       if (!n || n <= 0) return
       await api.canvasCalibrate(id, n, measuredMm)
-      await refreshMeshesOnly()
+      await refreshMeshesOnly(true)
     },
     [calibrateId, refreshMeshesOnly]
   )
@@ -1342,7 +1352,7 @@ export function App(): JSX.Element {
     const w = 100
     const h = img.naturalHeight && img.naturalWidth ? (100 * img.naturalHeight) / img.naturalWidth : 100
     const r = await api.canvasInsert('XY', w, h, dataUrl)
-    await refreshMeshesOnly()
+    await refreshMeshesOnly(true)
     // calibration is part of placing a canvas, not a separate tool
     if (r?.id) setCalibrateId(r.id)
   }, [refreshMeshesOnly])
@@ -1934,7 +1944,7 @@ export function App(): JSX.Element {
                       onEditDim: (id) => void editFeatureDim(id),
                       onSelect: (sel, add) => onSelect(sel, add),
                       onCalibrateCanvas: (id) => startCalibrate(id),
-                      onDeleteCanvas: (id) => void api.canvasDelete(id).then(refreshMeshesOnly)
+                      onDeleteCanvas: (id) => void api.canvasDelete(id).then(() => refreshMeshesOnly())
                     }}
                   />
                   {asmTree && (
