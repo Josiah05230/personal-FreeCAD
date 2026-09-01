@@ -338,7 +338,11 @@ export function OperationDialog({
     if (!selection.length) return
     // short debounce - the app coalesces overlapping calls and the in-place
     // fast path is a single recompute, so this can stay snappy while typing
-    const t = setTimeout(() => onLivePreview(kind, values), 130)
+    console.log(`[preview-effect] scheduled kind=${kind} values=${JSON.stringify(values)}`)
+    const t = setTimeout(() => {
+      console.log(`[preview-effect] FIRE kind=${kind}`)
+      onLivePreview(kind, values)
+    }, 130)
     return () => clearTimeout(t)
   }, [kind, selection, values]) // eslint-disable-line react-hooks/exhaustive-deps
 

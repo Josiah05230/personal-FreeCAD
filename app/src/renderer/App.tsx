@@ -930,6 +930,7 @@ export function App(): JSX.Element {
         return
       }
       lp.running = true
+      const t0 = performance.now()
       try {
         do {
           lp.pending = false
@@ -940,6 +941,7 @@ export function App(): JSX.Element {
             // changed - push them straight in (one recompute, one body meshed).
             const fast = previewProps(args.kind, args.v)
             if (lp.featureId && lp.kind === args.kind && fast) {
+              console.log(`[preview] FAST id=${lp.featureId} ${JSON.stringify(fast)}`)
               const { mesh } = await apiQuiet.previewUpdate(lp.featureId, fast)
               if (seq !== lp.seq) continue
               setMeshes((ms) => {
@@ -947,14 +949,19 @@ export function App(): JSX.Element {
                 return hit ? ms.map((m) => (m.id === mesh.id ? mesh : m)) : [...ms, mesh]
               })
               setSketchNotice(null)
+              console.log(`[preview] FAST done in ${Math.round(performance.now() - t0)}ms`)
               continue
             }
 
             // FULL PATH: first preview of this kind, or a topology change - roll
             // back the old attempt and build a fresh one.
+            console.log(
+              `[preview] FULL (featureId=${lp.featureId} kind=${lp.kind} want=${args.kind} fast=${!!fast})`
+            )
             await drainPreview()
             const call = previewCall(args.kind, args.v)
             if (!call) {
+              console.log('[preview] FULL: previewCall returned null (bad/absent value)')
               await refreshMeshesOnly(true)
               continue
             }
@@ -972,7 +979,11 @@ export function App(): JSX.Element {
             lp.kind = args.kind
             setSketchNotice(null)
             await refreshMeshesOnly(true)
+            console.log(
+              `[preview] FULL done in ${Math.round(performance.now() - t0)}ms, featureId now=${lp.featureId}`
+            )
           } catch (e) {
+            console.error(`[preview] ERROR ${(e as Error).message}`)
             await drainPreview()
             const msg = (e as Error).message || 'preview failed'
             setSketchNotice(`Preview: ${msg.replace(/^RPC \w+\.\w+:\s*/, '')}`)

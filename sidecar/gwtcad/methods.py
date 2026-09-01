@@ -187,6 +187,23 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
         body = fbody if fbody.TypeId == "PartDesign::Body" else fbody.getParentGeoFeatureGroup()
         if body is None or body.TypeId != "PartDesign::Body":
             raise RpcError(APP_ERROR, "that face is not on a Body")
+        if getattr(body, "Tip", None) is None:
+            raise RpcError(APP_ERROR,
+                           "that body has no solid yet - draw a sketch on the face "
+                           "and extrude that instead")
+        # only a flat face works as a pad/pocket profile - reject cylinders etc.
+        try:
+            _fsub = faceRef["sub"]
+            _fidx = int(_fsub[4:]) - 1
+            _face = body.Tip.Shape.Faces[_fidx]
+            if type(_face.Surface).__name__ != "Plane":
+                raise RpcError(APP_ERROR,
+                               "that face is curved - extruding a face needs a flat "
+                               "one (or use a sketch)")
+        except RpcError:
+            raise
+        except Exception:
+            pass  # index/attr trouble: let the pad attempt surface the real error
         sk = (body.Tip, [faceRef["sub"]])   # PartDesign accepts a base-solid face as a profile
     else:
         d, sk = _obj(sketchId)
@@ -895,9 +912,16 @@ def feature_preview_update(featureId=None, props=None):
         body = obj.getParentGeoFeatureGroup()
     except Exception:
         body = None
-    tip = getattr(body, "Tip", None) if body is not None else None
-    target = tip if tip is not None else obj
-    shape = getattr(target, "Shape", None)
+
+    # scene.get keys a solid's mesh by the *Body* name (not the tip feature), so
+    # the shell can only swap it in place if we answer with the same id + the
+    # body's resulting shape. Returning the tip feature's name instead makes the
+    # shell append a second mesh - you then see both the old and new extrude.
+    owner = body if (body is not None and body.TypeId == "PartDesign::Body") else obj
+    shape = getattr(owner, "Shape", None)
+    if shape is None or shape.isNull():
+        tip = getattr(body, "Tip", None) if body is not None else None
+        shape = getattr(tip, "Shape", None)
     ok = shape is not None and not shape.isNull()
     try:
         ok = ok and shape.isValid()
@@ -908,18 +932,18 @@ def feature_preview_update(featureId=None, props=None):
                        "that value produced an invalid shape - try another")
 
     sig = _shape_sig(shape)
-    cached = _TESS_CACHE.get(target.Name)
+    cached = _TESS_CACHE.get(owner.Name)
     if sig is not None and cached is not None and cached[0] == sig:
         buf = dict(cached[1])
     else:
         buf = tessellate_shape(shape)
         if sig is not None:
-            _TESS_CACHE[target.Name] = (sig, buf)
+            _TESS_CACHE[owner.Name] = (sig, buf)
     buf["sig"] = sig
-    buf["id"] = target.Name
-    buf["label"] = target.Label
+    buf["id"] = owner.Name
+    buf["label"] = owner.Label
     buf["visible"] = True
-    col = session.body_color(target.Name)
+    col = session.body_color(owner.Name)
     if col:
         buf["color"] = col
     return {"mesh": buf}
