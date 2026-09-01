@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { BodyTree } from '../rpc'
 import { Icon, type IconName } from './icons'
 import { ContextMenu, type MenuItem } from './ContextMenu'
@@ -16,7 +16,9 @@ export interface TimelineHandlers {
   onEditDim: (featureId: string) => void
   onRename: (featureId: string) => void
   onDelete: (featureId: string) => void
+  onDeleteMany: (featureIds: string[]) => void
   onSuppress: (featureId: string, suppressed: boolean) => void
+  onSuppressMany: (featureIds: string[], suppressed: boolean) => void
 }
 
 const CHIP_W = 54 // keep in sync with .tl-chip min-width + gap
@@ -24,6 +26,11 @@ const CHIP_W = 54 // keep in sync with .tl-chip min-width + gap
 /**
  * History timeline - full-width, bottom-pinned, left-aligned. A draggable
  * rollback marker sits between feature chips; the model rebuilds to that point.
+ *
+ * Clicking a chip SELECTS it (shift = range, ctrl/cmd = toggle) so a group of
+ * features can be reworked or deleted at once - it does NOT roll history.
+ * History rolls only via the marker, the transport buttons, or the right-click
+ * "Move timeline here" item, matching how Fusion / SolidWorks behave.
  */
 export function Timeline({
   bodies,
@@ -45,13 +52,81 @@ export function Timeline({
   const [playing, setPlaying] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const anchorRef = useRef<number | null>(null)
   const trackRef = useRef<HTMLDivElement>(null)
   const playTimer = useRef<number | null>(null)
+
+  const featIds = feats.map((f) => f.id).join('|')
+  // drop selection entries for features that no longer exist (deleted / rolled)
+  useEffect(() => {
+    setSelected((cur) => {
+      if (cur.size === 0) return cur
+      const live = new Set(feats.map((f) => f.id))
+      let changed = false
+      const next = new Set<string>()
+      cur.forEach((id) => (live.has(id) ? next.add(id) : (changed = true)))
+      return changed ? next : cur
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [featIds])
+
+  const selectedList = useMemo(
+    () => feats.filter((f) => selected.has(f.id)).map((f) => f.id),
+    [feats, selected]
+  )
 
   const rollToIndex = (idx: number): void => {
     const clamped = Math.max(0, Math.min(idx, feats.length - 1))
     handlers.onRollTo(clamped >= feats.length - 1 ? null : feats[clamped].id)
   }
+
+  const clickChip = (i: number, ev: React.MouseEvent): void => {
+    const id = feats[i].id
+    if (ev.shiftKey && anchorRef.current != null) {
+      const lo = Math.min(anchorRef.current, i)
+      const hi = Math.max(anchorRef.current, i)
+      const next = new Set(selected)
+      for (let k = lo; k <= hi; k++) next.add(feats[k].id)
+      setSelected(next)
+      return
+    }
+    if (ev.ctrlKey || ev.metaKey) {
+      const next = new Set(selected)
+      next.has(id) ? next.delete(id) : next.add(id)
+      setSelected(next)
+      anchorRef.current = i
+      return
+    }
+    setSelected(new Set([id]))
+    anchorRef.current = i
+  }
+
+  const clearSelection = (): void => {
+    setSelected(new Set())
+    anchorRef.current = null
+  }
+
+  // Delete / Backspace removes the selected chips; Escape clears the selection
+  useEffect(() => {
+    if (selected.size === 0) return
+    const onKey = (e: KeyboardEvent): void => {
+      const t = e.target as HTMLElement | null
+      if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return
+      if (e.key === 'Escape') {
+        clearSelection()
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault()
+        const ids = feats.filter((f) => selected.has(f.id)).map((f) => f.id)
+        if (ids.length === 1) handlers.onDelete(ids[0])
+        else if (ids.length > 1) handlers.onDeleteMany(ids)
+        clearSelection()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, featIds])
 
   useEffect(() => {
     if (!playing) return
@@ -106,6 +181,27 @@ export function Timeline({
   }, [dragging, feats.length])
 
   const menuItems = (id: string): MenuItem[] => {
+    // a right-click on a chip that is part of a multi-selection acts on the
+    // whole group; otherwise it acts on (and selects) just that chip
+    const group = selected.has(id) && selectedList.length > 1 ? selectedList : null
+    if (group) {
+      const anySuppressed = feats.some((f) => group.includes(f.id) && f.suppressed)
+      return [
+        {
+          label: anySuppressed ? `Unsuppress ${group.length} features` : `Suppress ${group.length} features`,
+          onClick: () => handlers.onSuppressMany(group, !anySuppressed)
+        },
+        { separator: true, label: '' },
+        {
+          label: `Delete ${group.length} features`,
+          danger: true,
+          onClick: () => {
+            handlers.onDeleteMany(group)
+            clearSelection()
+          }
+        }
+      ]
+    }
     const f = feats.find((x) => x.id === id)
     return [
       f?.kind === 'sketch'
@@ -149,7 +245,14 @@ export function Timeline({
         </button>
       </div>
 
-      <div className="tl-track" ref={trackRef}>
+      <div
+        className="tl-track"
+        ref={trackRef}
+        onClick={(e) => {
+          // a click on empty track space (not a chip) clears the selection
+          if (e.target === e.currentTarget) clearSelection()
+        }}
+      >
         {feats.length === 0 && <span className="tl-empty">No features yet</span>}
         {feats.map((f, i) => {
           const Glyph = Icon[KIND_ICON[f.kind] ?? 'point']
@@ -160,17 +263,22 @@ export function Timeline({
                 'tl-chip' +
                 (f.error ? ' error' : '') +
                 (f.afterTip || i > markerAt ? ' rolled' : '') +
-                (f.suppressed ? ' suppressed' : '')
+                (f.suppressed ? ' suppressed' : '') +
+                (selected.has(f.id) ? ' selected' : '')
               }
-              title={`${f.label}  ·  ${f.opType}`}
+              title={`${f.label}  ·  ${f.opType}\nClick to select · Shift/Ctrl click to multi-select · double-click to edit`}
               onDoubleClick={() =>
                 f.kind === 'sketch' ? handlers.onEdit(f.id) : handlers.onEditDim(f.id)
               }
               onContextMenu={(e) => {
                 e.preventDefault()
+                if (!selected.has(f.id)) {
+                  setSelected(new Set([f.id]))
+                  anchorRef.current = i
+                }
                 setMenu({ x: e.clientX, y: e.clientY, id: f.id })
               }}
-              onClick={() => rollToIndex(i)}
+              onClick={(e) => clickChip(i, e)}
             >
               <span className="tl-chip-ic">
                 <Glyph />

@@ -1071,6 +1071,60 @@ export function App(): JSX.Element {
     [afterEdit]
   )
 
+  const suppressFeaturesMany = useCallback(
+    async (ids: string[], suppressed: boolean) => {
+      if (!ids.length) return
+      for (const id of ids) {
+        try {
+          await api.featureSuppress(id, suppressed)
+        } catch (e) {
+          window.alert((e as Error).message)
+          break
+        }
+      }
+      await afterEdit()
+    },
+    [afterEdit]
+  )
+
+  const deleteFeaturesMany = useCallback(
+    async (ids: string[]) => {
+      if (!ids.length) return
+      if (ids.length === 1) return deleteFeature(ids[0])
+      if (!window.confirm(`Delete ${ids.length} features?`)) return
+      const set = new Set(ids)
+      // drop every target from view state at once so they vanish immediately
+      setBodies((bs) =>
+        bs.map((b) => ({ ...b, features: b.features.filter((f) => !set.has(f.id)) }))
+      )
+      setMeshes((ms) => ms.filter((m) => !set.has(m.id)))
+      setSketches((ss) => ss.filter((s) => !set.has(s.id)))
+      setDatums((ds) => ds.filter((dm) => !set.has(dm.id)))
+      setVisOverride((m) => {
+        const n = { ...m }
+        ids.forEach((id) => (n[id] = false))
+        return n
+      })
+      setSelection((cur) => cur.filter((s) => !('sketchId' in s && set.has(s.sketchId))))
+      markDirty()
+      // delete newest-first so earlier features never rebuild against a
+      // dependant that is about to be removed anyway
+      const order = (bodies[0]?.features ?? [])
+        .map((f) => f.id)
+        .filter((id) => set.has(id))
+        .reverse()
+      try {
+        for (const id of order) await api.deleteFeature(id)
+        const [scene, tree] = await Promise.all([api.sceneGet(), api.treeGet()])
+        applySceneTree(scene, tree)
+      } catch (e) {
+        window.alert((e as Error).message)
+        await refreshScene()
+      }
+    },
+    [deleteFeature, bodies, markDirty, applySceneTree, refreshScene]
+  )
+
   const doUndo = useCallback(async () => {
     if (!canUndo) return
     const r = await api.undo()
@@ -2013,7 +2067,9 @@ export function App(): JSX.Element {
                       onEditDim: (id) => void editFeatureDim(id),
                       onRename: renameFeature,
                       onDelete: deleteFeature,
-                      onSuppress: (id, s) => void suppressFeature(id, s)
+                      onDeleteMany: (ids) => void deleteFeaturesMany(ids),
+                      onSuppress: (id, s) => void suppressFeature(id, s),
+                      onSuppressMany: (ids, s) => void suppressFeaturesMany(ids, s)
                     }}
                   />
                 </>

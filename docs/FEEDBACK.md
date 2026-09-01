@@ -59,34 +59,4 @@ Drop new feedback here between sessions; it gets folded into a batch and this
 space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
 
-(nothing pending)
-
-## Recently addressed - Batch 28
-
-- "Extrude / live preview does nothing" root cause: dimensioning two opposite
-  sides of a rectangle left a redundant constraint that collapsed the sketch to
-  NO closed wire -> `build.pad` NULL shape -> `feature.extrude` crashed on
-  `.Shape.isValid()`, which broke every later op and blanked the scene.
-  * `sketch.finish` strips FreeCAD's reported redundant constraints and re-solves
-  * `feature.extrude` checks the profile up front, handles a null shape safely,
-    and removes an invalid pad instead of leaving the model broken
-  * live preview parses each field as a finite non-zero number (no NaN sends) and
-    shows the engine error in the hint bar instead of silent retries
-- `setDimension` and drag-release now run the REAL solver immediately (not a
-  240 ms timer), so a dimensioned rectangle snaps exact and an over-dimension is
-  vetoed at once.
-- Dragging a fully-sized rectangle's edge translates the whole rectangle
-  rigidly instead of stretching it.
-
-## Recently addressed - Batch 27
-
-- Delete a sketch dimension: click its value label (it highlights), press
-  Delete. Works on this-session dimensions and reopen-era ones (sketch.finish
-  removes the matching real constraint).
-- Over-dimensioning is now actually blocked - sketch.solve maps its diagnostics
-  through a per-constraint applied list, so a redundant / conflicting / rejected
-  dimension is caught by the pre-prompt check and the post-add veto.
-- A fully-defined entity (or a fully-constrained sketch) will not start a drag.
-- Blank viewport on extrude / live preview: a non-finite tessellation vertex is
-  dropped, a NaN camera frame is refused, buildScene is wrapped - a bad vertex
-  can no longer strand the camera.
+-when I edit an extrude, it shouldn't have to go back and forth with FCAD to update the visual, right? It should be able to do that in the background? I need it so that if the distance on my extrude is 10, and I hit backspace so it goes to 1, the visual is updated before I hit backspace again for it to go to 0. I need it fast. This is how it should work for pretty much ALL features. Not only all boxes, textboxes, dropdowns, etc. but EVERY user interaction if/when possible.
