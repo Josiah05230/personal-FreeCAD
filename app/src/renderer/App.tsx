@@ -523,12 +523,26 @@ export function App(): JSX.Element {
     pending: boolean
     featureId: string | null
     kind: OpKind | null
-  }>({ seq: 0, depth: 0, running: false, pending: false, featureId: null, kind: null })
+    // topology-affecting inputs (operation / mode / profile) the preview feature
+    // was BUILT with - if these change we must rebuild, not tweak in place. When
+    // they still match on Finish we keep the preview feature as the commit.
+    opSig: string
+  }>({ seq: 0, depth: 0, running: false, pending: false, featureId: null, kind: null, opSig: '' })
+
+  // signature of the inputs that decide the feature's shape topology (so a
+  // number tweak keeps the fast path but a Join->Cut switch forces a rebuild)
+  const previewSig = useCallback((kind: OpKind, v: OpValues): string => {
+    const sk = selection.find((s) => s.kind === 'sketch') as { sketchId: string } | undefined
+    const fc = selection.find((s) => s.kind === 'face') as { bodyId: string; sub: string } | undefined
+    const profile = sk ? `sk:${sk.sketchId}` : fc ? `fc:${fc.bodyId}/${fc.sub}` : 'none'
+    return [kind, profile, String(v.operation ?? ''), String(v.mode ?? ''), String(v.cut ?? '')].join('|')
+  }, [selection])
 
   const drainPreview = useCallback(async () => {
     const lp = livePreviewRef.current
     lp.featureId = null
     lp.kind = null
+    lp.opSig = ''
     while (lp.depth > 0) {
       lp.depth--
       try {
@@ -589,6 +603,45 @@ export function App(): JSX.Element {
 
   const applyOp = useCallback(
     async (kind: OpKind, v: OpValues, exprs: Record<string, string> = {}) => {
+      // FAST COMMIT: the live preview already built exactly this feature (same
+      // profile, same operation), so keep it instead of undo + re-extrude +
+      // full scene refresh. Only its final number might differ if Finish beat
+      // the debounce - push that in (~8ms) and we are done.
+      const lp = livePreviewRef.current
+      const fastProps = previewProps(kind, v)
+      if (
+        lp.featureId != null &&
+        lp.kind === kind &&
+        lp.opSig === previewSig(kind, v) &&
+        fastProps != null &&
+        Object.keys(exprs).length === 0
+      ) {
+        setOp(null)
+        try {
+          lp.seq++
+          const { mesh } = await apiQuiet.previewUpdate(lp.featureId, fastProps)
+          setMeshes((ms) => ms.map((m) => (m.id === mesh.id ? mesh : m)))
+          lp.depth = 0
+          lp.featureId = null
+          lp.kind = null
+          lp.opSig = ''
+          rollCacheRef.current.clear() // history changed - drop stale roll snapshots
+          const tree = await api.treeGet()
+          setBodies(tree.bodies)
+          if ('canUndo' in tree) setCanUndo(!!tree.canUndo)
+          if ('canRedo' in tree) setCanRedo(!!tree.canRedo)
+          setSketches((ss) =>
+            ss.filter((s) => !selection.some((x) => 'sketchId' in x && x.sketchId === s.id))
+          )
+          markDirty()
+          setSelection([])
+          return
+        } catch {
+          // preview feature went bad somehow - fall through to a clean rebuild
+          await drainPreview()
+        }
+      }
+
       // discard any live-preview attempt so the real commit starts from a clean
       // model (applyOp stays the single source of truth for the committed feature)
       livePreviewRef.current.seq++
@@ -823,7 +876,7 @@ export function App(): JSX.Element {
         setDatumGhostHold(false)
       }
     },
-    [selection, afterEdit, drainPreview]
+    [selection, afterEdit, drainPreview, previewProps, previewSig]
   )
 
   // ---- live feature preview ----
@@ -940,7 +993,8 @@ export function App(): JSX.Element {
             // FAST PATH: the preview feature already exists and only its numbers
             // changed - push them straight in (one recompute, one body meshed).
             const fast = previewProps(args.kind, args.v)
-            if (lp.featureId && lp.kind === args.kind && fast) {
+            const sig = previewSig(args.kind, args.v)
+            if (lp.featureId && lp.kind === args.kind && lp.opSig === sig && fast) {
               console.log(`[preview] FAST id=${lp.featureId} ${JSON.stringify(fast)}`)
               const { mesh } = await apiQuiet.previewUpdate(lp.featureId, fast)
               if (seq !== lp.seq) continue
@@ -977,6 +1031,7 @@ export function App(): JSX.Element {
               .at(-1)
             lp.featureId = newest?.id ?? null
             lp.kind = args.kind
+            lp.opSig = sig
             setSketchNotice(null)
             // pull just the new body's mesh in via the light path when we can
             // (keeps even the first preview snappy); otherwise fall back to a
@@ -1012,7 +1067,7 @@ export function App(): JSX.Element {
         lp.running = false
       }
     },
-    [previewCall, previewProps, drainPreview, refreshMeshesOnly, selection]
+    [previewCall, previewProps, previewSig, drainPreview, refreshMeshesOnly, selection]
   )
 
   const endLivePreview = useCallback(async () => {
