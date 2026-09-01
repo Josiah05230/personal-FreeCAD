@@ -601,6 +601,25 @@ export function App(): JSX.Element {
     []
   )
 
+  // does this op have a usable primary number yet? a blank / 0 / half-typed
+  // field (which happens constantly mid-edit) must NOT tear the preview down.
+  const previewHasValue = useCallback((kind: OpKind, v: OpValues): boolean => {
+    const key: Record<string, string> = {
+      extrude: 'length',
+      revolve: 'angle',
+      fillet: 'radius',
+      chamfer: 'size',
+      shell: 'thickness',
+      hole: 'diameter',
+      draft: 'angle',
+      rib: 'thickness'
+    }
+    const k = key[kind]
+    if (!k) return true
+    const n = Number(v[k])
+    return Number.isFinite(n) && n !== 0
+  }, [])
+
   const applyOp = useCallback(
     async (kind: OpKind, v: OpValues, exprs: Record<string, string> = {}) => {
       // FAST COMMIT: the live preview already built exactly this feature (same
@@ -671,6 +690,8 @@ export function App(): JSX.Element {
                 'Select a sketch (its outline / filled face) or a flat face of the model to extrude.'
               )
             const toObject = String(v.mode) === 'To object'
+            if (!toObject && !(Number.isFinite(Number(v.length)) && Number(v.length) !== 0))
+              throw new Error('Enter a non-zero distance.')
             // in "to object" mode the second selected face is the target
             const upToFace = toObject
               ? faces[faceProfile ? 1 : 0]
@@ -990,6 +1011,12 @@ export function App(): JSX.Element {
           const args = lastPreviewArgs.current!
           const seq = ++lp.seq
           try {
+            // blank / zero / half-typed value: leave whatever preview is on
+            // screen exactly as it is - do not drain or rebuild it
+            if (!previewHasValue(args.kind, args.v)) {
+              console.log('[preview] skip - no usable value, keeping current preview')
+              continue
+            }
             // FAST PATH: the preview feature already exists and only its numbers
             // changed - push them straight in (one recompute, one body meshed).
             const fast = previewProps(args.kind, args.v)
@@ -1067,7 +1094,7 @@ export function App(): JSX.Element {
         lp.running = false
       }
     },
-    [previewCall, previewProps, previewSig, drainPreview, refreshMeshesOnly, selection]
+    [previewCall, previewProps, previewSig, previewHasValue, drainPreview, refreshMeshesOnly, selection]
   )
 
   const endLivePreview = useCallback(async () => {
