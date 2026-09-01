@@ -1114,7 +1114,17 @@ export function App(): JSX.Element {
         .filter((id) => set.has(id))
         .reverse()
       try {
-        for (const id of order) await api.deleteFeature(id)
+        for (const id of order) {
+          try {
+            await api.deleteFeature(id)
+          } catch (e) {
+            // deleting one feature can cascade to its dependants, so a later id
+            // in the batch may already be gone - that is success, not failure
+            const m = (e as Error).message || ''
+            if (/no object|not found|already|unknown feature/i.test(m)) continue
+            throw e
+          }
+        }
         const [scene, tree] = await Promise.all([api.sceneGet(), api.treeGet()])
         applySceneTree(scene, tree)
       } catch (e) {
