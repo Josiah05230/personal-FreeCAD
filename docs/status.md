@@ -24,6 +24,9 @@ slice (board import + placeholders); next: component STEP models + connector->jo
   marker. Click a chip to SELECT it (Shift = range, Ctrl/Cmd = toggle);
   Delete/Backspace or right-click removes / suppresses the selected group.
   Clicking a chip no longer rolls history.
+- Live feature preview: first change builds the feature, then each keystroke
+  takes an in-place fast path (feature.previewUpdate: ~8ms, one body re-meshed,
+  no undo, no scene refresh) for extrude/revolve/fillet/chamfer/shell/draft/hole.
 - Ribbon "Select" dropdown: paint/window radios + entity-kind checkboxes; gates
   picking.
 
