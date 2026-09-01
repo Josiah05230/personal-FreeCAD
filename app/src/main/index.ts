@@ -51,10 +51,15 @@ async function createWindow(): Promise<void> {
 
   win.webContents.on('console-message', (_e, level, message, line, source) => {
     const tag = ['v', 'i', 'w', 'e'][level] ?? '?'
-    process.stdout.write(`[renderer:${tag}] ${message}  (${source}:${line})\n`)
+    // make renderer errors trivially greppable in the run log (dev watch / CI)
+    const mark = level >= 3 || /error|uncaught|unhandled/i.test(message) ? '[GUI-ERR] ' : ''
+    process.stdout.write(`${mark}[renderer:${tag}] ${message}  (${source}:${line})\n`)
   })
   win.webContents.on('render-process-gone', (_e, details) =>
-    process.stderr.write(`[renderer] gone: ${JSON.stringify(details)}\n`)
+    process.stderr.write(`[GUI-ERR] [renderer] gone: ${JSON.stringify(details)}\n`)
+  )
+  win.webContents.on('unresponsive', () =>
+    process.stderr.write('[GUI-ERR] [renderer] unresponsive\n')
   )
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -70,7 +75,13 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('cad:rpc', async (_e, method: string, params: Record<string, unknown>) => {
     if (!sidecar) throw new Error('sidecar unavailable')
-    return sidecar.rpc(method, params ?? {})
+    try {
+      return await sidecar.rpc(method, params ?? {})
+    } catch (err) {
+      // greppable one-liner in the run log so a watcher / dev can react fast
+      process.stderr.write(`[GUI-ERR] rpc ${method}: ${(err as Error).message}\n`)
+      throw err
+    }
   })
   ipcMain.handle('cad:sidecarStatus', () => ({ started: !!sidecar }))
 
