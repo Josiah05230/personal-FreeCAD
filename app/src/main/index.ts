@@ -242,6 +242,47 @@ app.whenReady().then(async () => {
 
   await createWindow()
 
+  // --e2e <scenario.js> : wait for renderer + engine, eval the scenario file in
+  // the renderer (it drives window.__gwtcad and returns {passed,failed,lines}),
+  // print TAP-ish output, exit 0/1. Runs the real component tree + IPC + sidecar.
+  const e2eIdx = process.argv.indexOf('--e2e')
+  if (e2eIdx !== -1 && win) {
+    const scenarioPath = process.argv[e2eIdx + 1]
+    void (async () => {
+      const w = win!
+      let code = 1
+      try {
+        for (let i = 0; i < 120; i++) {
+          const ready = await w.webContents
+            .executeJavaScript(
+              `(async () => (window.__gwtcad && (await window.cad.rpc('ping',{}).then(()=>1).catch(()=>0))) ? 1 : 0)()`
+            )
+            .catch(() => 0)
+          if (ready) break
+          await new Promise((r) => setTimeout(r, 500))
+        }
+        const harness = await readFile(resolve(REPO_ROOT, 'test/e2e/harness.js'), 'utf-8')
+        const scenario = await readFile(resolve(process.cwd(), scenarioPath), 'utf-8')
+        const raw = await w.webContents.executeJavaScript(
+          `(async () => {
+             ${harness}
+             try { await (async () => { ${scenario}
+             })() } catch (e) { _failed++; _lines.push('not ok - scenario threw: ' + ((e && e.message) || e)) }
+             return { passed: _passed, failed: _failed, lines: _lines }
+           })()`
+        )
+        const res = raw as { passed: number; failed: number; lines: string[] }
+        for (const l of res.lines) process.stdout.write(l + '\n')
+        process.stdout.write(`\n# ${scenarioPath}: ${res.passed} passed, ${res.failed} failed\n`)
+        code = res.failed === 0 ? 0 : 1
+      } catch (e) {
+        process.stderr.write(`[e2e] harness error: ${(e as Error).message}\n`)
+        code = 1
+      }
+      app.exit(code)
+    })()
+  }
+
   // --shot <out.png> [--shot-demo] : wait for the renderer + engine, optionally
   // build a demo part via the test bridge, capturePage, and quit. Dev tooling.
   const shotIdx = process.argv.indexOf('--shot')

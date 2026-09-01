@@ -1201,38 +1201,12 @@ export function App(): JSX.Element {
     [bodyId, bodies, applySceneTree, cachePut]
   )
 
-  // after the model changes and we are sitting at the tip, quietly cache the
-  // previous couple of build stages so the first "step back" is instant (the
-  // stage you want was rendered seconds ago). Best-effort, cancels on new edits.
-  useEffect(() => {
-    const b = bodies[0]
-    if (!bodyId || !b || b.marker) return
-    const feats = b.features
-    const wants: (string | null)[] = []
-    for (let dd = 1; dd <= Math.min(2, feats.length - 1); dd++) {
-      const j = feats.length - 1 - dd
-      const fid = feats[j]?.id ?? null
-      if (fid && !rollCacheRef.current.has(`${bodyId}:${fid}`)) wants.push(fid)
-    }
-    if (!wants.length) return
-    const seq = ++rollSeqRef.current
-    void (async () => {
-      for (const fid of wants) {
-        if (rollSeqRef.current !== seq) return
-        try {
-          await apiQuiet.rollTo(bodyId, fid)
-          if (rollSeqRef.current !== seq) return
-          const [scene, tree] = await Promise.all([apiQuiet.sceneGet(), apiQuiet.treeGet()])
-          if (rollSeqRef.current !== seq) return
-          cachePut(`${bodyId}:${fid ?? 'TIP'}`, { scene, tree })
-        } catch {
-          /* best effort */
-        }
-      }
-      if (rollSeqRef.current === seq) await apiQuiet.rollTo(bodyId, null).catch(() => undefined)
-    })()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bodies, bodyId])
+  // (removed) "pre-cache previous build stages" - it rolled the LIVE document
+  // back to an earlier feature and forward again in the background, so any
+  // scene.get / screenshot / refresh that landed in that window saw the model
+  // silently rolled back (blank / missing the latest feature). The first
+  // timeline step-back now just does one engine roll; correctness beats the
+  // ~100ms it saved. Scrubbing is still cached from real rollTo calls.
 
   const renameFeature = useCallback(
     async (id: string) => {
@@ -1712,18 +1686,80 @@ export function App(): JSX.Element {
       )
   }, [selection, jointType, refreshScene])
 
-  // test / automation bridge - lets an out-of-band script refresh the scene
-  // after driving the engine directly (used for screenshots + UI smoke runs)
+  // test / automation bridge - drives the same handlers the buttons call, so an
+  // out-of-band script can exercise the app end to end (see test/e2e).
   useEffect(() => {
-    ;(window as unknown as { __gwtcad?: unknown }).__gwtcad = {
+    const bridge = {
+      perf: PERF,
       refresh: () => refreshScene(),
       fit: () => vpApi.current?.fit(),
-      applyOp: (k: OpKind, v: OpValues) => void applyOp(k, v),
+
+      // --- ops (ribbon -> dialog -> apply) ---
+      openOp: (k: OpKind) => setOp(k),
+      closeOp: () => setOp(null),
+      applyOp: (k: OpKind, v: OpValues, exprs?: Record<string, string>) => applyOp(k, v, exprs),
+
+      // --- selection ---
+      select: (sels: Selection[]) => setSelection(sels ?? []),
+      selectFace: (bodyId: string, sub: string) =>
+        setSelection([{ kind: 'face', bodyId, sub, point: [0, 0, 0] } as Selection]),
+      selectSketch: (sketchId: string) => setSelection([{ kind: 'sketch', sketchId } as Selection]),
+      clearSelection: () => setSelection([]),
+
+      // --- sketch ---
       beginSketch,
+      createSketch,
+      finishSketch: () => finishSketch(),
+      cancelSketch: () => cancelSketch(),
       editSketch,
-      perf: PERF
+
+      // --- history / features ---
+      undo: () => doUndo(),
+      redo: () => doRedo(),
+      deleteFeature: (id: string) => deleteFeature(id),
+      rollTo: (fid: string | null) => rollTo(fid),
+
+      // --- observe ---
+      getState: () => ({
+        status: status.phase,
+        busy,
+        notice: sketchNotice,
+        op,
+        selection: selection.map(selKey),
+        bodies: bodies.map((b) => ({
+          id: b.id,
+          features: b.features.map((f) => ({ id: f.id, kind: f.kind, error: !!f.error }))
+        })),
+        meshes: meshes.map((m) => ({ id: m.id, tris: Math.floor((m.positions?.length ?? 0) / 9) })),
+        sketches: sketches.map((s) => s.id),
+        canUndo,
+        canRedo
+      })
     }
-  }, [refreshScene, applyOp, beginSketch, editSketch])
+    ;(window as unknown as { __gwtcad?: unknown }).__gwtcad = bridge
+  }, [
+    refreshScene,
+    applyOp,
+    beginSketch,
+    createSketch,
+    finishSketch,
+    cancelSketch,
+    editSketch,
+    doUndo,
+    doRedo,
+    deleteFeature,
+    rollTo,
+    status.phase,
+    busy,
+    sketchNotice,
+    op,
+    selection,
+    bodies,
+    meshes,
+    sketches,
+    canUndo,
+    canRedo
+  ])
 
   // ---- boot ----
   useEffect(() => {
