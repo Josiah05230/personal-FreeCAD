@@ -1703,6 +1703,21 @@ export function App(): JSX.Element {
     }
   }, [refreshScene])
 
+  // the geometry engine can hard-crash on bad OCCT input; the main process
+  // respawns it, but the new doc is empty - refetch and tell the user
+  useEffect(() => {
+    const off = window.cad.onSidecarRespawned?.(() => {
+      livePreviewRef.current.depth = 0
+      livePreviewRef.current.featureId = null
+      livePreviewRef.current.kind = null
+      livePreviewRef.current.opSig = ''
+      rollCacheRef.current.clear()
+      setSketchNotice('The geometry engine restarted after an error - unsaved model state was lost. Reopen the file to continue.')
+      void refreshScene()
+    })
+    return () => off?.()
+  }, [refreshScene])
+
   // ---- commands + hotkeys ----
   const commands = useMemo(
     () =>

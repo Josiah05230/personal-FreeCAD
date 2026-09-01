@@ -36,6 +36,12 @@ const cad = {
     return ipcRenderer.invoke('cad:rpc', method, params) as Promise<T>
   },
   sidecarStatus: () => ipcRenderer.invoke('cad:sidecarStatus') as Promise<{ started: boolean }>,
+  /** fires after the geometry engine crashed and was respawned (doc is now empty) */
+  onSidecarRespawned: (fn: () => void) => {
+    const h = (): void => fn()
+    ipcRenderer.on('cad:sidecarRespawned', h)
+    return () => ipcRenderer.removeListener('cad:sidecarRespawned', h)
+  },
   listDir: (dir?: string) => ipcRenderer.invoke('fs:listDir', dir) as Promise<DirListing>,
 
   saveDialog: (defaultPath?: string) =>

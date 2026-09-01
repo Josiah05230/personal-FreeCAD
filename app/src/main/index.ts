@@ -227,6 +227,12 @@ app.whenReady().then(async () => {
     }
   })
 
+  // after an unasked-for respawn the sidecar doc is empty - tell the renderer so
+  // it can refetch (and surface a notice that geometry state was lost)
+  sidecar.onRespawn = () => {
+    win?.webContents.send('cad:sidecarRespawned')
+  }
+
   try {
     const ep = await sidecar.start()
     process.stdout.write(`[main] sidecar ready on ${ep.host}:${ep.port}\n`)

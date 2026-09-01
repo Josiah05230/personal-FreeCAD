@@ -2,8 +2,11 @@
  * Sidecar supervisor: spawns headless FreeCAD (`freecadcmd sidecar/server.py`),
  * discovers the loopback port it prints, and proxies JSON-RPC calls to it.
  *
- * Milestone 0: single instance, no auto-restart. Supervision/restart lands with
- * the modelling milestone.
+ * Headless FreeCAD / OCCT can hard-abort on certain malformed geometry, so the
+ * supervisor auto-respawns a sidecar that exits without us asking. An in-flight
+ * RPC also lazily revives a dead sidecar before giving up. The document is
+ * in-memory only, so a respawn starts empty - the renderer re-fetches the scene
+ * and the user re-opens or redoes; better than a bricked session.
  */
 import { spawn, ChildProcess } from 'child_process'
 import { existsSync, readFileSync } from 'fs'
@@ -57,6 +60,10 @@ export class Sidecar {
   private proc: ChildProcess | null = null
   private endpoint: Endpoint | null = null
   private nextId = 1
+  private stopping = false
+  private starting: Promise<Endpoint> | null = null
+  /** notified when a respawn finishes so the renderer can re-fetch the scene */
+  onRespawn: (() => void) | null = null
 
   constructor(
     private readonly repoRoot: string,
@@ -65,6 +72,15 @@ export class Sidecar {
 
   async start(): Promise<Endpoint> {
     if (this.endpoint) return this.endpoint
+    // fold concurrent callers (e.g. a burst of RPCs after a crash) into one spawn
+    if (this.starting) return this.starting
+    this.starting = this._spawn().finally(() => {
+      this.starting = null
+    })
+    return this.starting
+  }
+
+  private async _spawn(): Promise<Endpoint> {
     const candidates = [
       resolve(this.repoRoot, 'sidecar/server.py'),
       resolve(process.resourcesPath, 'sidecar/server.py')
@@ -87,13 +103,14 @@ export class Sidecar {
       stdio: ['ignore', 'pipe', 'pipe']
     })
 
+    const proc = this.proc!
     const endpoint = await new Promise<Endpoint>((res, rej) => {
       const timer = setTimeout(
         () => rej(new Error('sidecar did not report ready in time')),
         this.cfg.sidecarStartupTimeoutMs
       )
       let buf = ''
-      this.proc!.stdout!.on('data', (d: Buffer) => {
+      proc.stdout!.on('data', (d: Buffer) => {
         buf += d.toString()
         const line = buf.split('\n').find((l) => l.startsWith(READY_PREFIX))
         if (line) {
@@ -105,13 +122,30 @@ export class Sidecar {
           }
         }
       })
-      this.proc!.stderr!.on('data', (d: Buffer) =>
+      proc.stderr!.on('data', (d: Buffer) =>
         process.stderr.write(`[sidecar] ${d.toString()}`)
       )
-      this.proc!.on('exit', (code, signal) => {
+      proc.on('exit', (code, signal) => {
         clearTimeout(timer)
-        this.endpoint = null
+        if (this.proc === proc) {
+          this.proc = null
+          this.endpoint = null
+        }
         rej(new Error(`sidecar exited early (code=${code} signal=${signal})`))
+        // a crash we did not ask for: bring a fresh one up so the app keeps working
+        if (!this.stopping && this.proc === null) {
+          process.stderr.write(
+            `[GUI-ERR] [main] sidecar exited (code=${code} signal=${signal}) - respawning\n`
+          )
+          this.start()
+            .then(() => {
+              process.stdout.write('[main] sidecar respawned\n')
+              this.onRespawn?.()
+            })
+            .catch((e) =>
+              process.stderr.write(`[GUI-ERR] [main] sidecar respawn failed: ${(e as Error).message}\n`)
+            )
+        }
       })
     })
 
@@ -120,13 +154,33 @@ export class Sidecar {
   }
 
   async rpc<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-    if (!this.endpoint) throw new Error('sidecar not started')
-    const { host, port } = this.endpoint
-    const resp = await fetch(`http://${host}:${port}/rpc`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: this.nextId++, method, params })
-    })
+    // heal a crashed sidecar before giving up on the call
+    if (!this.endpoint) {
+      if (this.stopping) throw new Error('sidecar not started')
+      await this.start()
+    }
+    const ep = this.endpoint
+    if (!ep) throw new Error('sidecar not started')
+    let resp: Response
+    try {
+      resp = await fetch(`http://${ep.host}:${ep.port}/rpc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: this.nextId++, method, params })
+      })
+    } catch (netErr) {
+      // connection dropped mid-flight (sidecar died): revive once and retry
+      this.endpoint = null
+      if (this.stopping) throw netErr
+      await this.start()
+      const ep2 = this.endpoint as Endpoint | null
+      if (!ep2) throw netErr
+      resp = await fetch(`http://${ep2.host}:${ep2.port}/rpc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: this.nextId++, method, params })
+      })
+    }
     const body = (await resp.json()) as {
       result?: T
       error?: { code: number; message: string; data?: unknown }
@@ -144,6 +198,7 @@ export class Sidecar {
   }
 
   stop(): void {
+    this.stopping = true
     const p = this.proc
     if (p && !p.killed) {
       p.kill('SIGTERM')

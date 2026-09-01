@@ -34,6 +34,7 @@ interface GitBranch {
 interface CadBridge {
   rpc<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>
   sidecarStatus(): Promise<{ started: boolean }>
+  onSidecarRespawned(fn: () => void): () => void
   listDir(dir?: string): Promise<DirListing>
   saveDialog(defaultPath?: string): Promise<string | null>
   openDialog(filters?: { name: string; extensions: string[] }[]): Promise<string | null>

@@ -64,6 +64,13 @@ def circle_sketch(body, radius, plane="XY"):
 def _set_profile(feature, profile):
     """profile is either a Sketcher object or a (feature, [subnames]) tuple
     naming a flat face of the base solid."""
+    # a (None, [...]) tuple slips through when a face profile is resolved against
+    # a body with no solid yet - FreeCAD then leaves a half-built Pad that aborts
+    # OCCT on the next recompute. Refuse it here.
+    if isinstance(profile, (tuple, list)):
+        if not profile or profile[0] is None:
+            feature.Document.removeObject(feature.Name)
+            raise ValueError("no profile to extrude - the base body has no solid")
     feature.Profile = profile
     if hasattr(profile, "Visibility"):
         profile.Visibility = False
