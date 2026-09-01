@@ -978,9 +978,28 @@ export function App(): JSX.Element {
             lp.featureId = newest?.id ?? null
             lp.kind = args.kind
             setSketchNotice(null)
-            await refreshMeshesOnly(true)
+            // pull just the new body's mesh in via the light path when we can
+            // (keeps even the first preview snappy); otherwise fall back to a
+            // full scene refresh so consumed sketches/datums reconcile
+            let light = false
+            if (lp.featureId) {
+              try {
+                const { mesh } = await apiQuiet.previewUpdate(lp.featureId, {})
+                setMeshes((ms) => {
+                  const hit = ms.some((m) => m.id === mesh.id)
+                  return hit ? ms.map((m) => (m.id === mesh.id ? mesh : m)) : [...ms, mesh]
+                })
+                // hide a sketch this feature just consumed so it does not show
+                // through the preview solid
+                setSketches((ss) => ss.filter((s) => !selection.some((x) => 'sketchId' in x && x.sketchId === s.id)))
+                light = true
+              } catch {
+                /* fall through to the full refresh */
+              }
+            }
+            if (!light) await refreshMeshesOnly(true)
             console.log(
-              `[preview] FULL done in ${Math.round(performance.now() - t0)}ms, featureId now=${lp.featureId}`
+              `[preview] FULL done in ${Math.round(performance.now() - t0)}ms (light=${light}), featureId now=${lp.featureId}`
             )
           } catch (e) {
             console.error(`[preview] ERROR ${(e as Error).message}`)
@@ -993,7 +1012,7 @@ export function App(): JSX.Element {
         lp.running = false
       }
     },
-    [previewCall, previewProps, drainPreview, refreshMeshesOnly]
+    [previewCall, previewProps, drainPreview, refreshMeshesOnly, selection]
   )
 
   const endLivePreview = useCallback(async () => {
