@@ -23,16 +23,17 @@ done, remove its line entirely rather than leaving a checked box.
       carries its construction diagonals. FULLY parametric versions (a real
       construction POINT entity at each pick, symmetric-about-centre) need a new
       point entity type in the sketcher - not done yet.
-- [~] Live feature preview: first preview of a kind builds the feature; after
-      that, changing a number takes the in-place fast path (feature.previewUpdate:
-      one recompute ~8ms, only the changed body re-meshed, no undo, no scene
-      refresh; debounce 130ms). Covers extrude / revolve / fillet / chamfer /
-      shell / draft / hole. Still on the slow rebuild path: rib, "To object"
-      extent, and pattern / mirror / combine (no preview at all). If tuning a
-      number still does not feel instant, the next step is a client-side
-      predictive mesh (three.js sweeps the profile with zero engine round-trip,
-      the real solid reconciles a beat later). No "committed vs preview" visual
-      tell yet.
+- [~] Live feature preview: in-place fast path (feature.previewUpdate ~8-15ms,
+      only the changed body re-meshed, no undo, no full scene refresh; debounce
+      130ms). First preview also uses the light single-body path now. Covers
+      extrude / revolve / fillet / chamfer / shell / draft / hole. Still on the
+      slow rebuild path: rib, "To object" extent, pattern / mirror / combine.
+      No "committed vs preview" visual tell. If still not instant enough the next
+      step is a client-side predictive mesh (zero engine round-trip).
+- [~] Extrude a model face with no sketch (F360 press-pull): works for FLAT faces
+      - Join pulls out, Cut pushes in, New body. Direction = face normal, Reversed
+      flips. Curved faces / bodies with no solid are rejected with a message.
+      NOT yet: selecting several faces and pulling them together.
 - [~] Section: cross-hatching is drawn (a hatched quad in the cut plane). "OK ->
       Analysis tab in the tree + timeline item" (a persisted section feature) is
       not done - section is still a live view-only tool.
