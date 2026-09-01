@@ -33,6 +33,15 @@ done, remove its line entirely rather than leaving a checked box.
 - [~] Hole: you place it by clicking the face (click again to move the point) and
       the dialog now says so. A live on-face position marker is still to add.
 
+## Recently addressed
+
+- Timeline: clicking a feature chip used to roll history to that point (which
+  scrolled the timeline and rebuilt the viewport). Now a click SELECTS the chip;
+  Shift-click ranges, Ctrl/Cmd-click toggles. Delete/Backspace removes the
+  selected group (one confirm), right-click on a multi-selection has
+  "Delete N features" / "Suppress N features". Rolling history is now only the
+  marker, the transport buttons, or right-click "Move timeline here".
+
 ## Deferred / not done
 
 - KiCad interop next steps: component STEP models (Windows env-var paths),
@@ -60,3 +69,4 @@ space cleared. As tasks complete, delete them from the batch above so this file
 stays short.
 
 -when I edit an extrude, it shouldn't have to go back and forth with FCAD to update the visual, right? It should be able to do that in the background? I need it so that if the distance on my extrude is 10, and I hit backspace so it goes to 1, the visual is updated before I hit backspace again for it to go to 0. I need it fast. This is how it should work for pretty much ALL features. Not only all boxes, textboxes, dropdowns, etc. but EVERY user interaction if/when possible.
+--if you are thinking interacting with FCAD is the problem/bottleneck and, you think you could actually make FCStd files through your own code/work, I am totally fine with that. I mean, you should be able to copy, delete, modify, anything with FCAD's source code.

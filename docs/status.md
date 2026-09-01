@@ -1,6 +1,6 @@
 # Status
 
-Updated 2026-08-31. Live-test feedback batches 1-29 addressed (open partials: full parametric
+Updated 2026-08-31. Live-test feedback batches 1-30 addressed (open partials: full parametric
 sketch tools, section analysis tab, optimistic datum row). All 16 feature-op RPCs smoke-tested
 end-to-end headless. All roadmap milestones have a
 working first version. `docs/FEEDBACK.md` tracks the live-test checklist. KiCad interop has a first
@@ -21,7 +21,9 @@ slice (board import + placeholders); next: component STEP models + connector->jo
   construction datums; group rows toggle all children.
 - Timeline: full-width, draggable rollback marker between chips, Play/Stop,
   double-click edit, right-click "Move timeline here". Model rebuilds to the
-  marker.
+  marker. Click a chip to SELECT it (Shift = range, Ctrl/Cmd = toggle);
+  Delete/Backspace or right-click removes / suppresses the selected group.
+  Clicking a chip no longer rolls history.
 - Ribbon "Select" dropdown: paint/window radios + entity-kind checkboxes; gates
   picking.
 
