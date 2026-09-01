@@ -199,20 +199,11 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
     up = _resolve_ref(d, body, upToFaceRef) if upToFaceRef else None
     off = float(offset or 0.0)
 
-    # a sketch profile has to be a closed wire before it can be padded / pocketed;
-    # give a clear message instead of a downstream OCC null-shape crash
+    # clear the sketch of redundant constraints first (they can leave the solver
+    # unable to form a closed wire, which then makes a NULL pad). Only touch the
+    # ones FreeCAD names; a real conflict is left for the user to fix.
     if not isinstance(sk, tuple) and sk.TypeId == "Sketcher::SketchObject":
-        try:
-            wires = sk.Shape.Wires
-            if not wires or not any(w.isClosed() for w in wires):
-                raise RpcError(APP_ERROR,
-                               "the sketch profile is not a closed loop - close "
-                               "the outline (or remove a redundant constraint) "
-                               "before extruding")
-        except RpcError:
-            raise
-        except Exception:
-            pass
+        _strip_redundant_constraints(sk, d)
 
     if op == "cut":
         build.pocket(body, sk, float(length), up_to=up, offset=off)
@@ -1247,6 +1238,41 @@ def _remove_matching_constraints(sk, removed):
             break
 
 
+def _strip_redundant_constraints(sk, d, max_passes=8):
+    """Delete the constraints FreeCAD flags as redundant / partially redundant,
+    re-solving between passes because removing one can expose another. Leaves
+    conflicting constraints alone (a real user contradiction). Returns how many
+    were dropped."""
+    dropped = 0
+    for _ in range(max_passes):
+        try:
+            red = sorted(
+                {int(i) for i in getattr(sk, "RedundantConstraints", ())} |
+                {int(i) for i in getattr(sk, "PartiallyRedundantConstraints", ())},
+                reverse=True,
+            )
+        except Exception:
+            break
+        if not red:
+            break
+        removed_any = False
+        for ci in red:
+            if 1 <= ci <= int(sk.ConstraintCount):
+                try:
+                    sk.delConstraint(ci - 1)
+                    dropped += 1
+                    removed_any = True
+                except Exception:
+                    pass
+        try:
+            d.recompute()
+        except Exception:
+            pass
+        if not removed_any:
+            break
+    return dropped
+
+
 @method("sketch.finish")
 def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None,
                   removedConstraints=None):
@@ -1262,27 +1288,10 @@ def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None,
         _auto_constrain(sk)
     d.recompute()
 
-    # a redundant constraint (e.g. dimensioning both opposite sides of a
-    # rectangle) can drop the solver into a state with NO closed wire, which
-    # then crashes the pad. Strip the redundants FreeCAD names and re-solve so
-    # the profile stays usable. Conflicting ones we leave (real user error) but
-    # still report.
-    dropped = 0
-    try:
-        red = sorted({int(i) for i in getattr(sk, "RedundantConstraints", ())} |
-                     {int(i) for i in getattr(sk, "PartiallyRedundantConstraints", ())},
-                     reverse=True)
-        for ci in red:
-            if 1 <= ci <= int(sk.ConstraintCount):
-                try:
-                    sk.delConstraint(ci - 1)
-                    dropped += 1
-                except Exception:
-                    pass
-        if dropped:
-            d.recompute()
-    except Exception:
-        pass
+    # _auto_constrain (and dimensioning opposite sides of a rect) can leave
+    # redundant constraints that stop the solver forming a closed wire and make
+    # a NULL pad - strip them and re-solve until clean
+    dropped = _strip_redundant_constraints(sk, d)
 
     sk.Visibility = True
     closed = False
@@ -1314,13 +1323,15 @@ def _auto_constrain(sk):
     import Sketcher
     n = sk.GeometryCount
     welded = set()      # (geoId, posId) already in a Coincident
-    hv = set()          # geoId already Horizontal or Vertical
+    hv = set()          # geoId already Horizontal or Vertical (line-level)
     for c in sk.Constraints:
         if c.Type == "Coincident":
             welded.add((c.First, c.FirstPos))
             welded.add((c.Second, c.SecondPos))
-        elif c.Type in ("Horizontal", "Vertical") and c.Second in (-2000, 0, None):
-            hv.add(c.First)
+        elif c.Type in ("Horizontal", "Vertical"):
+            # a line-level H/V has an unset Second; either way the line is done
+            if int(getattr(c, "FirstPos", 0)) == 0:
+                hv.add(c.First)
     pts = []  # (geoId, posId, Vector)
     for gid in range(n):
         g = sk.Geometry[gid]
