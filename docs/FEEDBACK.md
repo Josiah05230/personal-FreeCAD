@@ -42,6 +42,15 @@ done, remove its line entirely rather than leaving a checked box.
 
 ## Recently addressed
 
+- Finish on extrude/revolve/etc no longer rebuilds: the live-preview feature is
+  kept as the committed one (same profile+operation), so Finish is ~instant
+  instead of undo + re-extrude + full scene re-tessellation.
+- Geometry engine crash resilience: headless FreeCAD hard-aborts on a malformed
+  feature (seen: face-extrude against a body with no solid). Now guarded in
+  build._set_profile, and if the sidecar dies anyway the main process
+  auto-respawns it and the renderer refetches + warns (model state is lost -
+  reopen the file).
+
 - Timeline: clicking a feature chip used to roll history to that point (which
   scrolled the timeline and rebuilt the viewport). Now a click SELECTS the chip;
   Shift-click ranges, Ctrl/Cmd-click toggles. Delete/Backspace removes the
