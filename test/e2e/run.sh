@@ -44,10 +44,10 @@ for sc in "${SCENARIOS[@]}"; do
   echo "[e2e] $sc"
   echo "=============================================================="
   kill_strays
-  # --disable-gpu: the e2e run never screenshots, and sharing the rootless
-  # display's GPU across runs can crash the GPU process and take the app with it
-  ( cd "$APP" && timeout 240 ./node_modules/.bin/electron --no-sandbox --disable-gpu \
-      --disable-software-rasterizer . --e2e "$sc" 2>&1 ) \
+  # one instance at a time (kill_strays above) so the rootless display's GPU is
+  # not contended; the app still needs software WebGL for its viewport, so do
+  # NOT pass --disable-software-rasterizer
+  ( cd "$APP" && timeout 240 ./node_modules/.bin/electron --no-sandbox . --e2e "$sc" 2>&1 ) \
     | grep -vE '^\[.*\] sidecar |Download the React|GLib-GObject|^\[sidecar\]|GPU process|zygote|command_buffer' || true
   rc=${PIPESTATUS[0]}
   if [ "$rc" -ne 0 ]; then

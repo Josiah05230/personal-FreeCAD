@@ -272,8 +272,17 @@ app.whenReady().then(async () => {
            })()`
         )
         const res = raw as { passed: number; failed: number; lines: string[] }
-        for (const l of res.lines) process.stdout.write(l + '\n')
-        process.stdout.write(`\n# ${scenarioPath}: ${res.passed} passed, ${res.failed} failed\n`)
+        const report =
+          res.lines.join('\n') + `\n\n# ${scenarioPath}: ${res.passed} passed, ${res.failed} failed\n`
+        process.stdout.write(report)
+        // also drop a file - stdout capture through the harness / backgrounding
+        // is unreliable in some shells, and app.exit() can truncate a pipe
+        try {
+          const base = basename(scenarioPath).replace(/\.js$/, '')
+          await writeFile(resolve(REPO_ROOT, `test/e2e/report-${base}.txt`), report)
+        } catch {
+          /* best effort */
+        }
         code = res.failed === 0 ? 0 : 1
       } catch (e) {
         process.stderr.write(`[e2e] harness error: ${(e as Error).message}\n`)

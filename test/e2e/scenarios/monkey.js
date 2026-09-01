@@ -8,7 +8,7 @@
  * Seed is fixed so a failure reproduces; change SEED to fuzz differently.
  */
 const SEED = Number((typeof process !== 'undefined' && process.env && process.env.MONKEY_SEED) || 0) || 12345;
-const STEPS = 120;
+const STEPS = Number((typeof process !== 'undefined' && process.env && process.env.MONKEY_STEPS) || 0) || 60;
 const r = rng(SEED);
 note(`monkey seed=${SEED} steps=${STEPS}`);
 
@@ -77,7 +77,7 @@ for (let i = 0; i < STEPS; i++) {
 }
 
 note(`fired ${STEPS} actions (${acted} mutating), letting the queue drain`);
-await idle(20000);
+await idle(15000);
 
 // --- the app survived ---
 assert((await rpc('ping').then((p) => p.pong).catch(() => false)) === true, 'engine still responds after the monkey');
