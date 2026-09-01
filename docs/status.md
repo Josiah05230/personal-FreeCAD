@@ -1,10 +1,23 @@
 # Status
 
-Updated 2026-08-31. Live-test feedback batches 1-30 addressed (open partials: full parametric
-sketch tools, section analysis tab, optimistic datum row). All 16 feature-op RPCs smoke-tested
-end-to-end headless. All roadmap milestones have a
-working first version. `docs/FEEDBACK.md` tracks the live-test checklist. KiCad interop has a first
-slice (board import + placeholders); next: component STEP models + connector->joint mapping.
+Updated 2026-09-01. Live-test feedback batches 1-31 addressed (open partials: full parametric
+sketch tools, section analysis tab, optimistic datum row, multi-face press-pull). All 16
+feature-op RPCs smoke-tested headless; a UI-driven E2E suite (test/e2e, `bash test/e2e/run.sh`)
+runs a scripted workflow + a chaos "monkey" pass against the real app. All roadmap milestones
+have a working first version. `docs/FEEDBACK.md` tracks the live-test checklist. KiCad interop
+has a first slice (board import + placeholders); next: component STEP models + connector->joint.
+
+Batch 31 (2026-09-01) - perf + robustness pass:
+- Viewport reconciles scene content incrementally (per-body/sketch/datum node
+  map + signature) instead of full teardown+rebuild per frame - a live-preview
+  tweak rebuilds one body's geometry, not the whole scene.
+- All model mutations funnel through one serialised command queue (cmdQueue.ts):
+  ordered, one-at-a-time, a failed command is reported + resynced not wedging.
+- ErrorBoundary around <App/>; sidecar auto-respawn on crash (batch 30) stands.
+- Removed the post-commit "pre-cache build stages" effect that rolled the live
+  doc back/forward in the background (blank-viewport race).
+- feature.previewUpdate in-place fast path for live edits; Finish keeps the
+  preview feature instead of rebuilding; blank/zero value holds the preview.
 
 ## Working (verified: headless engine tests + app boots clean each pass)
 

@@ -42,6 +42,26 @@ done, remove its line entirely rather than leaving a checked box.
 
 ## Recently addressed
 
+- BIG perf fix: the viewport used to tear down and rebuild the ENTIRE three.js
+  scene (every body, edge, sketch fill, datum) on every mesh change - so a
+  live-preview tweak that took 8ms in the engine triggered a whole-scene rebuild
+  on the client. Now it reconciles incrementally: only the changed body's
+  geometry is rebuilt.
+- Robustness: every model mutation (apply op, delete, suppress, undo, redo) now
+  goes through one serialised command queue - fast double-clicks / key-mash run
+  in order, one at a time; a failed command is reported + resynced and the queue
+  keeps going. An ErrorBoundary catches any render crash with a "Reload" panel
+  instead of a white window.
+- Race fix: an effect used to roll the LIVE document back to a previous feature
+  and forward again after every commit (to pre-cache step-back). Anything that
+  refreshed / screenshotted in that window saw the model rolled back - blank
+  viewport, missing the feature just made. Removed.
+- A blank / zero distance in a dialog now HOLDS the preview instead of tearing
+  it down and rebuilding (the field goes empty on nearly every edit).
+- E2E tests now drive the real app through the UI (test/e2e): a scripted
+  workflow (sketch -> extrude -> undo/redo -> press-pull) and a "monkey" test
+  (120 random actions with garbage args, then assert the app is still alive and
+  a real op still works). `bash test/e2e/run.sh`.
 - Finish on extrude/revolve/etc no longer rebuilds: the live-preview feature is
   kept as the committed one (same profile+operation), so Finish is ~instant
   instead of undo + re-extrude + full scene re-tessellation.

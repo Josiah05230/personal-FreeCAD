@@ -29,20 +29,33 @@ if [ ${#SCENARIOS[@]} -eq 0 ]; then
   SCENARIOS=("$ROOT"/test/e2e/scenarios/*.js)
 fi
 
+kill_strays() {
+  for p in $(pgrep -f 'GWT-CAD/app/node_modules/electron/dist/electron' 2>/dev/null) \
+           $(pgrep -f 'GWT-CAD/sidecar/server.py' 2>/dev/null); do
+    kill -9 "$p" 2>/dev/null
+  done
+  sleep 1
+}
+
 fail=0
 for sc in "${SCENARIOS[@]}"; do
   echo
   echo "=============================================================="
   echo "[e2e] $sc"
   echo "=============================================================="
-  ( cd "$APP" && timeout 180 ./node_modules/.bin/electron --no-sandbox . --e2e "$sc" 2>&1 ) \
-    | grep -vE '^\[.*\] sidecar |Download the React|GLib-GObject|^\[sidecar\]' || true
+  kill_strays
+  # --disable-gpu: the e2e run never screenshots, and sharing the rootless
+  # display's GPU across runs can crash the GPU process and take the app with it
+  ( cd "$APP" && timeout 240 ./node_modules/.bin/electron --no-sandbox --disable-gpu \
+      --disable-software-rasterizer . --e2e "$sc" 2>&1 ) \
+    | grep -vE '^\[.*\] sidecar |Download the React|GLib-GObject|^\[sidecar\]|GPU process|zygote|command_buffer' || true
   rc=${PIPESTATUS[0]}
   if [ "$rc" -ne 0 ]; then
     echo "[e2e] SCENARIO FAILED (exit $rc): $sc"
     fail=1
   fi
 done
+kill_strays
 
 echo
 if [ "$fail" -eq 0 ]; then echo "[e2e] ALL SCENARIOS PASSED"; else echo "[e2e] SOME SCENARIOS FAILED"; fi
