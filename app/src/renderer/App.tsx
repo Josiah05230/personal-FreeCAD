@@ -49,6 +49,7 @@ import type { SketchTool, SketchConstraintType } from './viewport/SketchControll
 import type { SketchFrameDTO } from './rpc'
 import { basename, sketchEntitiesToPolys } from './util'
 import { perfProfile } from './perfProfile'
+import { CmdQueue } from './cmdQueue'
 
 const PERF = perfProfile()
 
@@ -156,6 +157,11 @@ export function App(): JSX.Element {
 
   useEffect(() => onBusyChange(setBusy), [])
 
+  // one serialised lane for every model mutation - fast double-clicks / key mash
+  // queue up and run in order; a task that throws is reported and skipped, never
+  // wedging the app. Wired to the notice + spinner just below refreshScene.
+  const cmdRef = useRef<CmdQueue>(new CmdQueue())
+
   const [tabs, setTabs] = useState<DocTab[]>([{ id: 'd1', name: 'Untitled', dirty: false }])
   const [activeTab, setActiveTab] = useState('d1')
 
@@ -203,6 +209,22 @@ export function App(): JSX.Element {
     applySceneTree(scene, tree)
     setAsmTree(asm && asm.assembly ? asm : null)
   }, [applySceneTree])
+
+  // route every queued-command failure to a notice + a resync from engine truth,
+  // so a rejected op leaves the UI consistent instead of half-applied
+  useEffect(() => {
+    const q = cmdRef.current
+    q.onError = (err, label) => {
+      const msg = (err.message || 'command failed').replace(/^RPC \w+\.\w+:\s*/, '')
+      flashSketchNotice(`${label}: ${msg}`)
+      void refreshScene().catch(() => undefined)
+    }
+    q.onBusyChange = (b) => setBusy((n) => Math.max(0, n + (b ? 1 : -1)))
+    return () => {
+      q.onError = null
+      q.onBusyChange = null
+    }
+  }, [refreshScene, flashSketchNotice])
 
   const refreshMeshesOnly = useCallback(async (quiet = false) => {
     // quiet = no busy spinner (used by the live feature preview, which fires
@@ -620,7 +642,7 @@ export function App(): JSX.Element {
     return Number.isFinite(n) && n !== 0
   }, [])
 
-  const applyOp = useCallback(
+  const applyOpImpl = useCallback(
     async (kind: OpKind, v: OpValues, exprs: Record<string, string> = {}) => {
       // FAST COMMIT: the live preview already built exactly this feature (same
       // profile, same operation), so keep it instead of undo + re-extrude +
@@ -891,13 +913,20 @@ export function App(): JSX.Element {
           }
         }
         await afterEdit()
-      } catch (e) {
-        window.alert((e as Error).message)
       } finally {
         setDatumGhostHold(false)
       }
     },
     [selection, afterEdit, drainPreview, previewProps, previewSig]
+  )
+
+  // public entry: every apply goes through the serialised queue, so a second
+  // Finish click (or a click landing while one is mid-flight) waits its turn
+  // instead of racing, and a failed op is reported + resynced, never half-left.
+  const applyOp = useCallback(
+    (kind: OpKind, v: OpValues, exprs: Record<string, string> = {}) =>
+      cmdRef.current.run(`Apply ${kind}`, () => applyOpImpl(kind, v, exprs)),
+    [applyOpImpl]
   )
 
   // ---- live feature preview ----
@@ -1233,8 +1262,8 @@ export function App(): JSX.Element {
   )
 
   const deleteFeature = useCallback(
-    async (id: string) => {
-      if (!window.confirm('Delete this feature?')) return
+    (id: string) => {
+      if (!window.confirm('Delete this feature?')) return Promise.resolve()
       // drop it from EVERY view state right away - tree, viewport meshes /
       // sketches / datums, selection - so it disappears the instant you click.
       // The engine rebuild runs behind the spinner and reconciles when it lands.
@@ -1245,47 +1274,40 @@ export function App(): JSX.Element {
       setVisOverride((m) => ({ ...m, [id]: false }))
       setSelection((cur) => cur.filter((s) => !('sketchId' in s && s.sketchId === id)))
       markDirty()
-      try {
+      return cmdRef.current.run('Delete feature', async () => {
         await api.deleteFeature(id)
         const [scene, tree] = await Promise.all([api.sceneGet(), api.treeGet()])
         applySceneTree(scene, tree)
-      } catch (e) {
-        window.alert((e as Error).message)
-        await refreshScene()
-      }
+      })
     },
-    [markDirty, applySceneTree, refreshScene]
+    [markDirty, applySceneTree]
   )
 
   const suppressFeature = useCallback(
-    async (id: string, suppressed: boolean) => {
-      await api.featureSuppress(id, suppressed)
-      await afterEdit()
-    },
+    (id: string, suppressed: boolean) =>
+      cmdRef.current.run('Suppress feature', async () => {
+        await api.featureSuppress(id, suppressed)
+        await afterEdit()
+      }),
     [afterEdit]
   )
 
   const suppressFeaturesMany = useCallback(
-    async (ids: string[], suppressed: boolean) => {
-      if (!ids.length) return
-      for (const id of ids) {
-        try {
-          await api.featureSuppress(id, suppressed)
-        } catch (e) {
-          window.alert((e as Error).message)
-          break
-        }
-      }
-      await afterEdit()
+    (ids: string[], suppressed: boolean) => {
+      if (!ids.length) return Promise.resolve()
+      return cmdRef.current.run('Suppress features', async () => {
+        for (const id of ids) await api.featureSuppress(id, suppressed)
+        await afterEdit()
+      })
     },
     [afterEdit]
   )
 
   const deleteFeaturesMany = useCallback(
-    async (ids: string[]) => {
-      if (!ids.length) return
+    (ids: string[]) => {
+      if (!ids.length) return Promise.resolve()
       if (ids.length === 1) return deleteFeature(ids[0])
-      if (!window.confirm(`Delete ${ids.length} features?`)) return
+      if (!window.confirm(`Delete ${ids.length} features?`)) return Promise.resolve()
       const set = new Set(ids)
       // drop every target from view state at once so they vanish immediately
       setBodies((bs) =>
@@ -1307,7 +1329,7 @@ export function App(): JSX.Element {
         .map((f) => f.id)
         .filter((id) => set.has(id))
         .reverse()
-      try {
+      return cmdRef.current.run('Delete features', async () => {
         for (const id of order) {
           try {
             await api.deleteFeature(id)
@@ -1321,36 +1343,37 @@ export function App(): JSX.Element {
         }
         const [scene, tree] = await Promise.all([api.sceneGet(), api.treeGet()])
         applySceneTree(scene, tree)
-      } catch (e) {
-        window.alert((e as Error).message)
-        await refreshScene()
-      }
+      })
     },
-    [deleteFeature, bodies, markDirty, applySceneTree, refreshScene]
+    [deleteFeature, bodies, markDirty, applySceneTree]
   )
 
-  const doUndo = useCallback(async () => {
-    if (!canUndo) return
-    const r = await api.undo()
-    setCanUndo(r.canUndo)
-    setCanRedo(r.canRedo)
-    rollCacheRef.current.clear()
-    // history moved - drop stale manual show/hide choices and trust the engine,
-    // so e.g. undoing an extrude un-hides the sketch it had consumed
-    setVisOverride({})
-    await refreshScene()
-    markDirty()
+  const doUndo = useCallback(() => {
+    if (!canUndo) return Promise.resolve()
+    return cmdRef.current.run('Undo', async () => {
+      const r = await api.undo()
+      setCanUndo(r.canUndo)
+      setCanRedo(r.canRedo)
+      rollCacheRef.current.clear()
+      // history moved - drop stale manual show/hide choices and trust the engine,
+      // so e.g. undoing an extrude un-hides the sketch it had consumed
+      setVisOverride({})
+      await refreshScene()
+      markDirty()
+    })
   }, [canUndo, refreshScene, markDirty])
 
-  const doRedo = useCallback(async () => {
-    if (!canRedo) return
-    const r = await api.redo()
-    setCanUndo(r.canUndo)
-    setCanRedo(r.canRedo)
-    rollCacheRef.current.clear()
-    setVisOverride({})
-    await refreshScene()
-    markDirty()
+  const doRedo = useCallback(() => {
+    if (!canRedo) return Promise.resolve()
+    return cmdRef.current.run('Redo', async () => {
+      const r = await api.redo()
+      setCanUndo(r.canUndo)
+      setCanRedo(r.canRedo)
+      rollCacheRef.current.clear()
+      setVisOverride({})
+      await refreshScene()
+      markDirty()
+    })
   }, [canRedo, refreshScene, markDirty])
 
   const editFeatureDim = useCallback(
