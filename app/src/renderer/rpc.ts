@@ -288,6 +288,8 @@ export const apiQuiet = {
    */
   previewUpdate: (featureId: string, props: Record<string, number | boolean>) =>
     rpcQuiet<{ mesh: RenderMesh }>('feature.previewUpdate', { featureId, props }),
+  /** delete one feature by id, no spinner - used to discard a live-preview feature */
+  deleteFeature: (id: string) => rpcQuiet<{ deleted: string }>('feature.delete', { id }),
   sceneGet: () =>
     rpcQuiet<{
       meshes: RenderMesh[]

@@ -286,6 +286,11 @@ export function App(): JSX.Element {
         return
       }
       if (!selFilter.includes(sel.kind as SelKind)) return // selection filter
+      // A feature dialog is open: a plain click must NOT wipe the op's inputs
+      // (its profile / refs). Treat every pick as additive so it accumulates
+      // extra refs (e.g. an "up to" face) instead - cancel the dialog to start
+      // a different selection.
+      if (opRef.current != null) additive = true
       setSelection((cur) => {
         if (!additive) return [sel]
         const k = selKey(sel)
@@ -533,23 +538,18 @@ export function App(): JSX.Element {
   }, [sketchSession, refreshScene])
 
   // live-preview lifecycle (defined fully below applyOp; the ref is stable).
-  // `depth` = preview features built and not yet rolled back - counted so rapid
-  // value changes can never stack extrudes even if calls interleave.
-  // `featureId`/`kind` remember the ONE preview feature currently on the model so
-  // a follow-up value change can be pushed straight into it (feature.previewUpdate:
-  // one recompute, one body re-tessellated, no undo) instead of undo + rebuild.
+  // There is ever only ONE live-preview feature on the model. `featureId` is its
+  // id; discarding the preview DELETES exactly that feature (never api.undo(),
+  // which could eat a committed edit if a counter ever drifts). `kind`/`opSig`
+  // gate whether a value change can be pushed in place vs. needs a rebuild.
   const livePreviewRef = useRef<{
     seq: number
-    depth: number
     running: boolean
     pending: boolean
     featureId: string | null
     kind: OpKind | null
-    // topology-affecting inputs (operation / mode / profile) the preview feature
-    // was BUILT with - if these change we must rebuild, not tweak in place. When
-    // they still match on Finish we keep the preview feature as the commit.
     opSig: string
-  }>({ seq: 0, depth: 0, running: false, pending: false, featureId: null, kind: null, opSig: '' })
+  }>({ seq: 0, running: false, pending: false, featureId: null, kind: null, opSig: '' })
 
   // signature of the inputs that decide the feature's shape topology (so a
   // number tweak keeps the fast path but a Join->Cut switch forces a rebuild)
@@ -560,18 +560,19 @@ export function App(): JSX.Element {
     return [kind, profile, String(v.operation ?? ''), String(v.mode ?? ''), String(v.cut ?? '')].join('|')
   }, [selection])
 
+  // discard the live-preview feature (if any) by DELETING it by id - deterministic,
+  // it can never touch the user's committed features the way api.undo() could.
   const drainPreview = useCallback(async () => {
     const lp = livePreviewRef.current
+    const id = lp.featureId
     lp.featureId = null
     lp.kind = null
     lp.opSig = ''
-    while (lp.depth > 0) {
-      lp.depth--
-      try {
-        await api.undo()
-      } catch {
-        /* nothing left to roll back */
-      }
+    if (!id) return
+    try {
+      await apiQuiet.deleteFeature(id)
+    } catch {
+      /* already gone / cascaded away - fine */
     }
   }, [])
 
@@ -662,8 +663,7 @@ export function App(): JSX.Element {
           lp.seq++
           const { mesh } = await apiQuiet.previewUpdate(lp.featureId, fastProps)
           setMeshes((ms) => ms.map((m) => (m.id === mesh.id ? mesh : m)))
-          lp.depth = 0
-          lp.featureId = null
+          lp.featureId = null // it is the committed feature now, not a preview
           lp.kind = null
           lp.opSig = ''
           rollCacheRef.current.clear() // history changed - drop stale roll snapshots
@@ -1076,11 +1076,8 @@ export function App(): JSX.Element {
               continue
             }
             const res = (await call) as { bodies?: BodyTree[] }
-            if (seq !== lp.seq) {
-              await drainPreview()
-              continue
-            }
-            lp.depth++
+            // record the feature we just built BEFORE the stale-seq check, so a
+            // superseded attempt still cleans up exactly its own feature by id
             const newest = (res?.bodies ?? [])
               .flatMap((b) => b.features ?? [])
               .filter((f) => f.kind !== 'sketch' && f.kind !== 'datum')
@@ -1088,6 +1085,10 @@ export function App(): JSX.Element {
             lp.featureId = newest?.id ?? null
             lp.kind = args.kind
             lp.opSig = sig
+            if (seq !== lp.seq) {
+              await drainPreview() // a newer value already superseded this build
+              continue
+            }
             setSketchNotice(null)
             // pull just the new body's mesh in via the light path when we can
             // (keeps even the first preview snappy); otherwise fall back to a
@@ -1130,7 +1131,7 @@ export function App(): JSX.Element {
     livePreviewRef.current.seq++
     livePreviewRef.current.pending = false
     setSketchNotice(null)
-    if (livePreviewRef.current.depth > 0) {
+    if (livePreviewRef.current.featureId) {
       await drainPreview()
       await refreshScene()
     }
@@ -1793,7 +1794,6 @@ export function App(): JSX.Element {
   // respawns it, but the new doc is empty - refetch and tell the user
   useEffect(() => {
     const off = window.cad.onSidecarRespawned?.(() => {
-      livePreviewRef.current.depth = 0
       livePreviewRef.current.featureId = null
       livePreviewRef.current.kind = null
       livePreviewRef.current.opSig = ''
