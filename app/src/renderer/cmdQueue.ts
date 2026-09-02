@@ -11,11 +11,16 @@
  *  - `busy` reflects whether anything is in flight (drives the spinner + lets
  *    the UI ignore re-entrant clicks)
  */
+import { trace } from './trace'
+
 export type QueueTask<T> = () => Promise<T>
 
 export class CmdQueue {
   private tail: Promise<unknown> = Promise.resolve()
   private depth = 0
+  private seq = 0
+  /** how many commands have been enqueued but not yet finished */
+  private queued = 0
 
   /** called with (error, label) whenever a queued task throws */
   onError: ((err: Error, label: string) => void) | null = null
@@ -32,11 +37,25 @@ export class CmdQueue {
    * failed command as a no-op and move on).
    */
   run<T>(label: string, task: QueueTask<T>): Promise<T | undefined> {
+    const id = ++this.seq
+    const enqueuedAt = Date.now()
+    const waitingAhead = this.queued
+    this.queued++
+    trace(`cmd #${id} enqueue "${label}"`, { waitingAhead, queued: this.queued, running: this.depth })
     const started = this.tail.then(async (): Promise<T | undefined> => {
+      const waited = Date.now() - enqueuedAt
       if (this.depth++ === 0) this.onBusyChange?.(true)
+      const ranAt = Date.now()
+      trace(`cmd #${id} start "${label}"`, { waitedMs: waited, running: this.depth })
       try {
-        return await task()
+        const r = await task()
+        trace(`cmd #${id} done "${label}"`, { ms: Date.now() - ranAt })
+        return r
       } catch (e) {
+        trace(`cmd #${id} ERROR "${label}"`, {
+          ms: Date.now() - ranAt,
+          msg: e instanceof Error ? e.message : String(e)
+        })
         try {
           this.onError?.(e instanceof Error ? e : new Error(String(e)), label)
         } catch {
@@ -44,6 +63,7 @@ export class CmdQueue {
         }
         return undefined
       } finally {
+        this.queued--
         if (--this.depth === 0) this.onBusyChange?.(false)
       }
     })

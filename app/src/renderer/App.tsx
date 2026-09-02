@@ -50,6 +50,7 @@ import type { SketchFrameDTO } from './rpc'
 import { basename, sketchEntitiesToPolys } from './util'
 import { perfProfile } from './perfProfile'
 import { CmdQueue } from './cmdQueue'
+import { trace, traceSpan } from './trace'
 
 const PERF = perfProfile()
 
@@ -224,6 +225,7 @@ export function App(): JSX.Element {
   )
 
   const refreshScene = useCallback(async () => {
+    const done = traceSpan('refreshScene')
     rollCacheRef.current.clear()
     const [scene, tree, asm] = await Promise.all([
       api.sceneGet(),
@@ -232,6 +234,7 @@ export function App(): JSX.Element {
     ])
     applySceneTree(scene, tree)
     setAsmTree(asm && asm.assembly ? asm : null)
+    done()
   }, [applySceneTree])
 
   // route every queued-command failure to a notice + a resync from engine truth,
@@ -253,6 +256,7 @@ export function App(): JSX.Element {
   const refreshMeshesOnly = useCallback(async (quiet = false) => {
     // quiet = no busy spinner (used by the live feature preview, which fires
     // repeatedly as a value is tuned)
+    const done = traceSpan('refreshMeshesOnly', { quiet })
     const a = quiet ? apiQuiet : api
     const [scene, tree] = await Promise.all([a.sceneGet(), a.treeGet()])
     setMeshes(scene.meshes)
@@ -260,6 +264,7 @@ export function App(): JSX.Element {
     setDatums(scene.datums ?? [])
     setPickPlanes(scene.pickPlanes ?? [])
     setBodies(tree.bodies)
+    done()
     // keep the user's client-side hide/show across a mesh refresh
   }, [])
 
@@ -292,6 +297,12 @@ export function App(): JSX.Element {
   opRef.current = op
   const onSelect = useCallback(
     (sel: Selection | null, additive: boolean) => {
+      trace('ACTION pick', {
+        sel: sel ? selKey(sel) : null,
+        additive,
+        op: opRef.current,
+        queueBusy: cmdRef.current.busy
+      })
       if (!sel) {
         if (!additive) setSelection([])
         return
@@ -383,6 +394,7 @@ export function App(): JSX.Element {
 
   const beginSketch = useCallback(
     async (ref: SketchRef) => {
+      trace('ACTION beginSketch', { ref, queueBusy: cmdRef.current.busy })
       setPlanePickMode(false)
       // origin planes have a known frame - enter the sketcher instantly and let
       // the engine create the sketch object in the background
@@ -481,6 +493,7 @@ export function App(): JSX.Element {
   )
 
   const finishSketch = useCallback(async () => {
+    trace('ACTION finishSketch', { queueBusy: cmdRef.current.busy })
     if (!sketchSession) return
     const newEnts = vpApi.current?.getNewSketchEntities() ?? []
     const allEnts = vpApi.current?.getSketchEntities() ?? []
@@ -530,6 +543,7 @@ export function App(): JSX.Element {
   }, [sketchSession, resetSketchUi, markDirty, refreshScene])
 
   const cancelSketch = useCallback(async () => {
+    trace('ACTION cancelSketch', { queueBusy: cmdRef.current.busy })
     if (sketchSession) {
       let id = sketchSession.sketchId
       if (!id && sketchOnRef.current) {
@@ -594,6 +608,7 @@ export function App(): JSX.Element {
     lp.kind = null
     lp.opSig = ''
     if (!id) return
+    trace('preview drain', { id })
     try {
       await apiQuiet.deleteFeature(id)
     } catch {
@@ -683,6 +698,7 @@ export function App(): JSX.Element {
         fastProps != null &&
         Object.keys(exprs).length === 0
       ) {
+        trace('applyOp: FAST commit (promote preview)', { kind, featureId: lp.featureId, fastProps })
         setOp(null)
         try {
           lp.seq++
@@ -710,6 +726,7 @@ export function App(): JSX.Element {
 
       // discard any live-preview attempt so the real commit starts from a clean
       // model (applyOp stays the single source of truth for the committed feature)
+      trace('applyOp: FULL commit (rebuild)', { kind, hadPreview: livePreviewRef.current.featureId })
       livePreviewRef.current.seq++
       await drainPreview()
       // close the dialog the instant the user commits - the engine rebuild and
@@ -949,8 +966,17 @@ export function App(): JSX.Element {
   // Finish click (or a click landing while one is mid-flight) waits its turn
   // instead of racing, and a failed op is reported + resynced, never half-left.
   const applyOp = useCallback(
-    (kind: OpKind, v: OpValues, exprs: Record<string, string> = {}) =>
-      cmdRef.current.run(`Apply ${kind}`, () => applyOpImpl(kind, v, exprs)),
+    (kind: OpKind, v: OpValues, exprs: Record<string, string> = {}) => {
+      const lp = livePreviewRef.current
+      trace('ACTION applyOp', {
+        kind,
+        v,
+        exprs,
+        queueBusy: cmdRef.current.busy,
+        preview: { featureId: lp.featureId, kind: lp.kind, running: lp.running, pending: lp.pending }
+      })
+      return cmdRef.current.run(`Apply ${kind}`, () => applyOpImpl(kind, v, exprs))
+    },
     [applyOpImpl]
   )
 
@@ -1051,6 +1077,14 @@ export function App(): JSX.Element {
     async (kind: OpKind, v: OpValues) => {
       const lp = livePreviewRef.current
       lastPreviewArgs.current = { kind, v }
+      trace('preview request', {
+        kind,
+        v,
+        running: lp.running,
+        featureId: lp.featureId,
+        lpKind: lp.kind,
+        seq: lp.seq
+      })
       // one in flight at a time; remember that a newer value is waiting so we
       // run exactly once more when this finishes (no stacking, no missed edit)
       if (lp.running) {
@@ -1068,7 +1102,7 @@ export function App(): JSX.Element {
             // blank / zero / half-typed value: leave whatever preview is on
             // screen exactly as it is - do not drain or rebuild it
             if (!previewHasValue(args.kind, args.v)) {
-              console.log('[preview] skip - no usable value, keeping current preview')
+              trace('preview skip: no usable value, keeping current')
               continue
             }
             // FAST PATH: the preview feature already exists and only its numbers
@@ -1076,7 +1110,7 @@ export function App(): JSX.Element {
             const fast = previewProps(args.kind, args.v)
             const sig = previewSig(args.kind, args.v)
             if (lp.featureId && lp.kind === args.kind && lp.opSig === sig && fast) {
-              console.log(`[preview] FAST id=${lp.featureId} ${JSON.stringify(fast)}`)
+              trace('preview FAST', { id: lp.featureId, fast })
               const { mesh } = await apiQuiet.previewUpdate(lp.featureId, fast)
               if (seq !== lp.seq) continue
               setMeshes((ms) => {
@@ -1084,15 +1118,13 @@ export function App(): JSX.Element {
                 return hit ? ms.map((m) => (m.id === mesh.id ? mesh : m)) : [...ms, mesh]
               })
               setSketchNotice(null)
-              console.log(`[preview] FAST done in ${Math.round(performance.now() - t0)}ms`)
+              trace('preview FAST done', { ms: Math.round(performance.now() - t0) })
               continue
             }
 
             // FULL PATH: first preview of this kind, or a topology change - roll
             // back the old attempt and build a fresh one.
-            console.log(
-              `[preview] FULL (featureId=${lp.featureId} kind=${lp.kind} want=${args.kind} fast=${!!fast})`
-            )
+            trace('preview FULL', { featureId: lp.featureId, lpKind: lp.kind, want: args.kind, fast: !!fast })
             await drainPreview()
             // snapshot existing feature ids so we can be SURE the id we later
             // treat as "the preview feature" is genuinely new - discarding it
@@ -1102,7 +1134,7 @@ export function App(): JSX.Element {
             )
             const call = previewCall(args.kind, args.v)
             if (!call) {
-              console.log('[preview] FULL: previewCall returned null (bad/absent value)')
+              trace('preview FULL: previewCall null (bad/absent value)')
               await refreshMeshesOnly(true)
               continue
             }
@@ -1139,11 +1171,9 @@ export function App(): JSX.Element {
               }
             }
             if (!light) await refreshMeshesOnly(true)
-            console.log(
-              `[preview] FULL done in ${Math.round(performance.now() - t0)}ms (light=${light}), featureId now=${lp.featureId}`
-            )
+            trace('preview FULL done', { ms: Math.round(performance.now() - t0), light, featureId: lp.featureId })
           } catch (e) {
-            console.error(`[preview] ERROR ${(e as Error).message}`)
+            trace('preview ERROR', { msg: (e as Error).message })
             await drainPreview()
             const msg = (e as Error).message || 'preview failed'
             setSketchNotice(`Preview: ${msg.replace(/^RPC \w+\.\w+:\s*/, '')}`)
@@ -1157,6 +1187,7 @@ export function App(): JSX.Element {
   )
 
   const endLivePreview = useCallback(async () => {
+    trace('preview end', { featureId: livePreviewRef.current.featureId })
     livePreviewRef.current.seq++
     livePreviewRef.current.pending = false
     setSketchNotice(null)
@@ -1178,6 +1209,7 @@ export function App(): JSX.Element {
 
   const rollTo = useCallback(
     async (featureId: string | null) => {
+      trace('ACTION rollTo', { featureId, queueBusy: cmdRef.current.busy })
       if (!bodyId) return
       const key = `${bodyId}:${featureId ?? 'TIP'}`
       const seq = ++rollSeqRef.current
@@ -1267,6 +1299,7 @@ export function App(): JSX.Element {
 
   const deleteFeature = useCallback(
     (id: string) => {
+      trace('ACTION deleteFeature', { id, queueBusy: cmdRef.current.busy })
       if (!window.confirm('Delete this feature?')) return Promise.resolve()
       // drop it from EVERY view state right away - tree, viewport meshes /
       // sketches / datums, selection - so it disappears the instant you click.
@@ -1309,6 +1342,7 @@ export function App(): JSX.Element {
 
   const deleteFeaturesMany = useCallback(
     (ids: string[]) => {
+      trace('ACTION deleteFeaturesMany', { ids, queueBusy: cmdRef.current.busy })
       if (!ids.length) return Promise.resolve()
       if (ids.length === 1) return deleteFeature(ids[0])
       if (!window.confirm(`Delete ${ids.length} features?`)) return Promise.resolve()
@@ -1354,6 +1388,7 @@ export function App(): JSX.Element {
 
   const doUndo = useCallback(() => {
     if (!canUndo) return Promise.resolve()
+    trace('ACTION undo', { queueBusy: cmdRef.current.busy })
     return cmdRef.current.run('Undo', async () => {
       const r = await api.undo()
       setCanUndo(r.canUndo)
@@ -1369,6 +1404,7 @@ export function App(): JSX.Element {
 
   const doRedo = useCallback(() => {
     if (!canRedo) return Promise.resolve()
+    trace('ACTION redo', { queueBusy: cmdRef.current.busy })
     return cmdRef.current.run('Redo', async () => {
       const r = await api.redo()
       setCanUndo(r.canUndo)
@@ -1716,6 +1752,11 @@ export function App(): JSX.Element {
       )
   }, [selection, jointType, refreshScene])
 
+  const openOp = useCallback((k: OpKind | null) => {
+    trace('ACTION openOp', { k, from: opRef.current, queueBusy: cmdRef.current.busy })
+    setOp(k)
+  }, [])
+
   // test / automation bridge - drives the same handlers the buttons call, so an
   // out-of-band script can exercise the app end to end (see test/e2e).
   useEffect(() => {
@@ -1725,8 +1766,8 @@ export function App(): JSX.Element {
       fit: () => vpApi.current?.fit(),
 
       // --- ops (ribbon -> dialog -> apply) ---
-      openOp: (k: OpKind) => setOp(k),
-      closeOp: () => setOp(null),
+      openOp: (k: OpKind) => openOp(k),
+      closeOp: () => openOp(null),
       applyOp: (k: OpKind, v: OpValues, exprs?: Record<string, string>) => applyOp(k, v, exprs),
 
       // --- selection ---
@@ -1783,6 +1824,7 @@ export function App(): JSX.Element {
     deleteFeature,
     rollTo,
     onSelect,
+    openOp,
     status.phase,
     busy,
     sketchNotice,
@@ -1841,7 +1883,7 @@ export function App(): JSX.Element {
   const commands = useMemo(
     () =>
       buildCommands({
-        openOp: (k) => setOp(k),
+        openOp: (k) => openOp(k),
         sweep,
         createSketch,
         newDesign,
@@ -1871,6 +1913,7 @@ export function App(): JSX.Element {
         selectFilterMenuNode: <SelectKindList active={selFilter} onActive={setSelFilter} />
       }),
     [
+      openOp,
       sweep,
       createSketch,
       newDesign,
@@ -1948,7 +1991,7 @@ export function App(): JSX.Element {
       }
       if (e.key === 'Escape') {
         setPaletteOpen(false)
-        setOp(null)
+        openOp(null)
         return
       }
       // data-driven command hotkeys (user-overridable)
@@ -1964,7 +2007,7 @@ export function App(): JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [sketchSession, sketchConstruction, save, openDesign, newDesign, doUndo, doRedo, commands, hotkeys])
+  }, [sketchSession, sketchConstruction, save, openDesign, newDesign, doUndo, doRedo, commands, hotkeys, openOp])
 
   const activeName = tabs.find((t) => t.id === activeTab)?.name ?? 'Untitled'
   const activeDirty = tabs.find((t) => t.id === activeTab)?.dirty ?? false
@@ -2328,7 +2371,7 @@ export function App(): JSX.Element {
                       kind={op}
                       selection={selection}
                       onApply={applyOp}
-                      onCancel={() => setOp(null)}
+                      onCancel={() => openOp(null)}
                       onPreview={onDatumPlanePreview}
                       onLivePreview={runLivePreview}
                       onLivePreviewEnd={endLivePreview}

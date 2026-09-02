@@ -1,5 +1,7 @@
 /** Thin typed wrappers over the preload bridge. */
 
+import { trace } from './trace'
+
 export type FeatureKind = 'sketch' | 'datum' | 'solid' | 'other'
 
 export interface Feature {
@@ -253,18 +255,57 @@ function bumpBusy(delta: number): void {
   for (const l of _busyListeners) l(_busy)
 }
 
+let _rpcSeq = 0
+const _pickParams = (p: Record<string, unknown>): Record<string, unknown> => {
+  const out: Record<string, unknown> = {}
+  for (const k of [
+    'sketchId',
+    'featureId',
+    'id',
+    'bodyId',
+    'length',
+    'angle',
+    'operation',
+    'cut',
+    'props',
+    'faceRef'
+  ]) {
+    if (k in p) out[k] = p[k]
+  }
+  return out
+}
+
 const rpc = async <T,>(m: string, p: Record<string, unknown> = {}): Promise<T> => {
+  const n = ++_rpcSeq
   bumpBusy(1)
+  trace(`rpc #${n} ${m}`, { busy: _busy, p: _pickParams(p) })
+  const t = Date.now()
   try {
-    return await window.cad.rpc<T>(m, p)
+    const r = await window.cad.rpc<T>(m, p)
+    trace(`rpc #${n} ${m} ok`, { ms: Date.now() - t })
+    return r
+  } catch (e) {
+    trace(`rpc #${n} ${m} ERR`, { ms: Date.now() - t, msg: (e as Error)?.message ?? String(e) })
+    throw e
   } finally {
     bumpBusy(-1)
   }
 }
 
 /** Background calls that must not light the busy indicator (timeline prefetch). */
-const rpcQuiet = <T,>(m: string, p: Record<string, unknown> = {}): Promise<T> =>
-  window.cad.rpc<T>(m, p)
+const rpcQuiet = async <T,>(m: string, p: Record<string, unknown> = {}): Promise<T> => {
+  const n = ++_rpcSeq
+  trace(`rpcQ #${n} ${m}`, { busy: _busy, p: _pickParams(p) })
+  const t = Date.now()
+  try {
+    const r = await window.cad.rpc<T>(m, p)
+    trace(`rpcQ #${n} ${m} ok`, { ms: Date.now() - t })
+    return r
+  } catch (e) {
+    trace(`rpcQ #${n} ${m} ERR`, { ms: Date.now() - t, msg: (e as Error)?.message ?? String(e) })
+    throw e
+  }
+}
 
 export const apiQuiet = {
   rollTo: (bodyId: string, featureId: string | null) =>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, type Selection } from '../rpc'
+import { trace } from '../trace'
 
 export type OpKind =
   | 'extrude'
@@ -338,9 +339,9 @@ export function OperationDialog({
     if (!selection.length) return
     // short debounce - the app coalesces overlapping calls and the in-place
     // fast path is a single recompute, so this can stay snappy while typing
-    console.log(`[preview-effect] scheduled kind=${kind} values=${JSON.stringify(values)}`)
+    trace('dialog preview scheduled', { kind, values })
     const t = setTimeout(() => {
-      console.log(`[preview-effect] FIRE kind=${kind}`)
+      trace('dialog preview fire', { kind, values })
       onLivePreview(kind, values)
     }, 130)
     return () => clearTimeout(t)

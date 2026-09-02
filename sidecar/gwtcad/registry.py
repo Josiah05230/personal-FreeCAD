@@ -4,9 +4,31 @@ Methods register with @method("namespace.name"). Dispatch is synchronous and
 single-threaded on purpose: FreeCAD / OCCT document mutation is not thread-safe,
 so the HTTP server processes one request at a time.
 """
+import os
+import sys
+import time
 import traceback
 
 METHODS = {}
+
+# Timestamped one-line-per-call trace to stderr (the main process prefixes it
+# [sidecar] into /tmp/gwtcad-run.log). On by default; GWTCAD_TRACE=0 disables.
+_TRACE = os.environ.get("GWTCAD_TRACE", "1") != "0"
+
+
+def _trace(msg):
+    if not _TRACE:
+        return
+    try:
+        sys.stderr.write("[trace %s] %s\n" % (time.strftime("%H:%M:%S"), msg))
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _short(v):
+    s = repr(v)
+    return s if len(s) <= 60 else s[:60] + "..."
 
 
 def method(name):
@@ -94,7 +116,18 @@ def dispatch(payload):
         return {"jsonrpc": "2.0", "id": rpc_id,
                 "error": _error(METHOD_NOT_FOUND, "no such method: %s" % name)}
 
+    _t0 = time.perf_counter()
     txn = _open_txn(name)
+    if _TRACE:
+        _pk = ""
+        if isinstance(params, dict):
+            _pk = " ".join(
+                "%s=%s" % (k, _short(params[k]))
+                for k in ("sketchId", "featureId", "id", "bodyId", "length", "angle",
+                          "operation", "props", "faceRef", "sketchIds")
+                if k in params
+            )
+        _trace("rpc #%s %s %s%s" % (rpc_id, name, _pk, "" if txn is None else " [txn]"))
     try:
         if isinstance(params, dict):
             result = fn(**params)
@@ -107,18 +140,22 @@ def dispatch(payload):
                 txn.commitTransaction()
             except Exception:
                 pass
+        _trace("rpc #%s %s OK %dms" % (rpc_id, name, (time.perf_counter() - _t0) * 1000))
         return {"jsonrpc": "2.0", "id": rpc_id, "result": result}
     except RpcError as e:
         _abort(txn)
+        _trace("rpc #%s %s ERR %dms: %s" % (rpc_id, name, (time.perf_counter() - _t0) * 1000, e.message))
         return {"jsonrpc": "2.0", "id": rpc_id,
                 "error": _error(e.code, e.message, e.data)}
     except TypeError as e:
         # most commonly a bad params signature
         _abort(txn)
+        _trace("rpc #%s %s ERR(type) %dms: %s" % (rpc_id, name, (time.perf_counter() - _t0) * 1000, e))
         return {"jsonrpc": "2.0", "id": rpc_id,
                 "error": _error(INVALID_PARAMS, str(e))}
     except Exception as e:  # noqa: BLE001 - sidecar must never crash on a bad call
         _abort(txn)
+        _trace("rpc #%s %s EXC %dms: %s: %s" % (rpc_id, name, (time.perf_counter() - _t0) * 1000, type(e).__name__, e))
         return {"jsonrpc": "2.0", "id": rpc_id,
                 "error": _error(APP_ERROR, "%s: %s" % (type(e).__name__, e),
                                 {"traceback": traceback.format_exc()})}
