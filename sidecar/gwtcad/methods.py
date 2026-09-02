@@ -212,6 +212,15 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
         body = sk.getParentGeoFeatureGroup()
         if body is None or body.TypeId != "PartDesign::Body":
             raise RpcError(APP_ERROR, "sketch is not inside a Body")
+        # a sketch already consumed by a Pad/Pocket cannot be re-used as a
+        # profile - doing so corrupts BOTH features on recompute
+        for _o in d.Objects:
+            prof = getattr(_o, "Profile", None)
+            pobj = prof[0] if isinstance(prof, (tuple, list)) and prof else prof
+            if pobj is sk and _o.Name != sketchId:
+                raise RpcError(APP_ERROR,
+                               "that sketch is already used by %s - draw a new "
+                               "sketch to extrude" % _o.Label)
     op = (operation or ("cut" if cut else "join")).lower()
     up = _resolve_ref(d, body, upToFaceRef) if upToFaceRef else None
     off = float(offset or 0.0)
@@ -222,37 +231,46 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
     if not isinstance(sk, tuple) and sk.TypeId == "Sketcher::SketchObject":
         _strip_redundant_constraints(sk, d)
 
+    # remember exactly what to undo if this build turns out invalid - just the
+    # feature we are about to add, never anything already in the body
+    prev_tip = getattr(body, "Tip", None)
+    prev_tip_name = prev_tip.Name if prev_tip is not None else None
+    made = None        # the Pad/Pocket this call creates
+    made_body = None   # a fresh Body, for the newbody branch
+
     if op == "cut":
-        build.pocket(body, sk, float(length), up_to=up, offset=off)
+        made = build.pocket(body, sk, float(length), up_to=up, offset=off)
         target = body
     elif op == "newbody":
         tip = getattr(body, "Tip", None)
         if isinstance(sk, tuple):
             # a model-face profile cannot be copied into a fresh body - just pad
-            build.pad(body, sk, float(length), reversed_=reversed,
-                      midplane=midplane, up_to=up, offset=off)
+            made = build.pad(body, sk, float(length), reversed_=reversed,
+                             midplane=midplane, up_to=up, offset=off)
             target = body
         elif tip is not None and _kind(tip.TypeId) == "solid":
             # body already has a solid - pad a copy of the sketch in a fresh body
             nb = build.new_body(d, next_label(None, "PartDesign::Body"))
             skc = d.copyObject(sk, False)
             nb.addObject(skc)
-            build.pad(nb, skc, float(length), reversed_=reversed,
-                      midplane=midplane, up_to=up, offset=off)
+            made = build.pad(nb, skc, float(length), reversed_=reversed,
+                             midplane=midplane, up_to=up, offset=off)
+            made_body = nb
             target = nb
         else:
-            build.pad(body, sk, float(length), reversed_=reversed,
-                      midplane=midplane, up_to=up, offset=off)
+            made = build.pad(body, sk, float(length), reversed_=reversed,
+                             midplane=midplane, up_to=up, offset=off)
             target = body
     else:  # join
-        build.pad(body, sk, float(length), reversed_=reversed,
-                  midplane=midplane, up_to=up, offset=off)
+        made = build.pad(body, sk, float(length), reversed_=reversed,
+                         midplane=midplane, up_to=up, offset=off)
         target = body
 
     d.recompute()
 
-    # if the pad failed, tear it back out so the model is not left broken (a
-    # NULL Shape here would otherwise crash every later op and blank the scene)
+    # if the pad failed, remove EXACTLY the feature we just made (and the fresh
+    # body, if any) and restore the previous tip - never touch features that
+    # were already there, or a bad 2nd extrude wipes the whole body
     try:
         shp = getattr(target, "Shape", None)
         ok = shp is not None and not shp.isNull() and shp.isValid()
@@ -260,16 +278,21 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
         ok = False
     if not ok:
         try:
-            for o in list(body.Group):
-                if o.TypeId in ("PartDesign::Pad", "PartDesign::Pocket") and \
-                   (getattr(o, "State", None) and "Invalid" in o.State):
-                    d.removeObject(o.Name)
+            if made is not None and d.getObject(made.Name) is not None:
+                d.removeObject(made.Name)
+            if made_body is not None and d.getObject(made_body.Name) is not None:
+                d.removeObject(made_body.Name)
+            if prev_tip_name and d.getObject(prev_tip_name) is not None:
+                try:
+                    body.Tip = d.getObject(prev_tip_name)
+                except Exception:
+                    pass
             d.recompute()
         except Exception:
             pass
         raise RpcError(APP_ERROR,
-                       "extrude produced an invalid shape - check the sketch is a "
-                       "clean closed profile and try again")
+                       "extrude produced an invalid shape - check the profile is a "
+                       "clean closed outline and try again")
     return tree_get()
 
 

@@ -1069,6 +1069,12 @@ export function App(): JSX.Element {
               `[preview] FULL (featureId=${lp.featureId} kind=${lp.kind} want=${args.kind} fast=${!!fast})`
             )
             await drainPreview()
+            // snapshot existing feature ids so we can be SURE the id we later
+            // treat as "the preview feature" is genuinely new - discarding it
+            // must never be able to delete a feature the user already committed
+            const before = new Set(
+              (bodies ?? []).flatMap((b) => b.features ?? []).map((f) => f.id)
+            )
             const call = previewCall(args.kind, args.v)
             if (!call) {
               console.log('[preview] FULL: previewCall returned null (bad/absent value)')
@@ -1076,13 +1082,11 @@ export function App(): JSX.Element {
               continue
             }
             const res = (await call) as { bodies?: BodyTree[] }
-            // record the feature we just built BEFORE the stale-seq check, so a
-            // superseded attempt still cleans up exactly its own feature by id
-            const newest = (res?.bodies ?? [])
+            const created = (res?.bodies ?? [])
               .flatMap((b) => b.features ?? [])
-              .filter((f) => f.kind !== 'sketch' && f.kind !== 'datum')
-              .at(-1)
-            lp.featureId = newest?.id ?? null
+              .filter((f) => f.kind !== 'sketch' && f.kind !== 'datum' && !before.has(f.id))
+            const newest = created.at(-1)
+            lp.featureId = newest?.id ?? null // only ever a brand-new feature
             lp.kind = args.kind
             lp.opSig = sig
             if (seq !== lp.seq) {
@@ -1124,7 +1128,7 @@ export function App(): JSX.Element {
         lp.running = false
       }
     },
-    [previewCall, previewProps, previewSig, previewHasValue, drainPreview, refreshMeshesOnly, selection]
+    [previewCall, previewProps, previewSig, previewHasValue, drainPreview, refreshMeshesOnly, selection, bodies]
   )
 
   const endLivePreview = useCallback(async () => {
