@@ -588,7 +588,18 @@ export function App(): JSX.Element {
     featureId: string | null
     kind: OpKind | null
     opSig: string
-  }>({ seq: 0, running: false, pending: false, featureId: null, kind: null, opSig: '' })
+    /** applyOp is mid-commit - the dialog unmount it triggers must NOT drain
+     * the preview feature (in the fast path that feature IS the commit) */
+    committing: boolean
+  }>({
+    seq: 0,
+    running: false,
+    pending: false,
+    featureId: null,
+    kind: null,
+    opSig: '',
+    committing: false
+  })
 
   // signature of the inputs that decide the feature's shape topology (so a
   // number tweak keeps the fast path but a Join->Cut switch forces a rebuild)
@@ -690,6 +701,10 @@ export function App(): JSX.Element {
       // full scene refresh. Only its final number might differ if Finish beat
       // the debounce - push that in (~8ms) and we are done.
       const lp = livePreviewRef.current
+      // from here until we return / finish, the dialog unmount that setOp(null)
+      // triggers must not let endLivePreview drain the preview feature - in the
+      // fast path that feature IS the thing we are committing
+      lp.committing = true
       const fastProps = previewProps(kind, v)
       if (
         lp.featureId != null &&
@@ -698,15 +713,19 @@ export function App(): JSX.Element {
         fastProps != null &&
         Object.keys(exprs).length === 0
       ) {
-        trace('applyOp: FAST commit (promote preview)', { kind, featureId: lp.featureId, fastProps })
+        // promote the preview feature to the committed one: detach it from the
+        // live-preview bookkeeping BEFORE closing the dialog, so nothing can
+        // delete it as a "leftover preview"
+        const promotedId = lp.featureId
+        lp.featureId = null
+        lp.kind = null
+        lp.opSig = ''
+        lp.seq++
+        trace('applyOp: FAST commit (promote preview)', { kind, featureId: promotedId, fastProps })
         setOp(null)
         try {
-          lp.seq++
-          const { mesh } = await apiQuiet.previewUpdate(lp.featureId, fastProps)
+          const { mesh } = await apiQuiet.previewUpdate(promotedId, fastProps)
           setMeshes((ms) => ms.map((m) => (m.id === mesh.id ? mesh : m)))
-          lp.featureId = null // it is the committed feature now, not a preview
-          lp.kind = null
-          lp.opSig = ''
           rollCacheRef.current.clear() // history changed - drop stale roll snapshots
           const tree = await api.treeGet()
           setBodies(tree.bodies)
@@ -717,9 +736,12 @@ export function App(): JSX.Element {
           )
           markDirty()
           setSelection([])
+          lp.committing = false
           return
         } catch {
-          // preview feature went bad somehow - fall through to a clean rebuild
+          // the promote failed - put the id back so the rebuild path can clean
+          // it up, then fall through
+          lp.featureId = promotedId
           await drainPreview()
         }
       }
@@ -957,6 +979,7 @@ export function App(): JSX.Element {
         await afterEdit()
       } finally {
         setDatumGhostHold(false)
+        livePreviewRef.current.committing = false
       }
     },
     [selection, afterEdit, drainPreview, previewProps, previewSig]
@@ -1187,11 +1210,19 @@ export function App(): JSX.Element {
   )
 
   const endLivePreview = useCallback(async () => {
-    trace('preview end', { featureId: livePreviewRef.current.featureId })
-    livePreviewRef.current.seq++
-    livePreviewRef.current.pending = false
+    const lp = livePreviewRef.current
+    trace('preview end', { featureId: lp.featureId, committing: lp.committing })
+    // applyOp is promoting / rebuilding this preview right now - it owns the
+    // feature's fate; draining here would delete the feature being committed
+    if (lp.committing) {
+      lp.seq++
+      lp.pending = false
+      return
+    }
+    lp.seq++
+    lp.pending = false
     setSketchNotice(null)
-    if (livePreviewRef.current.featureId) {
+    if (lp.featureId) {
       await drainPreview()
       await refreshScene()
     }

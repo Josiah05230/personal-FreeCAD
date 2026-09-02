@@ -16,9 +16,11 @@ is logging.
 """
 import json
 import os
+import queue
 import signal
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -28,17 +30,66 @@ import gwtcad.methods  # noqa: E402,F401  (import registers the RPC methods)
 READY_PREFIX = "GWTCAD_SIDECAR_READY "
 MAX_BODY_BYTES = 64 * 1024 * 1024  # generous; mesh payloads for parts are small
 
+# Why threaded server + a single engine worker:
+# The old single-threaded HTTPServer served one keep-alive connection at a time
+# and, between requests on it, blocked in readline() waiting for that socket's
+# next request - so a SECOND concurrent request (refreshScene alone fires three)
+# could not even be accepted until the first connection went idle and undici's
+# ~4s keepAliveTimeout closed it. That was whole seconds of "still loading" for
+# work the engine does in <1ms.
+# Now: connection threads do only socket I/O + JSON; every dispatch() is handed
+# to ONE dedicated worker thread (FreeCAD / OCCT is not thread-safe, so all
+# document work must stay on a single thread) and the caller blocks on an Event
+# for its result. Requests are still executed strictly one at a time, in arrival
+# order, just without the TCP-level head-of-line stall.
+_engine_q: "queue.Queue" = queue.Queue()
+
+
+def _engine_worker():
+    while True:
+        job = _engine_q.get()
+        if job is None:
+            return
+        payload, deliver = job
+        try:
+            if isinstance(payload, list):
+                out = [dispatch(p) for p in payload]
+            else:
+                out = dispatch(payload)
+        except BaseException as e:  # noqa: BLE001 - the worker must never die
+            out = {"jsonrpc": "2.0", "id": None,
+                   "error": {"code": -32603, "message": "engine worker error: %s" % e}}
+        try:
+            deliver(out)
+        except Exception:
+            pass
+
+
+def _run_on_engine(payload):
+    """Block the calling (connection) thread until the engine worker has a result."""
+    box = []
+    ev = threading.Event()
+
+    def _deliver(result):
+        box.append(result)
+        ev.set()
+
+    _engine_q.put((payload, _deliver))
+    ev.wait()
+    return box[0]
+
 
 def _log(*a):
     print("[sidecar]", *a, file=sys.stderr, flush=True)
 
 
-class Server(HTTPServer):
-    """HTTPServer that exits if it is orphaned (parent process died).
+class Server(ThreadingHTTPServer):
+    """Threaded HTTPServer that exits if it is orphaned (parent process died).
 
     The Electron supervisor may be SIGKILLed (crash, `timeout`, task manager)
     without a chance to reap us; without this the sidecar leaks.
     """
+    daemon_threads = True  # don't let lingering keep-alive sockets block shutdown
     _start_ppid = os.getppid()
 
     def service_actions(self):
@@ -53,6 +104,9 @@ class Server(HTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    # drop a silent / half-open keep-alive connection instead of pinning its
+    # worker thread on a blocking read forever
+    timeout = 65
 
     def _send(self, code, body_bytes, content_type="application/json"):
         self.send_response(code)
@@ -97,12 +151,12 @@ class Handler(BaseHTTPRequestHandler):
                              "error": {"code": -32700, "message": "parse error: %s" % e}})
             return
 
+        # hand the document work to the single engine thread; this connection
+        # thread just waits for the answer and writes it back
+        out = _run_on_engine(payload)
         if isinstance(payload, list):
-            responses = [dispatch(p) for p in payload]
-            responses = [r for r in responses if r.get("id") is not None]
-            self._json(200, responses)
-        else:
-            self._json(200, dispatch(payload))
+            out = [r for r in out if r.get("id") is not None]
+        self._json(200, out)
 
     def log_message(self, fmt, *args):  # quieter default logging
         _log(self.address_string(), fmt % args)
@@ -134,6 +188,7 @@ def _resolve_host_port():
 
 def main():
     host, port = _resolve_host_port()
+    threading.Thread(target=_engine_worker, name="gwtcad-engine", daemon=True).start()
     httpd = Server((host, port), Handler)
     bound_host, bound_port = httpd.server_address[0], httpd.server_address[1]
 
