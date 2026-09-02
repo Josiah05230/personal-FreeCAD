@@ -69,6 +69,30 @@ const selKey = (s: Selection): string => {
   return `${s.kind}:${s.bodyId}:${s.sub}`
 }
 
+// While a feature dialog is open the viewport only accepts the pick kinds that
+// operation can actually consume - so a stray click on an edge or vertex while
+// the Extrude dialog is up is simply ignored instead of piling a useless ref
+// onto the op. null -> no narrowing, use the user's Select-filter as normal.
+const opSelKinds = (k: OpKind | null): SelKind[] | null => {
+  switch (k) {
+    case 'extrude':
+    case 'loft':
+      return ['sketch', 'face'] // a profile: a sketch outline / filled face, or a flat model face
+    case 'revolve':
+      return ['sketch', 'face', 'edge', 'plane'] // profile + an axis (a body edge or a datum)
+    case 'fillet':
+    case 'chamfer':
+      return ['edge', 'face']
+    case 'shell':
+    case 'draft':
+      return ['face', 'plane']
+    case 'hole':
+      return ['face', 'edge']
+    default:
+      return null
+  }
+}
+
 export function App(): JSX.Element {
   const [status, setStatus] = useState<Status>({ phase: 'boot' })
   const [meshes, setMeshes] = useState<RenderMesh[]>([])
@@ -285,7 +309,8 @@ export function App(): JSX.Element {
         })
         return
       }
-      if (!selFilter.includes(sel.kind as SelKind)) return // selection filter
+      const activeFilter = opSelKinds(opRef.current) ?? selFilter
+      if (!activeFilter.includes(sel.kind as SelKind)) return // selection filter (narrowed while an op dialog is open)
       // A feature dialog is open: a plain click must NOT wipe the op's inputs
       // (its profile / refs). Treat every pick as additive so it accumulates
       // extra refs (e.g. an "up to" face) instead - cancel the dialog to start
@@ -1706,6 +1731,9 @@ export function App(): JSX.Element {
 
       // --- selection ---
       select: (sels: Selection[]) => setSelection(sels ?? []),
+      // routes through the real onSelect handler (filters, op-scoped kinds,
+      // coplanar lock, additive-while-dialog) - use this to test click behaviour
+      pick: (sel: Selection | null, additive = false) => onSelect(sel, additive),
       selectFace: (bodyId: string, sub: string) =>
         setSelection([{ kind: 'face', bodyId, sub, point: [0, 0, 0] } as Selection]),
       selectSketch: (sketchId: string) => setSelection([{ kind: 'sketch', sketchId } as Selection]),
@@ -1754,6 +1782,7 @@ export function App(): JSX.Element {
     doRedo,
     deleteFeature,
     rollTo,
+    onSelect,
     status.phase,
     busy,
     sketchNotice,

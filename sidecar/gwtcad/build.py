@@ -61,6 +61,85 @@ def circle_sketch(body, radius, plane="XY"):
     return sk
 
 
+def profile_is_consumed(d, sk):
+    """True when this Sketcher object is already the Profile / Sections / Spine
+    of some other feature. Handing the SAME sketch to a second feature makes
+    PartDesign corrupt both on the next recompute."""
+    for o in d.Objects:
+        for prop in ("Profile", "Sections", "Spine"):
+            v = getattr(o, prop, None)
+            if v is None:
+                continue
+            items = v if isinstance(v, (list, tuple)) else [v]
+            for it in items:
+                obj = it[0] if isinstance(it, (tuple, list)) and it else it
+                if obj is sk:
+                    return True
+    return False
+
+
+def reusable_profile(d, body, sk):
+    """A profile object safe to give to a NEW feature. If `sk` is a sketch that
+    is already consumed elsewhere, duplicate it (F360-style shared profile) so
+    the original feature keeps an intact copy and the new one gets its own.
+    A (face, [sub]) tuple is returned unchanged."""
+    if not hasattr(sk, "TypeId") or sk.TypeId != "Sketcher::SketchObject":
+        return sk
+    if not profile_is_consumed(d, sk):
+        return sk
+    dup = d.copyObject(sk, False)
+    try:
+        dup.Label = sk.Label + " (copy)"
+    except Exception:
+        pass
+    try:
+        body.addObject(dup)
+    except Exception:
+        pass
+    dup.Visibility = False
+    return dup
+
+
+def finalize_or_rollback(d, target, made, prev_tip_name, extra, what):
+    """Recompute and check `target` has a valid solid. If not, remove exactly
+    what this call created - `made` plus everything in `extra` - restore the
+    body's previous tip and raise RpcError(what). Features that were already in
+    the body are never touched, so a bad new feature can't wipe existing work."""
+    d.recompute()
+    try:
+        shp = getattr(target, "Shape", None)
+        ok = shp is not None and not shp.isNull() and shp.isValid()
+    except Exception:
+        ok = False
+    if ok:
+        return
+    body = None
+    for obj in list(extra) + [made]:
+        if obj is None:
+            continue
+        try:
+            grp = obj.getParentGeoFeatureGroup()
+            if grp is not None and grp.TypeId == "PartDesign::Body":
+                body = grp
+        except Exception:
+            pass
+        try:
+            if d.getObject(obj.Name) is not None:
+                d.removeObject(obj.Name)
+        except Exception:
+            pass
+    try:
+        if body is not None and prev_tip_name and d.getObject(prev_tip_name) is not None:
+            body.Tip = d.getObject(prev_tip_name)
+    except Exception:
+        pass
+    try:
+        d.recompute()
+    except Exception:
+        pass
+    raise RpcError(APP_ERROR, what)
+
+
 def _set_profile(feature, profile):
     """profile is either a Sketcher object or a (feature, [subnames]) tuple
     naming a flat face of the base solid."""

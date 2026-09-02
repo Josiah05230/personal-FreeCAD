@@ -29,3 +29,7 @@ config.local.json
 scratch/
 app/resources/
 release/
+
+# e2e per-scenario run artifacts
+test/e2e/report-*.txt
+test/e2e/last-report.txt

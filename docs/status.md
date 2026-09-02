@@ -1,11 +1,25 @@
 # Status
 
-Updated 2026-09-01. Live-test feedback batches 1-31 addressed (open partials: full parametric
+Updated 2026-09-01. Live-test feedback batches 1-32 addressed (open partials: full parametric
 sketch tools, section analysis tab, optimistic datum row, multi-face press-pull). All 16
 feature-op RPCs smoke-tested headless; a UI-driven E2E suite (test/e2e, `bash test/e2e/run.sh`)
-runs a scripted workflow + a chaos "monkey" pass against the real app. All roadmap milestones
-have a working first version. `docs/FEEDBACK.md` tracks the live-test checklist. KiCad interop
-has a first slice (board import + placeholders); next: component STEP models + connector->joint.
+runs a scripted workflow, a bug-repro pass, and a chaos "monkey" pass against the real app. All
+roadmap milestones have a working first version. `docs/FEEDBACK.md` tracks the live-test
+checklist. KiCad interop has a first slice (board import + placeholders); next: component STEP
+models + connector->joint.
+
+Batch 32 (2026-09-01) - revolve + sketch-reuse + op-scoped picking:
+- Revolve no longer wipes the body: a profile crossing the axis is rejected up
+  front (straddle check), and revolve now uses the same surgical
+  build-or-rollback as extrude (build.finalize_or_rollback) - a bad feature is
+  removed and the tip restored, existing work untouched.
+- Re-using a committed sketch works: PartDesign allows one owner per sketch, so
+  re-use extrudes an independent linked copy (build.reusable_profile). Applies
+  to extrude + revolve.
+- Feature dialogs narrow viewport picking to kinds the op consumes (opSelKinds):
+  Extrude ignores edge/vertex clicks; Revolve also accepts an edge/datum axis.
+- test/e2e/scenarios/repro.js drives all three through the UI bridge (added
+  __gwtcad.pick that routes through the real onSelect handler).
 
 Batch 31 (2026-09-01) - perf + robustness pass:
 - Viewport reconciles scene content incrementally (per-body/sketch/datum node

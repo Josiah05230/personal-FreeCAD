@@ -42,6 +42,22 @@ done, remove its line entirely rather than leaving a checked box.
 
 ## Recently addressed
 
+- Revolve no longer wipes the body. A profile that crossed the revolve axis was
+  swept into itself; PartDesign returned that as a "valid" sliver (not an error)
+  so the whole solid appeared to vanish. Now: (1) a straddle check rejects it up
+  front with a clear message ("move the sketch to one side of the axis, or pick
+  an edge / datum"), and (2) revolve builds through the same surgical
+  build-or-rollback path as extrude (build.finalize_or_rollback) - a bad new
+  feature is removed and the tip restored, existing work is never touched.
+- Re-using a committed sketch for another feature now works (F360 style). It was
+  hard-rejected ("that sketch is already used by ..."). PartDesign only lets one
+  feature own a sketch, so re-use now transparently extrudes an independent
+  linked copy (shows as "Sketch (copy)" in the timeline). Applies to extrude and
+  revolve via build.reusable_profile.
+- While a feature dialog is open the viewport only accepts the pick kinds that
+  op can use (Extrude: sketch / flat face only - an edge or vertex click is
+  ignored; Revolve also takes an edge / datum as the axis; Fillet/Chamfer: edges
+  + faces; etc). Stops stray clicks piling useless refs onto the operation.
 - BIG perf fix: the viewport used to tear down and rebuild the ENTIRE three.js
   scene (every body, edge, sketch fill, datum) on every mesh change - so a
   live-preview tweak that took 8ms in the engine triggered a whole-scene rebuild
