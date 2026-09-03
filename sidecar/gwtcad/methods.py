@@ -633,11 +633,12 @@ def feature_combine(op="Fuse", baseBodyId=None, toolBodyIds=None, keepTools=Fals
 
 @method("pattern.circular")
 def pattern_circular(count=4, angle=360.0, axisRef=None, axisPlane="XY",
-                     scope="body", refs=None):
+                     scope="body", refs=None, operation="join"):
     body = _require_body()
     _solid_tip(body)  # ensure there is a solid
     d = body.Document
     prev_tip_name = getattr(getattr(body, "Tip", None), "Name", None)
+    before = body.Shape.copy() if getattr(body, "Shape", None) is not None else None
     axis_tuple = _resolve_ref(d, body, axisRef) if axisRef else None  # resolve before newObject
     originals = _transform_originals(body, scope, refs)
     p = body.newObject("PartDesign::PolarPattern", "PolarPattern")
@@ -654,10 +655,9 @@ def pattern_circular(count=4, angle=360.0, axisRef=None, axisPlane="XY",
     p.Angle = float(angle)
     p.Occurrences = int(count)
     _apply_transformed(body, p)
-    build.finalize_or_rollback(
-        d, body, p, prev_tip_name, [],
-        "circular pattern produced an invalid shape - try fewer copies or a "
-        "different axis", check_made=True)
+    _finish_transform(d, body, p, prev_tip_name, before, operation,
+                      "circular pattern produced an invalid shape - try fewer "
+                      "copies or a different axis")
     return tree_get()
 
 
@@ -937,13 +937,143 @@ def _transform_originals(body, scope, refs):
     return _body_solid_features(body)
 
 
+def _scratch_body_from_shape(d, shp, label="__xform"):
+    """A throwaway PartDesign::Body whose tip is a Part::Feature holding `shp`,
+    for feeding a raw solid into a PartDesign::Boolean or standing alone as a
+    'new body' result. Returns the body; its helper Part::Feature is hidden."""
+    pf = d.addObject("Part::Feature", label + "_shape")
+    pf.Shape = shp
+    pf.Visibility = False
+    nb = build.new_body(d, next_label(None, "PartDesign::Body"))
+    fb = nb.newObject("PartDesign::FeatureBase", "BaseFeat")
+    fb.BaseFeature = pf
+    nb.Tip = fb
+    d.recompute()
+    return nb
+
+
+def _xform_helper_features(d):
+    """Part::Feature objects that only exist to seed a FeatureBase - hidden from
+    tree / scene (like _boolean_consumed_bodies for tool bodies)."""
+    out = set()
+    for o in d.Objects:
+        if o.TypeId == "PartDesign::FeatureBase":
+            bf = getattr(o, "BaseFeature", None)
+            if bf is not None and getattr(bf, "TypeId", "") == "Part::Feature":
+                out.add(bf.Name)
+    return out
+
+
+def _apply_result_boolean(d, body, prev_tip_name, tool_shape, op, what, prev_vol=None):
+    """After a Mirror / Pattern (or Extrude) has produced `tool_shape` (the net
+    solid it contributes), combine it with the body per `op`:
+      join      -> caller already fused it; nothing to do here.
+      cut       -> PartDesign::Boolean Cut  (scratch body as the tool)
+      intersect -> PartDesign::Boolean Common
+      newbody   -> tool_shape becomes its own PartDesign::Body; `body` is left
+                   at prev_tip.
+    Returns the feature that is now `body.Tip` (Boolean), or the new body for
+    'newbody'. Raises RpcError(what) on an empty / invalid result."""
+    op = (op or "join").lower()
+    if op == "newbody":
+        if prev_tip_name and d.getObject(prev_tip_name) is not None:
+            body.Tip = d.getObject(prev_tip_name)
+        nb = _scratch_body_from_shape(d, tool_shape, "MirrorResult")
+        d.recompute()
+        if nb.Shape is None or nb.Shape.isNull() or not nb.Shape.isValid():
+            try:
+                d.removeObject(nb.Name)
+            except Exception:
+                pass
+            raise RpcError(APP_ERROR, what)
+        return nb
+    nb = _scratch_body_from_shape(d, tool_shape, "ToolBody")
+    boolean = body.newObject("PartDesign::Boolean", "Boolean")
+    boolean.Label = next_label(body, "PartDesign::Boolean")
+    boolean.Type = "Cut" if op == "cut" else "Common"
+    boolean.Group = [nb]
+    body.Tip = boolean
+    try:
+        boolean.touch()
+    except Exception:
+        pass
+    d.recompute(None, True, True)
+    shp = getattr(body, "Shape", None)
+    ok = shp is not None and not shp.isNull()
+    try:
+        ok = ok and shp.isValid() and shp.Volume > 1e-9
+        # a Cut / Common that changed nothing means the copies never touched the
+        # body - treat that as a no-op error, like extrude Cut does
+        if ok and prev_vol is not None and abs(shp.Volume - prev_vol) < 1e-6:
+            ok = False
+    except Exception:
+        ok = False
+    if not ok:
+        for child in list(getattr(nb, "Group", [])):
+            try:
+                d.removeObject(child.Name)
+            except Exception:
+                pass
+        for nm in (boolean.Name, nb.Name):
+            try:
+                if d.getObject(nm) is not None:
+                    d.removeObject(nm)
+            except Exception:
+                pass
+        if prev_tip_name and d.getObject(prev_tip_name) is not None:
+            body.Tip = d.getObject(prev_tip_name)
+        d.recompute()
+        raise RpcError(APP_ERROR, what)
+    return boolean
+
+
+def _finish_transform(d, body, feat, prev_tip_name, before_shape, operation, what):
+    """Common tail for Mirror / LinearPattern / PolarPattern. `feat` has been
+    _apply_transformed (fused) already. operation: join keeps it; cut / intersect
+    / newbody re-express the transform's net contribution against the body."""
+    op = (operation or "join").lower()
+    if op == "join":
+        build.finalize_or_rollback(d, body, feat, prev_tip_name, [], what,
+                                   check_made=True)
+        return
+    # the geometry the transform added = after - before
+    after = getattr(body, "Shape", None)
+    if after is None or after.isNull() or before_shape is None:
+        build.finalize_or_rollback(d, body, feat, prev_tip_name, [], what,
+                                   check_made=True)
+        return
+    try:
+        tool = after.cut(before_shape)
+    except Exception:
+        tool = None
+    # drop the additive transform, restore the pre-transform tip
+    try:
+        if prev_tip_name and d.getObject(prev_tip_name) is not None:
+            body.Tip = d.getObject(prev_tip_name)
+        d.removeObject(feat.Name)
+        d.recompute()
+    except Exception:
+        pass
+    if tool is None or tool.isNull() or getattr(tool, "Volume", 0.0) <= 1e-9:
+        raise RpcError(APP_ERROR,
+                       "that %s adds nothing where it can be %s - the copies do "
+                       "not overlap the body" % ("mirror" if "Mirror" in feat.TypeId
+                                                 else "pattern", op))
+    _apply_result_boolean(d, body, prev_tip_name, tool, op,
+                          "that %s produced no change - the copies do not "
+                          "overlap the body" % op,
+                          prev_vol=getattr(before_shape, "Volume", None))
+    d.recompute()
+
+
 @method("pattern.linear")
 def pattern_linear(direction=(1, 0, 0), count=3, spacing=20.0, directionRef=None,
-                   scope="body", refs=None):
+                   scope="body", refs=None, operation="join"):
     body = _require_body()
     _solid_tip(body)  # ensure there is a solid
     d = body.Document
     prev_tip_name = getattr(getattr(body, "Tip", None), "Name", None)
+    before = body.Shape.copy() if getattr(body, "Shape", None) is not None else None
     dir_tuple = _resolve_ref(d, body, directionRef) if directionRef else None  # before newObject
     originals = _transform_originals(body, scope, refs)
     p = body.newObject("PartDesign::LinearPattern", "LinearPattern")
@@ -961,10 +1091,9 @@ def pattern_linear(direction=(1, 0, 0), count=3, spacing=20.0, directionRef=None
     p.Length = float(spacing) * max(1, int(count) - 1)
     p.Occurrences = int(count)
     _apply_transformed(body, p)
-    build.finalize_or_rollback(
-        d, body, p, prev_tip_name, [],
-        "rectangular pattern produced an invalid shape - try fewer copies or a "
-        "different spacing / direction", check_made=True)
+    _finish_transform(d, body, p, prev_tip_name, before, operation,
+                      "rectangular pattern produced an invalid shape - try fewer "
+                      "copies or a different spacing / direction")
     return tree_get()
 
 
@@ -1030,11 +1159,13 @@ def _resolve_ref(d, body, ref):
 
 
 @method("feature.mirror")
-def feature_mirror(planeRef=None, plane="YZ", scope="body", refs=None):
+def feature_mirror(planeRef=None, plane="YZ", scope="body", refs=None,
+                   operation="join"):
     body = _require_body()
     _solid_tip(body)  # ensure there is a solid
     d = body.Document
     prev_tip_name = getattr(getattr(body, "Tip", None), "Name", None)
+    before = body.Shape.copy() if getattr(body, "Shape", None) is not None else None
     plane_tuple = _resolve_ref(d, body, planeRef) if planeRef else \
         (build.origin_plane(body, plane), [""])  # resolve before newObject
     originals = _transform_originals(body, scope, refs)
@@ -1043,10 +1174,9 @@ def feature_mirror(planeRef=None, plane="YZ", scope="body", refs=None):
     m.Originals = originals
     m.MirrorPlane = plane_tuple
     _apply_transformed(body, m)
-    build.finalize_or_rollback(
-        d, body, m, prev_tip_name, [],
-        "mirror produced an invalid shape - the mirror plane may cut through "
-        "the solid", check_made=True)
+    _finish_transform(d, body, m, prev_tip_name, before, operation,
+                      "mirror produced an invalid shape - the mirror plane may "
+                      "cut through the solid")
     return tree_get()
 
 
@@ -1354,6 +1484,9 @@ _TYPE_KIND = {
     "PartDesign::Thickness": "shell",
     "PartDesign::Draft": "draft",
     "PartDesign::Hole": "hole",
+    "PartDesign::Mirrored": "mirror",
+    "PartDesign::LinearPattern": "patternLinear",
+    "PartDesign::PolarPattern": "patternCircular",
 }
 
 
@@ -1394,6 +1527,36 @@ def _axis_ref(o):
         return {"kind": "sketch", "id": feat.Name, "sub": subs[0] if subs else None}
     b = feat.getParentGeoFeatureGroup() or feat
     return {"kind": "edge", "bodyId": getattr(b, "Name", ""), "sub": subs[0] if subs else ""}
+
+
+def _link_ref(link):
+    """A (obj,[sub]) attachment link (MirrorPlane / Axis / Direction) -> GeomRef."""
+    if not link:
+        return None
+    feat, subs = (link[0], list(link[1])) if isinstance(link, (tuple, list)) else (link, [])
+    if feat is None:
+        return None
+    role = getattr(feat, "Role", "")
+    if role:
+        return {"kind": "origin", "role": role}
+    tid = getattr(feat, "TypeId", "")
+    if tid in ("PartDesign::Plane", "PartDesign::Line", "PartDesign::Point"):
+        return {"kind": "plane", "id": feat.Name}
+    b = feat.getParentGeoFeatureGroup() or feat
+    sub = subs[0] if subs and subs[0] else ""
+    kind = "edge" if (sub or "").startswith("Edge") else "face" if (sub or "").startswith("Face") else "plane"
+    if kind == "plane":
+        return {"kind": "plane", "id": getattr(b, "Name", feat.Name)}
+    return {"kind": kind, "bodyId": getattr(b, "Name", ""), "sub": sub}
+
+
+def _transform_scope_of(body, o):
+    """A committed Mirror/Pattern -> ('Body', []) or ('Features', [ids])."""
+    orig = [getattr(x, "Name", "") for x in (getattr(o, "Originals", []) or [])]
+    whole = [f.Name for f in _body_solid_features(body)]
+    if set(orig) == set(whole):
+        return "Body", []
+    return "Features", orig
 
 
 def _set_feature_values(o, values):
@@ -1440,6 +1603,25 @@ def _set_feature_values(o, values):
     elif T == "PartDesign::Hole":
         num("Diameter", "diameter")
         num("Depth", "depth")
+    elif T == "PartDesign::LinearPattern":
+        if "count" in v:
+            try:
+                o.Occurrences = int(v["count"])
+            except Exception:
+                pass
+        if "spacing" in v and "count" in v:
+            try:
+                o.Length = float(v["spacing"]) * max(1, int(v["count"]) - 1)
+            except Exception:
+                pass
+    elif T == "PartDesign::PolarPattern":
+        if "count" in v:
+            try:
+                o.Occurrences = int(v["count"])
+            except Exception:
+                pass
+        num("Angle", "angle")
+    # PartDesign::Mirrored has only its plane (a ref, handled in _set_feature_refs)
 
 
 def _set_feature_refs(d, o, body, refs):
@@ -1470,6 +1652,27 @@ def _set_feature_refs(d, o, body, refs):
         subs = r.get("edges") or r.get("faces")
         if subs and getattr(o, "Base", None):
             o.Base = (o.Base[0], list(subs))
+    elif T in ("PartDesign::Mirrored", "PartDesign::LinearPattern",
+               "PartDesign::PolarPattern"):
+        pa = r.get("planeOrAxis") or r.get("axis")
+        if pa:
+            try:
+                link = _resolve_ref(d, body, pa)
+                if T == "PartDesign::Mirrored":
+                    o.MirrorPlane = link
+                elif T == "PartDesign::LinearPattern":
+                    o.Direction = link
+                else:
+                    o.Axis = link
+            except Exception:
+                pass
+        feats = r.get("features")
+        if feats:
+            picked = [d.getObject(x) for x in feats if d.getObject(x) is not None]
+            if picked:
+                o.Originals = picked
+        elif r.get("scope") == "Body":
+            o.Originals = _body_solid_features(body)
 
 
 @method("feature.get")
@@ -1511,6 +1714,25 @@ def feature_get(id):
     elif T == "PartDesign::Hole":
         values["diameter"] = _prop_value(o, "Diameter")
         values["depth"] = _prop_value(o, "Depth")
+    elif T in ("PartDesign::Mirrored", "PartDesign::LinearPattern",
+               "PartDesign::PolarPattern"):
+        body = o.getParentGeoFeatureGroup()
+        scope, feat_ids = _transform_scope_of(body, o) if body is not None else ("Body", [])
+        values["scope"] = scope
+        values["operation"] = "Join"  # cut/intersect/newbody land as a Boolean / new body, not this feature
+        if T == "PartDesign::Mirrored":
+            refs["planeOrAxis"] = _link_ref(getattr(o, "MirrorPlane", None))
+        elif T == "PartDesign::LinearPattern":
+            values["count"] = int(getattr(o, "Occurrences", 2) or 2)
+            occ = max(1, values["count"] - 1)
+            values["spacing"] = round(float(getattr(o, "Length", 0) or 0) / occ, 4)
+            refs["planeOrAxis"] = _link_ref(getattr(o, "Direction", None))
+        else:
+            values["count"] = int(getattr(o, "Occurrences", 2) or 2)
+            values["angle"] = _prop_value(o, "Angle")
+            refs["planeOrAxis"] = _link_ref(getattr(o, "Axis", None))
+        if feat_ids:
+            refs["features"] = feat_ids
     return {"id": id, "label": o.Label, "kind": kind,
             "values": values, "refs": refs, "exprs": session.feature_exprs(id)}
 
@@ -1535,6 +1757,11 @@ def feature_update(id, values=None, refs=None, exprs=None):
             session.set_feature_expr(id, prop, str(e))
         except Exception:
             pass
+    # Transformed features (Mirror / Pattern) only fold in with the dirty
+    # recompute dance
+    if o.TypeId in ("PartDesign::Mirrored", "PartDesign::LinearPattern",
+                    "PartDesign::PolarPattern") and body is not None:
+        _apply_transformed(body, o)
     build.finalize_or_rollback(
         d, body, o, prev_tip_name, [],
         "that change produced an invalid shape - revert it and try again")
@@ -2302,9 +2529,12 @@ def scene_get():
     # show/hide as pure view state and never round-trips the engine for it.
     suppressed = _suppressed_names(d)
     consumed_bodies = _boolean_consumed_bodies(d)
+    helper_shapes = _xform_helper_features(d)
     for o in d.Objects:
         if o.Name in suppressed:
             continue
+        if o.Name in helper_shapes:
+            continue  # Part::Feature that only seeds a FeatureBase - drawn by the body
         tid = o.TypeId
         if tid in ("PartDesign::Body", "App::Link", "Part::Feature", "Mesh::Feature",
                    "Part::FeaturePython"):

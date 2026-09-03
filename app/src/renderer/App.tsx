@@ -143,6 +143,12 @@ const transformScope = (
   return { scope: 'body', refs: [] }
 }
 
+// mirror / pattern "Operation" dropdown -> sidecar op string (matches extrude)
+const xformOp = (v: OpValues): 'join' | 'cut' | 'intersect' | 'newbody' =>
+  (({ Join: 'join', Cut: 'cut', Intersect: 'intersect', 'New body': 'newbody' }) as const)[
+    String(v.operation ?? 'Join') as 'Join' | 'Cut' | 'Intersect' | 'New body'
+  ] ?? 'join'
+
 export function App(): JSX.Element {
   const [status, setStatus] = useState<Status>({ phase: 'boot' })
   const [meshes, setMeshes] = useState<RenderMesh[]>([])
@@ -227,6 +233,8 @@ export function App(): JSX.Element {
   // the timeline's chip selection, mirrored up so Mirror / Pattern (Type =
   // Features) can transform exactly those features
   const [timelineSel, setTimelineSel] = useState<string[]>([])
+  const timelineSelRef = useRef<string[]>([])
+  timelineSelRef.current = timelineSel
   const [measureResult, setMeasureResult] = useState<MeasureResult | null>(null)
   const [section, setSection] = useState<SectionState | null>(null)
   const [canvases, setCanvases] = useState<CanvasDTO[]>([])
@@ -725,7 +733,7 @@ export function App(): JSX.Element {
 
   // current selection -> the ref shape feature.update / feature.editPreview want
   const buildEditRefs = useCallback(
-    (kind: OpKind): import('./rpc').FeatureEdit['refs'] => {
+    (kind: OpKind, v?: OpValues): import('./rpc').FeatureEdit['refs'] => {
       const refs: import('./rpc').FeatureEdit['refs'] = {}
       const sk = selection.find((s) => s.kind === 'sketch') as { sketchId: string } | undefined
       const fc = selection.filter((s) => s.kind === 'face') as Array<{ bodyId: string; sub: string }>
@@ -745,6 +753,16 @@ export function App(): JSX.Element {
         refs.edges = ed.map((e) => e.sub)
       } else if (kind === 'shell' || kind === 'draft') {
         refs.faces = fc.map((f) => f.sub)
+      } else if (kind === 'mirror' || kind === 'patternLinear' || kind === 'patternCircular') {
+        // plane / axis / direction pick: a datum-plane or an edge/face
+        if (pl?.role) refs.planeOrAxis = { kind: 'origin', role: pl.role }
+        else if (pl) refs.planeOrAxis = { kind: 'plane', id: pl.planeId }
+        else if (ed[0]) refs.planeOrAxis = { kind: 'edge', bodyId: ed[0].bodyId, sub: ed[0].sub }
+        else if (fc[0]) refs.planeOrAxis = { kind: 'face', bodyId: fc[0].bodyId, sub: fc[0].sub }
+        const scope = String(v?.scope ?? 'Body')
+        refs.scope = scope
+        if (scope === 'Features' && timelineSelRef.current.length)
+          refs.features = timelineSelRef.current.slice()
       }
       return refs
     },
@@ -855,7 +873,7 @@ export function App(): JSX.Element {
         setEditLabel(null)
         setOp(null)
         try {
-          await api.featureUpdate(edit.id, v, buildEditRefs(kind), exprs)
+          await api.featureUpdate(edit.id, v, buildEditRefs(kind, v), exprs)
         } finally {
           try {
             if (bodyId) await apiQuiet.rollTo(bodyId, null) // back to the tip
@@ -1095,7 +1113,8 @@ export function App(): JSX.Element {
               Number(v.spacing),
               dirRef,
               scope,
-              refs
+              refs,
+              xformOp(v)
             )
             break
           }
@@ -1105,7 +1124,15 @@ export function App(): JSX.Element {
               selection.filter((s) => s.kind !== 'face').map(selectionToRef).find(Boolean) ??
               selection.map(selectionToRef).find(Boolean) ??
               null
-            await api.patternCircular(Number(v.count), Number(v.angle), ref, 'XY', scope, refs)
+            await api.patternCircular(
+              Number(v.count),
+              Number(v.angle),
+              ref,
+              'XY',
+              scope,
+              refs,
+              xformOp(v)
+            )
             break
           }
           case 'mirror': {
@@ -1120,7 +1147,7 @@ export function App(): JSX.Element {
                 .find(Boolean) ??
               selection.map(selectionToRef).find(Boolean) ??
               null
-            await api.mirror(ref, 'YZ', scope, refs)
+            await api.mirror(ref, 'YZ', scope, refs, xformOp(v))
             break
           }
           case 'datumPlane': {
@@ -1382,7 +1409,7 @@ export function App(): JSX.Element {
                 const { mesh } = await apiQuiet.editPreview(
                   lp.editing,
                   args.v,
-                  buildEditRefs(args.kind)
+                  buildEditRefs(args.kind, args.v)
                 )
                 if (seq !== lp.seq) continue
                 setMeshes((ms) => {
@@ -1874,6 +1901,16 @@ export function App(): JSX.Element {
         } as Selection)
       if (r.axis?.kind === 'origin')
         sels.push({ kind: 'plane', planeId: '', role: r.axis.role } as Selection)
+      // mirror / pattern: the plane / axis / direction reference
+      const pa = r.planeOrAxis
+      if (pa?.kind === 'origin') sels.push({ kind: 'plane', planeId: '', role: pa.role } as Selection)
+      else if (pa?.kind === 'plane') sels.push({ kind: 'plane', planeId: pa.id } as Selection)
+      else if (pa?.kind === 'edge')
+        sels.push({ kind: 'edge', bodyId: pa.bodyId, sub: pa.sub, point: [0, 0, 0] } as Selection)
+      else if (pa?.kind === 'face')
+        sels.push({ kind: 'face', bodyId: pa.bodyId, sub: pa.sub, point: [0, 0, 0] } as Selection)
+      // seed the timeline chip selection so a Type=Features edit keeps its set
+      if (r.features?.length) setTimelineSel(r.features)
 
       editingFeatureRef.current = {
         id,
@@ -2184,13 +2221,22 @@ export function App(): JSX.Element {
   }, [])
 
   // ---- assemblies ----
+  // insert a component by path (no file dialog) - shared by the ribbon action
+  // and the E2E harness
+  const addComponentFile = useCallback(
+    async (p: string) => {
+      await api.assemblyCreate()
+      await api.assemblyAddComponent(p, basename(p).replace(/\.FCStd$/i, ''))
+      await refreshScene()
+    },
+    [refreshScene]
+  )
+
   const addComponent = useCallback(async () => {
     const p = await window.cad.openDialog()
     if (!p) return
-    await api.assemblyCreate()
-    await api.assemblyAddComponent(p, basename(p).replace(/\.FCStd$/i, ''))
-    await refreshScene()
-  }, [refreshScene])
+    await addComponentFile(p)
+  }, [addComponentFile])
 
   const groundComponent = useCallback(
     async (id: string) => {
@@ -2239,6 +2285,9 @@ export function App(): JSX.Element {
         setSelection([{ kind: 'face', bodyId, sub, point: [0, 0, 0] } as Selection]),
       selectSketch: (sketchId: string) => setSelection([{ kind: 'sketch', sketchId } as Selection]),
       clearSelection: () => setSelection([]),
+      // the timeline's feature-chip selection (Mirror / Pattern Type=Features)
+      selectFeatures: (ids: string[]) => setTimelineSel(ids ?? []),
+      addComponentFile: (p: string) => addComponentFile(p),
 
       // --- sketch ---
       beginSketch,
@@ -2278,6 +2327,17 @@ export function App(): JSX.Element {
         })),
         meshes: meshes.map((m) => ({ id: m.id, tris: Math.floor((m.positions?.length ?? 0) / 9) })),
         sketches: sketches.map((s) => s.id),
+        timelineSel,
+        assembly: asmTree?.assembly
+          ? {
+              components: (asmTree.components ?? []).map((c) => ({
+                id: c.id,
+                label: c.label,
+                grounded: !!c.grounded
+              })),
+              joints: (asmTree.joints ?? []).length
+            }
+          : null,
         canUndo,
         canRedo
       })
@@ -2299,6 +2359,7 @@ export function App(): JSX.Element {
     rollTo,
     onSelect,
     openOp,
+    addComponentFile,
     sketchSession,
     status.phase,
     busy,
@@ -2308,6 +2369,8 @@ export function App(): JSX.Element {
     bodies,
     meshes,
     sketches,
+    timelineSel,
+    asmTree,
     canUndo,
     canRedo
   ])

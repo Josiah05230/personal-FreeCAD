@@ -57,6 +57,16 @@ const SCOPE_FIELD: FieldSpec = {
   wide: true
 }
 
+// how the mirror / pattern result combines with the body (same set as extrude)
+const OPERATION_FIELD: FieldSpec = {
+  key: 'operation',
+  label: 'Operation',
+  type: 'select',
+  default: 'Join',
+  options: ['Join', 'Cut', 'Intersect', 'New body'],
+  wide: true
+}
+
 const SPECS: Record<OpKind, OpSpec> = {
   extrude: {
     title: 'Extrude',
@@ -165,9 +175,10 @@ const SPECS: Record<OpKind, OpSpec> = {
   patternCircular: {
     title: 'Circular Pattern',
     needs: 'axis',
-    hint: 'Type = Body patterns the whole solid. Features / Faces pattern only what you pick in the timeline / viewport. Also pick the axis.',
+    hint: 'Type = Body patterns the whole solid; Features / Faces only what you pick in the timeline / viewport. Operation combines the copies like an extrude. Also pick the axis.',
     fields: [
       SCOPE_FIELD,
+      OPERATION_FIELD,
       { key: 'count', label: 'Quantity', type: 'number', default: 4, min: 2, step: 1 },
       { key: 'angle', label: 'Total angle', type: 'number', default: 360, step: 15 }
     ]
@@ -231,9 +242,10 @@ const SPECS: Record<OpKind, OpSpec> = {
   patternLinear: {
     title: 'Rectangular Pattern',
     needs: 'axis',
-    hint: 'Type = Body patterns the whole solid; Features / Faces only what you pick. Direction: an edge, a sketch line, or a datum / origin axis.',
+    hint: 'Type = Body patterns the whole solid; Features / Faces only what you pick. Operation combines the copies like an extrude. Direction: an edge, a sketch line, or a datum / origin axis.',
     fields: [
       SCOPE_FIELD,
+      OPERATION_FIELD,
       { key: 'count', label: 'Quantity', type: 'number', default: 3, min: 2, step: 1 },
       { key: 'spacing', label: 'Spacing', type: 'number', default: 20, min: 0.01, step: 1 }
     ]
@@ -241,8 +253,8 @@ const SPECS: Record<OpKind, OpSpec> = {
   mirror: {
     title: 'Mirror',
     needs: 'plane',
-    hint: 'Type = Body mirrors the whole solid; Features / Faces mirror only what you pick in the timeline / viewport. Also pick the mirror plane (a datum / origin plane or a flat face).',
-    fields: [SCOPE_FIELD]
+    hint: 'Type = Body mirrors the whole solid; Features / Faces mirror only what you pick in the timeline / viewport. Operation combines the mirrored copy like an extrude. Also pick the mirror plane (a datum / origin plane or a flat face).',
+    fields: [SCOPE_FIELD, OPERATION_FIELD]
   },
   datumPlane: {
     title: 'Plane',

@@ -121,6 +121,12 @@ export interface FeatureEdit {
     edges?: string[]
     faces?: string[]
     axis?: GeomRef
+    /** mirror / pattern: the mirror plane / pattern axis / linear direction */
+    planeOrAxis?: GeomRef
+    /** mirror / pattern Type=Features: the feature ids to transform */
+    features?: string[]
+    /** mirror / pattern Type dropdown value ('Body' | 'Features' | 'Faces') */
+    scope?: string
   }
   exprs?: Record<string, string>
 }
@@ -493,7 +499,8 @@ export const api = {
     spacing: number,
     directionRef: GeomRef | null = null,
     scope: 'body' | 'features' | 'faces' = 'body',
-    refs: string[] = []
+    refs: string[] = [],
+    operation: 'join' | 'cut' | 'intersect' | 'newbody' = 'join'
   ) =>
     rpc<{ bodies: BodyTree[] }>('pattern.linear', {
       direction,
@@ -501,14 +508,23 @@ export const api = {
       spacing,
       directionRef,
       scope,
-      refs
+      refs,
+      operation
     }),
   mirror: (
     planeRef: GeomRef | null,
     plane = 'YZ',
     scope: 'body' | 'features' | 'faces' = 'body',
-    refs: string[] = []
-  ) => rpc<{ bodies: BodyTree[] }>('feature.mirror', { planeRef, plane, scope, refs }),
+    refs: string[] = [],
+    operation: 'join' | 'cut' | 'intersect' | 'newbody' = 'join'
+  ) =>
+    rpc<{ bodies: BodyTree[] }>('feature.mirror', {
+      planeRef,
+      plane,
+      scope,
+      refs,
+      operation
+    }),
   datumPlane: (
     baseRef: GeomRef | null,
     offset: number,
@@ -618,7 +634,8 @@ export const api = {
     axisRef: GeomRef | null,
     axisPlane = 'XY',
     scope: 'body' | 'features' | 'faces' = 'body',
-    refs: string[] = []
+    refs: string[] = [],
+    operation: 'join' | 'cut' | 'intersect' | 'newbody' = 'join'
   ) =>
     rpc<{ bodies: BodyTree[] }>('pattern.circular', {
       count,
@@ -626,7 +643,8 @@ export const api = {
       axisRef,
       axisPlane,
       scope,
-      refs
+      refs,
+      operation
     }),
 
   measure: (refs: { bodyId: string; sub: string }[]) =>
