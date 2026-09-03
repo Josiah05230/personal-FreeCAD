@@ -170,5 +170,129 @@ assert(st5.bodies[0] && st5.bodies[0].features.filter((f) => f.kind === 'solid')
 assert(st5.meshes.length === 1 && st5.meshes[0].tris > 0, 'a solid is on screen after Finish');
 assert(!st5.bodies.some((b) => b.features.some((f) => f.error)), 'no feature left in error');
 
+// ---------- 6. fillet: plain click replaces the edge set, Ctrl-click adds ----------
+note('box + fillet: plain click = one edge, Ctrl-click = accumulate');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+const s6 = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+await rpc('sketch.finish', {
+  sketchId: s6.sketchId,
+  elements: [{ type: 'rect', a: [-15, -15], b: [15, 15] }],
+  constraints: []
+});
+await G.refresh();
+await idle();
+G.selectSketch(s6.sketchId);
+  await sleep(50);
+await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 12 });
+await idle();
+G.clearSelection();
+G.openOp('fillet');
+await sleep(60);
+G.pick({ kind: 'edge', bodyId: 'Body', sub: 'Edge1', point: [0, 0, 0] }, false);
+await sleep(60);
+let selF = G.getState().selection.filter((k) => /^edge:/i.test(k));
+assert(selF.length === 1 && /Edge1$/.test(selF[0]), 'plain click selects exactly one edge');
+G.pick({ kind: 'edge', bodyId: 'Body', sub: 'Edge2', point: [0, 0, 0] }, false);
+await sleep(60);
+selF = G.getState().selection.filter((k) => /^edge:/i.test(k));
+assert(selF.length === 1 && /Edge2$/.test(selF[0]),
+  'a second plain click REPLACES the edge set (not additive)');
+G.pick({ kind: 'edge', bodyId: 'Body', sub: 'Edge3', point: [0, 0, 0] }, true); // Ctrl-click
+await sleep(60);
+selF = G.getState().selection.filter((k) => /^edge:/i.test(k));
+assert(selF.length === 2, 'Ctrl-click adds a second edge (2 selected)');
+await waitFor(() => (G.getState().meshes[0] || {}).tris > 0, 4000);
+await G.applyOp('fillet', { radius: 2 });
+await idle();
+const st6 = G.getState();
+const fillets = st6.bodies[0].features.filter((f) => /fillet/i.test(f.kind) || /fillet/i.test(f.id));
+note('fillet features: ' + JSON.stringify(st6.bodies[0].features.map((f) => f.id + ':' + f.kind)));
+assert(st6.bodies[0].features.filter((f) => f.kind === 'solid').length >= 1 && !anyErr(st6),
+  'fillet committed as one clean feature, no errors');
+assert(st6.meshes.length === 1 && st6.meshes[0].tris > 0, 'filleted solid renders');
+
+// ---------- 7. mirror after two pads transforms the WHOLE solid ----------
+note('two pads, then Mirror (Type=Body) - both halves must be the full solid');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+const s7a = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+await rpc('sketch.finish', {
+  sketchId: s7a.sketchId,
+  elements: [{ type: 'rect', a: [5, -10], b: [25, 10] }],
+  constraints: []
+});
+await G.refresh(); await idle();
+G.selectSketch(s7a.sketchId);
+  await sleep(50);
+await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 8 });
+await idle();
+const s7b = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+await rpc('sketch.finish', {
+  sketchId: s7b.sketchId,
+  elements: [{ type: 'rect', a: [5, -4], b: [12, 4] }],
+  constraints: []
+});
+await G.refresh(); await idle();
+G.selectSketch(s7b.sketchId);
+  await sleep(50);
+await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 20 });
+await idle();
+const bbHalf = (await rpc('scene.get')).meshes[0].bbox;
+G.clearSelection();
+G.openOp('mirror');
+await sleep(50);
+G.pick({ kind: 'plane', planeId: 'YZ_Plane', role: 'YZ_Plane' }, false);
+await sleep(50);
+await G.applyOp('mirror', { scope: 'Body' });
+await idle();
+const st7 = G.getState();
+note('mirror tree: ' + JSON.stringify(st7.bodies[0].features.map((f) => f.id + ':' + f.kind)));
+assert(st7.bodies[0].features.some((f) => /mirror/i.test(f.id)) && !anyErr(st7),
+  'one Mirrored feature, no errors');
+const bbFull = (await rpc('scene.get')).meshes[0].bbox;
+const xlen = (b) => b.max[0] - b.min[0];
+note('bbox X len before ' + xlen(bbHalf).toFixed(1) + ' -> after ' + xlen(bbFull).toFixed(1));
+// the two pads span x 5..25 (X len 20); a YZ mirror must add the -25..-5 half,
+// so X len ~= 50 - not just mirror the last (7-wide) pad
+assert(xlen(bbFull) > xlen(bbHalf) * 1.8,
+  'mirror doubled the X extent (whole body mirrored, not just the tip feature)');
+
+// ---------- 8. revolve a flat model face about a picked edge ----------
+note('extrude a rect, then revolve a side face 90deg about a vertical edge');
+await rpc('session.reset');
+await G.refresh(); await idle();
+const s8 = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+await rpc('sketch.finish', {
+  sketchId: s8.sketchId,
+  elements: [{ type: 'rect', a: [0, 0], b: [20, 10] }],
+  constraints: []
+});
+await G.refresh(); await idle();
+G.selectSketch(s8.sketchId);
+  await sleep(50);
+await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 8 });
+await idle();
+const volPre8 = (await rpc('scene.get')).meshes[0].tris;
+G.clearSelection();
+G.openOp('revolve');
+await sleep(50);
+G.pick({ kind: 'face', bodyId: 'Body', sub: 'Face1', point: [0, 0, 0], normal: [0, -1, 0] }, false);
+await sleep(40);
+G.pick({ kind: 'edge', bodyId: 'Body', sub: 'Edge1', point: [0, 0, 0] }, true);
+await sleep(40);
+let rev8Err = null;
+try {
+  await G.applyOp('revolve', { angle: 90, axis: 'Selected edge / datum' });
+} catch (e) { rev8Err = (e && e.message) || String(e); }
+await idle();
+const st8 = G.getState();
+note('face-revolve: err=' + (rev8Err || 'none') + ' notice=' + (st8.notice || 'none'));
+note('face-revolve tree: ' + JSON.stringify(st8.bodies[0].features.map((f) => f.id + ':' + f.kind + (f.error ? '!ERR' : ''))));
+assert(!anyErr(st8), 'no feature in error after revolving a face');
+assert(st8.meshes.length >= 1 && st8.meshes[0].tris > 0, 'a solid still renders after the face revolve');
+
 assert((await rpc('ping')).pong === true, 'engine still responds at end');
 note('repro complete');

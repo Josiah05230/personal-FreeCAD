@@ -37,12 +37,21 @@ the seed + step + trace tail to replay.
   local relaxation solver, manual constraints + a Dimension tool (unit
   expressions), construction toggle, over-dimension veto, per-action undo.
   Reopen restores geometry + constraints.
-- Features: Extrude, Revolve (each on a sketch OR a flat model face - revolve
-  needs an axis pick), Loft, Sweep, Fillet, Chamfer, Shell, Hole
+- Features: Extrude (Join / Cut / Intersect / New body), Revolve (each on a
+  sketch OR a flat model face; an Axis dropdown - sketch V/H, X/Y/Z, or a
+  selected edge / datum), Loft, Sweep, Fillet, Chamfer, Shell, Hole
   (counterbore / countersink), Draft, Combine, Rectangular + Circular Pattern,
-  Mirror, Rib (real or offset-wire fallback), Offset Plane / Axis / Point.
-  All references come from viewport / browser selection - no geometry
-  dropdowns.
+  Mirror (each with a Type = Body / Features / Faces scope), Rib (real or
+  offset-wire fallback), Offset Plane / Axis / Point. All references come from
+  viewport / browser / timeline selection - no geometry dropdowns.
+- Extrude Cut auto-corrects its direction (flips Reversed if the first attempt
+  removes nothing) and rejects a profile that never meets the solid.
+- Mirror / Pattern transform the whole solid by default (every feature up to the
+  tip), not just the last one; Type = Features acts on the timeline chip
+  selection, Type = Faces on the features owning the selected faces.
+- Fillet / chamfer / shell / draft / hole: plain viewport click replaces the
+  edge/face set, Ctrl / Shift / Cmd-click adds one; the preview updates in place
+  (feature.previewSetBase) as the set changes instead of rebuilding.
 - **Editable features**: double-click (or "Edit Feature…") reopens the op
   dialog pre-filled; values AND references editable, live-previewed against
   just that feature, applied in place. Timeline rolls to the feature while
@@ -75,6 +84,21 @@ the seed + step + trace tail to replay.
 
 ## Recent notable changes
 
+- Mirror / Pattern were transforming only the tip feature (Originals=[tip]) - the
+  '46mm vs 30mm' mirror. Now Originals is the whole solid-feature chain, with a
+  Body / Features / Faces scope (`_transform_originals`, Timeline
+  `onSelectFeatures`).
+- Revolving a model face silently no-op'd ('The graph must be a DAG.') because
+  the axis ref resolved through `body.Tip` after it had advanced to the
+  half-built Revolution. Refs for revolve / mirror / pattern are now resolved
+  before `body.newObject`, and `finalize_or_rollback(check_made=True)` fails a
+  feature that produced no shape.
+- Extrude gained Intersect (scratch body + PartDesign::Boolean Common, filtered
+  from the tree via `_boolean_consumed_bodies`); Cut flips direction if it
+  removes nothing and errors if the profile never meets the solid.
+- Dress-up preview updates its Base in place (`feature.previewSetBase`) instead
+  of drain + rebuild; the dialog live-preview effect de-dupes identical fires
+  (extrude Blind-mode flicker).
 - Sidecar HTTP server is threaded with one dedicated engine worker - overlapping
   requests no longer stall seconds behind an idle keep-alive socket (boot scene
   refresh ~8s -> ~0.15s).

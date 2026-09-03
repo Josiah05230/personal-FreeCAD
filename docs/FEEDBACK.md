@@ -9,16 +9,16 @@ clear it as you go.
 
 - [~] Live feature preview: in-place fast path (`feature.previewUpdate`, one
       body re-meshed, ~10ms, debounce 130ms). Editing an existing feature
-      previews via `feature.editPreview` (recomputes only that feature).
-      Still on the slow full-rebuild path: rib, extrude "To object", pattern /
-      mirror / combine. No "committed vs preview" visual tell. Next lever if
-      still not instant: a client-side predictive mesh (no engine round-trip).
+      previews via `feature.editPreview`; a dress-up edge/face set change goes
+      through `feature.previewSetBase` in place. Still on the slow full-rebuild
+      path: rib, extrude "To object", extrude Intersect, pattern / mirror /
+      combine. No "committed vs preview" visual tell.
 - [~] Press-pull a model face (extrude / revolve with no sketch): works for one
       FLAT face + (revolve) an axis. NOT yet: selecting several faces and
       pulling them together.
 - [~] Edit feature: Pad / Revolution / Fillet / Chamfer / Shell / Draft / Hole
       reopen their real dialog with values + refs editable. Patterns / mirror /
-      datums still fall back to the one-number "Edit Value…" prompt.
+      combine / datums still fall back to the one-number "Edit Value…" prompt.
 - [~] Sheet metal: Base Flange only. Richer flange / unfold / bend deferred.
 - [~] Draggable dimension labels: the nudge is client-side and resets on sketch
       reopen. Persist it in the recorded constraint.
@@ -37,6 +37,28 @@ clear it as you go.
 
 ## Recently addressed (this session)
 
+- **Mirror / Pattern transform the whole solid + a Type scope.** They set
+  `Originals=[tip]`, so only the last feature was mirrored/patterned (the
+  "46mm vs 30mm" mirror). Now the default is the whole solid-feature chain,
+  with Type = Body / Features (timeline chips) / Faces (features owning the
+  picked faces). Refs resolve before `body.newObject` and the build runs
+  through `finalize_or_rollback`.
+- **Revolving a model face did nothing** ("The graph must be a DAG.", null
+  shape, RPC still OK) - the axis ref resolved through `body.Tip` after it had
+  advanced to the half-built Revolution -> self-reference. Resolve the axis
+  first; a face revolve that produces no shape now raises.
+- **Revolve axis is pickable for a sketch too.** New Axis dropdown (sketch
+  V/H, X/Y/Z, or a selected edge / datum); the live preview honours it (it
+  used to hard-code null whenever a sketch was selected).
+- **Extrude Cut removes material reliably** (flips Reversed if the first pass
+  cuts into empty space; errors if the profile never meets the solid), and
+  **Extrude Intersect** is a new operation (scratch body + Boolean Common).
+- **Dress-up multi-select.** Plain click replaces the edge/face set,
+  Ctrl/Shift/Cmd-click adds one; the preview updates its Base in place
+  (`feature.previewSetBase`) instead of tearing down and rebuilding, so adding
+  a fillet edge no longer makes the preview blink away.
+- **Extrude preview flicker in Blind mode** - the dialog live-preview effect
+  now de-dupes identical (kind, values, selection) fires.
 - **Editable features.** Double-click any feature chip -> its operation dialog
   reopens pre-filled; values AND references (profile / edges / faces / axis)
   are editable and applied in place (`feature.get` / `feature.update` /
