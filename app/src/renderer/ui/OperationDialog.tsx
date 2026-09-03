@@ -45,6 +45,18 @@ interface OpSpec {
   hint?: string
 }
 
+// Mirror / Pattern "what do I act on": the whole body (default), only the
+// feature chips selected in the timeline, or only the features owning the
+// selected faces.
+const SCOPE_FIELD: FieldSpec = {
+  key: 'scope',
+  label: 'Type',
+  type: 'select',
+  default: 'Body',
+  options: ['Body', 'Features', 'Faces'],
+  wide: true
+}
+
 const SPECS: Record<OpKind, OpSpec> = {
   extrude: {
     title: 'Extrude',
@@ -153,7 +165,9 @@ const SPECS: Record<OpKind, OpSpec> = {
   patternCircular: {
     title: 'Circular Pattern',
     needs: 'axis',
+    hint: 'Type = Body patterns the whole solid. Features / Faces pattern only what you pick in the timeline / viewport. Also pick the axis.',
     fields: [
+      SCOPE_FIELD,
       { key: 'count', label: 'Quantity', type: 'number', default: 4, min: 2, step: 1 },
       { key: 'angle', label: 'Total angle', type: 'number', default: 360, step: 15 }
     ]
@@ -217,8 +231,9 @@ const SPECS: Record<OpKind, OpSpec> = {
   patternLinear: {
     title: 'Rectangular Pattern',
     needs: 'axis',
-    hint: 'Direction: an edge, a sketch line, or a datum / origin axis',
+    hint: 'Type = Body patterns the whole solid; Features / Faces only what you pick. Direction: an edge, a sketch line, or a datum / origin axis.',
     fields: [
+      SCOPE_FIELD,
       { key: 'count', label: 'Quantity', type: 'number', default: 3, min: 2, step: 1 },
       { key: 'spacing', label: 'Spacing', type: 'number', default: 20, min: 0.01, step: 1 }
     ]
@@ -226,8 +241,8 @@ const SPECS: Record<OpKind, OpSpec> = {
   mirror: {
     title: 'Mirror',
     needs: 'plane',
-    hint: 'Select the mirror plane (a datum / origin plane or a flat face). The whole body is mirrored and joined.',
-    fields: []
+    hint: 'Type = Body mirrors the whole solid; Features / Faces mirror only what you pick in the timeline / viewport. Also pick the mirror plane (a datum / origin plane or a flat face).',
+    fields: [SCOPE_FIELD]
   },
   datumPlane: {
     title: 'Plane',

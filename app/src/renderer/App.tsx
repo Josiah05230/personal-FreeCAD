@@ -129,6 +129,20 @@ const revolveAxisRef = (
   }
 }
 
+// Mirror / Pattern "Type" dropdown -> the (scope, refs) the sidecar wants.
+// Features -> the timeline chip selection; Faces -> the selected face subnames;
+// anything else (or an empty pick) -> the whole body.
+const transformScope = (
+  v: OpValues,
+  faces: Array<{ sub: string }>,
+  timelineSel: string[]
+): { scope: 'body' | 'features' | 'faces'; refs: string[] } => {
+  const t = String(v.scope ?? 'Body')
+  if (t === 'Features' && timelineSel.length) return { scope: 'features', refs: timelineSel }
+  if (t === 'Faces' && faces.length) return { scope: 'faces', refs: faces.map((f) => f.sub) }
+  return { scope: 'body', refs: [] }
+}
+
 export function App(): JSX.Element {
   const [status, setStatus] = useState<Status>({ phase: 'boot' })
   const [meshes, setMeshes] = useState<RenderMesh[]>([])
@@ -210,6 +224,9 @@ export function App(): JSX.Element {
   const [pickPlanes, setPickPlanes] = useState<PickPlane[]>([])
 
   const [measureMode, setMeasureMode] = useState(false)
+  // the timeline's chip selection, mirrored up so Mirror / Pattern (Type =
+  // Features) can transform exactly those features
+  const [timelineSel, setTimelineSel] = useState<string[]>([])
   const [measureResult, setMeasureResult] = useState<MeasureResult | null>(null)
   const [section, setSection] = useState<SectionState | null>(null)
   const [canvases, setCanvases] = useState<CanvasDTO[]>([])
@@ -1052,18 +1069,44 @@ export function App(): JSX.Element {
             break
           }
           case 'patternLinear': {
-            const dirRef = selection.map(selectionToRef).find(Boolean) ?? null
-            await api.patternLinear([1, 0, 0], Number(v.count), Number(v.spacing), dirRef)
+            const { scope, refs } = transformScope(v, faces, timelineSel)
+            // the direction pick is anything that is not one of the scope faces
+            const dirRef =
+              selection.filter((s) => s.kind !== 'face').map(selectionToRef).find(Boolean) ??
+              selection.map(selectionToRef).find(Boolean) ??
+              null
+            await api.patternLinear(
+              [1, 0, 0],
+              Number(v.count),
+              Number(v.spacing),
+              dirRef,
+              scope,
+              refs
+            )
             break
           }
           case 'patternCircular': {
-            const ref = selection.map(selectionToRef).find(Boolean) ?? null
-            await api.patternCircular(Number(v.count), Number(v.angle), ref)
+            const { scope, refs } = transformScope(v, faces, timelineSel)
+            const ref =
+              selection.filter((s) => s.kind !== 'face').map(selectionToRef).find(Boolean) ??
+              selection.map(selectionToRef).find(Boolean) ??
+              null
+            await api.patternCircular(Number(v.count), Number(v.angle), ref, 'XY', scope, refs)
             break
           }
           case 'mirror': {
-            const ref = selection.map(selectionToRef).find(Boolean) ?? null
-            await api.mirror(ref)
+            const { scope, refs } = transformScope(v, faces, timelineSel)
+            // mirror plane: a datum / origin plane, or a flat face that is NOT
+            // one of the scope faces
+            const scopeFaceSubs = new Set(scope === 'faces' ? refs : [])
+            const ref =
+              selection
+                .filter((s) => s.kind !== 'face' || !scopeFaceSubs.has((s as { sub: string }).sub))
+                .map(selectionToRef)
+                .find(Boolean) ??
+              selection.map(selectionToRef).find(Boolean) ??
+              null
+            await api.mirror(ref, 'YZ', scope, refs)
             break
           }
           case 'datumPlane': {
@@ -2778,7 +2821,8 @@ export function App(): JSX.Element {
                       onDelete: deleteFeature,
                       onDeleteMany: (ids) => void deleteFeaturesMany(ids),
                       onSuppress: (id, s) => void suppressFeature(id, s),
-                      onSuppressMany: (ids, s) => void suppressFeaturesMany(ids, s)
+                      onSuppressMany: (ids, s) => void suppressFeaturesMany(ids, s),
+                      onSelectFeatures: setTimelineSel
                     }}
                   />
                 </>

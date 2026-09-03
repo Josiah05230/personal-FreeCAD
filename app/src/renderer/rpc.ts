@@ -487,10 +487,24 @@ export const api = {
     direction: number[],
     count: number,
     spacing: number,
-    directionRef: GeomRef | null = null
-  ) => rpc<{ bodies: BodyTree[] }>('pattern.linear', { direction, count, spacing, directionRef }),
-  mirror: (planeRef: GeomRef | null, plane = 'YZ') =>
-    rpc<{ bodies: BodyTree[] }>('feature.mirror', { planeRef, plane }),
+    directionRef: GeomRef | null = null,
+    scope: 'body' | 'features' | 'faces' = 'body',
+    refs: string[] = []
+  ) =>
+    rpc<{ bodies: BodyTree[] }>('pattern.linear', {
+      direction,
+      count,
+      spacing,
+      directionRef,
+      scope,
+      refs
+    }),
+  mirror: (
+    planeRef: GeomRef | null,
+    plane = 'YZ',
+    scope: 'body' | 'features' | 'faces' = 'body',
+    refs: string[] = []
+  ) => rpc<{ bodies: BodyTree[] }>('feature.mirror', { planeRef, plane, scope, refs }),
   datumPlane: (
     baseRef: GeomRef | null,
     offset: number,
@@ -594,8 +608,22 @@ export const api = {
     rpc<{ bodies: BodyTree[] }>('surface.offset', { refs, distance }),
   sheetBaseFlange: (sketchId: string, thickness: number) =>
     rpc<{ bodies: BodyTree[] }>('sheet.baseFlange', { sketchId, thickness }),
-  patternCircular: (count: number, angle: number, axisRef: GeomRef | null, axisPlane = 'XY') =>
-    rpc<{ bodies: BodyTree[] }>('pattern.circular', { count, angle, axisRef, axisPlane }),
+  patternCircular: (
+    count: number,
+    angle: number,
+    axisRef: GeomRef | null,
+    axisPlane = 'XY',
+    scope: 'body' | 'features' | 'faces' = 'body',
+    refs: string[] = []
+  ) =>
+    rpc<{ bodies: BodyTree[] }>('pattern.circular', {
+      count,
+      angle,
+      axisRef,
+      axisPlane,
+      scope,
+      refs
+    }),
 
   measure: (refs: { bodyId: string; sub: string }[]) =>
     rpc<MeasureResult>('measure.compute', { refs }),

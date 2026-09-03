@@ -632,15 +632,19 @@ def feature_combine(op="Fuse", baseBodyId=None, toolBodyIds=None, keepTools=Fals
 
 
 @method("pattern.circular")
-def pattern_circular(count=4, angle=360.0, axisRef=None, axisPlane="XY"):
+def pattern_circular(count=4, angle=360.0, axisRef=None, axisPlane="XY",
+                     scope="body", refs=None):
     body = _require_body()
-    tip = _solid_tip(body)
+    _solid_tip(body)  # ensure there is a solid
     d = body.Document
+    prev_tip_name = getattr(getattr(body, "Tip", None), "Name", None)
+    axis_tuple = _resolve_ref(d, body, axisRef) if axisRef else None  # resolve before newObject
+    originals = _transform_originals(body, scope, refs)
     p = body.newObject("PartDesign::PolarPattern", "PolarPattern")
     p.Label = next_label(body, "PartDesign::PolarPattern")
-    p.Originals = [tip]
-    if axisRef:
-        p.Axis = _resolve_ref(d, body, axisRef)
+    p.Originals = originals
+    if axis_tuple is not None:
+        p.Axis = axis_tuple
     else:
         role = {"XY": "Z_Axis", "XZ": "Y_Axis", "YZ": "X_Axis"}.get(axisPlane.upper(), "Z_Axis")
         for f in body.Origin.OriginFeatures:
@@ -650,8 +654,10 @@ def pattern_circular(count=4, angle=360.0, axisRef=None, axisPlane="XY"):
     p.Angle = float(angle)
     p.Occurrences = int(count)
     _apply_transformed(body, p)
-    if not body.Shape.isValid():
-        raise RpcError(APP_ERROR, "circular pattern produced an invalid shape")
+    build.finalize_or_rollback(
+        d, body, p, prev_tip_name, [],
+        "circular pattern produced an invalid shape - try fewer copies or a "
+        "different axis", check_made=True)
     return tree_get()
 
 
@@ -865,16 +871,86 @@ def _apply_transformed(body, feat):
     d.recompute(None, True, True)
 
 
-@method("pattern.linear")
-def pattern_linear(direction=(1, 0, 0), count=3, spacing=20.0, directionRef=None):
-    body = _require_body()
-    tip = _solid_tip(body)
+_TRANSFORM_SOLID_TYPES = (
+    "PartDesign::Pad", "PartDesign::Pocket",
+    "PartDesign::Revolution", "PartDesign::Groove",
+    "PartDesign::AdditivePipe", "PartDesign::SubtractivePipe",
+    "PartDesign::AdditiveLoft", "PartDesign::SubtractiveLoft",
+    "PartDesign::Hole",
+)
+
+
+def _body_solid_features(body):
+    """Every additive/subtractive solid feature in the body up to the Tip - the
+    Originals a Mirror / Pattern needs to transform the WHOLE solid rather than
+    just the last feature (which is what Originals=[tip] gives you)."""
+    tip = getattr(body, "Tip", None)
+    out = []
+    for f in body.Group:
+        if f.TypeId in _TRANSFORM_SOLID_TYPES:
+            out.append(f)
+        if tip is not None and f is tip:
+            break
+    return out
+
+
+def _features_for_faces(body, subs):
+    """The solid features that produced the named Tip.Shape faces (most-recent
+    first, dedup). Falls back to the whole chain when a face can't be traced."""
+    chain = _body_solid_features(body)
+    tip = getattr(body, "Tip", None)
+    tshape = getattr(tip, "Shape", None)
+    if tshape is None or tshape.isNull() or not subs:
+        return chain
+    targets = []
+    for sub in subs:
+        try:
+            fc = tshape.getElement(sub)
+            targets.append((fc.CenterOfMass, fc.Area))
+        except Exception:
+            pass
+    hits = []
+    for f in reversed(chain):
+        fs = getattr(f, "Shape", None)
+        if fs is None or fs.isNull():
+            continue
+        for com, area in targets:
+            for ff in fs.Faces:
+                if abs(ff.Area - area) < 1e-6 and ff.CenterOfMass.distanceToPoint(com) < 1e-6:
+                    if f not in hits:
+                        hits.append(f)
+                    break
+    return hits or chain
+
+
+def _transform_originals(body, scope, refs):
+    """Resolve a Mirror / Pattern scope ('body' | 'features' | 'faces') + refs
+    (feature ids or face subnames) to the Originals list. Empty -> whole body."""
+    scope = (scope or "body").lower()
     d = body.Document
+    if scope == "features" and refs:
+        want = set(refs)
+        picked = [f for f in _body_solid_features(body) if f.Name in want]
+        return picked or _body_solid_features(body)
+    if scope == "faces" and refs:
+        return _features_for_faces(body, list(refs))
+    return _body_solid_features(body)
+
+
+@method("pattern.linear")
+def pattern_linear(direction=(1, 0, 0), count=3, spacing=20.0, directionRef=None,
+                   scope="body", refs=None):
+    body = _require_body()
+    _solid_tip(body)  # ensure there is a solid
+    d = body.Document
+    prev_tip_name = getattr(getattr(body, "Tip", None), "Name", None)
+    dir_tuple = _resolve_ref(d, body, directionRef) if directionRef else None  # before newObject
+    originals = _transform_originals(body, scope, refs)
     p = body.newObject("PartDesign::LinearPattern", "LinearPattern")
     p.Label = next_label(body, "PartDesign::LinearPattern")
-    p.Originals = [tip]
-    if directionRef:
-        p.Direction = _resolve_ref(d, body, directionRef)
+    p.Originals = originals
+    if dir_tuple is not None:
+        p.Direction = dir_tuple
     else:
         role = {(1, 0, 0): "X_Axis", (0, 1, 0): "Y_Axis", (0, 0, 1): "Z_Axis"}.get(
             tuple(direction), "X_Axis")
@@ -885,8 +961,10 @@ def pattern_linear(direction=(1, 0, 0), count=3, spacing=20.0, directionRef=None
     p.Length = float(spacing) * max(1, int(count) - 1)
     p.Occurrences = int(count)
     _apply_transformed(body, p)
-    if not body.Shape.isValid():
-        raise RpcError(APP_ERROR, "rectangular pattern produced an invalid shape")
+    build.finalize_or_rollback(
+        d, body, p, prev_tip_name, [],
+        "rectangular pattern produced an invalid shape - try fewer copies or a "
+        "different spacing / direction", check_made=True)
     return tree_get()
 
 
@@ -952,20 +1030,23 @@ def _resolve_ref(d, body, ref):
 
 
 @method("feature.mirror")
-def feature_mirror(planeRef=None, plane="YZ"):
+def feature_mirror(planeRef=None, plane="YZ", scope="body", refs=None):
     body = _require_body()
-    tip = _solid_tip(body)
+    _solid_tip(body)  # ensure there is a solid
     d = body.Document
+    prev_tip_name = getattr(getattr(body, "Tip", None), "Name", None)
+    plane_tuple = _resolve_ref(d, body, planeRef) if planeRef else \
+        (build.origin_plane(body, plane), [""])  # resolve before newObject
+    originals = _transform_originals(body, scope, refs)
     m = body.newObject("PartDesign::Mirrored", "Mirrored")
     m.Label = next_label(body, "PartDesign::Mirrored")
-    m.Originals = [tip]
-    if planeRef:
-        m.MirrorPlane = _resolve_ref(d, body, planeRef)
-    else:
-        m.MirrorPlane = (build.origin_plane(body, plane), [""])
+    m.Originals = originals
+    m.MirrorPlane = plane_tuple
     _apply_transformed(body, m)
-    if not body.Shape.isValid():
-        raise RpcError(APP_ERROR, "mirror produced an invalid shape")
+    build.finalize_or_rollback(
+        d, body, m, prev_tip_name, [],
+        "mirror produced an invalid shape - the mirror plane may cut through "
+        "the solid", check_made=True)
     return tree_get()
 
 

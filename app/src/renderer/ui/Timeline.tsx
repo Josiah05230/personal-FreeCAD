@@ -19,6 +19,9 @@ export interface TimelineHandlers {
   onDeleteMany: (featureIds: string[]) => void
   onSuppress: (featureId: string, suppressed: boolean) => void
   onSuppressMany: (featureIds: string[], suppressed: boolean) => void
+  /** the timeline's own chip selection, surfaced so ops like Mirror /
+   * Pattern (Type = Features) can act on exactly those features */
+  onSelectFeatures?: (featureIds: string[]) => void
 }
 
 const CHIP_W = 54 // keep in sync with .tl-chip min-width + gap
@@ -75,6 +78,12 @@ export function Timeline({
     () => feats.filter((f) => selected.has(f.id)).map((f) => f.id),
     [feats, selected]
   )
+
+  // surface the chip selection so Mirror / Pattern (Type = Features) can use it
+  const onSelectFeatures = handlers.onSelectFeatures
+  useEffect(() => {
+    onSelectFeatures?.(selectedList)
+  }, [selectedList, onSelectFeatures])
 
   const rollToIndex = (idx: number): void => {
     const clamped = Math.max(0, Math.min(idx, feats.length - 1))
