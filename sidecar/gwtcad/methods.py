@@ -144,6 +144,39 @@ def _solid_tip(body):
     return tip
 
 
+def _ensure_body_tip(d, body):
+    """After removing / re-pointing a feature, body.Tip can be left dangling or
+    on a non-solid - body.Shape then goes null and the viewport blanks. Snap Tip
+    to the last remaining solid feature (or None for an empty body)."""
+    if body is None or body.TypeId != "PartDesign::Body":
+        return
+    tip = getattr(body, "Tip", None)
+    live = tip is not None and d.getObject(getattr(tip, "Name", "") or "") is not None
+    if live:
+        try:
+            if _kind(tip.TypeId) == "solid":
+                return
+        except Exception:
+            pass
+    last_solid = None
+    for f in body.Group:
+        if f.TypeId == "App::Origin":
+            continue
+        try:
+            if _kind(f.TypeId) == "solid":
+                last_solid = f
+        except Exception:
+            pass
+    try:
+        body.Tip = last_solid
+    except Exception:
+        pass
+    # a normal delete never means "rolled back to empty" - only history.rollTo
+    # sets that. If solids remain, make sure the flag is not stuck on.
+    if last_solid is not None:
+        session.set_rolled_empty(body.Name, False)
+
+
 @method("primitive.box")
 def primitive_box(width=40.0, depth=40.0, height=40.0, name=None):
     d = session.doc()
@@ -2540,9 +2573,11 @@ def feature_rename(id, label):
 @method("feature.delete")
 def feature_delete(id):
     d, o = _obj(id)
+    body = o.getParentGeoFeatureGroup()
     d.removeObject(o.Name)
     d.recompute()
     build.gc_profile_copies(d)  # sweep hidden sketch copies this freed
+    _ensure_body_tip(d, body)   # deleting the tip must not leave Tip dangling
     d.recompute()
     return {"deleted": id}
 
