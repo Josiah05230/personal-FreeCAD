@@ -89,6 +89,10 @@ const opSelKinds = (k: OpKind | null): SelKind[] | null => {
       return ['face', 'plane']
     case 'hole':
       return ['face', 'edge']
+    case 'datumPlane':
+    case 'datumAxis':
+    case 'datumPoint':
+      return ['face', 'edge', 'vertex', 'plane'] // any geometry - the sidecar picks the mode
     default:
       return null
   }
@@ -394,17 +398,20 @@ export function App(): JSX.Element {
       if (!activeFilter.includes(sel.kind as SelKind)) return // selection filter (narrowed while an op dialog is open)
       // A feature dialog is open. For ops with a SKETCH PROFILE (extrude /
       // revolve / loft) a plain click must not wipe that profile, so force
-      // additive - cancel the dialog to start over. For edge/face ops (fillet,
-      // chamfer, shell, draft, hole) do the opposite the user expects: a plain
-      // click REPLACES the edge/face set (so a stray pick is easy to undo) and
-      // Ctrl / Shift / Cmd-click adds or removes one.
-      const dressUp =
+      // additive - cancel the dialog to start over. For reference-picking ops
+      // (fillet, chamfer, shell, draft, hole, and the datum tools) do what the
+      // user expects: a plain click REPLACES the reference set (so a stray pick
+      // is easy to undo) and Ctrl / Shift / Cmd-click adds or removes one.
+      const refPickOp =
         opRef.current === 'fillet' ||
         opRef.current === 'chamfer' ||
         opRef.current === 'shell' ||
         opRef.current === 'draft' ||
-        opRef.current === 'hole'
-      if (opRef.current != null && !dressUp) additive = true
+        opRef.current === 'hole' ||
+        opRef.current === 'datumPlane' ||
+        opRef.current === 'datumAxis' ||
+        opRef.current === 'datumPoint'
+      if (opRef.current != null && !refPickOp) additive = true
       setSelection((cur) => {
         if (!additive) return [sel]
         const k = selKey(sel)
@@ -1154,21 +1161,29 @@ export function App(): JSX.Element {
             const refs = selection
               .map(selectionToRef)
               .filter(Boolean) as import('./rpc').GeomRef[]
-            const base = refs[0] ?? null
-            const target = v.mode === 'To object' ? refs[1] ?? null : null
-            await api.datumPlane(base, Number(v.offset), 'XY', target)
+            await api.datumPlane(
+              null,
+              Number(v.offset ?? 0),
+              'XY',
+              null,
+              refs,
+              Number(v.angle ?? 0),
+              Boolean(v.flip)
+            )
             break
           }
           case 'datumAxis': {
             const refs = selection
               .map(selectionToRef)
               .filter(Boolean) as import('./rpc').GeomRef[]
-            await api.datumAxis(refs)
+            await api.datumAxis(refs, Number(v.offset ?? 0), Boolean(v.flip))
             break
           }
           case 'datumPoint': {
-            const ref = selection.map(selectionToRef).find(Boolean) ?? null
-            await api.datumPoint(ref)
+            const refs = selection
+              .map(selectionToRef)
+              .filter(Boolean) as import('./rpc').GeomRef[]
+            await api.datumPoint(refs)
             break
           }
           case 'splitBody': {
@@ -2623,21 +2638,26 @@ export function App(): JSX.Element {
     return { ...F[section.plane], size: 80 }
   }, [section])
   const onDatumPlanePreview = useCallback(
-    async (info: { mode: string; offset: number } | null) => {
+    async (info: { offset: number; angle: number; flip: boolean } | null) => {
       const tok = ++previewTok.current
       if (!info) {
         setPreviewPlane(null)
         return
       }
       const refs = selection.map(selectionToRef).filter(Boolean) as import('./rpc').GeomRef[]
-      const base = refs[0] ?? null
-      const target = info.mode === 'To object' ? refs[1] ?? null : null
-      if (info.mode === 'To object' && !target) {
+      if (!refs.length) {
         setPreviewPlane(null)
         return
       }
       try {
-        const r = await api.datumPlanePreview(base, info.offset, target)
+        const r = await api.datumPlanePreview(
+          null,
+          info.offset,
+          null,
+          refs,
+          info.angle,
+          info.flip
+        )
         if (tok === previewTok.current) {
           setPreviewPlane({ origin: r.origin, x: r.x, y: r.y, size: r.size })
         }

@@ -1201,28 +1201,191 @@ def _ref_point(d, body, ref):
     return Vector(0, 0, 0)
 
 
+def _ref_kind_of(link):
+    """(obj,[sub]) -> 'face' | 'edge' | 'vertex' | 'plane'."""
+    sub = (link[1][0] if isinstance(link, (tuple, list)) and link[1] else "") or ""
+    if sub.startswith("Face"):
+        return "face"
+    if sub.startswith("Edge"):
+        return "edge"
+    if sub.startswith("Vertex"):
+        return "vertex"
+    tid = getattr(link[0] if isinstance(link, (tuple, list)) else link, "TypeId", "")
+    if "Plane" in tid or "Origin" in tid:
+        return "plane"
+    return "face"
+
+
+def _is_planar_face_link(link):
+    obj, subs = (link[0], link[1]) if isinstance(link, (tuple, list)) else (link, [])
+    sub = subs[0] if subs else ""
+    try:
+        if sub.startswith("Face"):
+            f = obj.Shape.getElement(sub)
+            return type(f.Surface).__name__ == "Plane", f
+        if "Plane" in getattr(obj, "TypeId", "") or "Origin" in getattr(obj, "TypeId", ""):
+            return True, None
+    except Exception:
+        pass
+    return False, None
+
+
+def _midplane_placement(d, body, linkA, linkB):
+    """World Placement of the plane midway between two planar faces / planes."""
+    from FreeCAD import Placement, Vector, Rotation
+
+    def origin_normal(link):
+        obj, subs = link[0], link[1]
+        sub = subs[0] if subs else ""
+        if sub.startswith("Face"):
+            f = obj.Shape.getElement(sub)
+            c = f.CenterOfMass
+            n = f.normalAt(*f.Surface.parameter(c))
+            return c, n
+        p = obj.Placement
+        return p.Base, p.Rotation.multVec(Vector(0, 0, 1))
+
+    cA, nA = origin_normal(linkA)
+    cB, nB = origin_normal(linkB)
+    mid = (cA + cB).multiply(0.5)
+    # normal: if the two faces face each other, use their average direction
+    nrm = nA if nA.dot(nB) >= 0 else nA - nB
+    if nrm.Length < 1e-9:
+        nrm = nA
+    nrm.normalize()
+    return Placement(mid, Rotation(Vector(0, 0, 1), nrm))
+
+
+_PLANE_MODES = ["FlatFace", "ThreePointsPlane", "OXY", "NormalToEdge", "ParallelPlane"]
+_AXIS_MODES = {
+    "2v": "TwoPointLine", "2f": "IntersectionLine",
+    "1f": "Normal", "1e": "Tangent",
+}
+
+
+def _attach_datum(d, body, obj, kind, refs, offset=0.0, angle=0.0, flip=False):
+    """Attach a PartDesign::Plane / Line / Point to `refs` (a list of GeomRef),
+    choosing the MapMode from the reference set. `kind` is 'plane'|'axis'|'point'.
+    offset/angle/flip are applied via AttachmentOffset (plane / axis)."""
+    from FreeCAD import Placement, Vector, Rotation
+    links = [_resolve_ref(d, body, r) for r in (refs or []) if r]
+    kinds = [_ref_kind_of(l) for l in links]
+    n = len(links)
+    sign = -1.0 if flip else 1.0
+
+    if kind == "plane":
+        planar = [_is_planar_face_link(l)[0] for l in links]
+        if n == 2 and all(planar):
+            obj.MapMode = "Deactivated"
+            obj.Placement = _midplane_placement(d, body, links[0], links[1])
+            d.recompute()
+        else:
+            obj.AttachmentSupport = links
+            if n == 3 and all(k == "vertex" for k in kinds):
+                mode = "ThreePointsPlane"
+            elif n >= 2 and all(k == "edge" for k in kinds):
+                mode = "OXY"
+            elif n == 1 and kinds[0] == "edge":
+                mode = "NormalToEdge"
+            elif n >= 2 and "vertex" in kinds:
+                mode = "ParallelPlane"
+            else:
+                mode = "FlatFace"
+            for m in [mode] + [x for x in _PLANE_MODES if x != mode] + ["Deactivated"]:
+                try:
+                    obj.MapMode = m
+                    d.recompute()
+                    break
+                except Exception:
+                    continue
+        obj.AttachmentOffset = Placement(Vector(0, 0, sign * float(offset)),
+                                         Rotation(Vector(1, 0, 0), float(angle)))
+        d.recompute()
+        return
+
+    if kind == "axis":
+        obj.AttachmentSupport = links
+        key = ("2v" if n >= 2 and all(k == "vertex" for k in kinds)
+               else "2f" if n >= 2 and all(k in ("face", "plane") for k in kinds)
+               else "1f" if n == 1 and kinds[0] in ("face", "plane")
+               else "1e" if n == 1 and kinds[0] == "edge"
+               else None)
+        for m in ([_AXIS_MODES[key]] if key else []) + ["Tangent", "TwoPointLine",
+                  "Normal", "IntersectionLine", "AxisOfCurvature", "Deactivated"]:
+            try:
+                obj.MapMode = m
+                d.recompute()
+                break
+            except Exception:
+                continue
+        if float(offset):
+            obj.AttachmentOffset = Placement(Vector(0, 0, sign * float(offset)), Rotation())
+        d.recompute()
+        return
+
+    # point
+    obj.AttachmentSupport = links
+    if n == 1 and kinds[0] == "vertex":
+        _mode_or_manual(d, obj, ["Vertex"], None)
+    elif n == 1 and kinds[0] in ("face", "plane"):
+        _mode_or_manual(d, obj, ["CenterOfMass"], None)
+    elif n == 1 and kinds[0] == "edge":
+        e = links[0][0].Shape.getElement(links[0][1][0])
+        try:
+            u0, u1 = e.ParameterRange
+            pmid = e.valueAt(0.5 * (u0 + u1))
+        except Exception:
+            pmid = e.CenterOfMass
+        _mode_or_manual(d, obj, ["MidPoint", "CenterOfMass"], pmid)
+    elif n >= 2 and all(k == "edge" for k in kinds):
+        eA = links[0][0].Shape.getElement(links[0][1][0])
+        eB = links[1][0].Shape.getElement(links[1][1][0])
+        try:
+            d0, pts, _ = eA.distToShape(eB)
+            pnt = pts[0][0]
+        except Exception:
+            pnt = eA.CenterOfMass
+        _mode_or_manual(d, obj, ["IntersectionPoint"], pnt)
+    else:
+        _mode_or_manual(d, obj, ["IntersectionPoint", "CenterOfMass"], None)
+    d.recompute()
+
+
+def _mode_or_manual(d, obj, modes, fallback_point):
+    """Try each MapMode; if none produced a real placement, drop to Deactivated
+    at `fallback_point` (a Vector) when given."""
+    from FreeCAD import Placement, Vector, Rotation
+    for m in modes:
+        try:
+            obj.MapMode = m
+            d.recompute()
+            b = obj.Placement.Base
+            if fallback_point is None or (b - fallback_point).Length < 1e-6 or b.Length > 1e-9:
+                return
+        except Exception:
+            continue
+    if fallback_point is not None:
+        obj.MapMode = "Deactivated"
+        obj.Placement = Placement(Vector(fallback_point), Rotation())
+        d.recompute()
+
+
 @method("datum.plane")
-def datum_plane(baseRef=None, basePlane="XY", offset=10.0, targetRef=None):
+def datum_plane(baseRef=None, basePlane="XY", offset=10.0, targetRef=None,
+                refs=None, angle=0.0, flip=False):
     body = _require_body()
     d = body.Document
     pl = body.newObject("PartDesign::Plane", "DatumPlane")
     pl.Label = next_label(body, "PartDesign::Plane")
-    if baseRef:
-        pl.AttachmentSupport = [_resolve_ref(d, body, baseRef)]
-    else:
-        pl.AttachmentSupport = [(build.origin_plane(body, basePlane), [""])]
-    pl.MapMode = "FlatFace"
-    from FreeCAD import Placement, Vector, Rotation
-    d.recompute()  # so pl.Placement reflects the attachment before we measure
-    dist = float(offset)
+    ref_list = list(refs or [])
+    if not ref_list and baseRef:
+        ref_list = [baseRef]
     if targetRef:
-        # offset the plane along its own normal so it passes through the target
-        # object, then add the extra user offset on top
-        base = pl.Placement
-        n = base.Rotation.multVec(Vector(0, 0, 1))
-        tp = _ref_point(d, body, targetRef)
-        dist = (tp - base.Base).dot(n) + float(offset)
-    pl.AttachmentOffset = Placement(Vector(0, 0, dist), Rotation())
+        ref_list.append(targetRef)
+    if not ref_list:
+        role = basePlane if basePlane.endswith("_Plane") else basePlane.upper() + "_Plane"
+        ref_list = [{"kind": "origin", "role": role}]
+    _attach_datum(d, body, pl, "plane", ref_list, offset, angle, flip)
     session.set_datum_shown(pl.Name, True)  # new datums are shown, like Fusion
     pl.Visibility = True
     d.recompute()
@@ -1230,7 +1393,8 @@ def datum_plane(baseRef=None, basePlane="XY", offset=10.0, targetRef=None):
 
 
 @method("datum.planePreview")
-def datum_plane_preview(baseRef=None, basePlane="XY", offset=10.0, targetRef=None):
+def datum_plane_preview(baseRef=None, basePlane="XY", offset=10.0, targetRef=None,
+                        refs=None, angle=0.0, flip=False):
     """Where an Offset Plane would land, as a world frame for a viewport ghost.
     Builds a throwaway PartDesign::Plane, reads its placement, removes it."""
     body = _require_body()
@@ -1238,20 +1402,17 @@ def datum_plane_preview(baseRef=None, basePlane="XY", offset=10.0, targetRef=Non
     from FreeCAD import Placement, Vector, Rotation
     pl = body.newObject("PartDesign::Plane", "__preview_plane")
     try:
-        if baseRef:
-            pl.AttachmentSupport = [_resolve_ref(d, body, baseRef)]
-        else:
-            pl.AttachmentSupport = [(build.origin_plane(body, basePlane), [""])]
-        pl.MapMode = "FlatFace"
+        ref_list = list(refs or [])
+        if not ref_list and baseRef:
+            ref_list = [baseRef]
+        if targetRef:
+            ref_list.append(targetRef)
+        if not ref_list:
+            role = basePlane if basePlane.endswith("_Plane") else basePlane.upper() + "_Plane"
+            ref_list = [{"kind": "origin", "role": role}]
+        _attach_datum(d, body, pl, "plane", ref_list, offset, angle, flip)
         d.recompute()
         dist = float(offset)
-        if targetRef:
-            base = pl.Placement
-            n = base.Rotation.multVec(Vector(0, 0, 1))
-            tp = _ref_point(d, body, targetRef)
-            dist = (tp - base.Base).dot(n) + float(offset)
-        pl.AttachmentOffset = Placement(Vector(0, 0, dist), Rotation())
-        d.recompute()
         p = pl.Placement
         ox = p.multVec(Vector(1, 0, 0)).sub(p.Base)
         oy = p.multVec(Vector(0, 1, 0)).sub(p.Base)
@@ -1277,20 +1438,19 @@ def datum_plane_preview(baseRef=None, basePlane="XY", offset=10.0, targetRef=Non
 
 
 @method("datum.axis")
-def datum_axis(refs=None):
-    """Construction axis from selection: one edge (axis of that curve), or two
-    points/planes (line through / intersection). refs = [GeomRef, ...]."""
+def datum_axis(refs=None, ref=None, offset=0.0, flip=False):
+    """Construction axis from a reference set: 1 straight edge (along it),
+    1 planar face (its normal), 2 vertices (line through), 2 planar faces
+    (their intersection). refs = [GeomRef, ...]."""
     body = _require_body()
     d = body.Document
     ax = body.newObject("PartDesign::Line", "DatumLine")
     ax.Label = next_label(body, "PartDesign::Line")
-    resolved = [_resolve_ref(d, body, r) for r in (refs or []) if r]
-    if resolved:
-        try:
-            ax.AttachmentSupport = resolved
-            ax.MapMode = "TwoPointLine" if len(resolved) >= 2 else "AxisOfCurve"
-        except Exception:
-            ax.MapMode = "Deactivated"
+    ref_list = list(refs or [])
+    if not ref_list and ref:
+        ref_list = [ref]
+    if ref_list:
+        _attach_datum(d, body, ax, "axis", ref_list, offset=offset, flip=flip)
     session.set_datum_shown(ax.Name, True)
     ax.Visibility = True
     d.recompute()
@@ -1298,24 +1458,18 @@ def datum_axis(refs=None):
 
 
 @method("datum.point")
-def datum_point(ref=None):
-    """Construction point on a vertex / edge midpoint / plane-line intersection."""
+def datum_point(ref=None, refs=None):
+    """Construction point: 1 vertex, 1 edge (midpoint), 1 planar face (centroid),
+    2 edges (nearest / intersection point). refs = [GeomRef, ...]."""
     body = _require_body()
     d = body.Document
     pt = body.newObject("PartDesign::Point", "DatumPoint")
     pt.Label = next_label(body, "PartDesign::Point")
-    if ref:
-        try:
-            pt.AttachmentSupport = [_resolve_ref(d, body, ref)]
-            wanted = "Vertex" if ref.get("kind") == "vertex" else "Center"
-            for mode in (wanted, "Vertex", "Translate", "Center", "ObjectXY"):
-                try:
-                    pt.MapMode = mode
-                    break
-                except Exception:
-                    continue
-        except Exception:
-            pt.MapMode = "Deactivated"
+    ref_list = list(refs or [])
+    if not ref_list and ref:
+        ref_list = [ref]
+    if ref_list:
+        _attach_datum(d, body, pt, "point", ref_list)
     session.set_datum_shown(pt.Name, True)
     pt.Visibility = True
     d.recompute()

@@ -529,12 +529,27 @@ export const api = {
     baseRef: GeomRef | null,
     offset: number,
     basePlane = 'XY',
-    targetRef: GeomRef | null = null
-  ) => rpc<{ bodies: BodyTree[] }>('datum.plane', { baseRef, offset, basePlane, targetRef }),
+    targetRef: GeomRef | null = null,
+    refs: GeomRef[] = [],
+    angle = 0,
+    flip = false
+  ) =>
+    rpc<{ bodies: BodyTree[] }>('datum.plane', {
+      baseRef,
+      offset,
+      basePlane,
+      targetRef,
+      refs,
+      angle,
+      flip
+    }),
   datumPlanePreview: (
     baseRef: GeomRef | null,
     offset: number,
-    targetRef: GeomRef | null = null
+    targetRef: GeomRef | null = null,
+    refs: GeomRef[] = [],
+    angle = 0,
+    flip = false
   ) =>
     rpc<{
       origin: [number, number, number]
@@ -543,7 +558,7 @@ export const api = {
       z: [number, number, number]
       size: number
       distance: number
-    }>('datum.planePreview', { baseRef, offset, basePlane: 'XY', targetRef }),
+    }>('datum.planePreview', { baseRef, offset, basePlane: 'XY', targetRef, refs, angle, flip }),
   sketchOnPlane: (plane: string) =>
     rpc<{ sketchId: string; bodyId: string; frame: SketchFrameDTO }>('sketch.onPlane', { plane }),
   sketchOnFace: (bodyId: string, face: string) =>
@@ -606,8 +621,9 @@ export const api = {
     neutral: string | null,
     neutralRef: GeomRef | null = null
   ) => rpc<{ bodies: BodyTree[] }>('feature.draft', { faces, angle, neutral, neutralRef }),
-  datumAxis: (refs: GeomRef[]) => rpc<{ bodies: BodyTree[] }>('datum.axis', { refs }),
-  datumPoint: (ref: GeomRef | null) => rpc<{ bodies: BodyTree[] }>('datum.point', { ref }),
+  datumAxis: (refs: GeomRef[], offset = 0, flip = false) =>
+    rpc<{ bodies: BodyTree[] }>('datum.axis', { refs, offset, flip }),
+  datumPoint: (refs: GeomRef[]) => rpc<{ bodies: BodyTree[] }>('datum.point', { refs }),
   featureSuppress: (id: string, suppressed: boolean) =>
     rpc<{ bodies: BodyTree[] }>('feature.suppress', { id, suppressed }),
   combine: (

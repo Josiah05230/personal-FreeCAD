@@ -258,29 +258,34 @@ const SPECS: Record<OpKind, OpSpec> = {
   },
   datumPlane: {
     title: 'Plane',
-    needs: 'plane',
-    hint: 'Pick a base plane / face. In "To object" mode also pick a point / edge / face to reach, with an optional extra offset.',
+    needs: 'none',
+    hint: 'Click geometry to set the reference, Ctrl-click to add another. 1 face = on it (offset); 1 edge = on the edge (tilt by Angle); 2 edges = through both; 2 faces = mid-plane; 3 points = through them.',
     fields: [
+      { key: 'offset', label: 'Offset', type: 'number', default: 0, step: 1 },
       {
-        key: 'mode',
-        label: 'Type',
-        type: 'select',
-        default: 'Distance',
-        options: ['Distance', 'To object']
+        key: 'angle',
+        label: 'Angle',
+        type: 'number',
+        default: 0,
+        step: 5,
+        showIf: () => true
       },
-      { key: 'offset', label: 'Offset', type: 'number', default: 10, step: 1 }
+      { key: 'flip', label: 'Flip', type: 'checkbox', default: false }
     ]
   },
   datumAxis: {
     title: 'Axis',
-    needs: 'axis',
-    hint: 'One edge, or two planes / faces for their intersection',
-    fields: []
+    needs: 'none',
+    hint: 'Click, Ctrl-click to add. 1 edge = along it; 1 face = its normal; 2 vertices = through both; 2 faces = their intersection.',
+    fields: [
+      { key: 'offset', label: 'Offset', type: 'number', default: 0, step: 1 },
+      { key: 'flip', label: 'Flip', type: 'checkbox', default: false }
+    ]
   },
   datumPoint: {
     title: 'Point',
     needs: 'none',
-    hint: 'Select a vertex (or an edge / face centre) to place it there, else the body origin',
+    hint: 'Click, Ctrl-click to add. 1 vertex = there; 1 edge = its midpoint; 1 face = its centre; 2 edges = where they meet.',
     fields: []
   },
   splitBody: {
@@ -327,7 +332,7 @@ export function OperationDialog({
   selection: Selection[]
   onApply: (kind: OpKind, values: OpValues, exprs: Record<string, string>) => void
   onCancel: () => void
-  onPreview?: (info: { mode: string; offset: number } | null) => void
+  onPreview?: (info: { offset: number; angle: number; flip: boolean } | null) => void
   onLivePreview?: (kind: OpKind, values: OpValues) => void
   onLivePreviewEnd?: () => void
   handleDrag?: { delta: number; phase: 'move' | 'end'; seq: number } | null
@@ -353,17 +358,8 @@ export function OperationDialog({
     }
   }, [kind, initialValues]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Offset Plane: picking a second piece of geometry while in Distance mode
-  // means "put the plane there" - switch to To object and start the extra
-  // offset at 0, like Fusion.
-  useEffect(() => {
-    if (kind !== 'datumPlane') return
-    if (values.mode === 'Distance' && selection.length >= 2) {
-      setValues((v) => ({ ...v, mode: 'To object', offset: '0' }))
-    }
-  }, [kind, selection, values.mode])
-
-  // push a live ghost of where the Offset Plane will land
+  // push a live ghost of where the datum Plane will land (offset / angle / flip
+  // + the current reference selection, which the app reads directly)
   useEffect(() => {
     if (!onPreview) return
     if (kind !== 'datumPlane') {
@@ -371,13 +367,14 @@ export function OperationDialog({
       return
     }
     const off = Number(String(values.offset ?? 0))
-    if (isNaN(off)) return
+    const ang = Number(String(values.angle ?? 0))
+    if (isNaN(off) || isNaN(ang)) return
     const t = setTimeout(
-      () => onPreview({ mode: String(values.mode ?? 'Distance'), offset: off }),
+      () => onPreview({ offset: off, angle: ang, flip: Boolean(values.flip) }),
       120
     )
     return () => clearTimeout(t)
-  }, [kind, values.mode, values.offset, selection, onPreview])
+  }, [kind, values.offset, values.angle, values.flip, selection, onPreview])
 
   // drop the ghost when the dialog unmounts
   useEffect(() => () => onPreview?.(null), []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -469,11 +466,11 @@ export function OperationDialog({
   // extrude accepts a sketch OR a flat model face as the profile
   const extrudeProfileOk = kind === 'extrude' && (sketchesSel.length === 1 || faces.length >= 1)
   const planeSel = selection.filter((s) => s.kind === 'plane' || s.kind === 'face')
-  const datumPlaneToObj = kind === 'datumPlane' && values.mode === 'To object'
-  const datumPlaneMsg = datumPlaneToObj
-    ? selection.length >= 2
-      ? 'base + target selected'
-      : `pick a base plane / face, then a point / edge / face to reach (${selection.length}/2)`
+  const isDatum = kind === 'datumPlane' || kind === 'datumAxis' || kind === 'datumPoint'
+  const datumPlaneMsg = isDatum
+    ? selection.length
+      ? `${selection.length} reference${selection.length === 1 ? '' : 's'} - click to replace, Ctrl-click to add`
+      : 'click geometry to set the reference'
     : null
   const axisSel = selection.filter((s) => s.kind === 'plane' || s.kind === 'edge' || s.kind === 'face')
   const needMsg =
@@ -507,9 +504,8 @@ export function OperationDialog({
   const ready =
     // editing a committed feature: its refs are already seeded, Update is always allowed
     !!editingLabel ||
-    (datumPlaneToObj && selection.length >= 2) ||
-    (kind === 'datumPlane' && !datumPlaneToObj && planeSel.length >= 1) ||
-    spec.needs === 'none' ||
+    (isDatum && selection.length >= 1) ||
+    (spec.needs === 'none' && !isDatum) ||
     (spec.needs === 'edges' && edges.length > 0) ||
     (spec.needs === 'faces' && faces.length > 0) ||
     (spec.needs === 'planeFace' && faces.length === 1) ||
