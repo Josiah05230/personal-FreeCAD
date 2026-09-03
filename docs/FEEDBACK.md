@@ -37,6 +37,25 @@ clear it as you go.
 
 ## Recently addressed (this session)
 
+- **Sketch geometry points are selectable.** A circle / arc centre (and line
+  endpoints) can be picked on their own: dimension centre-to-centre /
+  centre-to-line, and Coincident / Horizontal / Vertical between two points.
+  Survives finish + reopen. Deferred: Symmetric-between-points (needs the
+  ribbon constraint enum widened), a visible dimension glyph for point
+  distances (the constraint drives the solver, just no leader line yet).
+- **Mirror / Pattern got an Operation** (Join / Cut / Intersect / New body,
+  like extrude) and are now **editable features** - double-click a Mirror /
+  Pattern chip to change its plane / axis / count / Type. Deferred: changing
+  the Operation during an edit (a cut/intersect/new-body result is a Boolean /
+  separate body whose chip has no dialog - it is create-time only for now).
+- **Datum Plane / Axis / Point reworked.** One Offset field (no Distance vs To
+  object split), plain click replaces the reference, Ctrl-click adds; the
+  reference set decides the geometry (2 edges -> plane through both, 2 faces ->
+  mid-plane, 1 edge -> plane on it tilted by Angle, etc.). Deferred: a live
+  ghost for Axis / Point (Plane has one).
+- **A real part + assembly E2E** (`part_asm.js`): sketch -> extrude -> cut ->
+  fillet -> mirror one timeline-selected feature -> edit that mirror, then two
+  components + a joint - all driven through the GUI bridge.
 - **Mirror / Pattern transform the whole solid + a Type scope.** They set
   `Originals=[tip]`, so only the last feature was mirrored/patterned (the
   "46mm vs 30mm" mirror). Now the default is the whole solid-feature chain,

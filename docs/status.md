@@ -36,19 +36,30 @@ the seed + step + trace tail to replay.
   arc (centre + 3-pt) / spline, snapping, window-select, welded drags with a
   local relaxation solver, manual constraints + a Dimension tool (unit
   expressions), construction toggle, over-dimension veto, per-action undo.
-  Reopen restores geometry + constraints.
+  Reopen restores geometry + constraints. Individual geometry POINTS (line
+  ends, circle / arc centres) are selectable: dimension centre-to-centre /
+  centre-to-line, and Coincident / Horizontal / Vertical between two points.
 - Features: Extrude (Join / Cut / Intersect / New body), Revolve (each on a
   sketch OR a flat model face; an Axis dropdown - sketch V/H, X/Y/Z, or a
   selected edge / datum), Loft, Sweep, Fillet, Chamfer, Shell, Hole
   (counterbore / countersink), Draft, Combine, Rectangular + Circular Pattern,
-  Mirror (each with a Type = Body / Features / Faces scope), Rib (real or
-  offset-wire fallback), Offset Plane / Axis / Point. All references come from
-  viewport / browser / timeline selection - no geometry dropdowns.
+  Mirror (each with Type = Body / Features / Faces and Operation = Join / Cut /
+  Intersect / New body), Rib (real or offset-wire fallback), Datum Plane /
+  Axis / Point. All references come from viewport / browser / timeline
+  selection - no geometry dropdowns.
 - Extrude Cut auto-corrects its direction (flips Reversed if the first attempt
   removes nothing) and rejects a profile that never meets the solid.
 - Mirror / Pattern transform the whole solid by default (every feature up to the
   tip), not just the last one; Type = Features acts on the timeline chip
-  selection, Type = Faces on the features owning the selected faces.
+  selection, Type = Faces on the features owning the selected faces; Operation
+  re-expresses the copies as a Cut / Common / new body. Mirror / Linear /
+  Polar pattern are editable features (reopen -> change plane/axis/count/scope).
+- Datum Plane / Axis / Point: one reference model (plain click replaces the
+  reference, Ctrl-click adds); the reference set picks the geometry type
+  (1 face = on it + Offset; 1 edge = on the edge + Angle; 2 edges = through
+  both; 2 faces = mid-plane; 3 points = through them; axis along an edge / face
+  normal / two-point line / face intersection; point at a vertex / edge
+  midpoint / edge intersection).
 - Fillet / chamfer / shell / draft / hole: plain viewport click replaces the
   edge/face set, Ctrl / Shift / Cmd-click adds one; the preview updates in place
   (feature.previewSetBase) as the set changes instead of rebuilding.
@@ -84,6 +95,21 @@ the seed + step + trace tail to replay.
 
 ## Recent notable changes
 
+- Sketch geometry points are first-class: `SketchController.pickPoint` /
+  `selectedPts`, point handles, point-to-point + point-to-line Distance, and
+  Coincident / H / V between two points. Sidecar `_apply_sketch_constraints`
+  + `_reopen_constraints` carry the PosIds through finish + reopen.
+- Mirror / Pattern gained an Operation (Join / Cut / Intersect / New body,
+  `_apply_result_boolean` - the transform's net shape re-expressed as a
+  Boolean or a new body) and are now editable features (`_TYPE_KIND` +
+  `feature_get` / `_set_feature_*` for Mirrored / LinearPattern / PolarPattern).
+- Datum Plane / Axis / Point reworked: one reference model (click replaces,
+  Ctrl-click adds), `_attach_datum` picks the FreeCAD Attacher MapMode from the
+  reference set (mid-plane / edge-intersection points computed manually where
+  the Attacher mode is missing in this build).
+- E2E: `test/e2e/scenarios/part_asm.js` drives a real multi-feature part AND a
+  two-component assembly + joint through the `window.__gwtcad` bridge
+  (`selectFeatures`, `addComponentFile` added).
 - Mirror / Pattern were transforming only the tip feature (Originals=[tip]) - the
   '46mm vs 30mm' mirror. Now Originals is the whole solid-feature chain, with a
   Body / Features / Faces scope (`_transform_originals`, Timeline
