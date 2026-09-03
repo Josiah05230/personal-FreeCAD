@@ -165,17 +165,27 @@ assert(G.getState().bodies[0] && G.getState().bodies[0].features.some((f) => f.k
   'base model has a solid to fuzz against');
 
 // ---------------- the random walk ----------------
+// Each step fires a BURST of 1-4 actions back-to-back with no settle between
+// them (a user mashing buttons), then waits for the queue to drain and checks
+// invariants. This is where race guards actually get exercised.
 let failStep = -1;
 for (let step = 1; step <= STEPS; step++) {
-  const [, name, fn] = nextAction();
+  const burst = 1 + ri(4);
+  const fired = [];
   let threw = null;
-  try {
-    await fn();
-  } catch (e) {
-    threw = (e && e.message) || String(e);
+  for (let b = 0; b < burst; b++) {
+    const [, nm, fn] = nextAction();
+    fired.push(nm);
+    try {
+      await fn();
+    } catch (e) {
+      threw = (threw ? threw + ' | ' : '') + nm + ': ' + ((e && e.message) || String(e));
+    }
+    if (b < burst - 1) await sleep(5 + ri(25)); // just a keystroke apart
   }
+  const name = fired.join('+');
   const settled = await idle(3500);
-  if (step % 25 === 0) await refreshGeom();
+  if (step % 20 === 0) await refreshGeom();
 
   // ---- invariants ----
   const problems = [];
@@ -197,7 +207,7 @@ for (let step = 1; step <= STEPS; step++) {
 
   if (problems.length) {
     failStep = step;
-    fail(`step ${step} [${name}]${threw ? ' (threw: ' + threw.slice(0, 80) + ')' : ''}  ->  ${problems.join('; ')}`);
+    fail(`step ${step} burst=[${name}]${threw ? '  threw: ' + threw.slice(0, 200) : ''}  ->  ${problems.join('; ')}`);
     note(`REPLAY: FUZZ_SEED=${SEED} bash test/e2e/run.sh test/e2e/scenarios/fuzz.js`);
     try {
       const dump = window.__trace.dump().split('\n');
