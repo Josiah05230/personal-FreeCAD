@@ -6,7 +6,10 @@ milestones M0-M5 have a working first version; ~85 sidecar RPC methods. Live
 feedback is tracked in `docs/FEEDBACK.md`; per-change detail is in git history.
 Verified each pass by headless engine tests (`scratch/*.py`) + a UI-driven E2E
 suite (`bash test/e2e/run.sh`: `workflow.js`, `repro.js`, `editfeature.js`,
-`monkey.js`).
+`monkey.js`, `fuzz.js`). `bash test/e2e/fuzz-loop.sh` runs a seeded random walk
+over every action + ribbon command forever until an invariant breaks (engine
+dead / error state / ErrorBoundary / stuck queue / blank viewport), printing
+the seed + step + trace tail to replay.
 
 ## Working
 
