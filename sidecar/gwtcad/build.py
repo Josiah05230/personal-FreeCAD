@@ -159,17 +159,29 @@ def gc_profile_copies(d):
                 pass
 
 
-def finalize_or_rollback(d, target, made, prev_tip_name, extra, what):
+def finalize_or_rollback(d, target, made, prev_tip_name, extra, what,
+                         check_made=False):
     """Recompute and check `target` has a valid solid. If not, remove exactly
     what this call created - `made` plus everything in `extra` - restore the
     body's previous tip and raise RpcError(what). Features that were already in
-    the body are never touched, so a bad new feature can't wipe existing work."""
+    the body are never touched, so a bad new feature can't wipe existing work.
+
+    check_made=True also fails when `made` itself has a null/invalid shape even
+    though `target` (the body) still looks fine - this catches a feature that
+    silently did nothing (e.g. a face revolve that tripped a DAG error and left
+    the previous tip in place)."""
     d.recompute()
     try:
         shp = getattr(target, "Shape", None)
         ok = shp is not None and not shp.isNull() and shp.isValid()
     except Exception:
         ok = False
+    if ok and check_made and made is not None:
+        try:
+            msh = getattr(made, "Shape", None)
+            ok = msh is not None and not msh.isNull() and msh.isValid()
+        except Exception:
+            ok = False
     if ok:
         return
     body = None

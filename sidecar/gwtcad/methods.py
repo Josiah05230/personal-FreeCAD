@@ -417,12 +417,19 @@ def feature_revolve(sketchId=None, angle=360.0, axis="V", axisRef=None,
     prev_tip = getattr(body, "Tip", None)
     prev_tip_name = prev_tip.Name if prev_tip is not None else None
 
+    # resolve the axis BEFORE creating the feature - body.newObject() advances
+    # body.Tip to the new (half-built) Revolution, so a ref that resolves through
+    # body.Tip (e.g. axisRef.bodyId is the Body id, which the GUI sends for edge
+    # picks) would otherwise point the Revolution's ReferenceAxis at itself and
+    # trip "The graph must be a DAG." -> null shape -> a silent no-op revolve.
+    axis_tuple = _resolve_ref(d, body, axisRef) if axisRef else None
+
     tid = "PartDesign::Groove" if cut else "PartDesign::Revolution"
     rev = body.newObject(tid, "Revolution")
     rev.Label = next_label(body, tid)
     rev.Profile = prof
-    if axisRef:
-        rev.ReferenceAxis = _resolve_ref(d, body, axisRef)
+    if axis_tuple is not None:
+        rev.ReferenceAxis = axis_tuple
     else:
         rev.ReferenceAxis = (prof, ["V_Axis" if vert else "H_Axis"])
     rev.Angle = float(angle)
@@ -437,7 +444,8 @@ def feature_revolve(sketchId=None, angle=360.0, axis="V", axisRef=None,
     build.finalize_or_rollback(
         d, body, rev, prev_tip_name, extra,
         "revolve produced an invalid shape - check the profile is one closed "
-        "outline that stays on one side of the axis, then try again")
+        "outline that stays on one side of the axis, then try again",
+        check_made=True)
     return tree_get()
 
 
@@ -816,7 +824,22 @@ def _resolve_ref(d, body, ref):
         src = d.getObject(ref["bodyId"])
         if src is None:
             raise RpcError(APP_ERROR, "no object %r" % ref.get("bodyId"))
-        base = src.Tip if src.TypeId == "PartDesign::Body" else src
+        base = src
+        if src.TypeId == "PartDesign::Body":
+            base = src.Tip
+            # a feature being built right now has advanced body.Tip to itself but
+            # has no shape yet - resolving against it would make a self-reference
+            # (DAG error). Fall back to the last feature that actually has a solid.
+            try:
+                bs = getattr(base, "Shape", None)
+                if bs is None or bs.isNull():
+                    for o in reversed(list(src.Group)):
+                        os_ = getattr(o, "Shape", None)
+                        if os_ is not None and not os_.isNull() and os_.isValid():
+                            base = o
+                            break
+            except Exception:
+                pass
         return (base, [ref["sub"]])
     if k == "sketch":
         o = d.getObject(ref.get("id") or ref.get("sketchId"))

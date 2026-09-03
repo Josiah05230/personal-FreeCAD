@@ -94,6 +94,41 @@ const opSelKinds = (k: OpKind | null): SelKind[] | null => {
   }
 }
 
+// Revolve axis: the dialog's "Axis" dropdown -> an explicit ReferenceAxis, or
+// null + a V/H code meaning "use the sketch's own vertical / horizontal line".
+// "Selected edge / datum" falls back to scanning the current selection.
+const revolveAxisRef = (
+  vAxis: string | undefined,
+  selection: Selection[],
+  profileSketchId: string | undefined
+): { axisRef: import('./rpc').GeomRef | null; axisCode: 'V' | 'H' } => {
+  switch (vAxis) {
+    case 'Sketch horizontal':
+      return { axisRef: null, axisCode: 'H' }
+    case 'X':
+      return { axisRef: { kind: 'origin', role: 'X_Axis' }, axisCode: 'V' }
+    case 'Y':
+      return { axisRef: { kind: 'origin', role: 'Y_Axis' }, axisCode: 'V' }
+    case 'Z':
+      return { axisRef: { kind: 'origin', role: 'Z_Axis' }, axisCode: 'V' }
+    case 'Selected edge / datum': {
+      for (const s of selection) {
+        if (s.kind === 'edge') return { axisRef: { kind: 'edge', bodyId: s.bodyId, sub: s.sub }, axisCode: 'V' }
+        if (s.kind === 'plane')
+          return {
+            axisRef: s.role ? { kind: 'origin', role: s.role } : { kind: 'plane', id: s.planeId },
+            axisCode: 'V'
+          }
+        if (s.kind === 'sketch' && s.sketchId !== profileSketchId)
+          return { axisRef: { kind: 'sketch', id: s.sketchId }, axisCode: 'V' }
+      }
+      return { axisRef: null, axisCode: 'V' }
+    }
+    default: // 'Sketch vertical'
+      return { axisRef: null, axisCode: 'V' }
+  }
+}
+
 export function App(): JSX.Element {
   const [status, setStatus] = useState<Status>({ phase: 'boot' })
   const [meshes, setMeshes] = useState<RenderMesh[]>([])
@@ -653,7 +688,8 @@ export function App(): JSX.Element {
       refs || 'none',
       String(v.operation ?? ''),
       String(v.mode ?? ''),
-      String(v.cut ?? '')
+      String(v.cut ?? ''),
+      String(v.axis ?? '')
     ].join('|')
   }, [selection])
 
@@ -910,35 +946,32 @@ export function App(): JSX.Element {
             break
           }
           case 'revolve': {
-            // axis: first non-profile edge / sketch line / datum axis in the selection
-            let axisRef: import('./rpc').GeomRef | null = null
-            for (const s of selection) {
-              if (s.kind === 'edge') {
-                axisRef = { kind: 'edge', bodyId: s.bodyId, sub: s.sub }
-                break
-              }
-              if (s.kind === 'plane') {
-                axisRef = s.role
-                  ? { kind: 'origin', role: s.role }
-                  : { kind: 'plane', id: s.planeId }
-                break
-              }
-              if (s.kind === 'sketch' && s.sketchId !== sketchIds[0]) {
-                axisRef = { kind: 'sketch', id: s.sketchId }
-                break
-              }
-            }
+            // axis: the dialog dropdown (Sketch vertical/horizontal, X/Y/Z, or a
+            // selected edge / datum). A face profile always needs an explicit one.
+            let { axisRef, axisCode } = revolveAxisRef(
+              String(v.axis ?? ''),
+              selection,
+              sketchIds[0]
+            )
             // no sketch selected: revolve a flat model face (needs an axis pick)
             const faceProfile =
               !sketchIds[0] && faces[0] ? { bodyId: faces[0].bodyId, sub: faces[0].sub } : null
             if (!sketchIds[0] && !faceProfile)
               throw new Error('Select a sketch, or a flat face of the model plus an axis, to revolve.')
+            // a face has no vertical/horizontal of its own - fall back to any
+            // edge / datum in the selection even if the dropdown was left on a
+            // sketch option
+            if (faceProfile && !axisRef) {
+              axisRef = revolveAxisRef('Selected edge / datum', selection, sketchIds[0]).axisRef
+            }
             if (faceProfile && !axisRef)
-              throw new Error('Revolving a face needs an axis - also select a straight edge or a datum.')
+              throw new Error(
+                'Revolving a face needs an axis - set Axis to X/Y/Z, or "Selected edge / datum" and click a straight edge or datum axis.'
+              )
             await api.revolve(
               sketchIds[0] ?? null,
               Number(v.angle),
-              'V',
+              axisCode,
               Boolean(v.cut),
               axisRef,
               faceProfile
@@ -1176,22 +1209,19 @@ export function App(): JSX.Element {
         case 'revolve': {
           const ang = num('angle')
           if (ang == null) return null
-          if (sk) return api.revolve(sk.sketchId, ang, 'V', Boolean(v.cut), null)
-          // face profile: needs a flat face plus an axis pick (edge / datum)
+          const { axisRef, axisCode } = revolveAxisRef(
+            String(v.axis ?? ''),
+            selection,
+            sk?.sketchId
+          )
+          // sketch profile: preview about the chosen axis (matches commit)
+          if (sk) return api.revolve(sk.sketchId, ang, axisCode, Boolean(v.cut), axisRef)
+          // face profile: needs a flat face plus an axis (edge / datum / X-Y-Z)
           const faceProfile = faces[0] ? { bodyId: faces[0].bodyId, sub: faces[0].sub } : null
-          let axisRef: import('./rpc').GeomRef | null = null
-          for (const s of selection) {
-            if (s.kind === 'edge') {
-              axisRef = { kind: 'edge', bodyId: s.bodyId, sub: s.sub }
-              break
-            }
-            if (s.kind === 'plane') {
-              axisRef = s.role ? { kind: 'origin', role: s.role } : { kind: 'plane', id: s.planeId }
-              break
-            }
-          }
-          return faceProfile && axisRef
-            ? api.revolve(null, ang, 'V', Boolean(v.cut), axisRef, faceProfile)
+          const faceAxis =
+            axisRef ?? revolveAxisRef('Selected edge / datum', selection, undefined).axisRef
+          return faceProfile && faceAxis
+            ? api.revolve(null, ang, axisCode, Boolean(v.cut), faceAxis, faceProfile)
             : null
         }
         case 'fillet': {
