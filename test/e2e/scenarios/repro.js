@@ -70,6 +70,7 @@ note('select sketch s1 again and extrude it a second time (F360 lets you re-use 
 await G.refresh();
 await idle();
 const preReuseFeats = feats(G.getState());
+const preReuseSketchChips = (G.getState().bodies[0]?.features || []).filter((f) => f.kind === 'sketch').length;
 G.selectSketch(s1.sketchId);
 await sleep(50);
 let reuseErr = null;
@@ -84,10 +85,13 @@ note('after re-use extrude: notice=' + (st.notice || 'none') + ' err=' + (reuseE
 note('after re-use extrude: feats=' + JSON.stringify(st.bodies.map((b) => b.features.map((f) => f.id + ':' + f.kind + (f.error ? '!ERR' : '')))));
 assert(!reuseErr && (!st.notice || !/already used|draw a new/i.test(st.notice)),
   'no "sketch already used" rejection when re-using a committed sketch');
-// re-use duplicates the consumed sketch (PartDesign: one sketch -> one feature)
-// so the timeline gains a linked copy + the new pad = +2
-assert(feats(st) === preReuseFeats + 2,
-  `re-use inserts a profile copy + the new pad (${preReuseFeats} -> ${feats(st)})`);
+// a sketch is never "consumed": re-using it adds ONLY the new pad - any copy
+// PartDesign needs is hidden, so the timeline gains exactly one feature and
+// still shows exactly one sketch chip
+assert(feats(st) === preReuseFeats + 1,
+  `re-use adds only the new pad, no visible copy (${preReuseFeats} -> ${feats(st)})`);
+assert(st.bodies[0].features.filter((f) => f.kind === 'sketch').length === preReuseSketchChips,
+  'no new sketch chip after re-use (the hidden copy is not shown)');
 assert(st.bodies[0].features.filter((f) => f.kind === 'solid').length === 2,
   'the body now has two solid features (the original pad + the re-use pad)');
 assert(!anyErr(st), 'no feature in error after re-using the sketch');

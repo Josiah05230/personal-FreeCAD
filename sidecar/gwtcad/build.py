@@ -78,18 +78,43 @@ def profile_is_consumed(d, sk):
     return False
 
 
+# A sketch is input geometry, never "consumed": the user can extrude it, revolve
+# it, extrude it again. PartDesign still needs one Sketcher object per feature
+# Profile, so when a sketch is already in use we hand the new feature a HIDDEN
+# copy tagged with this property (= the source sketch's name). Tagged copies are
+# filtered out of tree.get / scene.get and garbage-collected once unreferenced.
+REF_TAG = "gwtRefCopy"
+
+
+def is_ref_copy(o):
+    return bool(getattr(o, REF_TAG, ""))
+
+
 def reusable_profile(d, body, sk):
     """A profile object safe to give to a NEW feature. If `sk` is a sketch that
-    is already consumed elsewhere, duplicate it (F360-style shared profile) so
-    the original feature keeps an intact copy and the new one gets its own.
-    A (face, [sub]) tuple is returned unchanged."""
+    is already in use, return a hidden tagged copy (reusing a spare one if a free
+    copy of the same source already exists). A (face,[sub]) tuple passes through."""
     if not hasattr(sk, "TypeId") or sk.TypeId != "Sketcher::SketchObject":
         return sk
-    if not profile_is_consumed(d, sk):
+    if is_ref_copy(sk) or not profile_is_consumed(d, sk):
         return sk
+    # reuse a spare copy of this exact source if one is going unused
+    for o in d.Objects:
+        if getattr(o, REF_TAG, "") == sk.Name and not profile_is_consumed(d, o):
+            _sync_ref_copy(o, sk)
+            return o
     dup = d.copyObject(sk, False)
     try:
-        dup.Label = sk.Label + " (copy)"
+        dup.addProperty("App::PropertyString", REF_TAG, "GWT",
+                        "hidden copy of a sketch used by another feature", 4)
+    except Exception:
+        pass
+    try:
+        setattr(dup, REF_TAG, sk.Name)
+    except Exception:
+        pass
+    try:
+        dup.Label = sk.Label  # same geometry, same name - it is never shown
     except Exception:
         pass
     try:
@@ -98,6 +123,40 @@ def reusable_profile(d, body, sk):
         pass
     dup.Visibility = False
     return dup
+
+
+def _sync_ref_copy(copy, src):
+    """Make a hidden copy match its source sketch again (source was edited)."""
+    try:
+        copy.Geometry = src.Geometry
+        copy.Constraints = src.Constraints
+        copy.AttachmentSupport = src.AttachmentSupport
+        copy.MapMode = src.MapMode
+        copy.Placement = src.Placement
+    except Exception:
+        pass
+
+
+def sync_ref_copies(d, src):
+    """After the source sketch is edited, refresh every hidden copy of it so the
+    features built off those copies pick up the change."""
+    if d is None or not hasattr(src, "Name"):
+        return
+    for o in list(d.Objects):
+        if getattr(o, REF_TAG, "") == src.Name:
+            _sync_ref_copy(o, src)
+
+
+def gc_profile_copies(d):
+    """Remove any hidden profile copy no longer referenced by a live feature."""
+    if d is None:
+        return
+    for o in list(d.Objects):
+        if is_ref_copy(o) and not profile_is_consumed(d, o):
+            try:
+                d.removeObject(o.Name)
+            except Exception:
+                pass
 
 
 def finalize_or_rollback(d, target, made, prev_tip_name, extra, what):

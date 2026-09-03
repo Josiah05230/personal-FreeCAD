@@ -1502,6 +1502,10 @@ def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None,
     dropped = _strip_redundant_constraints(sk, d)
 
     sk.Visibility = True
+    # a re-finished (edited) sketch: push the change into any hidden copies that
+    # other features were built from, so "edit the sketch" updates them all
+    build.sync_ref_copies(d, sk)
+    d.recompute()
     closed = False
     try:
         wires = sk.Shape.Wires
@@ -1821,6 +1825,8 @@ def scene_get():
                 buf["color"] = col
             meshes.append(buf)
         elif tid == "Sketcher::SketchObject":
+            if build.is_ref_copy(o):
+                continue  # hidden internal copy of a reused sketch
             polys = []
             try:
                 for e in o.Shape.Edges:
@@ -2075,6 +2081,8 @@ def tree_get():
             for f in o.Group:
                 if f.TypeId == "App::Origin":
                     continue
+                if build.is_ref_copy(f):
+                    continue  # hidden internal copy of a reused sketch
                 feats.append({
                     "id": f.Name,
                     "label": f.Label,
@@ -2187,11 +2195,13 @@ def _reshow_loose_sketches(d):
                 if nm == "Sketcher::SketchObject":
                     consumed.add(it.Name)
     for o in d.Objects:
-        if o.TypeId == "Sketcher::SketchObject" and o.Name not in consumed:
+        if (o.TypeId == "Sketcher::SketchObject" and o.Name not in consumed
+                and not build.is_ref_copy(o)):
             try:
                 o.Visibility = True
             except Exception:
                 pass
+    build.gc_profile_copies(d)
 
 
 @method("history.undo")
@@ -2265,6 +2275,9 @@ def history_roll_to(bodyId, featureId=None):
     )
 
     for f in feats:
+        if build.is_ref_copy(f):
+            f.Visibility = False
+            continue
         if _kind(f.TypeId) in ("sketch", "datum"):
             vis = f is marker and not at_end
             f.Visibility = vis
@@ -2290,6 +2303,8 @@ def feature_rename(id, label):
 def feature_delete(id):
     d, o = _obj(id)
     d.removeObject(o.Name)
+    d.recompute()
+    build.gc_profile_copies(d)  # sweep hidden sketch copies this freed
     d.recompute()
     return {"deleted": id}
 
