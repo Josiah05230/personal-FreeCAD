@@ -120,5 +120,51 @@ if (haveEdges) {
 G.closeOp();
 await idle();
 
+// ---------- 5. clicking preview-solid faces mid-extrude must not lose the profile ----------
+note('sketch a rect, open extrude, then click faces of the live preview + empty space, then Finish');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+const s5 = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+await rpc('sketch.finish', {
+  sketchId: s5.sketchId,
+  elements: [{ type: 'rect', a: [-12, -12], b: [12, 12] }],
+  constraints: []
+});
+await G.refresh();
+await idle();
+G.selectSketch(s5.sketchId);
+await sleep(40);
+G.openOp('extrude');
+await sleep(60);
+// let the live preview build its Pad
+await waitFor(() => (G.getState().meshes[0] || {}).tris > 0, 4000);
+// now fumble: click a face of the preview solid, then empty space, then another face
+G.pick({ kind: 'face', bodyId: 'Body', sub: 'Face3', point: [0, 0, 0], normal: [1, 0, 0] }, false);
+await sleep(60);
+G.pick(null, false); // empty-space miss-click - must NOT drop the sketch profile
+await sleep(60);
+G.pick({ kind: 'face', bodyId: 'Body', sub: 'Face6', point: [0, 0, 0], normal: [0, 1, 0] }, false);
+await sleep(60);
+const selMid = G.getState().selection;
+note('selection after the fumbling: ' + JSON.stringify(selMid));
+assert(selMid.some((k) => /^sketch:/i.test(k)), 'the sketch profile is still selected after a miss-click');
+let applyErr = null;
+try {
+  await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 10 });
+} catch (e) {
+  applyErr = (e && e.message) || String(e);
+}
+await idle();
+const st5 = G.getState();
+note('after Finish: notice=' + (st5.notice || 'none') + ' err=' + (applyErr || 'none'));
+note('after Finish: bodies=' + JSON.stringify(st5.bodies.map((b) => b.features.map((f) => f.id + ':' + f.kind + (f.error ? '!ERR' : '')))));
+assert(!applyErr && (!st5.notice || !/no solid|has no solid/i.test(st5.notice)),
+  'Finish did not fail with "body has no solid" after clicking preview faces');
+assert(st5.bodies[0] && st5.bodies[0].features.filter((f) => f.kind === 'solid').length === 1,
+  'exactly one solid pad was committed (the sketch extrude), not zero');
+assert(st5.meshes.length === 1 && st5.meshes[0].tris > 0, 'a solid is on screen after Finish');
+assert(!st5.bodies.some((b) => b.features.some((f) => f.error)), 'no feature left in error');
+
 assert((await rpc('ping')).pong === true, 'engine still responds at end');
 note('repro complete');

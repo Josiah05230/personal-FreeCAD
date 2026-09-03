@@ -304,7 +304,11 @@ export function App(): JSX.Element {
         queueBusy: cmdRef.current.busy
       })
       if (!sel) {
-        if (!additive) setSelection([])
+        // a miss-click (empty space) must NOT wipe the op's inputs while a
+        // feature dialog is open - only Cancel does that. Otherwise it is easy
+        // to lose the profile sketch mid-extrude and end up picking a face of
+        // the now-orphaned preview solid.
+        if (!additive && opRef.current == null) setSelection([])
         return
       }
       // measure mode: every click adds a probe (face / edge / vertex), rolling
@@ -331,6 +335,19 @@ export function App(): JSX.Element {
         if (!additive) return [sel]
         const k = selKey(sel)
         if (cur.some((s) => selKey(s) === k)) return cur.filter((s) => selKey(s) !== k)
+        // extrude / revolve / loft already have a sketch profile: a face click
+        // is almost always a stray hit on the live-preview solid. Allow at most
+        // ONE extra face (an "up to" target) and never let a face pile up or
+        // shadow the sketch as a profile.
+        if (
+          sel.kind === 'face' &&
+          (opRef.current === 'extrude' || opRef.current === 'revolve' || opRef.current === 'loft') &&
+          cur.some((s) => s.kind === 'sketch') &&
+          cur.some((s) => s.kind === 'face')
+        ) {
+          trace('pick ignored: face on preview solid (sketch profile already set)', { op: opRef.current })
+          return cur
+        }
         // multi-face pick: once one face is chosen, only add coplanar faces
         // (clear the selection to start on a different plane). Only for extrude
         // / no dialog - shell, draft, etc. legitimately want faces on many planes.

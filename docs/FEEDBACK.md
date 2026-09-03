@@ -42,6 +42,23 @@ done, remove its line entirely rather than leaving a checked box.
 
 ## Recently addressed
 
+- "Errors if I make another extrude while the engine is still loading." Two
+  races, found with the new timestamped trace (client + engine, in
+  /tmp/gwtcad-run.log; on by default):
+  1. The sidecar's single-threaded HTTP server could not accept a second
+     concurrent request until an idle keep-alive connection timed out (~4s),
+     so overlapping calls (refreshScene fires three) stacked seconds of
+     latency onto <1ms of engine work. Now a threaded server + one dedicated
+     engine worker thread: boot refresh 8.2s -> 0.14s, "Apply extrude"
+     command 8s -> 65ms.
+  2. Finishing an extrude deleted the feature it had just committed - closing
+     the dialog fired its cleanup, which drained the (now committed) preview
+     feature. Guarded with a livePreviewRef.committing flag.
+  3. A miss-click on empty space while the Extrude dialog was open wiped the
+     profile sketch; the next face-click then landed on the orphaned preview
+     solid -> "that body has no solid yet". A miss-click no longer clears the
+     selection while a feature dialog is open, and a stray face-click on the
+     preview solid (when a sketch profile is already set) is ignored.
 - Revolve no longer wipes the body. A profile that crossed the revolve axis was
   swept into itself; PartDesign returned that as a "valid" sliver (not an error)
   so the whole solid appeared to vanish. Now: (1) a straddle check rejects it up
