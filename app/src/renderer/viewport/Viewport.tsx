@@ -476,7 +476,7 @@ export function Viewport({
 
       if (!st.content) return
       const sel = st.picker.pick(e, st.content)
-      onSelectRef.current?.(sel, e.shiftKey || e.ctrlKey)
+      onSelectRef.current?.(sel, e.shiftKey || e.ctrlKey || e.metaKey)
     }
     const onMove = (e: PointerEvent): void => {
       const st = stateRef.current

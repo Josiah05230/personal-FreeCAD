@@ -384,11 +384,19 @@ export function App(): JSX.Element {
       }
       const activeFilter = opSelKinds(opRef.current) ?? selFilter
       if (!activeFilter.includes(sel.kind as SelKind)) return // selection filter (narrowed while an op dialog is open)
-      // A feature dialog is open: a plain click must NOT wipe the op's inputs
-      // (its profile / refs). Treat every pick as additive so it accumulates
-      // extra refs (e.g. an "up to" face) instead - cancel the dialog to start
-      // a different selection.
-      if (opRef.current != null) additive = true
+      // A feature dialog is open. For ops with a SKETCH PROFILE (extrude /
+      // revolve / loft) a plain click must not wipe that profile, so force
+      // additive - cancel the dialog to start over. For edge/face ops (fillet,
+      // chamfer, shell, draft, hole) do the opposite the user expects: a plain
+      // click REPLACES the edge/face set (so a stray pick is easy to undo) and
+      // Ctrl / Shift / Cmd-click adds or removes one.
+      const dressUp =
+        opRef.current === 'fillet' ||
+        opRef.current === 'chamfer' ||
+        opRef.current === 'shell' ||
+        opRef.current === 'draft' ||
+        opRef.current === 'hole'
+      if (opRef.current != null && !dressUp) additive = true
       setSelection((cur) => {
         if (!additive) return [sel]
         const k = selKey(sel)
@@ -663,6 +671,10 @@ export function App(): JSX.Element {
     featureId: string | null
     kind: OpKind | null
     opSig: string
+    /** dress-up (fillet/chamfer/shell/draft/hole) preview: the edge/face sub
+     * list currently applied, so adding one more updates the feature's Base in
+     * place instead of tearing the whole preview down and rebuilding it */
+    baseSig: string
     /** applyOp is mid-commit - the dialog unmount it triggers must NOT drain
      * the preview feature (in the fast path that feature IS the commit) */
     committing: boolean
@@ -676,6 +688,7 @@ export function App(): JSX.Element {
     featureId: null,
     kind: null,
     opSig: '',
+    baseSig: '',
     committing: false,
     editing: null
   })
@@ -746,6 +759,7 @@ export function App(): JSX.Element {
     lp.featureId = null
     lp.kind = null
     lp.opSig = ''
+    lp.baseSig = ''
     if (!id) return
     trace('preview drain', { id })
     try {
@@ -1385,10 +1399,60 @@ export function App(): JSX.Element {
               continue
             }
 
-            // FAST PATH: the preview feature already exists and only its numbers
-            // changed - push them straight in (one recompute, one body meshed).
             const fast = previewProps(args.kind, args.v)
             const sig = previewSig(args.kind, args.v)
+
+            // DRESS-UP IN PLACE: fillet / chamfer / shell / draft / hole whose
+            // edge/face set (or number) changed - re-point the existing preview
+            // feature's Base and/or push the number. Never drain + rebuild, so
+            // adding a second fillet edge just restyles the current preview
+            // instead of it blinking away; a bad pick just shows a notice.
+            const dressUp =
+              args.kind === 'fillet' ||
+              args.kind === 'chamfer' ||
+              args.kind === 'shell' ||
+              args.kind === 'draft' ||
+              args.kind === 'hole'
+            if (dressUp && lp.featureId && lp.kind === args.kind) {
+              const wantEdges = args.kind === 'fillet' || args.kind === 'chamfer'
+              const subs = selection
+                .filter((s) => (wantEdges ? s.kind === 'edge' : s.kind === 'face'))
+                .map((s) => (s as { sub: string }).sub)
+                .sort()
+              const baseSig = subs.join(',')
+              try {
+                if (subs.length && baseSig !== lp.baseSig) {
+                  trace('preview dress-up setBase', { id: lp.featureId, subs })
+                  const { mesh } = await apiQuiet.previewSetBase(lp.featureId, subs)
+                  if (seq !== lp.seq) continue
+                  lp.baseSig = baseSig
+                  setMeshes((ms) => {
+                    const hit = ms.some((m) => m.id === mesh.id)
+                    return hit ? ms.map((m) => (m.id === mesh.id ? mesh : m)) : [...ms, mesh]
+                  })
+                }
+                if (fast) {
+                  const { mesh } = await apiQuiet.previewUpdate(lp.featureId, fast)
+                  if (seq !== lp.seq) continue
+                  setMeshes((ms) => {
+                    const hit = ms.some((m) => m.id === mesh.id)
+                    return hit ? ms.map((m) => (m.id === mesh.id ? mesh : m)) : [...ms, mesh]
+                  })
+                }
+                lp.opSig = sig
+                setSketchNotice(null)
+                trace('preview dress-up done', { ms: Math.round(performance.now() - t0) })
+              } catch (e) {
+                trace('preview dress-up error', { msg: (e as Error).message })
+                setSketchNotice(
+                  `Preview: ${(e as Error).message.replace(/^RPC \w+\.\w+:\s*/, '')}`
+                )
+              }
+              continue
+            }
+
+            // FAST PATH: the preview feature already exists and only its numbers
+            // changed - push them straight in (one recompute, one body meshed).
             if (lp.featureId && lp.kind === args.kind && lp.opSig === sig && fast) {
               trace('preview FAST', { id: lp.featureId, fast })
               const { mesh } = await apiQuiet.previewUpdate(lp.featureId, fast)
@@ -1426,6 +1490,24 @@ export function App(): JSX.Element {
             lp.featureId = newest?.id ?? null // only ever a brand-new feature
             lp.kind = args.kind
             lp.opSig = sig
+            // remember the dress-up edge/face set so a later add updates Base in
+            // place instead of coming back through this rebuild path
+            {
+              const we = args.kind === 'fillet' || args.kind === 'chamfer'
+              const du =
+                args.kind === 'fillet' ||
+                args.kind === 'chamfer' ||
+                args.kind === 'shell' ||
+                args.kind === 'draft' ||
+                args.kind === 'hole'
+              lp.baseSig = du
+                ? selection
+                    .filter((s) => (we ? s.kind === 'edge' : s.kind === 'face'))
+                    .map((s) => (s as { sub: string }).sub)
+                    .sort()
+                    .join(',')
+                : ''
+            }
             if (seq !== lp.seq) {
               await drainPreview() // a newer value already superseded this build
               continue

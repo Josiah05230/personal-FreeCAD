@@ -76,6 +76,7 @@ _NO_TXN = {
     "object.setVisibility", "visibility.setGroup",
     "datum.planePreview", "kicad.status", "sketch.solve",
     "feature.previewUpdate", "feature.editPreview", "feature.get",
+    "feature.previewSetBase",
 }
 
 

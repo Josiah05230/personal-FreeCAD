@@ -1273,6 +1273,51 @@ def feature_preview_update(featureId=None, props=None):
     return {"mesh": _owner_mesh(owner, shape)}
 
 
+@method("feature.previewSetBase")
+def feature_preview_set_base(id=None, subs=None):
+    """Live-preview path for a dress-up (fillet / chamfer / shell / draft / hole)
+    whose EDGE or FACE set changed: re-point its Base to `subs` and recompute
+    once, in place. No drain, no rebuild - so adding a second fillet edge just
+    restyles the existing preview instead of it blinking away. In registry._NO_TXN."""
+    d = session.doc(create=False)
+    if d is None:
+        raise RpcError(APP_ERROR, "no document")
+    o = d.getObject(id) if id else None
+    if o is None:
+        raise RpcError(APP_ERROR, "no object %r" % id)
+    base = getattr(o, "Base", None)
+    if not base or not isinstance(base, tuple):
+        raise RpcError(APP_ERROR, "%r has no editable Base" % id)
+    o.Base = (base[0], [s for s in (subs or []) if s])
+    d.recompute()
+    body = None
+    try:
+        body = o.getParentGeoFeatureGroup()
+    except Exception:
+        body = None
+    owner = body if (body is not None and body.TypeId == "PartDesign::Body") else o
+    shape = getattr(owner, "Shape", None)
+    ok = shape is not None and not shape.isNull()
+    try:
+        ok = ok and shape.isValid()
+    except Exception:
+        ok = False
+    # the feature can error (bad edge link, size too big) while body.Shape still
+    # holds the last good solid - surface that as a preview notice too
+    try:
+        st = getattr(o, "State", None) or []
+        os_ = getattr(o, "Shape", None)
+        if ("Error" in st) or ("Invalid" in st) or (os_ is None or os_.isNull()):
+            ok = False
+    except Exception:
+        pass
+    if not ok:
+        raise RpcError(APP_ERROR,
+                       "that edge / face selection produced an invalid shape - "
+                       "try a smaller size or a different pick")
+    return {"mesh": _owner_mesh(owner, shape)}
+
+
 def _owner_mesh(owner, shape):
     """Tessellate `shape` (cached by signature) into a render buffer keyed by the
     owner's name - shared by feature.previewUpdate and feature.editPreview."""

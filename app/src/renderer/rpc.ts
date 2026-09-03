@@ -344,6 +344,10 @@ export const apiQuiet = {
    */
   previewUpdate: (featureId: string, props: Record<string, number | boolean>) =>
     rpcQuiet<{ mesh: RenderMesh }>('feature.previewUpdate', { featureId, props }),
+  /** live preview when a dress-up's edge / face set changed: re-point its Base
+   * in place (no drain + rebuild), returns the body's fresh mesh */
+  previewSetBase: (id: string, subs: string[]) =>
+    rpcQuiet<{ mesh: RenderMesh }>('feature.previewSetBase', { id, subs }),
   /** delete one feature by id, no spinner - used to discard a live-preview feature */
   deleteFeature: (id: string) => rpcQuiet<{ deleted: string }>('feature.delete', { id }),
   /** read a committed feature's params + refs so its dialog can reopen */

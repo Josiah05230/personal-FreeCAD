@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, type Selection } from '../rpc'
 import { trace } from '../trace'
 
@@ -372,6 +372,7 @@ export function OperationDialog({
 
   // live feature preview: debounce value / selection changes and ask the app to
   // build the feature in the engine so it renders as you tune the number
+  const lastFired = useRef('')
   useEffect(() => {
     if (!kind || !LIVE_PREVIEW.has(kind) || !onLivePreview) return
     if (!selection.length) return
@@ -379,6 +380,16 @@ export function OperationDialog({
     // fast path is a single recompute, so this can stay snappy while typing
     trace('dialog preview scheduled', { kind, values })
     const t = setTimeout(() => {
+      // an unrelated re-render (or React StrictMode) re-runs this effect with an
+      // identical kind / values / selection - skip the redundant engine round
+      // trip, which is what makes the preview flicker while you drag a number
+      const key = JSON.stringify({
+        kind,
+        values,
+        sel: selection.map((s) => JSON.stringify(s)).sort()
+      })
+      if (key === lastFired.current) return
+      lastFired.current = key
       trace('dialog preview fire', { kind, values })
       onLivePreview(kind, values)
     }, 130)
