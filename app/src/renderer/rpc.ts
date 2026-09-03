@@ -110,6 +110,21 @@ export type SketchRef =
   | { kind: 'plane'; id: string }
   | { kind: 'face'; bodyId: string; sub: string }
 
+/** everything the operation dialog needs to reopen a committed feature */
+export interface FeatureEdit {
+  id: string
+  label: string
+  kind: string | null // an OpKind, or null when the feature has no edit dialog
+  values?: Record<string, number | string | boolean>
+  refs?: {
+    profile?: { kind: 'sketch'; id: string } | { kind: 'face'; bodyId: string; sub: string }
+    edges?: string[]
+    faces?: string[]
+    axis?: GeomRef
+  }
+  exprs?: Record<string, string>
+}
+
 export interface SketchRender {
   id: string
   label: string
@@ -331,6 +346,14 @@ export const apiQuiet = {
     rpcQuiet<{ mesh: RenderMesh }>('feature.previewUpdate', { featureId, props }),
   /** delete one feature by id, no spinner - used to discard a live-preview feature */
   deleteFeature: (id: string) => rpcQuiet<{ deleted: string }>('feature.delete', { id }),
+  /** read a committed feature's params + refs so its dialog can reopen */
+  featureGet: (id: string) => rpcQuiet<FeatureEdit>('feature.get', { id }),
+  /** live preview while editing: recompute ONLY this feature, get its body mesh */
+  editPreview: (
+    id: string,
+    values: Record<string, number | string | boolean>,
+    refs: FeatureEdit['refs']
+  ) => rpcQuiet<{ mesh: RenderMesh }>('feature.editPreview', { id, values, refs }),
   sceneGet: () =>
     rpcQuiet<{
       meshes: RenderMesh[]
@@ -425,6 +448,13 @@ export const api = {
     }),
   fillet: (edges: string[], radius: number) =>
     rpc<{ bodies: BodyTree[] }>('feature.fillet', { edges, radius }),
+  /** commit an edit to an existing feature (params + references) in place */
+  featureUpdate: (
+    id: string,
+    values: Record<string, number | string | boolean>,
+    refs: FeatureEdit['refs'],
+    exprs: Record<string, string> = {}
+  ) => rpc<{ bodies: BodyTree[] }>('feature.update', { id, values, refs, exprs }),
   chamfer: (edges: string[], size: number) =>
     rpc<{ bodies: BodyTree[] }>('feature.chamfer', { edges, size }),
   shell: (faces: string[], thickness: number) =>

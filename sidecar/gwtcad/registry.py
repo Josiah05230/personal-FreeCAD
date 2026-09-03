@@ -75,7 +75,7 @@ _NO_TXN = {
     "io.export", "io.exportStep", "io.exportStl",
     "object.setVisibility", "visibility.setGroup",
     "datum.planePreview", "kicad.status", "sketch.solve",
-    "feature.previewUpdate",
+    "feature.previewUpdate", "feature.editPreview", "feature.get",
 }
 
 

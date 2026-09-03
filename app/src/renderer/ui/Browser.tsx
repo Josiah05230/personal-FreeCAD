@@ -141,7 +141,10 @@ export function Browser({
   const featMenu = (id: string, kind?: 'sketch'): MenuItem[] => [
     kind === 'sketch'
       ? { label: 'Edit Sketch', onClick: () => handlers.onEdit(id) }
-      : { label: 'Edit Value…', onClick: () => handlers.onEditDim(id) },
+      : { label: 'Edit Feature…', onClick: () => handlers.onEdit(id) },
+    ...(kind === 'sketch'
+      ? []
+      : [{ label: 'Edit Value…', onClick: () => handlers.onEditDim(id) }]),
     { label: 'Rename…', onClick: () => handlers.onRename(id) },
     { separator: true, label: '' },
     { label: 'Delete', danger: true, onClick: () => handlers.onDelete(id) }

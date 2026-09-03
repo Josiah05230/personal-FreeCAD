@@ -278,7 +278,9 @@ export function OperationDialog({
   onPreview,
   onLivePreview,
   onLivePreviewEnd,
-  handleDrag
+  handleDrag,
+  initialValues,
+  editingLabel
 }: {
   kind: OpKind | null
   selection: Selection[]
@@ -288,6 +290,10 @@ export function OperationDialog({
   onLivePreview?: (kind: OpKind, values: OpValues) => void
   onLivePreviewEnd?: () => void
   handleDrag?: { delta: number; phase: 'move' | 'end'; seq: number } | null
+  /** seed the fields from an existing feature (edit mode) instead of the defaults */
+  initialValues?: OpValues | null
+  /** feature label when editing - drives the title / button text */
+  editingLabel?: string | null
 }): JSX.Element | null {
   const spec = kind ? SPECS[kind] : null
   const [values, setValues] = useState<OpValues>({})
@@ -297,11 +303,14 @@ export function OperationDialog({
   useEffect(() => {
     if (spec) {
       const init: OpValues = {}
-      for (const f of spec.fields) init[f.key] = f.default
+      for (const f of spec.fields) {
+        const seed = initialValues ? initialValues[f.key] : undefined
+        init[f.key] = seed !== undefined ? seed : f.default
+      }
       setValues(init)
       setPreview({})
     }
-  }, [kind]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [kind, initialValues]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Offset Plane: picking a second piece of geometry while in Distance mode
   // means "put the plane there" - switch to To object and start the extra
@@ -444,6 +453,8 @@ export function OperationDialog({
                 : null)
 
   const ready =
+    // editing a committed feature: its refs are already seeded, Update is always allowed
+    !!editingLabel ||
     (datumPlaneToObj && selection.length >= 2) ||
     (kind === 'datumPlane' && !datumPlaneToObj && planeSel.length >= 1) ||
     spec.needs === 'none' ||
@@ -463,7 +474,9 @@ export function OperationDialog({
 
   return (
     <div className="opdlg">
-      <div className="opdlg-title">{spec.title}</div>
+      <div className="opdlg-title">
+        {editingLabel ? `Edit ${editingLabel}` : spec.title}
+      </div>
       {needMsg && (
         <div className={ready ? 'opdlg-need ok' : 'opdlg-need'}>{needMsg}</div>
       )}
@@ -514,7 +527,7 @@ export function OperationDialog({
           Cancel
         </button>
         <button className="opdlg-ok" disabled={!ready || busy} onClick={() => void submit()}>
-          {busy ? '…' : 'OK'}
+          {busy ? '…' : editingLabel ? 'Update' : 'OK'}
         </button>
       </div>
     </div>

@@ -1042,6 +1042,12 @@ def feature_preview_update(featureId=None, props=None):
         raise RpcError(APP_ERROR,
                        "that value produced an invalid shape - try another")
 
+    return {"mesh": _owner_mesh(owner, shape)}
+
+
+def _owner_mesh(owner, shape):
+    """Tessellate `shape` (cached by signature) into a render buffer keyed by the
+    owner's name - shared by feature.previewUpdate and feature.editPreview."""
     sig = _shape_sig(shape)
     cached = _TESS_CACHE.get(owner.Name)
     if sig is not None and cached is not None and cached[0] == sig:
@@ -1057,7 +1063,239 @@ def feature_preview_update(featureId=None, props=None):
     col = session.body_color(owner.Name)
     if col:
         buf["color"] = col
-    return {"mesh": buf}
+    return buf
+
+
+# --------------------------------------------------------------------------- #
+# edit an existing feature: read its params/refs, write them back, live preview
+# --------------------------------------------------------------------------- #
+
+# FreeCAD TypeId -> the OpKind string the client dialog uses
+_TYPE_KIND = {
+    "PartDesign::Pad": "extrude",
+    "PartDesign::Pocket": "extrude",
+    "PartDesign::Revolution": "revolve",
+    "PartDesign::Groove": "revolve",
+    "PartDesign::Fillet": "fillet",
+    "PartDesign::Chamfer": "chamfer",
+    "PartDesign::Thickness": "shell",
+    "PartDesign::Draft": "draft",
+    "PartDesign::Hole": "hole",
+}
+
+
+def _profile_ref(o):
+    """{kind:'sketch',id} or {kind:'face',bodyId,sub} for a feature's Profile.
+    A hidden reuse-copy is reported as its SOURCE sketch so the UI re-picks the
+    visible one."""
+    prof = getattr(o, "Profile", None)
+    if prof is None:
+        return None
+    if isinstance(prof, (tuple, list)):
+        feat = prof[0] if prof else None
+        subs = list(prof[1]) if len(prof) > 1 else []
+        if feat is None:
+            return None
+        if getattr(feat, "TypeId", "") == "Sketcher::SketchObject":
+            src = getattr(feat, build.REF_TAG, "")
+            return {"kind": "sketch", "id": src or feat.Name}
+        b = feat.getParentGeoFeatureGroup() or feat
+        return {"kind": "face", "bodyId": b.Name, "sub": subs[0] if subs else ""}
+    if getattr(prof, "TypeId", "") == "Sketcher::SketchObject":
+        src = getattr(prof, build.REF_TAG, "")
+        return {"kind": "sketch", "id": src or prof.Name}
+    return None
+
+
+def _axis_ref(o):
+    ax = getattr(o, "ReferenceAxis", None)
+    if not ax:
+        return None
+    feat, subs = (ax[0], list(ax[1])) if isinstance(ax, (tuple, list)) else (ax, [])
+    if feat is None:
+        return None
+    role = getattr(feat, "Role", "")
+    if role:
+        return {"kind": "origin", "role": role}
+    if getattr(feat, "TypeId", "") == "Sketcher::SketchObject":
+        return {"kind": "sketch", "id": feat.Name, "sub": subs[0] if subs else None}
+    b = feat.getParentGeoFeatureGroup() or feat
+    return {"kind": "edge", "bodyId": getattr(b, "Name", ""), "sub": subs[0] if subs else ""}
+
+
+def _set_feature_values(o, values):
+    """Write dialog OpValues back onto a PartDesign feature (best effort)."""
+    T = o.TypeId
+    v = values or {}
+
+    def num(prop, key):
+        if key in v and v[key] is not None:
+            try:
+                setattr(o, prop, float(v[key]))
+            except Exception:
+                pass
+
+    def flag(prop, key):
+        if key in v:
+            try:
+                setattr(o, prop, bool(v[key]))
+            except Exception:
+                pass
+
+    if T in ("PartDesign::Pad", "PartDesign::Pocket"):
+        num("Length", "length")
+        flag("Reversed", "reversed")
+        if "midplane" in v:
+            try:
+                if hasattr(o, "SideType"):
+                    o.SideType = "Symmetric" if v["midplane"] else "Dimension"
+                else:
+                    o.Midplane = bool(v["midplane"])
+            except Exception:
+                pass
+    elif T in ("PartDesign::Revolution", "PartDesign::Groove"):
+        num("Angle", "angle")
+        flag("Reversed", "reversed")
+    elif T == "PartDesign::Fillet":
+        num("Radius", "radius")
+    elif T == "PartDesign::Chamfer":
+        num("Size", "size")
+    elif T == "PartDesign::Thickness":
+        num("Value", "thickness")
+    elif T == "PartDesign::Draft":
+        num("Angle", "angle")
+    elif T == "PartDesign::Hole":
+        num("Diameter", "diameter")
+        num("Depth", "depth")
+
+
+def _set_feature_refs(d, o, body, refs):
+    """Re-point a feature's Profile / Base / ReferenceAxis from UI refs."""
+    r = refs or {}
+    T = o.TypeId
+    if T in ("PartDesign::Pad", "PartDesign::Pocket",
+             "PartDesign::Revolution", "PartDesign::Groove"):
+        pr = r.get("profile")
+        if pr:
+            if pr.get("kind") == "sketch":
+                sk = d.getObject(pr.get("id") or "")
+                if sk is not None:
+                    o.Profile = build.reusable_profile(d, body, sk)
+            elif pr.get("kind") == "face":
+                src = d.getObject(pr.get("bodyId") or "")
+                base = src.Tip if (src is not None and src.TypeId == "PartDesign::Body") else src
+                if base is not None and pr.get("sub"):
+                    o.Profile = (base, [pr["sub"]])
+        ax = r.get("axis")
+        if ax and hasattr(o, "ReferenceAxis"):
+            try:
+                o.ReferenceAxis = _resolve_ref(d, body, ax)
+            except Exception:
+                pass
+    elif T in ("PartDesign::Fillet", "PartDesign::Chamfer",
+               "PartDesign::Thickness", "PartDesign::Draft"):
+        subs = r.get("edges") or r.get("faces")
+        if subs and getattr(o, "Base", None):
+            o.Base = (o.Base[0], list(subs))
+
+
+@method("feature.get")
+def feature_get(id):
+    """Everything the operation dialog needs to reopen a committed feature."""
+    d, o = _obj(id)
+    kind = _TYPE_KIND.get(o.TypeId)
+    if kind is None:
+        return {"id": id, "label": o.Label, "kind": None}
+    T = o.TypeId
+    values, refs = {}, {}
+    if T in ("PartDesign::Pad", "PartDesign::Pocket"):
+        values["length"] = _prop_value(o, "Length")
+        values["reversed"] = bool(getattr(o, "Reversed", False))
+        st = getattr(o, "SideType", None)
+        values["midplane"] = (str(st) == "Symmetric") if st is not None \
+            else bool(getattr(o, "Midplane", False))
+        values["mode"] = "To object" if str(getattr(o, "Type", "Length")) == "UpToFace" else "Blind"
+        values["operation"] = "Cut" if T == "PartDesign::Pocket" else "Join"
+        refs["profile"] = _profile_ref(o)
+    elif T in ("PartDesign::Revolution", "PartDesign::Groove"):
+        values["angle"] = _prop_value(o, "Angle")
+        values["cut"] = (T == "PartDesign::Groove")
+        values["reversed"] = bool(getattr(o, "Reversed", False))
+        refs["profile"] = _profile_ref(o)
+        refs["axis"] = _axis_ref(o)
+    elif T == "PartDesign::Fillet":
+        values["radius"] = _prop_value(o, "Radius")
+        refs["edges"] = list(o.Base[1]) if getattr(o, "Base", None) else []
+    elif T == "PartDesign::Chamfer":
+        values["size"] = _prop_value(o, "Size")
+        refs["edges"] = list(o.Base[1]) if getattr(o, "Base", None) else []
+    elif T == "PartDesign::Thickness":
+        values["thickness"] = _prop_value(o, "Value")
+        refs["faces"] = list(o.Base[1]) if getattr(o, "Base", None) else []
+    elif T == "PartDesign::Draft":
+        values["angle"] = _prop_value(o, "Angle")
+        refs["faces"] = list(o.Base[1]) if getattr(o, "Base", None) else []
+    elif T == "PartDesign::Hole":
+        values["diameter"] = _prop_value(o, "Diameter")
+        values["depth"] = _prop_value(o, "Depth")
+    return {"id": id, "label": o.Label, "kind": kind,
+            "values": values, "refs": refs, "exprs": session.feature_exprs(id)}
+
+
+@method("feature.update")
+def feature_update(id, values=None, refs=None, exprs=None):
+    """Commit an edit: write params + refs onto the existing feature, full
+    recompute, surgical rollback on failure, then return the tree."""
+    d, o = _obj(id)
+    if _TYPE_KIND.get(o.TypeId) is None:
+        raise RpcError(APP_ERROR, "%s cannot be edited this way" % o.Label)
+    body = o.getParentGeoFeatureGroup()
+    prev_tip_name = body.Tip.Name if (body is not None and getattr(body, "Tip", None)) else None
+    _set_feature_values(o, values or {})
+    _set_feature_refs(d, o, body, refs or {})
+    for prop, e in (exprs or {}).items():
+        if not (e and hasattr(o, prop)):
+            continue
+        try:
+            k = "angle" if prop in _ANGLE_PROPS else "length"
+            setattr(o, prop, _expr.evaluate(str(e), k, session.params()))
+            session.set_feature_expr(id, prop, str(e))
+        except Exception:
+            pass
+    build.finalize_or_rollback(
+        d, body, o, prev_tip_name, [],
+        "that change produced an invalid shape - revert it and try again")
+    build.gc_profile_copies(d)
+    d.recompute()
+    return tree_get()
+
+
+@method("feature.editPreview")
+def feature_edit_preview(id=None, values=None, refs=None):
+    """Live preview while editing: write params/refs, recompute ONLY this
+    feature (not the downstream chain), return its body's fresh mesh. In
+    registry._NO_TXN - adds no undo step."""
+    d, o = _obj(id)
+    body = o.getParentGeoFeatureGroup()
+    _set_feature_values(o, values or {})
+    _set_feature_refs(d, o, body, refs or {})
+    try:
+        d.recompute([o, body] if body is not None else [o])
+    except Exception:
+        d.recompute()
+    owner = body if (body is not None and body.TypeId == "PartDesign::Body") else o
+    shape = getattr(owner, "Shape", None)
+    if shape is None or shape.isNull():
+        tip = getattr(body, "Tip", None) if body is not None else None
+        shape = getattr(tip, "Shape", None)
+    ok = shape is not None and not shape.isNull()
+    try:
+        ok = ok and shape.isValid()
+    except Exception:
+        ok = False
+    if not ok:
+        raise RpcError(APP_ERROR, "that value produced an invalid shape - try another")
+    return {"mesh": _owner_mesh(owner, shape)}
 
 
 def _frame(sk):

@@ -295,6 +295,12 @@ export function App(): JSX.Element {
   measureModeRef.current = measureMode
   const opRef = useRef<OpKind | null>(null)
   opRef.current = op
+
+  const openOp = useCallback((k: OpKind | null) => {
+    trace('ACTION openOp', { k, from: opRef.current, queueBusy: cmdRef.current.busy })
+    setOp(k)
+  }, [])
+
   const onSelect = useCallback(
     (sel: Selection | null, additive: boolean) => {
       trace('ACTION pick', {
@@ -608,6 +614,9 @@ export function App(): JSX.Element {
     /** applyOp is mid-commit - the dialog unmount it triggers must NOT drain
      * the preview feature (in the fast path that feature IS the commit) */
     committing: boolean
+    /** editing an existing feature: id of that feature. Preview then recomputes
+     * only it (no throwaway feature, no downstream rebuild until Finish). */
+    editing: string | null
   }>({
     seq: 0,
     running: false,
@@ -615,8 +624,19 @@ export function App(): JSX.Element {
     featureId: null,
     kind: null,
     opSig: '',
-    committing: false
+    committing: false,
+    editing: null
   })
+  // full edit context: the feature being edited + a snapshot of its committed
+  // params/refs so Cancel can put it back (editPreview mutates it in place).
+  const editingFeatureRef = useRef<{
+    id: string
+    label: string
+    values: OpValues
+    refs: import('./rpc').FeatureEdit['refs']
+  } | null>(null)
+  const [editInit, setEditInit] = useState<OpValues | null>(null)
+  const [editLabel, setEditLabel] = useState<string | null>(null)
 
   // signature of the inputs that decide the feature's shape topology (so a
   // number tweak keeps the fast path but a Join->Cut switch forces a rebuild)
@@ -636,6 +656,34 @@ export function App(): JSX.Element {
       String(v.cut ?? '')
     ].join('|')
   }, [selection])
+
+  // current selection -> the ref shape feature.update / feature.editPreview want
+  const buildEditRefs = useCallback(
+    (kind: OpKind): import('./rpc').FeatureEdit['refs'] => {
+      const refs: import('./rpc').FeatureEdit['refs'] = {}
+      const sk = selection.find((s) => s.kind === 'sketch') as { sketchId: string } | undefined
+      const fc = selection.filter((s) => s.kind === 'face') as Array<{ bodyId: string; sub: string }>
+      const ed = selection.filter((s) => s.kind === 'edge') as Array<{ bodyId: string; sub: string }>
+      const pl = selection.find((s) => s.kind === 'plane') as
+        | { role?: string; planeId: string }
+        | undefined
+      if (kind === 'extrude' || kind === 'revolve') {
+        if (sk) refs.profile = { kind: 'sketch', id: sk.sketchId }
+        else if (fc[0]) refs.profile = { kind: 'face', bodyId: fc[0].bodyId, sub: fc[0].sub }
+        if (kind === 'revolve') {
+          if (ed[0]) refs.axis = { kind: 'edge', bodyId: ed[0].bodyId, sub: ed[0].sub }
+          else if (pl?.role) refs.axis = { kind: 'origin', role: pl.role }
+          else if (pl) refs.axis = { kind: 'plane', id: pl.planeId }
+        }
+      } else if (kind === 'fillet' || kind === 'chamfer') {
+        refs.edges = ed.map((e) => e.sub)
+      } else if (kind === 'shell' || kind === 'draft') {
+        refs.faces = fc.map((f) => f.sub)
+      }
+      return refs
+    },
+    [selection]
+  )
 
   // discard the live-preview feature (if any) by DELETING it by id - deterministic,
   // it can never touch the user's committed features the way api.undo() could.
@@ -723,11 +771,40 @@ export function App(): JSX.Element {
 
   const applyOpImpl = useCallback(
     async (kind: OpKind, v: OpValues, exprs: Record<string, string> = {}) => {
+      const lp = livePreviewRef.current
+
+      // EDIT COMMIT: reopened an existing feature - write params + refs back in
+      // place (feature.update), then roll the marker home. No create, no promote.
+      const edit = editingFeatureRef.current
+      if (edit) {
+        lp.committing = true
+        lp.seq++
+        lp.editing = null
+        editingFeatureRef.current = null
+        setEditInit(null)
+        setEditLabel(null)
+        setOp(null)
+        try {
+          await api.featureUpdate(edit.id, v, buildEditRefs(kind), exprs)
+        } finally {
+          try {
+            if (bodyId) await apiQuiet.rollTo(bodyId, null) // back to the tip
+          } catch {
+            /* refreshScene below re-syncs anyway */
+          }
+          rollCacheRef.current.clear()
+          await refreshScene()
+          markDirty()
+          setSelection([])
+          lp.committing = false
+        }
+        return
+      }
+
       // FAST COMMIT: the live preview already built exactly this feature (same
       // profile, same operation), so keep it instead of undo + re-extrude +
       // full scene refresh. Only its final number might differ if Finish beat
       // the debounce - push that in (~8ms) and we are done.
-      const lp = livePreviewRef.current
       // from here until we return / finish, the dialog unmount that setOp(null)
       // triggers must not let endLivePreview drain the preview feature - in the
       // fast path that feature IS the thing we are committing
@@ -1023,7 +1100,17 @@ export function App(): JSX.Element {
         livePreviewRef.current.committing = false
       }
     },
-    [selection, afterEdit, drainPreview, previewProps, previewSig]
+    [
+      selection,
+      afterEdit,
+      drainPreview,
+      previewProps,
+      previewSig,
+      buildEditRefs,
+      bodyId,
+      refreshScene,
+      markDirty
+    ]
   )
 
   // public entry: every apply goes through the serialised queue, so a second
@@ -1186,6 +1273,32 @@ export function App(): JSX.Element {
               trace('preview skip: no usable value, keeping current')
               continue
             }
+
+            // EDIT MODE: recompute ONLY the feature being edited (its downstream
+            // chain stays as-is until Finish). No throwaway feature, no drain.
+            if (lp.editing) {
+              trace('preview EDIT', { id: lp.editing })
+              try {
+                const { mesh } = await apiQuiet.editPreview(
+                  lp.editing,
+                  args.v,
+                  buildEditRefs(args.kind)
+                )
+                if (seq !== lp.seq) continue
+                setMeshes((ms) => {
+                  const hit = ms.some((m) => m.id === mesh.id)
+                  return hit ? ms.map((m) => (m.id === mesh.id ? mesh : m)) : [...ms, mesh]
+                })
+                setSketchNotice(null)
+              } catch (e) {
+                trace('preview EDIT error', { msg: (e as Error).message })
+                setSketchNotice(
+                  `Preview: ${(e as Error).message.replace(/^RPC \w+\.\w+:\s*/, '')}`
+                )
+              }
+              continue
+            }
+
             // FAST PATH: the preview feature already exists and only its numbers
             // changed - push them straight in (one recompute, one body meshed).
             const fast = previewProps(args.kind, args.v)
@@ -1264,12 +1377,12 @@ export function App(): JSX.Element {
         lp.running = false
       }
     },
-    [previewCall, previewProps, previewSig, previewHasValue, drainPreview, refreshMeshesOnly, selection, bodies]
+    [previewCall, previewProps, previewSig, previewHasValue, drainPreview, refreshMeshesOnly, selection, bodies, buildEditRefs]
   )
 
   const endLivePreview = useCallback(async () => {
     const lp = livePreviewRef.current
-    trace('preview end', { featureId: lp.featureId, committing: lp.committing })
+    trace('preview end', { featureId: lp.featureId, editing: lp.editing, committing: lp.committing })
     // applyOp is promoting / rebuilding this preview right now - it owns the
     // feature's fate; draining here would delete the feature being committed
     if (lp.committing) {
@@ -1280,11 +1393,29 @@ export function App(): JSX.Element {
     lp.seq++
     lp.pending = false
     setSketchNotice(null)
+    // Cancel while editing: editPreview mutated the real feature in place, so
+    // put its committed params/refs back, then roll the marker home.
+    if (lp.editing) {
+      const snap = editingFeatureRef.current
+      lp.editing = null
+      editingFeatureRef.current = null
+      setEditInit(null)
+      setEditLabel(null)
+      try {
+        if (snap) await api.featureUpdate(snap.id, snap.values, snap.refs ?? {})
+        if (bodyId) await apiQuiet.rollTo(bodyId, null)
+      } catch {
+        /* refreshScene re-syncs */
+      }
+      rollCacheRef.current.clear()
+      await refreshScene()
+      return
+    }
     if (lp.featureId) {
       await drainPreview()
       await refreshScene()
     }
-  }, [drainPreview, refreshScene])
+  }, [drainPreview, refreshScene, bodyId])
 
   const cachePut = useCallback(
     (key: string, val: { scene: Awaited<ReturnType<typeof api.sceneGet>>; tree: Awaited<ReturnType<typeof api.treeGet>> }) => {
@@ -1531,6 +1662,83 @@ export function App(): JSX.Element {
       }
     },
     [refreshScene, markDirty]
+  )
+
+  // reopen a committed feature in its real operation dialog: values + references
+  // editable, live-previewed against just that feature, applied in place.
+  const editFeature = useCallback(
+    async (id: string) => {
+      trace('ACTION editFeature', { id })
+      let info: import('./rpc').FeatureEdit
+      try {
+        info = await apiQuiet.featureGet(id)
+      } catch (e) {
+        window.alert((e as Error).message)
+        return
+      }
+      if (!info.kind) {
+        // patterns / mirror / datums have no full dialog yet - quick value edit
+        return editFeatureDim(id)
+      }
+      const kind = info.kind as OpKind
+      const r = info.refs ?? {}
+      const bid = bodyId ?? bodies[0]?.id ?? ''
+      const sels: Selection[] = []
+      if (r.profile?.kind === 'sketch')
+        sels.push({ kind: 'sketch', sketchId: r.profile.id } as Selection)
+      if (r.profile?.kind === 'face')
+        sels.push({
+          kind: 'face',
+          bodyId: r.profile.bodyId,
+          sub: r.profile.sub,
+          point: [0, 0, 0]
+        } as Selection)
+      for (const e of r.edges ?? [])
+        sels.push({ kind: 'edge', bodyId: bid, sub: e, point: [0, 0, 0] } as Selection)
+      for (const f of r.faces ?? [])
+        sels.push({ kind: 'face', bodyId: bid, sub: f, point: [0, 0, 0] } as Selection)
+      if (r.axis?.kind === 'edge')
+        sels.push({
+          kind: 'edge',
+          bodyId: r.axis.bodyId,
+          sub: r.axis.sub,
+          point: [0, 0, 0]
+        } as Selection)
+      if (r.axis?.kind === 'origin')
+        sels.push({ kind: 'plane', planeId: '', role: r.axis.role } as Selection)
+
+      editingFeatureRef.current = {
+        id,
+        label: info.label,
+        values: info.values ?? {},
+        refs: r
+      }
+      livePreviewRef.current.editing = id
+      livePreviewRef.current.seq++
+      setEditInit(info.values ?? {})
+      setEditLabel(info.label)
+      setSelection(sels)
+      // show the model as of this feature while editing (downstream hidden)
+      try {
+        if (bid) await apiQuiet.rollTo(bid, id)
+        await refreshScene()
+      } catch {
+        /* the dialog still opens; preview will surface any issue */
+      }
+      openOp(kind)
+    },
+    [bodyId, bodies, editFeatureDim, refreshScene, openOp]
+  )
+
+  // double-click / "Edit…" on any timeline or browser row: sketches open the
+  // sketcher, everything else opens its operation dialog for a full edit.
+  const onEditRow = useCallback(
+    (id: string) => {
+      const f = bodies.flatMap((b) => b.features).find((x) => x.id === id)
+      if (f?.kind === 'sketch' || sketches.some((s) => s.id === id)) return void editSketch(id)
+      void editFeature(id)
+    },
+    [bodies, sketches, editSketch, editFeature]
   )
 
   const toggleVisibility = useCallback((id: string, visible: boolean) => {
@@ -1841,11 +2049,6 @@ export function App(): JSX.Element {
       )
   }, [selection, jointType, refreshScene])
 
-  const openOp = useCallback((k: OpKind | null) => {
-    trace('ACTION openOp', { k, from: opRef.current, queueBusy: cmdRef.current.busy })
-    setOp(k)
-  }, [])
-
   // test / automation bridge - drives the same handlers the buttons call, so an
   // out-of-band script can exercise the app end to end (see test/e2e).
   useEffect(() => {
@@ -1880,6 +2083,7 @@ export function App(): JSX.Element {
       undo: () => doUndo(),
       redo: () => doRedo(),
       deleteFeature: (id: string) => deleteFeature(id),
+      editFeature: (id: string) => editFeature(id),
       rollTo: (fid: string | null) => rollTo(fid),
 
       // --- observe ---
@@ -1911,6 +2115,7 @@ export function App(): JSX.Element {
     doUndo,
     doRedo,
     deleteFeature,
+    editFeature,
     rollTo,
     onSelect,
     openOp,
@@ -2437,7 +2642,7 @@ export function App(): JSX.Element {
                       onToggleGroup: toggleGroup,
                       onRename: renameFeature,
                       onDelete: deleteFeature,
-                      onEdit: (id) => void editSketch(id),
+                      onEdit: (id) => onEditRow(id),
                       onEditDim: (id) => void editFeatureDim(id),
                       onSelect: (sel, add) => onSelect(sel, add),
                       onCalibrateCanvas: (id) => startCalibrate(id),
@@ -2465,6 +2670,8 @@ export function App(): JSX.Element {
                       onLivePreview={runLivePreview}
                       onLivePreviewEnd={endLivePreview}
                       handleDrag={planeHandleDrag}
+                      initialValues={editInit}
+                      editingLabel={editLabel}
                     />
                   )}
                   {measureMode && (
@@ -2506,7 +2713,7 @@ export function App(): JSX.Element {
                     bodies={bodies}
                     handlers={{
                       onRollTo: rollTo,
-                      onEdit: (id) => void editSketch(id),
+                      onEdit: (id) => onEditRow(id),
                       onEditDim: (id) => void editFeatureDim(id),
                       onRename: renameFeature,
                       onDelete: deleteFeature,

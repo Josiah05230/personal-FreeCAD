@@ -206,7 +206,10 @@ export function Timeline({
     return [
       f?.kind === 'sketch'
         ? { label: 'Edit Sketch', onClick: () => handlers.onEdit(id) }
-        : { label: 'Edit Value…', onClick: () => handlers.onEditDim(id) },
+        : { label: 'Edit Feature…', onClick: () => handlers.onEdit(id) },
+      ...(f?.kind === 'sketch'
+        ? []
+        : [{ label: 'Edit Value…', onClick: () => handlers.onEditDim(id) }]),
       { label: 'Rename…', onClick: () => handlers.onRename(id) },
       { label: 'Move timeline here', onClick: () => handlers.onRollTo(id) },
       {
@@ -267,9 +270,7 @@ export function Timeline({
                 (selected.has(f.id) ? ' selected' : '')
               }
               title={`${f.label}  ·  ${f.opType}\nClick to select · Shift/Ctrl click to multi-select · double-click to edit`}
-              onDoubleClick={() =>
-                f.kind === 'sketch' ? handlers.onEdit(f.id) : handlers.onEditDim(f.id)
-              }
+              onDoubleClick={() => handlers.onEdit(f.id)}
               onContextMenu={(e) => {
                 e.preventDefault()
                 if (!selected.has(f.id)) {
