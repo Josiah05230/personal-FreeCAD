@@ -96,7 +96,7 @@ const SPECS: Record<OpKind, OpSpec> = {
   revolve: {
     title: 'Revolve',
     needs: 'sketch',
-    hint: 'Axis: also select an edge / sketch line / datum axis (else the sketch’s vertical)',
+    hint: 'Profile: a sketch, or a flat face of the model. Axis: an edge / datum axis (required for a face; else the sketch’s vertical).',
     fields: [
       { key: 'angle', label: 'Angle', type: 'number', default: 360, step: 15 },
       { key: 'cut', label: 'Cut', type: 'checkbox', default: false }

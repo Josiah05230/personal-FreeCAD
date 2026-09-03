@@ -513,12 +513,21 @@ export const api = {
   sketchSolve: (elements: unknown[], constraints: SketchConstraint[]) =>
     rpc<SketchSolveDTO>('sketch.solve', { elements, constraints }),
   revolve: (
-    sketchId: string,
+    sketchId: string | null,
     angle: number,
     axis = 'V',
     cut = false,
-    axisRef: GeomRef | null = null
-  ) => rpc<{ bodies: BodyTree[] }>('feature.revolve', { sketchId, angle, axis, cut, axisRef }),
+    axisRef: GeomRef | null = null,
+    faceRef: { bodyId: string; sub: string } | null = null
+  ) =>
+    rpc<{ bodies: BodyTree[] }>('feature.revolve', {
+      sketchId,
+      angle,
+      axis,
+      cut,
+      axisRef,
+      faceRef
+    }),
   sweep: (
     profileId: string,
     pathId: string | null,

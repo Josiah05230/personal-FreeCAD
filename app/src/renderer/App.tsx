@@ -851,7 +851,21 @@ export function App(): JSX.Element {
                 break
               }
             }
-            await api.revolve(sketchIds[0], Number(v.angle), 'V', Boolean(v.cut), axisRef)
+            // no sketch selected: revolve a flat model face (needs an axis pick)
+            const faceProfile =
+              !sketchIds[0] && faces[0] ? { bodyId: faces[0].bodyId, sub: faces[0].sub } : null
+            if (!sketchIds[0] && !faceProfile)
+              throw new Error('Select a sketch, or a flat face of the model plus an axis, to revolve.')
+            if (faceProfile && !axisRef)
+              throw new Error('Revolving a face needs an axis - also select a straight edge or a datum.')
+            await api.revolve(
+              sketchIds[0] ?? null,
+              Number(v.angle),
+              'V',
+              Boolean(v.cut),
+              axisRef,
+              faceProfile
+            )
             break
           }
           case 'loft':
@@ -1074,7 +1088,24 @@ export function App(): JSX.Element {
         }
         case 'revolve': {
           const ang = num('angle')
-          return sk && ang != null ? api.revolve(sk.sketchId, ang, 'V', Boolean(v.cut), null) : null
+          if (ang == null) return null
+          if (sk) return api.revolve(sk.sketchId, ang, 'V', Boolean(v.cut), null)
+          // face profile: needs a flat face plus an axis pick (edge / datum)
+          const faceProfile = faces[0] ? { bodyId: faces[0].bodyId, sub: faces[0].sub } : null
+          let axisRef: import('./rpc').GeomRef | null = null
+          for (const s of selection) {
+            if (s.kind === 'edge') {
+              axisRef = { kind: 'edge', bodyId: s.bodyId, sub: s.sub }
+              break
+            }
+            if (s.kind === 'plane') {
+              axisRef = s.role ? { kind: 'origin', role: s.role } : { kind: 'plane', id: s.planeId }
+              break
+            }
+          }
+          return faceProfile && axisRef
+            ? api.revolve(null, ang, 'V', Boolean(v.cut), axisRef, faceProfile)
+            : null
         }
         case 'fillet': {
           const rad = num('radius')

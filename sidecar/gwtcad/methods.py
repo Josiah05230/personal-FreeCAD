@@ -317,33 +317,70 @@ def _sketch_local_extent(sk):
 
 
 @method("feature.revolve")
-def feature_revolve(sketchId, angle=360.0, axis="V", axisRef=None, reversed=False, cut=False):
-    d, sk = _obj(sketchId)
-    if sk.TypeId != "Sketcher::SketchObject":
-        raise RpcError(APP_ERROR, "%r is not a sketch" % sketchId)
-    body = sk.getParentGeoFeatureGroup()
-    if body is None or body.TypeId != "PartDesign::Body":
-        raise RpcError(APP_ERROR, "sketch is not inside a Body")
-
-    # a profile that crosses the revolve axis sweeps into itself - PartDesign
-    # sometimes returns that as a "valid" sliver rather than an error, which
-    # then reads as the body vanishing. Catch it up front while we still can
-    # name the axis (only when the axis IS the sketch's own H/V line).
+def feature_revolve(sketchId=None, angle=360.0, axis="V", axisRef=None,
+                    reversed=False, cut=False, faceRef=None):
+    """Revolve a sketch, OR (no sketchId) a flat model face - the latter needs
+    an explicit axisRef since a face has no H/V axis of its own."""
     vert = str(axis).upper().startswith("V")
-    if not axisRef:
-        ext = _sketch_local_extent(sk)
-        if ext is not None:
-            xmin, xmax, ymin, ymax = ext
-            tol = 1e-6
-            straddles = (xmin < -tol and xmax > tol) if vert else (ymin < -tol and ymax > tol)
-            if straddles:
-                raise RpcError(APP_ERROR,
-                               "the profile crosses the revolve axis - move the "
-                               "sketch fully to one side of the %s axis, or select "
-                               "a model edge / datum line to revolve about"
-                               % ("vertical" if vert else "horizontal"))
 
-    prof = build.reusable_profile(d, body, sk)
+    if faceRef and not sketchId:
+        d = session.doc(create=False)
+        if d is None:
+            raise RpcError(APP_ERROR, "no document")
+        fbody = d.getObject(faceRef["bodyId"])
+        if fbody is None:
+            raise RpcError(APP_ERROR, "no object %r" % faceRef["bodyId"])
+        body = fbody if fbody.TypeId == "PartDesign::Body" else fbody.getParentGeoFeatureGroup()
+        if body is None or body.TypeId != "PartDesign::Body":
+            raise RpcError(APP_ERROR, "that face is not on a Body")
+        if getattr(body, "Tip", None) is None:
+            raise RpcError(APP_ERROR,
+                           "that body has no solid yet - draw a sketch on the "
+                           "face and revolve that instead")
+        try:
+            _fidx = int(faceRef["sub"][4:]) - 1
+            _face = body.Tip.Shape.Faces[_fidx]
+            if type(_face.Surface).__name__ != "Plane":
+                raise RpcError(APP_ERROR,
+                               "that face is curved - revolving a face needs a "
+                               "flat one (or use a sketch)")
+        except RpcError:
+            raise
+        except Exception:
+            pass
+        if not axisRef:
+            raise RpcError(APP_ERROR,
+                           "revolving a face needs an axis - also select a "
+                           "straight edge or a datum axis to revolve about")
+        sk = None
+        base_prof = (body.Tip, [faceRef["sub"]])
+    else:
+        d, sk = _obj(sketchId)
+        if sk.TypeId != "Sketcher::SketchObject":
+            raise RpcError(APP_ERROR, "%r is not a sketch" % sketchId)
+        body = sk.getParentGeoFeatureGroup()
+        if body is None or body.TypeId != "PartDesign::Body":
+            raise RpcError(APP_ERROR, "sketch is not inside a Body")
+        base_prof = None
+
+        # a profile that crosses the revolve axis sweeps into itself - PartDesign
+        # sometimes returns that as a "valid" sliver rather than an error, which
+        # then reads as the body vanishing. Catch it up front while we still can
+        # name the axis (only when the axis IS the sketch's own H/V line).
+        if not axisRef:
+            ext = _sketch_local_extent(sk)
+            if ext is not None:
+                xmin, xmax, ymin, ymax = ext
+                tol = 1e-6
+                straddles = (xmin < -tol and xmax > tol) if vert else (ymin < -tol and ymax > tol)
+                if straddles:
+                    raise RpcError(APP_ERROR,
+                                   "the profile crosses the revolve axis - move the "
+                                   "sketch fully to one side of the %s axis, or select "
+                                   "a model edge / datum line to revolve about"
+                                   % ("vertical" if vert else "horizontal"))
+
+    prof = base_prof if base_prof is not None else build.reusable_profile(d, body, sk)
     prev_tip = getattr(body, "Tip", None)
     prev_tip_name = prev_tip.Name if prev_tip is not None else None
 
@@ -363,7 +400,7 @@ def feature_revolve(sketchId, angle=360.0, axis="V", axisRef=None, reversed=Fals
 
     # build; if it comes out invalid, drop exactly this feature (and any profile
     # copy we made), put the tip back, and raise - never disturb existing work
-    extra = [prof] if prof is not sk else []
+    extra = [prof] if (sk is not None and prof is not sk) else []
     build.finalize_or_rollback(
         d, body, rev, prev_tip_name, extra,
         "revolve produced an invalid shape - check the profile is one closed "
