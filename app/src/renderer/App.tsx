@@ -621,10 +621,20 @@ export function App(): JSX.Element {
   // signature of the inputs that decide the feature's shape topology (so a
   // number tweak keeps the fast path but a Join->Cut switch forces a rebuild)
   const previewSig = useCallback((kind: OpKind, v: OpValues): string => {
-    const sk = selection.find((s) => s.kind === 'sketch') as { sketchId: string } | undefined
-    const fc = selection.find((s) => s.kind === 'face') as { bodyId: string; sub: string } | undefined
-    const profile = sk ? `sk:${sk.sketchId}` : fc ? `fc:${fc.bodyId}/${fc.sub}` : 'none'
-    return [kind, profile, String(v.operation ?? ''), String(v.mode ?? ''), String(v.cut ?? '')].join('|')
+    // EVERY selected reference matters, not just the first - a fillet gaining a
+    // second edge, or an extrude re-pointed at a different face, must invalidate
+    // the in-place fast path and force a full rebuild so the new ref set lands.
+    const refs = selection
+      .map((s) => selKey(s))
+      .sort()
+      .join(',')
+    return [
+      kind,
+      refs || 'none',
+      String(v.operation ?? ''),
+      String(v.mode ?? ''),
+      String(v.cut ?? '')
+    ].join('|')
   }, [selection])
 
   // discard the live-preview feature (if any) by DELETING it by id - deterministic,
