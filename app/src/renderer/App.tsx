@@ -2084,7 +2084,16 @@ export function App(): JSX.Element {
       redo: () => doRedo(),
       deleteFeature: (id: string) => deleteFeature(id),
       editFeature: (id: string) => editFeature(id),
+      suppressFeature: (id: string, s: boolean) => suppressFeature(id, s),
       rollTo: (fid: string | null) => rollTo(fid),
+
+      // --- ribbon commands (every wired button) ---
+      commandIds: () => commandsRef.current.filter((c) => c.run).map((c) => c.id),
+      runCommand: (id: string) => {
+        const c = commandsRef.current.find((x) => x.id === id)
+        trace('ACTION runCommand', { id, found: !!c })
+        c?.run?.()
+      },
 
       // --- observe ---
       getState: () => ({
@@ -2092,9 +2101,11 @@ export function App(): JSX.Element {
         busy,
         notice: sketchNotice,
         op,
+        sketchMode: !!sketchSession,
         selection: selection.map(selKey),
         bodies: bodies.map((b) => ({
           id: b.id,
+          marker: b.marker ?? null,
           features: b.features.map((f) => ({ id: f.id, kind: f.kind, error: !!f.error }))
         })),
         meshes: meshes.map((m) => ({ id: m.id, tris: Math.floor((m.positions?.length ?? 0) / 9) })),
@@ -2116,9 +2127,11 @@ export function App(): JSX.Element {
     doRedo,
     deleteFeature,
     editFeature,
+    suppressFeature,
     rollTo,
     onSelect,
     openOp,
+    sketchSession,
     status.phase,
     busy,
     sketchNotice,
@@ -2235,6 +2248,9 @@ export function App(): JSX.Element {
       selFilter
     ]
   )
+  // exposed to the test bridge (defined earlier); plain render assignment like opRef
+  const commandsRef = useRef<typeof commands>([])
+  commandsRef.current = commands
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {

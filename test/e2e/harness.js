@@ -19,6 +19,8 @@ const G = new Proxy(
   }
 );
 const rpc = (m, p) => window.cad.rpc(m, p || {});
+/** whitelisted shell env forwarded by the --e2e harness (FUZZ_* / MONKEY_* / E2E_*) */
+const ENV = (typeof window !== 'undefined' && window.__E2E_ENV) || {};
 const _lines = [];
 let _passed = 0,
   _failed = 0;

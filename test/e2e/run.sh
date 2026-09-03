@@ -47,7 +47,7 @@ for sc in "${SCENARIOS[@]}"; do
   # one instance at a time (kill_strays above) so the rootless display's GPU is
   # not contended; the app still needs software WebGL for its viewport, so do
   # NOT pass --disable-software-rasterizer
-  ( cd "$APP" && timeout 240 ./node_modules/.bin/electron --no-sandbox . --e2e "$sc" 2>&1 ) \
+  ( cd "$APP" && timeout "${E2E_TIMEOUT:-240}" ./node_modules/.bin/electron --no-sandbox . --e2e "$sc" 2>&1 ) \
     | grep -vE '^\[.*\] sidecar |Download the React|GLib-GObject|^\[sidecar\]|GPU process|zygote|command_buffer' || true
   rc=${PIPESTATUS[0]}
   if [ "$rc" -ne 0 ]; then

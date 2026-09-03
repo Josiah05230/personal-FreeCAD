@@ -263,6 +263,15 @@ app.whenReady().then(async () => {
         }
         const harness = await readFile(resolve(REPO_ROOT, 'test/e2e/harness.js'), 'utf-8')
         const scenario = await readFile(resolve(process.cwd(), scenarioPath), 'utf-8')
+        // pass a whitelist of env through to the renderer (process.env is not
+        // reachable there); scenarios read it via ENV.<NAME>
+        const envOut: Record<string, string | undefined> = {}
+        for (const k of Object.keys(process.env)) {
+          if (/^(FUZZ|MONKEY|E2E)_/.test(k)) envOut[k] = process.env[k]
+        }
+        await w.webContents
+          .executeJavaScript(`window.__E2E_ENV = ${JSON.stringify(envOut)};0`)
+          .catch(() => 0)
         const raw = await w.webContents.executeJavaScript(
           `(async () => {
              ${harness}
