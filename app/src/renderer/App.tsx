@@ -750,7 +750,10 @@ export function App(): JSX.Element {
       switch (kind) {
         case 'extrude': {
           const len = n('length')
-          if (len == null || String(v.mode) === 'To object') return null
+          // Intersect builds a scratch body + PartDesign::Boolean - no single
+          // Length prop to nudge, so always take the full rebuild path.
+          if (len == null || String(v.mode) === 'To object' || String(v.operation) === 'Intersect')
+            return null
           return { Length: len, Midplane: Boolean(v.midplane), Reversed: Boolean(v.reversed) }
         }
         case 'revolve': {
@@ -926,9 +929,10 @@ export function App(): JSX.Element {
               (upToFace
                 ? { kind: 'face', bodyId: upToFace.bodyId, sub: upToFace.sub }
                 : null) as import('./rpc').GeomRef | null
-            const opMap: Record<string, 'join' | 'cut' | 'newBody'> = {
+            const opMap: Record<string, 'join' | 'cut' | 'intersect' | 'newBody'> = {
               Join: 'join',
               Cut: 'cut',
+              Intersect: 'intersect',
               'New body': 'newBody'
             }
             const operation = opMap[String(v.operation)] ?? 'join'
@@ -1185,15 +1189,24 @@ export function App(): JSX.Element {
       }
       switch (kind) {
         case 'extrude': {
-          const opMap: Record<string, 'join' | 'cut' | 'newBody'> = {
+          const opMap: Record<string, 'join' | 'cut' | 'intersect' | 'newBody'> = {
             Join: 'join',
             Cut: 'cut',
+            Intersect: 'intersect',
             'New body': 'newBody'
           }
           const operation = opMap[String(v.operation)] ?? 'join'
           const faceProfile = !sk && faces[0] ? { bodyId: faces[0].bodyId, sub: faces[0].sub } : null
           const len = num('length')
-          if ((!sk && !faceProfile) || len == null || String(v.mode) === 'To object') return null
+          // Intersect spins up a scratch body + Boolean - not worth previewing
+          // live (and hard to drain cleanly); it just commits on OK.
+          if (
+            (!sk && !faceProfile) ||
+            len == null ||
+            String(v.mode) === 'To object' ||
+            operation === 'intersect'
+          )
+            return null
           return api.extrude(
             sk?.sketchId ?? null,
             len,

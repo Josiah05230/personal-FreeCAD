@@ -56,7 +56,7 @@ const SPECS: Record<OpKind, OpSpec> = {
         label: 'Operation',
         type: 'select',
         default: 'Join',
-        options: ['New body', 'Join', 'Cut'],
+        options: ['New body', 'Join', 'Cut', 'Intersect'],
         wide: true
       },
       {

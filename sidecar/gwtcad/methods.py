@@ -144,6 +144,20 @@ def _solid_tip(body):
     return tip
 
 
+def _boolean_consumed_bodies(d):
+    """Body names that have been folded into a PartDesign::Boolean as a tool -
+    they must not show as their own body in the tree or scene."""
+    out = set()
+    if d is None:
+        return out
+    for o in d.Objects:
+        if o.TypeId == "PartDesign::Boolean":
+            for t in getattr(o, "Group", []) or []:
+                if getattr(t, "TypeId", "") == "PartDesign::Body":
+                    out.add(t.Name)
+    return out
+
+
 def _ensure_body_tip(d, body):
     """After removing / re-pointing a feature, body.Tip can be left dangling or
     on a non-solid - body.Shape then goes null and the viewport blanks. Snap Tip
@@ -206,7 +220,8 @@ def primitive_cylinder(diameter=40.0, height=40.0, name=None):
 @method("feature.extrude")
 def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, cut=False,
                     upToFaceRef=None, operation=None, offset=0.0, faceRef=None):
-    """operation: 'join' (add) | 'cut' (remove) | 'newBody' (separate solid).
+    """operation: 'join' (add) | 'cut' (remove) | 'intersect' (keep the overlap)
+    | 'newBody' (separate solid).
     `cut=True` is kept as a shorthand for operation='cut'. When upToFaceRef is
     given, `offset` is the extra distance past that face. Instead of a sketch you
     may pass `faceRef` ({bodyId, sub}) to extrude an existing flat model face."""
@@ -263,12 +278,42 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
     # feature we are about to add, never anything already in the body
     prev_tip = getattr(body, "Tip", None)
     prev_tip_name = prev_tip.Name if prev_tip is not None else None
+    try:
+        prev_vol = body.Shape.Volume if getattr(body, "Shape", None) is not None else 0.0
+    except Exception:
+        prev_vol = 0.0
     made = None        # the Pad/Pocket this call creates
     made_body = None   # a fresh Body, for the newbody branch
 
     if op == "cut":
         made = build.pocket(body, sk, float(length), up_to=up, offset=off)
         target = body
+    elif op == "intersect":
+        # keep only where the new prism and the existing solid overlap. PartDesign
+        # has no native "intersect pad", so pad a scratch body and Common it in.
+        if isinstance(sk, tuple) or prev_tip is None or _kind(prev_tip.TypeId) != "solid":
+            raise RpcError(APP_ERROR,
+                           "Intersect needs a sketch profile and an existing solid "
+                           "to intersect with")
+        nb = build.new_body(d, next_label(None, "PartDesign::Body"))
+        skc = d.copyObject(sk, False)
+        nb.addObject(skc)
+        pad = build.pad(nb, skc, float(length), reversed_=reversed,
+                        midplane=midplane, up_to=up, offset=off)
+        made_body = nb
+        d.recompute()
+        boolean = body.newObject("PartDesign::Boolean", "Boolean")
+        boolean.Label = next_label(body, "PartDesign::Boolean")
+        boolean.Type = "Common"
+        boolean.Group = [nb]
+        made = boolean
+        target = body
+        body.Tip = boolean
+        try:
+            boolean.touch()
+        except Exception:
+            pass
+        d.recompute(None, True, True)
     elif op == "newbody":
         tip = getattr(body, "Tip", None)
         if isinstance(sk, tuple):
@@ -294,21 +339,69 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
                          midplane=midplane, up_to=up, offset=off)
         target = body
 
-    d.recompute()
+    if op != "intersect":
+        d.recompute()
+
+    fail_msg = ("extrude produced an invalid shape - check the profile is a "
+                "clean closed outline and try again")
+
+    # a Pocket cuts opposite the profile normal; a cut sketch on a base plane (or
+    # a face whose normal points away from the material) then pockets into empty
+    # space and removes nothing. If the volume did not drop, flip Reversed once.
+    if op == "cut" and made is not None:
+        try:
+            cur = target.Shape.Volume if getattr(target, "Shape", None) is not None else prev_vol
+            valid_now = target.Shape is not None and not target.Shape.isNull() and target.Shape.isValid()
+        except Exception:
+            cur, valid_now = prev_vol, False
+        if valid_now and cur >= prev_vol - 1e-6 and up is None:
+            try:
+                made.Reversed = not bool(getattr(made, "Reversed", False))
+                d.recompute()
+                cur = target.Shape.Volume
+            except Exception:
+                pass
+        if valid_now and cur >= prev_vol - 1e-6 and up is None:
+            fail_msg = ("the cut profile does not intersect the solid - draw it on "
+                        "a face of the model, or where it overlaps the body")
+            try:
+                made.Reversed = not bool(getattr(made, "Reversed", False))  # restore
+            except Exception:
+                pass
+            valid_now = False  # force the rollback path below
+        ok = valid_now
+    else:
+        ok = None  # decided below
 
     # if the pad failed, remove EXACTLY the feature we just made (and the fresh
     # body, if any) and restore the previous tip - never touch features that
     # were already there, or a bad 2nd extrude wipes the whole body
-    try:
-        shp = getattr(target, "Shape", None)
-        ok = shp is not None and not shp.isNull() and shp.isValid()
-    except Exception:
-        ok = False
+    if ok is None:
+        try:
+            shp = getattr(target, "Shape", None)
+            ok = shp is not None and not shp.isNull() and shp.isValid()
+        except Exception:
+            ok = False
+        if ok and op == "intersect":
+            try:
+                ok = target.Shape.Volume <= prev_vol + 1e-6 and target.Shape.Volume > 1e-9
+            except Exception:
+                ok = False
+            if not ok:
+                fail_msg = ("Intersect produced nothing - the new prism and the "
+                            "existing solid do not overlap")
     if not ok:
         try:
             if made is not None and d.getObject(made.Name) is not None:
                 d.removeObject(made.Name)
             if made_body is not None and d.getObject(made_body.Name) is not None:
+                # take the scratch body's children (copied sketch + pad) with it
+                for child in list(getattr(made_body, "Group", [])):
+                    try:
+                        if d.getObject(child.Name) is not None:
+                            d.removeObject(child.Name)
+                    except Exception:
+                        pass
                 d.removeObject(made_body.Name)
             if prev_tip_name and d.getObject(prev_tip_name) is not None:
                 try:
@@ -318,9 +411,7 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
             d.recompute()
         except Exception:
             pass
-        raise RpcError(APP_ERROR,
-                       "extrude produced an invalid shape - check the profile is a "
-                       "clean closed outline and try again")
+        raise RpcError(APP_ERROR, fail_msg)
     return tree_get()
 
 
@@ -2084,6 +2175,7 @@ def scene_get():
     # scene.get returns EVERYTHING with a `visible` hint; the shell owns
     # show/hide as pure view state and never round-trips the engine for it.
     suppressed = _suppressed_names(d)
+    consumed_bodies = _boolean_consumed_bodies(d)
     for o in d.Objects:
         if o.Name in suppressed:
             continue
@@ -2092,6 +2184,8 @@ def scene_get():
                    "Part::FeaturePython"):
             if tid == "PartDesign::Body" and session.is_rolled_empty(o.Name):
                 continue
+            if tid == "PartDesign::Body" and o.Name in consumed_bodies:
+                continue  # tool body folded into a Boolean (e.g. extrude Intersect)
             if tid == "Mesh::Feature":
                 buf = _mesh_feature_buffer(o)
                 if buf is None:
@@ -2367,9 +2461,12 @@ def tree_get():
                     session.set_rolled_empty(o.Name, False)
 
         suppressed = _suppressed_names(d)
+        consumed_bodies = _boolean_consumed_bodies(d)
         for o in d.Objects:
             if o.TypeId != "PartDesign::Body":
                 continue
+            if o.Name in consumed_bodies:
+                continue  # tool body folded into a Boolean (e.g. extrude Intersect)
             tip = getattr(o, "Tip", None)
             feats = []
             for f in o.Group:
