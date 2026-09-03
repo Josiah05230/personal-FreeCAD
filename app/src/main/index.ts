@@ -106,7 +106,12 @@ app.whenReady().then(async () => {
     return { dir: target, parent: resolve(target, '..'), items }
   })
 
+  // --e2e / fuzz: never pop a native file dialog (it would block the run) -
+  // behave as if the user hit Cancel.
+  const E2E = process.argv.includes('--e2e')
+
   ipcMain.handle('dialog:save', async (_e, defaultPath?: string) => {
+    if (E2E) return null
     const r = await dialog.showSaveDialog(win!, {
       defaultPath,
       filters: [{ name: 'FreeCAD Design', extensions: ['FCStd'] }]
@@ -115,6 +120,7 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('dialog:open', async (_e, filters?: { name: string; extensions: string[] }[]) => {
+    if (E2E) return null
     const r = await dialog.showOpenDialog(win!, {
       properties: ['openFile'],
       filters: filters ?? [{ name: 'FreeCAD Design', extensions: ['FCStd'] }]
@@ -123,6 +129,7 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('dialog:export', async (_e, defaultPath?: string) => {
+    if (E2E) return null
     const r = await dialog.showSaveDialog(win!, {
       defaultPath,
       filters: [

@@ -24,6 +24,12 @@ interface PromptRequest {
 
 let _open: ((req: PromptRequest) => void) | null = null
 
+/** under the --e2e / fuzz harness nobody answers a prompt - auto-cancel so the
+ * run never hangs (a real user would hit Escape) */
+const _e2e = (): boolean =>
+  typeof window !== 'undefined' &&
+  !!(window as unknown as { __E2E_ENV?: unknown }).__E2E_ENV
+
 /** Single-field convenience. Resolves to the string, or null if cancelled. */
 export function promptText(
   title: string,
@@ -31,7 +37,7 @@ export function promptText(
   placeholder = ''
 ): Promise<string | null> {
   return new Promise((resolve) => {
-    if (!_open) return resolve(null)
+    if (!_open || _e2e()) return resolve(null)
     _open({
       title,
       fields: [{ key: 'v', label: title, value, placeholder }],
@@ -47,7 +53,7 @@ export function promptForm(
   okLabel = 'OK'
 ): Promise<Record<string, string> | null> {
   return new Promise((resolve) => {
-    if (!_open) return resolve(null)
+    if (!_open || _e2e()) return resolve(null)
     _open({ title, fields, okLabel, resolve })
   })
 }

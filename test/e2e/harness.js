@@ -21,6 +21,13 @@ const G = new Proxy(
 const rpc = (m, p) => window.cad.rpc(m, p || {});
 /** whitelisted shell env forwarded by the --e2e harness (FUZZ_* / MONKEY_* / E2E_*) */
 const ENV = (typeof window !== 'undefined' && window.__E2E_ENV) || {};
+// nobody is here to click a native modal - auto-answer so a run never blocks
+try {
+  window.confirm = () => true;
+  window.alert = () => {};
+} catch (_e) {
+  /* ignore */
+}
 const _lines = [];
 let _passed = 0,
   _failed = 0;

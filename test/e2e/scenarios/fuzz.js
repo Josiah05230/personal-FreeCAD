@@ -125,7 +125,7 @@ function nextAction() {
 async function viewportOK() {
   const tg = await rpc('tree.get');
   const b = tg.bodies[0];
-  if (!b) return true;
+  if (!b) return null;
   const feats = b.features;
   const markerIdx = b.marker ? feats.findIndex((f) => f.id === b.marker) : feats.length - 1;
   let liveSolid = false;
@@ -133,9 +133,16 @@ async function viewportOK() {
     const f = feats[i];
     if (f.kind === 'solid' && !f.suppressed && !f.error) liveSolid = true;
   }
-  if (!liveSolid) return true; // nothing should render - a blank viewport is correct
+  if (!liveSolid) return null; // nothing should render - a blank viewport is correct
   const sg = await rpc('scene.get');
-  return sg.meshes.some((m) => (m.positions || []).length > 0);
+  if (!sg.meshes.some((m) => (m.positions || []).length > 0)) {
+    return 'engine has a solid at the tip but scene.get returns no mesh';
+  }
+  // engine has geometry - the client should be showing it too (allow a beat for React)
+  let clientHasMesh = G.getState().meshes.some((m) => m.tris > 0);
+  if (!clientHasMesh) { await flush(); await sleep(60); await flush(); clientHasMesh = G.getState().meshes.some((m) => m.tris > 0); }
+  if (!clientHasMesh) return 'engine has a solid but the client viewport has no mesh';
+  return null;
 }
 
 // ---------------- lay a base model ----------------
@@ -181,9 +188,10 @@ for (let step = 1; step <= STEPS; step++) {
     if (document.body.innerText.includes('The interface hit an error')) problems.push('ErrorBoundary tripped');
   } catch { /* ignore */ }
   if (!settled) problems.push('command queue did not settle within 3.5s');
-  if (pong && !st.sketchMode) {
+  if (pong && !st.sketchMode && st.op == null) {
     try {
-      if (!(await viewportOK())) problems.push('VIEWPORT BLANK (solids at the tip but scene.get has no mesh)');
+      const blank = await viewportOK();
+      if (blank) problems.push('VIEWPORT BLANK: ' + blank);
     } catch (e) { problems.push('viewport check threw: ' + ((e && e.message) || e)); }
   }
 
