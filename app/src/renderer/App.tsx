@@ -2669,9 +2669,29 @@ export function App(): JSX.Element {
   )
 
   const onSketchDimensionRequest = useCallback(
-    async (entityIndex: number, kind: 'linear' | 'radius') => {
+    async (entityIndex: number | null, kind: 'linear' | 'radius' | 'distance') => {
+      if (kind === 'distance') {
+        const cur = vpApi.current?.sketchDistancePickValue?.() ?? null
+        const txt = await promptText(
+          'Distance (number or expression)',
+          cur != null ? String(Math.round(cur * 1000) / 1000) : ''
+        )
+        if (!txt) return
+        let value = Number(txt)
+        if (isNaN(value)) {
+          try {
+            value = (await api.exprEval(txt, 'length')).value
+          } catch (e) {
+            window.alert((e as Error).message)
+            return
+          }
+        }
+        vpApi.current?.setSketchDistanceDimension(value)
+        onSketchChange()
+        return
+      }
       // stop an over-dimensioning attempt before the user even types a number
-      const block = await (vpApi.current?.checkSketchDimension?.(entityIndex) ??
+      const block = await (vpApi.current?.checkSketchDimension?.(entityIndex as number) ??
         Promise.resolve(null))
       if (block) {
         flashSketchNotice(block)
@@ -2689,7 +2709,7 @@ export function App(): JSX.Element {
           return
         }
       }
-      vpApi.current?.setSketchDimension(entityIndex, value)
+      vpApi.current?.setSketchDimension(entityIndex as number, value)
       onSketchChange()
     },
     [onSketchChange, flashSketchNotice]

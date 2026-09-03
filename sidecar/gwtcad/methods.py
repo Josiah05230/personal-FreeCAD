@@ -2110,7 +2110,9 @@ def _reopen_constraints(sk, geo_to_ent):
         et = ("Distance" if t in ("Distance", "DistanceX", "DistanceY")
               else "Radius" if t in ("Radius", "Diameter") else t)
         refs = [ref(c.First, c.FirstPos)]
-        if et not in ("Distance", "Radius") and real(getattr(c, "Second", None)):
+        # Radius is always single-ref; a plain line-length Distance has no
+        # Second, but a point-to-point / point-to-line Distance does - keep it
+        if et != "Radius" and real(getattr(c, "Second", None)):
             refs.append(ref(c.Second, c.SecondPos))
         if t == "Symmetric" and real(getattr(c, "Third", None)):
             refs.append(ref(c.Third, c.ThirdPos))
@@ -2261,10 +2263,40 @@ def _apply_sketch_constraints(sk, constraints, emap):
         try:
             if ct in ("Distance", "Radius", "Diameter") and refs:
                 v = float(c.get("value", 0) or 0)
-                if v > 0:
-                    sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0]), v))
+                if v > 0 and len(refs) >= 2:
+                    # point-to-point, or point-to-line (2nd ref has no pt)
+                    p2 = refs[1].get("pt")
+                    if p2 is not None:
+                        sk.addConstraint(Sketcher.Constraint(
+                            "Distance",
+                            gid(refs[0]), int(refs[0].get("pt", 1)),
+                            gid(refs[1]), int(p2), v))
+                    else:
+                        sk.addConstraint(Sketcher.Constraint(
+                            "Distance",
+                            gid(refs[0]), int(refs[0].get("pt", 1)),
+                            gid(refs[1]), v))
+                elif v > 0:
+                    if refs[0].get("pt") is not None and ct == "Distance":
+                        # a lone point ref with no partner - skip (no meaning)
+                        pass
+                    else:
+                        sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0]), v))
             elif ct in ("Horizontal", "Vertical") and refs:
-                sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0])))
+                if len(refs) >= 2 and refs[0].get("pt") is not None:
+                    # between two points: same Y (Horizontal) / same X (Vertical)
+                    try:
+                        sk.addConstraint(Sketcher.Constraint(
+                            ct,
+                            gid(refs[0]), int(refs[0].get("pt", 1)),
+                            gid(refs[1]), int(refs[1].get("pt", 1))))
+                    except Exception:
+                        sk.addConstraint(Sketcher.Constraint(
+                            "DistanceY" if ct == "Horizontal" else "DistanceX",
+                            gid(refs[0]), int(refs[0].get("pt", 1)),
+                            gid(refs[1]), int(refs[1].get("pt", 1)), 0.0))
+                else:
+                    sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0])))
             elif ct == "PointOnObject" and len(refs) >= 2:
                 sk.addConstraint(Sketcher.Constraint(
                     "PointOnObject",

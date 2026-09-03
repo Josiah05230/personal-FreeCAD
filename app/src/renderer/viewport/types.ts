@@ -27,6 +27,10 @@ export interface ViewportApi {
   setSketchDimension: (entityIndex: number, value: number) => boolean
   /** would a new dimension on this entity over-constrain it? message or null */
   checkSketchDimension: (entityIndex: number) => Promise<string | null>
+  /** commit the pending point-to-point / point-to-line distance dimension */
+  setSketchDistanceDimension: (value: number) => boolean
+  /** current distance between the two dimension-tool picks (for the prompt default) */
+  sketchDistancePickValue: () => number | null
   sketchSelectedCount: () => number
   /** construction-geometry mode for newly drawn entities */
   setSketchConstruction: (on: boolean) => void

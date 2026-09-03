@@ -83,6 +83,9 @@ export interface RecordedConstraint {
   value?: number
 }
 
+/** an individual geometry point: pt 1 = start, 2 = end, 3 = centre */
+export type PtRef = { e: number; pt: 1 | 2 | 3 }
+
 const GRID = 1 // mm snap
 const SNAP_PX = 12
 
@@ -137,6 +140,11 @@ export class SketchController {
   private refPolys: [number, number][][] = []
   private refPoints: [number, number][] = []
   private selected: number[] = []
+  /** individually-selected geometry points (line ends, circle/arc centres) */
+  private selectedPts: PtRef[] = []
+  private hoverPt: PtRef | null = null
+  /** dimension tool: the picks collected so far (a point or a whole entity) */
+  private dimPicks: Array<{ pt: PtRef } | { ent: number }> = []
   private hoverIdx = -1
   private drag: {
     idx: number
@@ -178,7 +186,11 @@ export class SketchController {
     root: THREE.Object3D,
     onChange: () => void,
     refGeom?: SketchRefGeom | null,
-    private readonly onDimensionRequest?: (entityIndex: number, kind: 'linear' | 'radius') => void,
+    private readonly onDimensionRequest?: (
+      entityIndex: number | null,
+      kind: 'linear' | 'radius' | 'distance',
+      pts?: PtRef[]
+    ) => void,
     onSolve?: SketchSolveFn,
     onNotice?: (msg: string) => void
   ) {
@@ -247,10 +259,13 @@ export class SketchController {
     this.pendingSnaps = []
     this.pendingMids = []
     this.hoverIdx = -1
+    this.hoverPt = null
+    this.dimPicks = []
     this.drag = null
     this.band = null
     this.dom.style.cursor = ''
     if (t !== 'select') this.selected = []
+    if (t !== 'select' && t !== 'dimension') this.selectedPts = []
     if (t !== 'select') this.pendingCon = null
     this.redraw()
   }
@@ -643,6 +658,109 @@ export class SketchController {
     return best
   }
 
+  /** the selectable points of one entity (line ends, circle/arc centre, arc ends) */
+  private entityPts(idx: number): PtRef[] {
+    const e = this.entities[idx]
+    if (!e) return []
+    if (e.type === 'line') return [{ e: idx, pt: 1 }, { e: idx, pt: 2 }]
+    if (e.type === 'circle') return [{ e: idx, pt: 3 }]
+    if (e.type === 'arc') return [{ e: idx, pt: 3 }, { e: idx, pt: 1 }, { e: idx, pt: 2 }]
+    return []
+  }
+
+  /** world-uv of a geometry point */
+  private ptUV(pr: PtRef): [number, number] {
+    const e = this.entities[pr.e]
+    if (!e) return [0, 0]
+    if (pr.pt === 3) return e.type === 'circle' || e.type === 'arc' ? [...e.c] : this.endpointOf(e, 1)
+    if (e.type === 'arc') {
+      const a = pr.pt === 1 ? e.a0 : e.a1
+      return [e.c[0] + Math.cos(a) * e.r, e.c[1] + Math.sin(a) * e.r]
+    }
+    return this.endpointOf(e, pr.pt)
+  }
+
+  private samePt(a: PtRef | null, b: PtRef | null): boolean {
+    return !!a && !!b && a.e === b.e && a.pt === b.pt
+  }
+
+  /** nearest selectable geometry point to `uv`, within the snap tolerance */
+  private pickPoint(uv: [number, number]): PtRef | null {
+    const tol = SNAP_PX / Math.max(this.pxPerMm(), 0.001)
+    let best: PtRef | null = null
+    let bestD = tol
+    for (let i = 0; i < this.entities.length; i++) {
+      for (const pr of this.entityPts(i)) {
+        const p = this.ptUV(pr)
+        const d = Math.hypot(p[0] - uv[0], p[1] - uv[1])
+        if (d < bestD) {
+          bestD = d
+          best = pr
+        }
+      }
+    }
+    return best
+  }
+
+  private ptToHandle(pr: PtRef): DragHandle {
+    return pr.pt === 3 ? 'c' : pr.pt === 2 ? 'b' : 'a'
+  }
+
+  /** ref shape (geo / new + pt) for a recorded constraint */
+  private ptRecRef(pr: PtRef): RecordedConstraint['refs'][number] {
+    return pr.e < this.baseCount
+      ? { geo: pr.e, pt: pr.pt }
+      : { new: pr.e - this.baseCount, sub: 0, pt: pr.pt }
+  }
+
+  /** the dimension tool has collected 2 picks - ask the app for a value */
+  private fireDistanceDim(): void {
+    this.onDimensionRequest?.(null, 'distance')
+  }
+
+  /** current distance between the two dim picks (point-point or point-line) */
+  distancePickValue(): number | null {
+    if (this.dimPicks.length < 2) return null
+    const [p0, p1] = this.dimPicks
+    if (!('pt' in p0)) return null
+    const a = this.ptUV(p0.pt)
+    if ('pt' in p1) {
+      const b = this.ptUV(p1.pt)
+      return Math.hypot(b[0] - a[0], b[1] - a[1])
+    }
+    const e = this.entities[p1.ent]
+    if (!e || e.type !== 'line') return null
+    // perpendicular distance from point a to the infinite line
+    const dx = e.b[0] - e.a[0]
+    const dy = e.b[1] - e.a[1]
+    const L = Math.hypot(dx, dy) || 1
+    return Math.abs((a[0] - e.a[0]) * dy - (a[1] - e.a[1]) * dx) / L
+  }
+
+  /** commit the pending point-to-point / point-to-line distance dimension */
+  setDistanceDimension(value: number): boolean {
+    if (!(value > 0) || this.dimPicks.length < 2) return false
+    const [p0, p1] = this.dimPicks
+    if (!('pt' in p0)) return false
+    this.snapshot()
+    const refs: RecordedConstraint['refs'] = [this.ptRecRef(p0.pt)]
+    if ('pt' in p1) refs.push(this.ptRecRef(p1.pt))
+    else
+      refs.push(
+        p1.ent < this.baseCount ? { geo: p1.ent } : { new: p1.ent - this.baseCount, sub: 0 }
+      )
+    this.constraints.push({ type: 'Distance', refs, value })
+    this.lastUserConstraint = this.constraints.length - 1
+    this.dimPicks = []
+    this.selectedPts = []
+    this.geomV++
+    this.redraw()
+    void this.runSolve()
+    this.scheduleSolve()
+    this.onChange()
+    return true
+  }
+
   /** Nearest dimension value-label to a uv, within a screen-sized tolerance. */
   /** constraint index of the Distance / Radius dimension driving entity `owner` */
   private dimConstraintIndex(owner: number): number {
@@ -650,6 +768,8 @@ export class SketchController {
       if (c.type !== 'Distance' && c.type !== 'Radius') return false
       const r0 = c.refs[0]
       if (!r0) return false
+      // point-to-point / point-to-line distances are not an entity's own linear dim
+      if (c.type === 'Distance' && (c.refs.length >= 2 || r0.pt != null)) return false
       const ei = r0.geo != null ? r0.geo : (r0.new ?? -999) + this.baseCount
       return ei === owner
     })
@@ -679,9 +799,32 @@ export class SketchController {
     if (ev.button !== 0) return
     if (this.tool === 'dimension') {
       ev.stopPropagation()
-      const idx = this.pickEntity(this.rawPointerUV(ev))
-      if (idx < 0) return
+      const raw = this.rawPointerUV(ev)
+      const hp = this.pickPoint(raw)
+      if (hp) {
+        // building a point-to-point (or point-to-line) distance
+        if (!this.dimPicks.some((p) => 'pt' in p && this.samePt(p.pt, hp))) {
+          this.dimPicks.push({ pt: hp })
+        }
+        if (this.dimPicks.length >= 2) this.fireDistanceDim()
+        this.redraw()
+        return
+      }
+      const idx = this.pickEntity(raw)
+      if (idx < 0) {
+        this.dimPicks = []
+        this.redraw()
+        return
+      }
       const e = this.entities[idx]
+      if (this.dimPicks.length === 1 && e.type === 'line') {
+        // point -> line distance
+        this.dimPicks.push({ ent: idx })
+        this.fireDistanceDim()
+        this.redraw()
+        return
+      }
+      this.dimPicks = []
       this.onDimensionRequest?.(idx, e.type === 'circle' || e.type === 'arc' ? 'radius' : 'linear')
       return
     }
@@ -714,6 +857,31 @@ export class SketchController {
         this.dimV = -1
       }
 
+      // a geometry POINT (line end, circle / arc centre) beats the curve under it
+      const hitPt = this.pendingCon ? null : this.pickPoint(uv)
+      if (hitPt) {
+        if (ev.shiftKey || ev.ctrlKey || ev.metaKey) {
+          this.selectedPts = this.selectedPts.some((p) => this.samePt(p, hitPt))
+            ? this.selectedPts.filter((p) => !this.samePt(p, hitPt))
+            : [...this.selectedPts, hitPt]
+        } else {
+          this.selectedPts = [hitPt]
+          this.selected = []
+          // keep it draggable (the centre / an endpoint) unless it is locked
+          const locked =
+            this.constrainedSet.has(hitPt.e) ||
+            (this.sketchFullyConstrained && !this.entities[hitPt.e]?.construction)
+          if (!locked) {
+            this.drag = { idx: hitPt.e, handle: this.ptToHandle(hitPt), last: uv }
+            this.dragMoved = false
+            this.preDragSnap = { ents: this.cloneEnts(), cons: this.cloneCons() }
+          }
+        }
+        this.redraw()
+        this.onChange()
+        return
+      }
+
       const idx = this.pickEntity(uv)
 
       // "click the constraint, then click the geometry" mode
@@ -730,6 +898,7 @@ export class SketchController {
         return
       }
 
+      if (!ev.shiftKey) this.selectedPts = []
       if (idx < 0) {
         if (!ev.shiftKey) this.selected = []
         // empty press starts a rubber-band window select
@@ -780,6 +949,7 @@ export class SketchController {
     return this.constraints.some((c) => {
       if (c.type !== 'Distance' && c.type !== 'Radius') return false
       const r0 = c.refs[0]
+      if (c.type === 'Distance' && (c.refs.length >= 2 || r0?.pt != null)) return false
       const ei = r0?.geo != null ? r0.geo : (r0?.new ?? -999) + this.baseCount
       return ei === idx
     })
@@ -1093,12 +1263,14 @@ export class SketchController {
     if (this.tool === 'select' || this.tool === 'dimension') {
       const raw = this.rawPointerUV(ev)
       const onLabel = this.tool === 'select' && !symKey && this.pickDimLabel(raw)
-      const idx = symKey || onLabel ? -1 : this.pickEntity(raw)
-      if (idx !== this.hoverIdx) {
+      const hp = symKey || onLabel ? null : this.pickPoint(raw)
+      const idx = symKey || onLabel || hp ? -1 : this.pickEntity(raw)
+      if (idx !== this.hoverIdx || !this.samePt(hp, this.hoverPt)) {
         this.hoverIdx = idx
+        this.hoverPt = hp
         this.redraw()
       }
-      this.dom.style.cursor = onLabel ? 'move' : idx >= 0 || symKey ? 'pointer' : ''
+      this.dom.style.cursor = onLabel ? 'move' : hp || idx >= 0 || symKey ? 'pointer' : ''
       return
     }
     if (this.hoverIdx !== -1) this.hoverIdx = -1
@@ -1114,6 +1286,8 @@ export class SketchController {
       this.pendingSnaps = []
       this.pendingMids = []
       this.selected = []
+      this.selectedPts = []
+      this.dimPicks = []
       this.selectedDim = null
       this.dimV = -1
       this.band = null
@@ -1753,6 +1927,13 @@ export class SketchController {
 
   /** Which constraint types are legal for the current selection. */
   availableConstraints(): SketchConstraintType[] {
+    // point selection takes priority when the user has picked individual points
+    if (this.selectedPts.length) {
+      const out: SketchConstraintType[] = []
+      if (this.selectedPts.length === 2) out.push('Coincident', 'Horizontal', 'Vertical')
+      if (this.selectedPts.length === 1 && this.selected.length === 1) out.push('Coincident')
+      return out
+    }
     const sel = this.selected.map((i) => this.entities[i]).filter(Boolean)
     if (!sel.length) return []
     const out: SketchConstraintType[] = []
@@ -1844,7 +2025,66 @@ export class SketchController {
     return true
   }
 
+  /** Coincident / Horizontal / Vertical / Symmetric on selected geometry
+   *  points. Returns false if `type` is not a point constraint. */
+  private applyPointConstraint(type: SketchConstraintType): boolean {
+    const pts = this.selectedPts.slice()
+    // a point + a whole entity -> treat the entity's nearest end as the 2nd pt
+    if (pts.length === 1 && this.selected.length === 1 && type === 'Coincident') {
+      const oi = this.selected[0]
+      const a = this.ptUV(pts[0])
+      const cands = this.entityPts(oi)
+      if (!cands.length) return false
+      cands.sort((x, y) => {
+        const px = this.ptUV(x)
+        const py = this.ptUV(y)
+        return Math.hypot(px[0] - a[0], px[1] - a[1]) - Math.hypot(py[0] - a[0], py[1] - a[1])
+      })
+      pts.push(cands[0])
+    }
+    if (pts.length !== 2) return false
+    const [p, q] = pts
+    const pa = this.ptUV(p)
+    const setPt = (pr: PtRef, uv: [number, number]): void => {
+      const e = this.entities[pr.e]
+      if (!e) return
+      if (pr.pt === 3 && (e.type === 'circle' || e.type === 'arc')) e.c = [uv[0], uv[1]]
+      else if (e.type === 'line') {
+        if (pr.pt === 2) e.b = [uv[0], uv[1]]
+        else e.a = [uv[0], uv[1]]
+      }
+    }
+    this.snapshot()
+    if (type === 'Coincident') {
+      setPt(q, pa)
+      this.constraints.push({ type: 'Coincident', refs: [this.ptRecRef(p), this.ptRecRef(q)] })
+    } else if (type === 'Horizontal' || type === 'Vertical') {
+      const qb = this.ptUV(q)
+      // nudge the 2nd point onto the same row / column
+      setPt(q, type === 'Horizontal' ? [qb[0], pa[1]] : [pa[0], qb[1]])
+      this.constraints.push({ type, refs: [this.ptRecRef(p), this.ptRecRef(q)] })
+    } else {
+      return false
+    }
+    this.lastUserConstraint = this.constraints.length - 1
+    this.selectedPts = []
+    this.geomV++
+    this.redraw()
+    void this.runSolve()
+    this.scheduleSolve()
+    this.onChange()
+    return true
+  }
+
   applyConstraint(type: SketchConstraintType): boolean {
+    // point-selection constraints: Coincident / Horizontal / Vertical between
+    // two geometry points (line ends, circle / arc centres), Symmetric of two
+    // points about a line
+    if (this.selectedPts.length >= 1) {
+      const ok = this.applyPointConstraint(type)
+      if (ok) return true
+      // fall through only if the point path did not handle this type
+    }
     const idxs = this.selected.slice()
     const ents = idxs.map((i) => this.entities[i])
     if (ents.some((e) => !e)) return false
@@ -1961,6 +2201,8 @@ export class SketchController {
   private conHoverMat = new THREE.LineBasicMaterial({ color: 0x7fe0ff, linewidth: 2 })
   private refMat = new THREE.LineBasicMaterial({ color: 0x6b7784, transparent: true, opacity: 0.6 })
   private refPtMat = new THREE.PointsMaterial({ color: 0x9aa7b4, size: 5, sizeAttenuation: false })
+  private ptHandleMat = new THREE.PointsMaterial({ color: 0x8fa8c8, size: 6, sizeAttenuation: false })
+  private ptHandleSelMat = new THREE.PointsMaterial({ color: 0xffcc44, size: 11, sizeAttenuation: false })
   private previewMat = new THREE.LineDashedMaterial({
     color: 0x8fd0f4,
     dashSize: 1.5,
@@ -2438,6 +2680,9 @@ export class SketchController {
       if (con.value == null) continue
       if (con.type !== 'Distance' && con.type !== 'Radius') continue
       const r0 = con.refs[0]
+      // point-to-point / point-to-line distances have no dimension glyph yet -
+      // the constraint still drives the solver
+      if (con.type === 'Distance' && (con.refs.length >= 2 || r0.pt != null)) continue
       const i = r0.geo != null ? r0.geo : (r0.new ?? 0) + this.baseCount
       const e = this.entities[i]
       if (!e || e.construction) continue
@@ -2674,6 +2919,35 @@ export class SketchController {
       const m = new THREE.Points(g, this.snapMats[this.snapKind])
       m.renderOrder = 42
       this.preview.add(m)
+    }
+
+    // geometry-point handles (select tool / dimension tool): every line end and
+    // circle / arc centre, brighter when selected / hovered / a dim pick
+    if (this.tool === 'select' || this.tool === 'dimension') {
+      const bright: PtRef[] = [
+        ...this.selectedPts,
+        ...(this.hoverPt ? [this.hoverPt] : []),
+        ...this.dimPicks.flatMap((p) => ('pt' in p ? [p.pt] : []))
+      ]
+      const isBright = (pr: PtRef): boolean => bright.some((b) => this.samePt(b, pr))
+      const faint: THREE.Vector3[] = []
+      const hot: THREE.Vector3[] = []
+      for (let i = 0; i < this.entities.length; i++) {
+        for (const pr of this.entityPts(i)) {
+          const uv = this.ptUV(pr)
+          ;(isBright(pr) ? hot : faint).push(this.toWorld(uv[0], uv[1]))
+        }
+      }
+      if (faint.length) {
+        const o = new THREE.Points(new THREE.BufferGeometry().setFromPoints(faint), this.ptHandleMat)
+        o.renderOrder = 43
+        this.preview.add(o)
+      }
+      if (hot.length) {
+        const o = new THREE.Points(new THREE.BufferGeometry().setFromPoints(hot), this.ptHandleSelMat)
+        o.renderOrder = 44
+        this.preview.add(o)
+      }
     }
   }
 

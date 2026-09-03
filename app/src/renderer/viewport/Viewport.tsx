@@ -122,7 +122,11 @@ export function Viewport({
   sketchInitialConstraints?: unknown[]
   sketchTool?: SketchTool
   onSketchChange?: () => void
-  onSketchDimensionRequest?: (entityIndex: number, kind: 'linear' | 'radius') => void
+  onSketchDimensionRequest?: (
+    entityIndex: number | null,
+    kind: 'linear' | 'radius' | 'distance',
+    pts?: import('./SketchController').PtRef[]
+  ) => void
   onSketchSolve?: import('./SketchController').SketchSolveFn
   onSketchNotice?: (msg: string) => void
   apiRef?: { current: ViewportApi | null }
@@ -273,6 +277,10 @@ export function Viewport({
         setSketchDimension: (i, v) => stateRef.current?.sketch?.setDimension(i, v) ?? false,
         checkSketchDimension: (i) =>
           stateRef.current?.sketch?.dimensionPrecheck(i) ?? Promise.resolve(null),
+        setSketchDistanceDimension: (v) =>
+          stateRef.current?.sketch?.setDistanceDimension(v) ?? false,
+        sketchDistancePickValue: () =>
+          stateRef.current?.sketch?.distancePickValue() ?? null,
         sketchSelectedCount: () => stateRef.current?.sketch?.selectedCount ?? 0,
         setSketchConstruction: (on) => stateRef.current?.sketch?.setConstruction(on),
         toggleSketchConstruction: () =>
