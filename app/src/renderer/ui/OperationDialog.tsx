@@ -144,6 +144,14 @@ const SPECS: Record<OpKind, OpSpec> = {
         default: false,
         showIf: (v) => v.mode !== 'To object'
       },
+      {
+        key: 'taper',
+        label: 'Taper angle',
+        type: 'number',
+        default: 0,
+        step: 1,
+        showIf: (v) => v.mode !== 'To object'
+      },
       { key: 'reversed', label: 'Flip', type: 'checkbox', default: false }
     ]
   },
@@ -276,7 +284,15 @@ const SPECS: Record<OpKind, OpSpec> = {
     needs: 'faces',
     hint: 'Select the face(s) to remove (open the shell); the rest is hollowed to the thickness.',
     fields: [
-      { key: 'thickness', label: 'Thickness', type: 'number', default: 2, min: 0.01, step: 0.5 }
+      { key: 'thickness', label: 'Thickness', type: 'number', default: 2, min: 0.01, step: 0.5 },
+      {
+        key: 'direction',
+        label: 'Direction',
+        type: 'select',
+        default: 'Inside',
+        options: ['Inside', 'Outside', 'Both'],
+        wide: true
+      }
     ]
   },
   hole: {

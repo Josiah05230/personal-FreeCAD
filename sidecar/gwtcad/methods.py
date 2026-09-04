@@ -197,7 +197,7 @@ def _ensure_body_tip(d, body):
 
 @method("feature.extrude")
 def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, cut=False,
-                    upToFaceRef=None, operation=None, offset=0.0, faceRef=None):
+                    upToFaceRef=None, operation=None, offset=0.0, faceRef=None, taper=0.0):
     """operation: 'join' (add) | 'cut' (remove) | 'intersect' (keep the overlap)
     | 'newBody' (separate solid).
     `cut=True` is kept as a shorthand for operation='cut'. When upToFaceRef is
@@ -264,7 +264,7 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
     made_body = None   # a fresh Body, for the newbody branch
 
     if op == "cut":
-        made = build.pocket(body, sk, float(length), up_to=up, offset=off)
+        made = build.pocket(body, sk, float(length), up_to=up, offset=off, taper=taper)
         target = body
     elif op == "intersect":
         # keep only where the new prism and the existing solid overlap. PartDesign
@@ -277,7 +277,7 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
         skc = d.copyObject(sk, False)
         nb.addObject(skc)
         pad = build.pad(nb, skc, float(length), reversed_=reversed,
-                        midplane=midplane, up_to=up, offset=off)
+                        midplane=midplane, up_to=up, offset=off, taper=taper)
         made_body = nb
         d.recompute()
         boolean = body.newObject("PartDesign::Boolean", "Boolean")
@@ -297,7 +297,7 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
         if isinstance(sk, tuple):
             # a model-face profile cannot be copied into a fresh body - just pad
             made = build.pad(body, sk, float(length), reversed_=reversed,
-                             midplane=midplane, up_to=up, offset=off)
+                             midplane=midplane, up_to=up, offset=off, taper=taper)
             target = body
         elif tip is not None and _kind(tip.TypeId) == "solid":
             # body already has a solid - pad a copy of the sketch in a fresh body
@@ -305,16 +305,16 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
             skc = d.copyObject(sk, False)
             nb.addObject(skc)
             made = build.pad(nb, skc, float(length), reversed_=reversed,
-                             midplane=midplane, up_to=up, offset=off)
+                             midplane=midplane, up_to=up, offset=off, taper=taper)
             made_body = nb
             target = nb
         else:
             made = build.pad(body, sk, float(length), reversed_=reversed,
-                             midplane=midplane, up_to=up, offset=off)
+                             midplane=midplane, up_to=up, offset=off, taper=taper)
             target = body
     else:  # join
         made = build.pad(body, sk, float(length), reversed_=reversed,
-                         midplane=midplane, up_to=up, offset=off)
+                         midplane=midplane, up_to=up, offset=off, taper=taper)
         target = body
 
     if op != "intersect":
@@ -696,11 +696,22 @@ def feature_chamfer(edges, size=2.0, mode="Equal", size2=0.0, angle=45.0):
 
 
 @method("feature.shell")
-def feature_shell(faces, thickness=2.0):
+def feature_shell(faces, thickness=2.0, direction="Inside"):
+    """direction: 'Inside' (hollow inward, default), 'Outside' (add a wall
+    outward), 'Both' (split the wall about the surface)."""
     body = _require_body()
     tip = _solid_tip(body)
     f = build.dress_up(body, "PartDesign::Thickness", tip, faces, "Shell")
     f.Value = float(thickness)
+    dr = str(direction or "Inside").lower()
+    try:
+        if dr.startswith("out"):
+            f.Reversed = True
+        elif dr.startswith("both"):
+            if hasattr(f, "Mode"):
+                f.Mode = "RectoVerso"
+    except Exception:
+        pass
     body.Document.recompute()
     if not body.Shape.isValid():
         raise RpcError(APP_ERROR, "shell produced an invalid shape")

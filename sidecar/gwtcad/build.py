@@ -227,11 +227,16 @@ def _set_profile(feature, profile):
 
 
 def pad(body, sketch, length, reversed_=False, midplane=False, name="Pad",
-        up_to=None, offset=0.0):
+        up_to=None, offset=0.0, taper=0.0):
     p = body.newObject("PartDesign::Pad", name)
     p.Label = next_label(body, "PartDesign::Pad")
     _set_profile(p, sketch)
     p.Length = float(length)
+    if taper and hasattr(p, "TaperAngle"):
+        try:
+            p.TaperAngle = float(taper)
+        except Exception:
+            pass
     if up_to is not None:
         try:
             p.Type = "UpToFace"
@@ -252,10 +257,15 @@ def pad(body, sketch, length, reversed_=False, midplane=False, name="Pad",
 
 
 def pocket(body, sketch, length, through_all=False, name="Pocket", up_to=None,
-           offset=0.0):
+           offset=0.0, taper=0.0):
     p = body.newObject("PartDesign::Pocket", name)
     p.Label = next_label(body, "PartDesign::Pocket")
     _set_profile(p, sketch)
+    if taper and hasattr(p, "TaperAngle"):
+        try:
+            p.TaperAngle = float(taper)
+        except Exception:
+            pass
     if up_to is not None:
         try:
             p.Type = "UpToFace"

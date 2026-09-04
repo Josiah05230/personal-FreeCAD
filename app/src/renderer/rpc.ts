@@ -439,7 +439,8 @@ export const api = {
     upToFaceRef: GeomRef | null = null,
     operation: 'join' | 'cut' | 'intersect' | 'newBody' = 'join',
     offset = 0,
-    faceRef: { bodyId: string; sub: string } | null = null
+    faceRef: { bodyId: string; sub: string } | null = null,
+    taper = 0
   ) =>
     rpc<{ bodies: BodyTree[] }>('feature.extrude', {
       sketchId,
@@ -450,7 +451,8 @@ export const api = {
       upToFaceRef,
       operation,
       offset,
-      faceRef
+      faceRef,
+      taper
     }),
   fillet: (edges: string[], radius: number) =>
     rpc<{ bodies: BodyTree[] }>('feature.fillet', { edges, radius }),
@@ -468,8 +470,8 @@ export const api = {
     size2 = 0,
     angle = 45
   ) => rpc<{ bodies: BodyTree[] }>('feature.chamfer', { edges, size, mode, size2, angle }),
-  shell: (faces: string[], thickness: number) =>
-    rpc<{ bodies: BodyTree[] }>('feature.shell', { faces, thickness }),
+  shell: (faces: string[], thickness: number, direction: 'Inside' | 'Outside' | 'Both' = 'Inside') =>
+    rpc<{ bodies: BodyTree[] }>('feature.shell', { faces, thickness, direction }),
   hole: (
     face: string,
     point: number[],

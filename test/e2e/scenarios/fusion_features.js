@@ -152,6 +152,46 @@ await idle();
   assert(!err && !anyErr(), 'revolve with Operation=New body, Full committed');
 }
 
+// ---------------------------------------------------------------- Extrude taper + Shell direction
+note('--- Extrude taper angle + Shell direction ---');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+{
+  const s = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: s.sketchId,
+    elements: [{ type: 'rect', a: [0, 0], b: [40, 30] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.clearSelection();
+  G.openOp('extrude');
+  await sleep(50);
+  G.selectSketch(s.sketchId);
+  await sleep(50);
+  await waitFor(() => G.getState().opReady === true, 4000);
+  let err = null;
+  try {
+    await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 20, taper: 8 });
+  } catch (e) {
+    err = (e && e.message) || String(e);
+  }
+  await idle();
+  G.closeOp();
+  assert(!err && !anyErr(), `extrude with an 8deg taper committed (${err || 'ok'})`);
+}
+{
+  const sbid = meshes()[0].id;
+  await openApply('shell', { thickness: 2, direction: 'Outside' }, {
+    setup: async () => {
+      G.pick({ kind: 'face', bodyId: sbid, sub: 'Face2', point: [0, 0, 0] }, false);
+    },
+    soft: true
+  });
+}
+
 // ---------------------------------------------------------------- Chamfer modes
 note('--- Chamfer: Distance and angle ---');
 await rpc('session.reset');

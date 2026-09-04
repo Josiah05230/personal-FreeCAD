@@ -1028,7 +1028,8 @@ export function App(): JSX.Element {
               upTo,
               operation,
               toObject ? Number(v.offset ?? 0) : 0,
-              faceProfile
+              faceProfile,
+              Number(v.taper ?? 0)
             )
             break
           }
@@ -1116,7 +1117,11 @@ export function App(): JSX.Element {
             )
             break
           case 'shell':
-            await api.shell(faces.map((f) => f.sub), Number(v.thickness))
+            await api.shell(
+              faces.map((f) => f.sub),
+              Number(v.thickness),
+              String(v.direction ?? 'Inside') as 'Inside' | 'Outside' | 'Both'
+            )
             break
           case 'hole':
             await api.hole(
@@ -1561,7 +1566,8 @@ export function App(): JSX.Element {
             null,
             operation,
             0,
-            faceProfile
+            faceProfile,
+            Number(v.taper ?? 0)
           )
         }
         case 'revolve': {
@@ -1595,7 +1601,13 @@ export function App(): JSX.Element {
         }
         case 'shell': {
           const th = num('thickness')
-          return faces.length && th != null ? api.shell(faces.map((f) => f.sub), th) : null
+          return faces.length && th != null
+            ? api.shell(
+                faces.map((f) => f.sub),
+                th,
+                String(v.direction ?? 'Inside') as 'Inside' | 'Outside' | 'Both'
+              )
+            : null
         }
         case 'hole': {
           const dia = num('diameter')
