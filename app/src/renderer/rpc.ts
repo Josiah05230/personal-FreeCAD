@@ -430,10 +430,6 @@ export const api = {
     rpc<CanvasDTO>('canvas.calibrate', { id, realMm, measuredMm }),
   canvasDelete: (id: string) => rpc<{ deleted: string }>('canvas.delete', { id }),
 
-  box: (width: number, depth: number, height: number) =>
-    rpc<{ bodies: BodyTree[] }>('primitive.box', { width, depth, height }),
-  cylinder: (diameter: number, height: number) =>
-    rpc<{ bodies: BodyTree[] }>('primitive.cylinder', { diameter, height }),
   extrude: (
     sketchId: string | null,
     length: number,
@@ -465,8 +461,13 @@ export const api = {
     refs: FeatureEdit['refs'],
     exprs: Record<string, string> = {}
   ) => rpc<{ bodies: BodyTree[] }>('feature.update', { id, values, refs, exprs }),
-  chamfer: (edges: string[], size: number) =>
-    rpc<{ bodies: BodyTree[] }>('feature.chamfer', { edges, size }),
+  chamfer: (
+    edges: string[],
+    size: number,
+    mode: 'Equal' | 'Two distances' | 'Distance and angle' = 'Equal',
+    size2 = 0,
+    angle = 45
+  ) => rpc<{ bodies: BodyTree[] }>('feature.chamfer', { edges, size, mode, size2, angle }),
   shell: (faces: string[], thickness: number) =>
     rpc<{ bodies: BodyTree[] }>('feature.shell', { faces, thickness }),
   hole: (
@@ -597,7 +598,8 @@ export const api = {
     axis = 'V',
     cut = false,
     axisRef: GeomRef | null = null,
-    faceRef: { bodyId: string; sub: string } | null = null
+    faceRef: { bodyId: string; sub: string } | null = null,
+    operation: 'join' | 'cut' | 'intersect' | 'newbody' = 'join'
   ) =>
     rpc<{ bodies: BodyTree[] }>('feature.revolve', {
       sketchId,
@@ -605,7 +607,8 @@ export const api = {
       axis,
       cut,
       axisRef,
-      faceRef
+      faceRef,
+      operation
     }),
   sweep: (
     profileId: string,
@@ -637,6 +640,107 @@ export const api = {
   bodyCopy: (id: string) => rpc<{ bodies: BodyTree[] }>('body.copy', { id }),
   splitBody: (bodyId: string, planeRef: GeomRef) =>
     rpc<{ bodies: BodyTree[] }>('body.split', { bodyId, planeRef }),
+
+  // --- Move/Copy, Scale, Align (Fusion Modify panel) ---
+  moveCopy: (args: {
+    ids: string[]
+    mode: 'translate' | 'rotate' | 'pointToPoint' | 'pointToPosition'
+    dx?: number
+    dy?: number
+    dz?: number
+    axisBase?: number[]
+    axisDir?: number[]
+    angle?: number
+    fromPoint?: number[]
+    toPoint?: number[]
+    createCopy?: boolean
+    copies?: number
+  }) => rpc<{ bodies: BodyTree[] }>('body.moveCopy', args),
+  scaleBody: (args: {
+    id: string | null
+    uniform: boolean
+    factor?: number
+    fx?: number
+    fy?: number
+    fz?: number
+    center?: number[]
+  }) => rpc<{ bodies: BodyTree[] }>('body.scaleBody', args),
+  alignBody: (moveId: string | null, fromRef: GeomRef | null, toRef: GeomRef | null) =>
+    rpc<{ bodies: BodyTree[] }>('body.align', { moveId, fromRef, toRef }),
+  interference: (ids: string[] = []) =>
+    rpc<{ pairs: { a: string; b: string; volume: number; hasInterference: boolean }[]; totalVolume: number }>(
+      'inspect.interference',
+      { ids }
+    ),
+  centerOfMass: (ids: string[] = []) =>
+    rpc<{
+      bodies: { id: string; com: number[]; volume: number; area: number }[]
+      combined: { com: number[]; volume: number }
+    }>('inspect.centerOfMass', { ids }),
+
+  // --- Modify panel additions ---
+  offsetFace: (faces: string[], distance: number) =>
+    rpc<{ bodies: BodyTree[] }>('feature.offsetFace', { faces, distance }),
+  splitFace: (faces: string[], planeRef: GeomRef | null) =>
+    rpc<{ bodies: BodyTree[] }>('feature.splitFace', { faces, planeRef }),
+  pressPull: (subs: string[], distance: number) =>
+    rpc<{ bodies: BodyTree[] }>('feature.pressPull', { subs, distance }),
+
+  // --- CREATE: primitives ---
+  primBox: (a: { length: number; width: number; height: number; operation: string; planeRef: GeomRef | null }) =>
+    rpc<{ bodies: BodyTree[] }>('primitive.box', a),
+  primCylinder: (a: { diameter: number; height: number; operation: string; planeRef: GeomRef | null }) =>
+    rpc<{ bodies: BodyTree[] }>('primitive.cylinder', a),
+  primSphere: (a: { diameter: number; operation: string; planeRef: GeomRef | null }) =>
+    rpc<{ bodies: BodyTree[] }>('primitive.sphere', a),
+  primTorus: (a: {
+    meanDiameter: number
+    sectionDiameter: number
+    operation: string
+    planeRef: GeomRef | null
+  }) => rpc<{ bodies: BodyTree[] }>('primitive.torus', a),
+  primCoil: (a: {
+    diameter: number
+    pitch: number
+    height: number
+    sectionDiameter: number
+    turns: number
+    operation: string
+    planeRef: GeomRef | null
+  }) => rpc<{ bodies: BodyTree[] }>('primitive.coil', a),
+  primPipe: (a: {
+    pathRefs: { bodyId: string; sub: string }[]
+    sectionDiameter: number
+    wallThickness: number
+    operation: string
+  }) => rpc<{ bodies: BodyTree[] }>('primitive.pipe', a),
+
+  // --- MESH tab ---
+  meshFromBRep: (a: { bodyId: string | null; deflection: number; angularDeflection: number }) =>
+    rpc<{ bodies: BodyTree[] }>('mesh.fromBRep', a),
+  meshReduce: (a: { id: string | null; targetFactor: number; targetCount: number }) =>
+    rpc<{ bodies: BodyTree[] }>('mesh.reduce', a),
+  meshSmooth: (a: { id: string | null; iterations: number }) =>
+    rpc<{ bodies: BodyTree[] }>('mesh.smooth', a),
+  meshPlaneCut: (a: {
+    id: string | null
+    planeRef: GeomRef | null
+    base: number[]
+    normal: number[]
+    keep: string
+    fill: boolean
+  }) => rpc<{ bodies: BodyTree[] }>('mesh.planeCut', a),
+  meshFlipNormals: (id: string | null) => rpc<{ bodies: BodyTree[] }>('mesh.flipNormals', { id }),
+  meshRepair: (a: {
+    id: string | null
+    fixNormals: boolean
+    fillHoles: boolean
+    removeNonManifold: boolean
+    removeDuplicates: boolean
+  }) => rpc<{ bodies: BodyTree[] }>('mesh.repair', a),
+  meshSeparate: (id: string | null) => rpc<{ bodies: BodyTree[] }>('mesh.separate', { id }),
+  meshToSolid: (a: { id: string | null; mode: string; sewTolerance: number }) =>
+    rpc<{ bodies: BodyTree[] }>('mesh.toSolid', a),
   surfaceRuled: (refs: GeomRef[]) => rpc<{ bodies: BodyTree[] }>('surface.ruled', { refs }),
   surfaceFill: (refs: GeomRef[]) => rpc<{ bodies: BodyTree[] }>('surface.fill', { refs }),
   surfaceStitch: (refs: GeomRef[]) => rpc<{ bodies: BodyTree[] }>('surface.stitch', { refs }),

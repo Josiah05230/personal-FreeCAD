@@ -24,7 +24,8 @@ const chance = (p) => r() < p;
 const OP_KINDS = [
   'extrude', 'revolve', 'rib', 'loft', 'draft', 'combine', 'fillet', 'chamfer',
   'shell', 'hole', 'patternLinear', 'patternCircular', 'mirror', 'datumPlane',
-  'datumAxis', 'datumPoint', 'moveBody', 'copyBody', 'splitBody'
+  'datumAxis', 'datumPoint', 'move', 'scale', 'splitBody',
+  'box', 'cylinder', 'sphere', 'torus', 'pressPull', 'offsetFace'
 ];
 const PLANES = ['XY_Plane', 'XZ_Plane', 'YZ_Plane'];
 const JUNK_VALUES = [

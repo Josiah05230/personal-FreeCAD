@@ -191,30 +191,8 @@ def _ensure_body_tip(d, body):
         session.set_rolled_empty(body.Name, False)
 
 
-@method("primitive.box")
-def primitive_box(width=40.0, depth=40.0, height=40.0, name=None):
-    d = session.doc()
-    body = build.new_body(d, name or "Box")
-    sk = build.rect_sketch(body, float(width), float(depth), "XY", centered=True)
-    d.recompute()
-    build.pad(body, sk, float(height))
-    d.recompute()
-    if not body.Shape.isValid():
-        raise RpcError(APP_ERROR, "box shape invalid")
-    return tree_get()
-
-
-@method("primitive.cylinder")
-def primitive_cylinder(diameter=40.0, height=40.0, name=None):
-    d = session.doc()
-    body = build.new_body(d, name or "Cylinder")
-    sk = build.circle_sketch(body, float(diameter) / 2.0, "XY")
-    d.recompute()
-    build.pad(body, sk, float(height))
-    d.recompute()
-    if not body.Shape.isValid():
-        raise RpcError(APP_ERROR, "cylinder shape invalid")
-    return tree_get()
+# primitive.box / primitive.cylinder (+ sphere / torus / coil / pipe) are
+# implemented in gwtcad.primitives, imported at the bottom of this module.
 
 
 @method("feature.extrude")
@@ -442,9 +420,12 @@ def _sketch_local_extent(sk):
 
 @method("feature.revolve")
 def feature_revolve(sketchId=None, angle=360.0, axis="V", axisRef=None,
-                    reversed=False, cut=False, faceRef=None):
+                    reversed=False, cut=False, faceRef=None, operation=None):
     """Revolve a sketch, OR (no sketchId) a flat model face - the latter needs
-    an explicit axisRef since a face has no H/V axis of its own."""
+    an explicit axisRef since a face has no H/V axis of its own.
+    operation: 'join' (default) | 'cut' (Groove) | 'newbody' | 'intersect'.
+    The caller also passes cut=True for 'cut'; 'newbody' / 'intersect' build an
+    additive Revolution and then re-express it against the body."""
     vert = str(axis).upper().startswith("V")
 
     if faceRef and not sketchId:
@@ -508,6 +489,15 @@ def feature_revolve(sketchId=None, angle=360.0, axis="V", axisRef=None,
     prev_tip = getattr(body, "Tip", None)
     prev_tip_name = prev_tip.Name if prev_tip is not None else None
 
+    _rev_op = (operation or "join").lower()
+    _reexpress = _rev_op in ("newbody", "intersect")
+    _before = None
+    if _reexpress:
+        try:
+            _before = body.Shape.copy()
+        except Exception:
+            _before = None
+
     # resolve the axis BEFORE creating the feature - body.newObject() advances
     # body.Tip to the new (half-built) Revolution, so a ref that resolves through
     # body.Tip (e.g. axisRef.bodyId is the Body id, which the GUI sends for edge
@@ -532,11 +522,17 @@ def feature_revolve(sketchId=None, angle=360.0, axis="V", axisRef=None,
     # build; if it comes out invalid, drop exactly this feature (and any profile
     # copy we made), put the tip back, and raise - never disturb existing work
     extra = [prof] if (sk is not None and prof is not sk) else []
-    build.finalize_or_rollback(
-        d, body, rev, prev_tip_name, extra,
-        "revolve produced an invalid shape - check the profile is one closed "
-        "outline that stays on one side of the axis, then try again",
-        check_made=True)
+    _what = ("revolve produced an invalid shape - check the profile is one closed "
+             "outline that stays on one side of the axis, then try again")
+    if _reexpress and _before is not None and not _before.isNull():
+        # additive Revolution already built; re-express its contribution as a
+        # new body (newbody) or an intersection (intersect) - same path the
+        # mirror / pattern Operation uses
+        d.recompute()
+        _finish_transform(d, body, rev, prev_tip_name, _before, _rev_op, _what)
+    else:
+        build.finalize_or_rollback(d, body, rev, prev_tip_name, extra, _what,
+                                   check_made=True)
     return tree_get()
 
 
@@ -674,11 +670,25 @@ def feature_fillet(edges, radius=2.0):
 
 
 @method("feature.chamfer")
-def feature_chamfer(edges, size=2.0):
+def feature_chamfer(edges, size=2.0, mode="Equal", size2=0.0, angle=45.0):
+    """mode: 'Equal' (one distance), 'Two distances' (Size + Size2), or
+    'Distance and angle' (Size + Angle)."""
     body = _require_body()
     tip = _solid_tip(body)
     f = build.dress_up(body, "PartDesign::Chamfer", tip, edges, "Chamfer")
     f.Size = float(size)
+    m = str(mode or "Equal").lower()
+    try:
+        if m.startswith("two"):
+            f.ChamferType = "Two distances"
+            f.Size2 = float(size2) if float(size2 or 0) > 0 else float(size)
+        elif "angle" in m:
+            f.ChamferType = "Distance and angle"
+            f.Angle = float(angle)
+        else:
+            f.ChamferType = "Equal distance"
+    except Exception:
+        pass  # older builds: single-distance only, Size already set
     body.Document.recompute()
     if not body.Shape.isValid():
         raise RpcError(APP_ERROR, "chamfer produced an invalid shape")
@@ -694,6 +704,80 @@ def feature_shell(faces, thickness=2.0):
     body.Document.recompute()
     if not body.Shape.isValid():
         raise RpcError(APP_ERROR, "shell produced an invalid shape")
+    return tree_get()
+
+
+@method("feature.pressPull")
+def feature_press_pull(subs, distance=2.0):
+    """Fusion's Press Pull (Q): one entry point. An edge sub -> fillet by
+    `distance`; a face sub -> offset that face by `distance` (positive adds
+    material, negative removes). Delegates to the tested fillet / face-extrude
+    paths so the result stays parametric."""
+    subs = list(subs or [])
+    if not subs:
+        raise RpcError(APP_ERROR, "pick an edge (to fillet) or a face (to offset)")
+    edges = [s for s in subs if str(s).startswith("Edge")]
+    faces = [s for s in subs if str(s).startswith("Face")]
+    if edges:
+        return feature_fillet(edges, abs(float(distance)) or 1.0)
+    if faces:
+        return feature_offset_face(faces, float(distance))
+    raise RpcError(APP_ERROR, "Press Pull needs edge or face references")
+
+
+@method("feature.offsetFace")
+def feature_offset_face(faces, distance=2.0):
+    """Move planar faces along their normal. Implemented as a face pad (add) or
+    pocket (remove) so it lands in the timeline like any other feature."""
+    body = _require_body()
+    faces = list(faces or [])
+    if not faces:
+        raise RpcError(APP_ERROR, "select the face(s) to offset")
+    dist = float(distance)
+    op = "join" if dist >= 0 else "cut"
+    last = None
+    for sub in faces:
+        last = feature_extrude(sketchId=None, length=abs(dist), operation=op,
+                               faceRef={"bodyId": body.Name, "sub": sub})
+    return last if last is not None else tree_get()
+
+
+@method("feature.splitFace")
+def feature_split_face(faces, planeRef=None):
+    """Imprint a plane's intersection onto the selected face(s), splitting them
+    without changing the volume. Non-parametric: emits a derived Part::Feature
+    (PartDesign has no native Split Face in this build)."""
+    body = _require_body()
+    d = body.Document
+    tip = _solid_tip(body)
+    if planeRef is None:
+        raise RpcError(APP_ERROR, "also pick the splitting plane (a datum / origin plane)")
+    import Part
+    from FreeCAD import Vector
+
+    obj, sub = _resolve_ref(d, body, planeRef)
+    # build a big planar face at the reference plane
+    if sub and str(sub[0]).startswith("Face"):
+        ref_face = obj.Shape.getElement(sub[0])
+        pl_pt = ref_face.CenterOfMass
+        pl_n = ref_face.normalAt(0, 0)
+    else:
+        pl = obj.Placement
+        pl_pt = pl.Base
+        pl_n = pl.Rotation.multVec(Vector(0, 0, 1))
+    bb = tip.Shape.BoundBox
+    size = bb.DiagonalLength * 2.0 or 100.0
+    plane = Part.makePlane(size, size, Vector(pl_pt).sub(Vector(pl_n).multiply(0)), pl_n)
+    plane.translate(Vector(pl_pt).sub(plane.CenterOfMass))
+    try:
+        pieces = tip.Shape.generalFuse([plane])[0]
+        result = pieces
+    except Exception as e:
+        raise RpcError(APP_ERROR, "split face failed: %s" % e)
+    pf = d.addObject("Part::Feature", "SplitFace")
+    pf.Shape = result
+    body.Visibility = False
+    d.recompute()
     return tree_get()
 
 
@@ -3814,3 +3898,13 @@ def body_convert_units(id, fromUnit, toUnit):
 
 # KiCad .kicad_pcb import (registers kicad.* RPC methods on import)
 from gwtcad import kicad as _kicad_methods  # noqa: E402,F401
+
+# Fusion-parity feature modules. Each registers its own @method RPCs on import.
+# Guarded so a problem in one module cannot take the whole sidecar down.
+for _mod in ("primitives", "xform", "meshtools"):
+    try:
+        __import__("gwtcad." + _mod)
+    except Exception as _e:  # pragma: no cover - surfaced in the sidecar log
+        import sys as _sys
+        print("[gwtcad] optional module %r failed to load: %s" % (_mod, _e),
+              file=_sys.stderr)

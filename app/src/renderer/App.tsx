@@ -83,12 +83,30 @@ const opSelKinds = (k: OpKind | null): SelKind[] | null => {
       return ['sketch', 'face', 'edge', 'plane'] // profile + an axis (a body edge or a datum)
     case 'fillet':
     case 'chamfer':
+    case 'pressPull':
       return ['edge', 'face']
     case 'shell':
     case 'draft':
+    case 'offsetFace':
+      return ['face', 'plane']
+    case 'align':
+      return ['face']
+    case 'splitFace':
       return ['face', 'plane']
     case 'hole':
       return ['face', 'edge']
+    case 'pipe':
+      return ['edge']
+    case 'box':
+    case 'cylinder':
+    case 'sphere':
+    case 'torus':
+    case 'coil':
+      return ['face', 'plane']
+    case 'meshPlaneCut':
+      return ['face', 'plane']
+    case 'move':
+      return ['edge', 'vertex']
     case 'datumPlane':
     case 'datumAxis':
     case 'datumPoint':
@@ -1037,13 +1055,22 @@ export function App(): JSX.Element {
               throw new Error(
                 'Revolving a face needs an axis - set Axis to X/Y/Z, or "Selected edge / datum" and click a straight edge or datum axis.'
               )
+            const revOpMap: Record<string, 'join' | 'cut' | 'intersect' | 'newbody'> = {
+              'New body': 'newbody',
+              Join: 'join',
+              Cut: 'cut',
+              Intersect: 'intersect'
+            }
+            const revOp = revOpMap[String(v.operation ?? 'Join')] ?? 'join'
+            const revAngle = v.full ? 360 : Number(v.angle)
             await api.revolve(
               sketchIds[0] ?? null,
-              Number(v.angle),
+              revAngle,
               axisCode,
-              Boolean(v.cut),
+              revOp === 'cut',
               axisRef,
-              faceProfile
+              faceProfile,
+              revOp
             )
             break
           }
@@ -1080,7 +1107,13 @@ export function App(): JSX.Element {
             await api.fillet([...edges, ...faces.map((f) => f.sub)], Number(v.radius))
             break
           case 'chamfer':
-            await api.chamfer([...edges, ...faces.map((f) => f.sub)], Number(v.size))
+            await api.chamfer(
+              [...edges, ...faces.map((f) => f.sub)],
+              Number(v.size),
+              String(v.mode ?? 'Equal') as 'Equal' | 'Two distances' | 'Distance and angle',
+              Number(v.size2 ?? 0),
+              Number(v.angle ?? 45)
+            )
             break
           case 'shell':
             await api.shell(faces.map((f) => f.sub), Number(v.thickness))
@@ -1097,25 +1130,92 @@ export function App(): JSX.Element {
               Number(v.cutDepth)
             )
             break
-          case 'moveBody': {
+          case 'move': {
             const tgt = selection.find((s) => s.kind === 'body' || s.kind === 'face') as
               | { bodyId: string }
               | undefined
             const id = tgt?.bodyId ?? bodies[0]?.id
-            if (id)
-              await api.bodyTransform(
-                id,
-                [Number(v.dx), Number(v.dy), Number(v.dz)],
-                [Number(v.rx), Number(v.ry), Number(v.rz)]
-              )
+            if (!id) break
+            const modeMap: Record<string, 'translate' | 'rotate' | 'pointToPoint'> = {
+              Translate: 'translate',
+              Rotate: 'rotate',
+              'Point to Point': 'pointToPoint'
+            }
+            const axisDirMap: Record<string, number[]> = {
+              X: [1, 0, 0],
+              Y: [0, 1, 0],
+              Z: [0, 0, 1]
+            }
+            const pts = selection.filter((s) => s.kind === 'vertex') as Array<{
+              point: [number, number, number]
+            }>
+            const edgeSel = selection.find((s) => s.kind === 'edge') as
+              | { bodyId: string; sub: string }
+              | undefined
+            const axisDir =
+              v.axis === 'Selected edge' && edgeSel
+                ? undefined // sidecar falls back to its default when axisDir omitted; keep simple
+                : axisDirMap[String(v.axis ?? 'Z')] ?? [0, 0, 1]
+            await api.moveCopy({
+              ids: [id],
+              mode: modeMap[String(v.mode ?? 'Translate')] ?? 'translate',
+              dx: Number(v.dx ?? 0),
+              dy: Number(v.dy ?? 0),
+              dz: Number(v.dz ?? 0),
+              axisDir,
+              angle: Number(v.angle ?? 0),
+              fromPoint: pts[0]?.point ?? [0, 0, 0],
+              toPoint: pts[1]?.point ?? [0, 0, 0],
+              createCopy: Boolean(v.createCopy),
+              copies: Math.max(1, Number(v.copies ?? 1))
+            })
             break
           }
-          case 'copyBody': {
+          case 'scale': {
             const tgt = selection.find((s) => s.kind === 'body' || s.kind === 'face') as
               | { bodyId: string }
               | undefined
-            const id = tgt?.bodyId ?? bodies[0]?.id
-            if (id) await api.bodyCopy(id)
+            const id = tgt?.bodyId ?? bodies[0]?.id ?? null
+            await api.scaleBody({
+              id,
+              uniform: Boolean(v.uniform ?? true),
+              factor: Number(v.factor ?? 2),
+              fx: Number(v.fx ?? 1),
+              fy: Number(v.fy ?? 1),
+              fz: Number(v.fz ?? 1)
+            })
+            break
+          }
+          case 'align': {
+            // first picked face = FROM, second = TO
+            const fs = selection.filter((s) => s.kind === 'face') as Array<{
+              bodyId: string
+              sub: string
+            }>
+            if (fs.length >= 2) {
+              await api.alignBody(
+                fs[0].bodyId,
+                { kind: 'face', bodyId: fs[0].bodyId, sub: fs[0].sub },
+                { kind: 'face', bodyId: fs[1].bodyId, sub: fs[1].sub }
+              )
+            }
+            break
+          }
+          case 'pressPull': {
+            const subs = [...edges, ...faces.map((f) => f.sub)]
+            if (subs.length) await api.pressPull(subs, Number(v.distance ?? 2))
+            break
+          }
+          case 'offsetFace': {
+            if (faces.length) await api.offsetFace(faces.map((f) => f.sub), Number(v.distance ?? 2))
+            break
+          }
+          case 'splitFace': {
+            const plane = selection
+              .filter((s) => s.kind === 'plane')
+              .map(selectionToRef)
+              .find(Boolean) ?? null
+            if (faces.length) await api.splitFace(faces.map((f) => f.sub), plane)
             break
           }
           case 'patternLinear': {
@@ -1212,6 +1312,141 @@ export function App(): JSX.Element {
             if (sk) await api.sheetBaseFlange(sk, Number(v.thickness))
             break
           }
+
+          // --- CREATE: primitives ---
+          case 'box':
+          case 'cylinder':
+          case 'sphere':
+          case 'torus':
+          case 'coil': {
+            const opMap: Record<string, string> = {
+              'New body': 'newbody',
+              Join: 'join',
+              Cut: 'cut',
+              Intersect: 'intersect'
+            }
+            const operation = opMap[String(v.operation ?? 'New body')] ?? 'newbody'
+            const planeRef =
+              selection
+                .filter((s) => s.kind === 'plane' || s.kind === 'face')
+                .map(selectionToRef)
+                .find(Boolean) ?? null
+            if (kind === 'box')
+              await api.primBox({
+                length: Number(v.length),
+                width: Number(v.width),
+                height: Number(v.height),
+                operation,
+                planeRef
+              })
+            else if (kind === 'cylinder')
+              await api.primCylinder({
+                diameter: Number(v.diameter),
+                height: Number(v.height),
+                operation,
+                planeRef
+              })
+            else if (kind === 'sphere')
+              await api.primSphere({ diameter: Number(v.diameter), operation, planeRef })
+            else if (kind === 'torus')
+              await api.primTorus({
+                meanDiameter: Number(v.meanDiameter),
+                sectionDiameter: Number(v.sectionDiameter),
+                operation,
+                planeRef
+              })
+            else
+              await api.primCoil({
+                diameter: Number(v.diameter),
+                pitch: Number(v.pitch),
+                height: Number(v.pitch) * Number(v.turns ?? 1),
+                sectionDiameter: Number(v.sectionDiameter),
+                turns: Number(v.turns ?? 1),
+                operation,
+                planeRef
+              })
+            break
+          }
+          case 'pipe': {
+            const opMap: Record<string, string> = {
+              'New body': 'newbody',
+              Join: 'join',
+              Cut: 'cut',
+              Intersect: 'intersect'
+            }
+            const pathRefs = (
+              selection.filter((s) => s.kind === 'edge') as Array<{ bodyId: string; sub: string }>
+            ).map((e) => ({ bodyId: e.bodyId, sub: e.sub }))
+            if (pathRefs.length)
+              await api.primPipe({
+                pathRefs,
+                sectionDiameter: Number(v.sectionDiameter),
+                wallThickness: Number(v.wallThickness ?? 0),
+                operation: opMap[String(v.operation ?? 'New body')] ?? 'newbody'
+              })
+            break
+          }
+
+          // --- MESH tab ---
+          case 'meshFromBRep': {
+            const tgt = selection.find((s) => s.kind === 'body' || s.kind === 'face') as
+              | { bodyId: string }
+              | undefined
+            await api.meshFromBRep({
+              bodyId: tgt?.bodyId ?? bodies[0]?.id ?? null,
+              deflection: Number(v.deflection ?? 0.1),
+              angularDeflection: Number(v.angularDeflection ?? 0.5)
+            })
+            break
+          }
+          case 'meshReduce':
+            await api.meshReduce({
+              id: null,
+              targetFactor: Number(v.targetFactor ?? 0.5),
+              targetCount: Number(v.targetCount ?? 0)
+            })
+            break
+          case 'meshSmooth':
+            await api.meshSmooth({ id: null, iterations: Number(v.iterations ?? 2) })
+            break
+          case 'meshPlaneCut': {
+            const planeRef =
+              selection
+                .filter((s) => s.kind === 'plane' || s.kind === 'face')
+                .map(selectionToRef)
+                .find(Boolean) ?? null
+            await api.meshPlaneCut({
+              id: null,
+              planeRef,
+              base: [0, 0, 0],
+              normal: [0, 0, 1],
+              keep: String(v.keep ?? 'both'),
+              fill: Boolean(v.fill)
+            })
+            break
+          }
+          case 'meshFlipNormals':
+            await api.meshFlipNormals(null)
+            break
+          case 'meshRepair':
+            await api.meshRepair({
+              id: null,
+              fixNormals: Boolean(v.fixNormals ?? true),
+              fillHoles: Boolean(v.fillHoles ?? true),
+              removeNonManifold: Boolean(v.removeNonManifold ?? true),
+              removeDuplicates: Boolean(v.removeDuplicates ?? true)
+            })
+            break
+          case 'meshSeparate':
+            await api.meshSeparate(null)
+            break
+          case 'meshToSolid':
+            await api.meshToSolid({
+              id: null,
+              mode: String(v.mode ?? 'faceted'),
+              sewTolerance: Number(v.sewTolerance ?? 0.1)
+            })
+            break
         }
         // persist any dimension expressions against the feature just created
         const exprKeys = Object.keys(exprs)
@@ -1330,21 +1565,22 @@ export function App(): JSX.Element {
           )
         }
         case 'revolve': {
-          const ang = num('angle')
+          const ang = v.full ? 360 : num('angle')
           if (ang == null) return null
+          const revCut = String(v.operation ?? 'Join') === 'Cut'
           const { axisRef, axisCode } = revolveAxisRef(
             String(v.axis ?? ''),
             selection,
             sk?.sketchId
           )
           // sketch profile: preview about the chosen axis (matches commit)
-          if (sk) return api.revolve(sk.sketchId, ang, axisCode, Boolean(v.cut), axisRef)
+          if (sk) return api.revolve(sk.sketchId, ang, axisCode, revCut, axisRef)
           // face profile: needs a flat face plus an axis (edge / datum / X-Y-Z)
           const faceProfile = faces[0] ? { bodyId: faces[0].bodyId, sub: faces[0].sub } : null
           const faceAxis =
             axisRef ?? revolveAxisRef('Selected edge / datum', selection, undefined).axisRef
           return faceProfile && faceAxis
-            ? api.revolve(null, ang, axisCode, Boolean(v.cut), faceAxis, faceProfile)
+            ? api.revolve(null, ang, axisCode, revCut, faceAxis, faceProfile)
             : null
         }
         case 'fillet': {
@@ -2153,6 +2389,48 @@ export function App(): JSX.Element {
     }
   }, [selection, bodies, meshes, afterEdit])
 
+  const runInterference = useCallback(() => {
+    void (async () => {
+      try {
+        const sel = selection
+          .filter((s) => s.kind === 'body')
+          .map((s) => (s as { bodyId: string }).bodyId)
+        const r = await api.interference(sel)
+        const hits = r.pairs.filter((p) => p.hasInterference)
+        if (!hits.length) {
+          flashSketchNotice('No interference between the bodies.')
+          return
+        }
+        window.alert(
+          'Interference:\n' +
+            hits
+              .map((p) => `  ${p.a} <-> ${p.b}: ${p.volume.toFixed(3)} mm3`)
+              .join('\n') +
+            `\n\nTotal overlap volume: ${r.totalVolume.toFixed(3)} mm3`
+        )
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    })()
+  }, [selection, flashSketchNotice])
+
+  const runCenterOfMass = useCallback(() => {
+    void (async () => {
+      try {
+        const sel = selection
+          .filter((s) => s.kind === 'body')
+          .map((s) => (s as { bodyId: string }).bodyId)
+        const r = await api.centerOfMass(sel)
+        const c = r.combined.com
+        flashSketchNotice(
+          `Center of mass: (${c[0].toFixed(2)}, ${c[1].toFixed(2)}, ${c[2].toFixed(2)}) mm - volume ${r.combined.volume.toFixed(1)} mm3`
+        )
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    })()
+  }, [selection, flashSketchNotice])
+
   const newDesign = useCallback(() => {
     const id = `d${Date.now()}`
     setTabs((t) => [...t, { id, name: 'Untitled', dirty: false }])
@@ -2473,6 +2751,8 @@ export function App(): JSX.Element {
         startMeasure,
         toggleSection,
         scale: scaleBody,
+        interference: runInterference,
+        centerOfMass: runCenterOfMass,
         insertCanvas,
         toggleParams: () => setParamsOpen((v) => !v),
         importKicad,
@@ -2509,6 +2789,8 @@ export function App(): JSX.Element {
       startMeasure,
       toggleSection,
       scaleBody,
+      runInterference,
+      runCenterOfMass,
       insertCanvas,
       startCalibrate,
       selectMode,

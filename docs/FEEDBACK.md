@@ -37,6 +37,15 @@ clear it as you go.
 
 ## Recently addressed (this session)
 
+- **Fusion-parity pass 1.** Researched the F360 Design workspace SOLID + MESH
+  ribbon (`docs/fusion-parity.md` = the full command-by-command gap list) and
+  implemented the highest-value missing pieces: Move/Copy done the F360 way
+  (modes + Create Copy, was just a bare dx/dy/dz), Scale dialog, Align, Press
+  Pull, Offset Face, Split Face, the Box/Cylinder/Sphere/Torus/Coil/Pipe
+  primitives, Revolve Operation set + Full, Chamfer modes, Interference +
+  Center of Mass, and a whole MESH tab (Reduce / Smooth / Plane Cut / Repair /
+  Separate / BRep<->Mesh). Remaining corrections listed at the bottom of
+  `fusion-parity.md`.
 - **Revolve OK stayed disabled after the preview rendered** when the profile
   was a flat model face (not a sketch). The dialog `ready` check only accepted
   a sketch for revolve; it now accepts a sketch OR one flat face, like extrude.

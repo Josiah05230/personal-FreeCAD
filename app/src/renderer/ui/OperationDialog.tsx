@@ -19,10 +19,28 @@ export type OpKind =
   | 'datumPlane'
   | 'datumAxis'
   | 'datumPoint'
-  | 'moveBody'
-  | 'copyBody'
+  | 'move'
+  | 'scale'
+  | 'align'
+  | 'pressPull'
+  | 'offsetFace'
+  | 'splitFace'
   | 'splitBody'
   | 'baseFlange'
+  | 'box'
+  | 'cylinder'
+  | 'sphere'
+  | 'torus'
+  | 'coil'
+  | 'pipe'
+  | 'meshFromBRep'
+  | 'meshReduce'
+  | 'meshSmooth'
+  | 'meshPlaneCut'
+  | 'meshFlipNormals'
+  | 'meshRepair'
+  | 'meshSeparate'
+  | 'meshToSolid'
 
 interface FieldSpec {
   key: string
@@ -67,6 +85,16 @@ const OPERATION_FIELD: FieldSpec = {
   type: 'select',
   default: 'Join',
   options: ['Join', 'Cut', 'Intersect', 'New body'],
+  wide: true
+}
+
+// primitives default to a new body (Fusion behavior) but can combine instead
+const PRIMITIVE_OP_FIELD: FieldSpec = {
+  key: 'operation',
+  label: 'Operation',
+  type: 'select',
+  default: 'New body',
+  options: ['New body', 'Join', 'Cut', 'Intersect'],
   wide: true
 }
 
@@ -124,12 +152,30 @@ const SPECS: Record<OpKind, OpSpec> = {
     needs: 'sketch',
     hint: 'Profile: a sketch, or a flat face of the model. Axis: pick from the list, or choose "Selected edge / datum" and click a straight edge or datum axis (required when the profile is a face).',
     fields: [
-      { key: 'angle', label: 'Angle', type: 'number', default: 360, step: 15, flipWith: 'reversed' },
+      {
+        key: 'operation',
+        label: 'Operation',
+        type: 'select',
+        default: 'Join',
+        options: ['New body', 'Join', 'Cut', 'Intersect'],
+        wide: true
+      },
+      { key: 'full', label: 'Full (360)', type: 'checkbox', default: true },
+      {
+        key: 'angle',
+        label: 'Angle',
+        type: 'number',
+        default: 360,
+        step: 15,
+        flipWith: 'reversed',
+        showIf: (v) => !v.full
+      },
       {
         key: 'axis',
         label: 'Axis',
         type: 'select',
         default: 'Sketch vertical',
+        wide: true,
         options: [
           'Sketch vertical',
           'Sketch horizontal',
@@ -138,8 +184,7 @@ const SPECS: Record<OpKind, OpSpec> = {
           'Z',
           'Selected edge / datum'
         ]
-      },
-      { key: 'cut', label: 'Cut', type: 'checkbox', default: false }
+      }
     ]
   },
   rib: {
@@ -197,7 +242,34 @@ const SPECS: Record<OpKind, OpSpec> = {
     title: 'Chamfer',
     needs: 'edges',
     hint: 'Click edges to chamfer. Click a face to chamfer all of its edges. Ctrl-click to add more, plain click replaces.',
-    fields: [{ key: 'size', label: 'Distance', type: 'number', default: 2, min: 0.01, step: 0.5 }]
+    fields: [
+      {
+        key: 'mode',
+        label: 'Type',
+        type: 'select',
+        default: 'Equal',
+        options: ['Equal', 'Two distances', 'Distance and angle'],
+        wide: true
+      },
+      { key: 'size', label: 'Distance', type: 'number', default: 2, min: 0.01, step: 0.5 },
+      {
+        key: 'size2',
+        label: 'Distance 2',
+        type: 'number',
+        default: 2,
+        min: 0.01,
+        step: 0.5,
+        showIf: (v) => v.mode === 'Two distances'
+      },
+      {
+        key: 'angle',
+        label: 'Angle',
+        type: 'number',
+        default: 45,
+        step: 5,
+        showIf: (v) => v.mode === 'Distance and angle'
+      }
+    ]
   },
   shell: {
     title: 'Shell',
@@ -226,24 +298,78 @@ const SPECS: Record<OpKind, OpSpec> = {
       { key: 'cutDepth', label: 'C-bore depth', type: 'number', default: 0, min: 0, step: 0.5 }
     ]
   },
-  copyBody: {
-    title: 'Copy Body',
+  move: {
+    title: 'Move/Copy',
     needs: 'none',
-    hint: 'Duplicates the selected body (or the first body) as an independent body',
+    hint: 'Acts on the selected body (or the first body). Translate: X/Y/Z. Rotate: axis + angle. Tick Create Copy to leave the original in place.',
+    fields: [
+      {
+        key: 'mode',
+        label: 'Move type',
+        type: 'select',
+        default: 'Translate',
+        options: ['Translate', 'Rotate', 'Point to Point'],
+        wide: true
+      },
+      { key: 'dx', label: 'Distance X', type: 'number', default: 0, step: 1, showIf: (v) => v.mode === 'Translate' },
+      { key: 'dy', label: 'Distance Y', type: 'number', default: 0, step: 1, showIf: (v) => v.mode === 'Translate' },
+      { key: 'dz', label: 'Distance Z', type: 'number', default: 0, step: 1, showIf: (v) => v.mode === 'Translate' },
+      {
+        key: 'axis',
+        label: 'Axis',
+        type: 'select',
+        default: 'Z',
+        options: ['X', 'Y', 'Z', 'Selected edge'],
+        wide: true,
+        showIf: (v) => v.mode === 'Rotate'
+      },
+      { key: 'angle', label: 'Angle', type: 'number', default: 90, step: 15, showIf: (v) => v.mode === 'Rotate' },
+      {
+        key: 'usePicks',
+        label: 'Use 2 picked points',
+        type: 'checkbox',
+        default: true,
+        showIf: (v) => v.mode === 'Point to Point'
+      },
+      { key: 'createCopy', label: 'Create Copy', type: 'checkbox', default: false },
+      { key: 'copies', label: 'Copies', type: 'number', default: 1, min: 1, step: 1, showIf: (v) => Boolean(v.createCopy) }
+    ]
+  },
+  scale: {
+    title: 'Scale',
+    needs: 'none',
+    hint: 'Acts on the selected body (or the first body). Uniform scales all axes by one factor; untick for per-axis.',
+    fields: [
+      { key: 'uniform', label: 'Uniform', type: 'checkbox', default: true },
+      { key: 'factor', label: 'Scale factor', type: 'number', default: 2, min: 0.001, step: 0.1, showIf: (v) => Boolean(v.uniform) },
+      { key: 'fx', label: 'X factor', type: 'number', default: 1, min: 0.001, step: 0.1, showIf: (v) => !v.uniform },
+      { key: 'fy', label: 'Y factor', type: 'number', default: 1, min: 0.001, step: 0.1, showIf: (v) => !v.uniform },
+      { key: 'fz', label: 'Z factor', type: 'number', default: 1, min: 0.001, step: 0.1, showIf: (v) => !v.uniform }
+    ]
+  },
+  align: {
+    title: 'Align',
+    needs: 'faces',
+    hint: 'Pick the face to move FROM first, then the face to align it TO. Mates them flush.',
     fields: []
   },
-  moveBody: {
-    title: 'Move / Rotate Body',
-    needs: 'none',
-    hint: 'Applies to the selected body (or the first body). Rotation in degrees.',
-    fields: [
-      { key: 'dx', label: 'Move X', type: 'number', default: 0, step: 1 },
-      { key: 'dy', label: 'Move Y', type: 'number', default: 0, step: 1 },
-      { key: 'dz', label: 'Move Z', type: 'number', default: 0, step: 1 },
-      { key: 'rx', label: 'Rotate X', type: 'number', default: 0, step: 5 },
-      { key: 'ry', label: 'Rotate Y', type: 'number', default: 0, step: 5 },
-      { key: 'rz', label: 'Rotate Z', type: 'number', default: 0, step: 5 }
-    ]
+  pressPull: {
+    title: 'Press Pull',
+    needs: 'edges',
+    hint: 'Pick an edge to fillet it, or a face to offset it. One tool, like Fusion Q.',
+    fields: [{ key: 'distance', label: 'Distance / Radius', type: 'number', default: 2, step: 0.5 }]
+  },
+  offsetFace: {
+    title: 'Offset Face',
+    needs: 'faces',
+    hint: 'Move the selected face(s) along their normal. Positive adds material, negative removes.',
+    fields: [{ key: 'distance', label: 'Offset', type: 'number', default: 2, step: 0.5 }]
+  },
+  splitFace: {
+    title: 'Split Face',
+    needs: 'faces',
+    hint: 'Split the selected face(s) with a plane / datum. Also pick the splitting plane.',
+    fields: []
   },
   patternLinear: {
     title: 'Rectangular Pattern',
@@ -304,6 +430,139 @@ const SPECS: Record<OpKind, OpSpec> = {
     needs: 'sketch',
     fields: [
       { key: 'thickness', label: 'Thickness', type: 'number', default: 1.5, min: 0.1, step: 0.5 }
+    ]
+  },
+
+  // --- CREATE: primitives (optionally place on a picked plane / face) ---
+  box: {
+    title: 'Box',
+    needs: 'none',
+    hint: 'Optionally click a plane or flat face to place it on.',
+    fields: [
+      PRIMITIVE_OP_FIELD,
+      { key: 'length', label: 'Length', type: 'number', default: 40, min: 0.01, step: 1 },
+      { key: 'width', label: 'Width', type: 'number', default: 40, min: 0.01, step: 1 },
+      { key: 'height', label: 'Height', type: 'number', default: 20, min: 0.01, step: 1 }
+    ]
+  },
+  cylinder: {
+    title: 'Cylinder',
+    needs: 'none',
+    hint: 'Optionally click a plane or flat face to place it on.',
+    fields: [
+      PRIMITIVE_OP_FIELD,
+      { key: 'diameter', label: 'Diameter', type: 'number', default: 40, min: 0.01, step: 1 },
+      { key: 'height', label: 'Height', type: 'number', default: 40, min: 0.01, step: 1 }
+    ]
+  },
+  sphere: {
+    title: 'Sphere',
+    needs: 'none',
+    hint: 'Optionally click a plane or flat face to place its centre on.',
+    fields: [
+      PRIMITIVE_OP_FIELD,
+      { key: 'diameter', label: 'Diameter', type: 'number', default: 40, min: 0.01, step: 1 }
+    ]
+  },
+  torus: {
+    title: 'Torus',
+    needs: 'none',
+    fields: [
+      PRIMITIVE_OP_FIELD,
+      { key: 'meanDiameter', label: 'Mean diameter', type: 'number', default: 60, min: 0.01, step: 1 },
+      { key: 'sectionDiameter', label: 'Section diameter', type: 'number', default: 15, min: 0.01, step: 1 }
+    ]
+  },
+  coil: {
+    title: 'Coil',
+    needs: 'none',
+    hint: 'A helical coil. Optionally click a plane to base it on.',
+    fields: [
+      PRIMITIVE_OP_FIELD,
+      { key: 'diameter', label: 'Diameter', type: 'number', default: 30, min: 0.01, step: 1 },
+      { key: 'pitch', label: 'Pitch', type: 'number', default: 8, min: 0.01, step: 1 },
+      { key: 'turns', label: 'Revolutions', type: 'number', default: 5, min: 0.1, step: 1 },
+      { key: 'sectionDiameter', label: 'Section diameter', type: 'number', default: 4, min: 0.01, step: 0.5 }
+    ]
+  },
+  pipe: {
+    title: 'Pipe',
+    needs: 'edges',
+    hint: 'Pick the path edges, then set the section. A wall thickness makes it hollow.',
+    fields: [
+      PRIMITIVE_OP_FIELD,
+      { key: 'sectionDiameter', label: 'Section diameter', type: 'number', default: 10, min: 0.01, step: 1 },
+      { key: 'wallThickness', label: 'Wall thickness', type: 'number', default: 0, min: 0, step: 0.5 }
+    ]
+  },
+
+  // --- MESH tab ---
+  meshFromBRep: {
+    title: 'BRep to Mesh',
+    needs: 'none',
+    hint: 'Tessellate the selected solid body into a mesh body.',
+    fields: [
+      { key: 'deflection', label: 'Deviation', type: 'number', default: 0.1, min: 0.001, step: 0.05 },
+      { key: 'angularDeflection', label: 'Angle', type: 'number', default: 0.5, min: 0.01, step: 0.1 }
+    ]
+  },
+  meshReduce: {
+    title: 'Reduce',
+    needs: 'none',
+    hint: 'Decimate the selected mesh.',
+    fields: [
+      { key: 'targetFactor', label: 'Keep fraction', type: 'number', default: 0.5, min: 0.01, step: 0.05 },
+      { key: 'targetCount', label: 'Target triangles (0 = use fraction)', type: 'number', default: 0, min: 0, step: 100 }
+    ]
+  },
+  meshSmooth: {
+    title: 'Smooth',
+    needs: 'none',
+    fields: [{ key: 'iterations', label: 'Iterations', type: 'number', default: 2, min: 1, step: 1 }]
+  },
+  meshPlaneCut: {
+    title: 'Plane Cut',
+    needs: 'plane',
+    hint: 'Pick the cutting plane (a datum / origin plane or a flat face).',
+    fields: [
+      {
+        key: 'keep',
+        label: 'Keep',
+        type: 'select',
+        default: 'both',
+        options: ['both', 'positive', 'negative'],
+        wide: true
+      },
+      { key: 'fill', label: 'Fill the cut', type: 'checkbox', default: false }
+    ]
+  },
+  meshFlipNormals: { title: 'Reverse Normals', needs: 'none', fields: [] },
+  meshRepair: {
+    title: 'Repair',
+    needs: 'none',
+    hint: 'Fix normals, non-manifold edges, small holes and duplicates on the selected mesh.',
+    fields: [
+      { key: 'fixNormals', label: 'Fix normals', type: 'checkbox', default: true },
+      { key: 'fillHoles', label: 'Fill holes', type: 'checkbox', default: true },
+      { key: 'removeNonManifold', label: 'Remove non-manifold', type: 'checkbox', default: true },
+      { key: 'removeDuplicates', label: 'Remove duplicates', type: 'checkbox', default: true }
+    ]
+  },
+  meshSeparate: { title: 'Separate', needs: 'none', fields: [] },
+  meshToSolid: {
+    title: 'Convert Mesh',
+    needs: 'none',
+    hint: 'Rebuild a solid BRep from the selected mesh.',
+    fields: [
+      {
+        key: 'mode',
+        label: 'Result',
+        type: 'select',
+        default: 'faceted',
+        options: ['faceted', 'prismatic', 'organic'],
+        wide: true
+      },
+      { key: 'sewTolerance', label: 'Sew tolerance', type: 'number', default: 0.1, min: 0.001, step: 0.05 }
     ]
   }
 }
@@ -371,6 +630,7 @@ export function OperationDialog({
   const [preview, setPreview] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
+  const onReadyPrev = useRef<boolean | null>(null)
 
   // put the caret in the first field so Enter / Esc work without a mouse move
   useEffect(() => {
@@ -557,11 +817,13 @@ export function OperationDialog({
     (spec.needs === 'plane' && planeSel.length >= 1) ||
     (spec.needs === 'axis' && axisSel.length >= 1)
 
-  // report OK-pressability to the parent (parent guarantees a non-null kind, so
-  // the early `return null` above is never taken while mounted)
-  useEffect(() => {
+  // report OK-pressability to the parent. Done inline (not in an effect) so it
+  // survives the early `return null` above for an unknown kind without breaking
+  // the hook order. The parent handler only stashes it in a ref.
+  if (onReadyPrev.current !== ready) {
+    onReadyPrev.current = ready
     onReady?.(ready)
-  }, [ready, onReady])
+  }
 
   // Enter = OK (when the params are good), Esc = Cancel - from anywhere in the
   // dialog, no mouse needed

@@ -214,7 +214,7 @@ await checkCommit(
 
 // ---------------------------------------------------------------- needs:'none' ops
 // these have no selection requirement - opReady must be true the instant they open
-for (const k of ['combine', 'moveBody', 'copyBody']) {
+for (const k of ['combine', 'move', 'scale']) {
   G.clearSelection();
   await sleep(20);
   G.openOp(k);

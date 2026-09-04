@@ -99,6 +99,21 @@ the seed + step + trace tail to replay.
 
 ## Recent notable changes
 
+- **Fusion-parity pass 1** (`docs/fusion-parity.md` tracks the full gap list).
+  New SOLID commands: Move/Copy (Translate / Rotate / Point-to-Point +
+  Create Copy, replaces the old Move + Copy Body), Scale (uniform / per-axis),
+  Align, Press Pull (Q), Offset Face, Split Face, and the primitives Box /
+  Cylinder / Sphere / Torus / Coil / Pipe (dialog + Operation New body / Join /
+  Cut / Intersect). Revolve gained the Operation set + a Full toggle; Chamfer
+  gained Equal / Two-distance / Distance-and-angle modes. Inspect gained
+  Interference and Center of Mass. A new **MESH tab**: BRep to Mesh, Reduce,
+  Smooth, Plane Cut, Reverse Normals, Repair, Separate, Convert Mesh. Sidecar
+  code in new modules `primitives.py` / `xform.py` / `meshtools.py`; driven E2E
+  by `test/e2e/scenarios/fusion_features.js` (61 checks).
+- A negative value in a directional field (extrude Distance, revolve Angle,
+  datum-plane Offset) folds to its magnitude + the Flip toggle. Enter commits a
+  ready op dialog; Esc cancels it from anywhere in the dialog.
+- Fillet / Chamfer accept a picked face (round/chamfer all of its edges).
 - Revolve would not let you press OK with a flat model face as the profile
   (only a sketch cleared the dialog's `ready` gate), even though the live
   preview rendered. Revolve now accepts a sketch OR a single flat face, like

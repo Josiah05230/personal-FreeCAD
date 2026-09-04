@@ -38,6 +38,8 @@ export interface CommandContext {
   startMeasure: () => void
   toggleSection: () => void
   scale: () => Promise<void>
+  interference: () => void
+  centerOfMass: () => void
   insertCanvas: () => Promise<void>
   toggleParams: () => void
   importKicad: () => Promise<void>
@@ -59,9 +61,16 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'sketch.create', title: 'Create Sketch', group: 'Create', tab: 'SOLID', icon: 'sketch', hotkey: 'c s', run: () => ctx.createSketch() },
     { id: 'solid.extrude', title: 'Extrude', group: 'Create', tab: 'SOLID', icon: 'extrude', hotkey: 'e', run: op('extrude') },
     { id: 'solid.revolve', title: 'Revolve', group: 'Create', tab: 'SOLID', icon: 'revolve', run: op('revolve') },
-    { id: 'solid.loft', title: 'Loft', group: 'Create', tab: 'SOLID', icon: 'loft', run: op('loft') },
     { id: 'solid.sweep', title: 'Sweep', group: 'Create', tab: 'SOLID', icon: 'sweep', run: () => ctx.sweep() },
+    { id: 'solid.loft', title: 'Loft', group: 'Create', tab: 'SOLID', icon: 'loft', run: op('loft') },
     { id: 'solid.rib', title: 'Rib', group: 'Create', tab: 'SOLID', icon: 'extrude', run: op('rib') },
+    { id: 'solid.hole', title: 'Hole', group: 'Create', tab: 'SOLID', icon: 'hole', run: op('hole') },
+    { id: 'solid.box', title: 'Box', group: 'Create', tab: 'SOLID', icon: 'extrude', run: op('box') },
+    { id: 'solid.cylinder', title: 'Cylinder', group: 'Create', tab: 'SOLID', icon: 'revolve', run: op('cylinder') },
+    { id: 'solid.sphere', title: 'Sphere', group: 'Create', tab: 'SOLID', icon: 'revolve', run: op('sphere') },
+    { id: 'solid.torus', title: 'Torus', group: 'Create', tab: 'SOLID', icon: 'revolve', run: op('torus') },
+    { id: 'solid.coil', title: 'Coil', group: 'Create', tab: 'SOLID', icon: 'revolve', run: op('coil') },
+    { id: 'solid.pipe', title: 'Pipe', group: 'Create', tab: 'SOLID', icon: 'sweep', run: op('pipe') },
     // --- surface ---
     { id: 'surf.ruled', title: 'Ruled Surface', group: 'Create', tab: 'SURFACE', icon: 'loft', run: () => ctx.surfaceRuled() },
     { id: 'surf.fill', title: 'Boundary Fill', group: 'Create', tab: 'SURFACE', icon: 'plane', run: () => ctx.surfaceFill() },
@@ -73,15 +82,17 @@ export function buildCommands(ctx: CommandContext): Command[] {
     // --- sheet metal ---
     { id: 'sm.base', title: 'Base Flange', group: 'Create', tab: 'SHEET METAL', icon: 'extrude', run: op('baseFlange') },
     // --- modify ---
+    { id: 'mod.pressPull', title: 'Press Pull', group: 'Modify', tab: 'SOLID', icon: 'draft', hotkey: 'q', run: op('pressPull') },
     { id: 'mod.fillet', title: 'Fillet', group: 'Modify', tab: 'SOLID', icon: 'fillet', hotkey: 'f', run: op('fillet') },
     { id: 'mod.chamfer', title: 'Chamfer', group: 'Modify', tab: 'SOLID', icon: 'chamfer', run: op('chamfer') },
     { id: 'mod.shell', title: 'Shell', group: 'Modify', tab: 'SOLID', icon: 'shell', run: op('shell') },
-    { id: 'mod.hole', title: 'Hole', group: 'Modify', tab: 'SOLID', icon: 'hole', run: op('hole') },
     { id: 'mod.draft', title: 'Draft', group: 'Modify', tab: 'SOLID', icon: 'draft', run: op('draft') },
+    { id: 'mod.scale', title: 'Scale', group: 'Modify', tab: 'SOLID', icon: 'patternRect', run: op('scale') },
     { id: 'mod.combine', title: 'Combine', group: 'Modify', tab: 'SOLID', icon: 'combine', run: op('combine') },
-    { id: 'mod.scale', title: 'Scale', group: 'Modify', tab: 'SOLID', icon: 'patternRect', run: () => ctx.scale() },
-    { id: 'mod.move', title: 'Move / Rotate', group: 'Modify', tab: 'SOLID', icon: 'patternRect', run: op('moveBody') },
-    { id: 'mod.copy', title: 'Copy Body', group: 'Modify', tab: 'SOLID', icon: 'combine', run: op('copyBody') },
+    { id: 'mod.offsetFace', title: 'Offset Face', group: 'Modify', tab: 'SOLID', icon: 'draft', run: op('offsetFace') },
+    { id: 'mod.splitFace', title: 'Split Face', group: 'Modify', tab: 'SOLID', icon: 'plane', run: op('splitFace') },
+    { id: 'mod.move', title: 'Move/Copy', group: 'Modify', tab: 'SOLID', icon: 'patternRect', run: op('move') },
+    { id: 'mod.align', title: 'Align', group: 'Modify', tab: 'SOLID', icon: 'combine', run: op('align') },
     // --- pattern ---
     { id: 'pat.rect', title: 'Rectangular Pattern', group: 'Pattern', tab: 'SOLID', icon: 'patternRect', run: op('patternLinear') },
     { id: 'pat.circ', title: 'Circular Pattern', group: 'Pattern', tab: 'SOLID', icon: 'patternCirc', run: op('patternCircular') },
@@ -104,6 +115,18 @@ export function buildCommands(ctx: CommandContext): Command[] {
     // --- inspect (a group on SOLID, F360-style) ---
     { id: 'insp.measure', title: 'Measure', group: 'Inspect', tab: 'SOLID', icon: 'axis', hotkey: 'm', run: () => ctx.startMeasure() },
     { id: 'insp.section', title: 'Section', group: 'Inspect', tab: 'SOLID', icon: 'plane', run: () => ctx.toggleSection() },
+    { id: 'insp.interference', title: 'Interference', group: 'Inspect', tab: 'SOLID', icon: 'combine', run: () => ctx.interference() },
+    { id: 'insp.com', title: 'Center of Mass', group: 'Inspect', tab: 'SOLID', icon: 'point', run: () => ctx.centerOfMass() },
+    // --- MESH tab (Fusion mesh workspace) ---
+    { id: 'mesh.fromBRep', title: 'BRep to Mesh', group: 'Create', tab: 'MESH', icon: 'extrude', run: op('meshFromBRep') },
+    { id: 'mesh.insert', title: 'Insert Mesh', group: 'Create', tab: 'MESH', icon: 'point', run: () => ctx.importStep() },
+    { id: 'mesh.reduce', title: 'Reduce', group: 'Modify', tab: 'MESH', icon: 'patternRect', run: op('meshReduce') },
+    { id: 'mesh.smooth', title: 'Smooth', group: 'Modify', tab: 'MESH', icon: 'draft', run: op('meshSmooth') },
+    { id: 'mesh.planeCut', title: 'Plane Cut', group: 'Modify', tab: 'MESH', icon: 'plane', run: op('meshPlaneCut') },
+    { id: 'mesh.flipNormals', title: 'Reverse Normals', group: 'Modify', tab: 'MESH', icon: 'draft', run: op('meshFlipNormals') },
+    { id: 'mesh.repair', title: 'Repair', group: 'Modify', tab: 'MESH', icon: 'combine', run: op('meshRepair') },
+    { id: 'mesh.separate', title: 'Separate', group: 'Modify', tab: 'MESH', icon: 'combine', run: op('meshSeparate') },
+    { id: 'mesh.toSolid', title: 'Convert Mesh', group: 'BRep', tab: 'MESH', icon: 'extrude', run: op('meshToSolid') },
     { id: 'mod.params', title: 'Parameters', group: 'Modify', tab: 'SOLID', icon: 'patternRect', run: () => ctx.toggleParams() },
     // --- drawing ---
     { id: 'draw.fromDesign', title: 'Drawing from Design', group: 'Drawing', tab: 'TOOLS', icon: 'sketch', run: () => ctx.startDrawing() },
