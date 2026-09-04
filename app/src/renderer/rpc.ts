@@ -221,6 +221,7 @@ export function selectionToRef(s: Selection): GeomRef | null {
   if (s.kind === 'face') return { kind: 'face', bodyId: s.bodyId, sub: s.sub }
   if (s.kind === 'edge') return { kind: 'edge', bodyId: s.bodyId, sub: s.sub }
   if (s.kind === 'vertex') return { kind: 'vertex', bodyId: s.bodyId, sub: s.sub }
+  if (s.kind === 'sketch') return { kind: 'sketch', id: s.sketchId }
   return null
 }
 

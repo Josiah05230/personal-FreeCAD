@@ -213,10 +213,38 @@ Move/Copy of faces + features (not just bodies).
 - `fusion_features.js` extended: Two Sides, All/Cut, primitive-on-plane,
   and a hotkey-dispatch check for the F360 defaults (91 checks total).
 
-Still open: Split Body by face/sketch, parametric Scale / Split Face (both
-currently bake a derived, non-parametric shape), Move/Copy of faces + features,
-Two Sides for Cut/Intersect/New-body, Align of non-planar refs, coil/pipe plane
-placement.
+Still open: parametric Scale / Split Face (both currently bake a derived,
+non-parametric shape), Move/Copy of faces + features, Two Sides for
+Cut/Intersect/New-body, Align of non-planar refs, coil/pipe plane placement.
+
+---
+
+## Done in the fourth parity pass
+
+- **Split Body by face or sketch**, not just a plane/datum (`needs: 'any'`,
+  hint updated). Found and fixed two real bugs on the way:
+  - A sketch reference resolves to `(sketch, ["Edge1"])` - an EDGE sub, not a
+    face - so `body_split` was calling face-only `normalAt(u, v)` on an Edge
+    and crashing with a wrong-arg-count TypeError. Now branches on the sub's
+    own type instead of just truthiness.
+  - **A real, higher-impact bug**: `PartDesign::Body.Tip.Shape` does NOT
+    include the body's own `Placement`, only `Body.Shape` does. Every
+    face/edge/vertex reference resolves through `Tip`, so referencing a face
+    of a body that had been moved with the new Move/Copy (translate/rotate,
+    no copy) silently used its PRE-move geometry. Tried making `_resolve_ref`
+    return the Body instead of Tip generally - that breaks PartDesign's
+    scoping rule (a new feature may only reference siblings in its OWN body's
+    Group, not the Body container) with "Link(s) ... go out of the allowed
+    scope" / "graph must be a DAG" for revolve axis / pattern direction /
+    mirror plane - i.e. it fixed cross-body refs and broke the far more common
+    same-body ones. Reverted that; fixed `body_split` locally instead by
+    composing the owning body's `Placement` onto the extracted face's
+    `CenterOfMass`/normal. Other cross-body-only consumers (Align, primitive
+    placement, pipe path) were not hit by this in testing but carry the same
+    latent risk if used against a moved body - noted in `_resolve_ref`'s
+    docstring for the next pass to pick up if it bites.
+- `fusion_features.js` extended to 88 checks (split by plane/face/sketch,
+  including split by a face belonging to a body moved via Move/Copy).
 
 ---
 

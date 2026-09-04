@@ -498,7 +498,8 @@ const SPECS: Record<OpKind, OpSpec> = {
   },
   splitBody: {
     title: 'Split Body',
-    needs: 'plane',
+    needs: 'any',
+    hint: 'Click the splitting tool: a plane/datum, a flat face, or a sketch.',
     fields: []
   },
   baseFlange: {

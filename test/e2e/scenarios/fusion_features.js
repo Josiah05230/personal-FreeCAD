@@ -251,6 +251,81 @@ await openApply('meshRepair', {
 }, { soft: true });
 await openApply('meshToSolid', { mode: 'faceted', sewTolerance: 0.1 }, { soft: true });
 
+// ---------------------------------------------------------------- Split Body by face / sketch
+note('--- Split Body: a plane, a face, and a sketch as the tool ---');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+{
+  const s = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: s.sketchId,
+    elements: [{ type: 'rect', a: [-20, -20], b: [20, 20] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.selectSketch(s.sketchId);
+  await sleep(40);
+  await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 40 });
+  await idle();
+}
+await openApply('splitBody', {}, {
+  setup: async () => {
+    // XZ_Plane (y=0) actually bisects a box spanning y:-20..20 - XY_Plane
+    // would be tangent to this box's own bottom face and split nothing
+    G.pick({ kind: 'plane', planeId: 'XZ_Plane', role: 'XZ_Plane' }, false);
+  }
+});
+{
+  const st = G.getState();
+  const parts = st.meshes.length;
+  assert(parts >= 2, `split by a datum/origin plane produced pieces (${parts} meshes)`);
+}
+// split by a SKETCH tool
+await rpc('session.reset');
+await G.refresh();
+await idle();
+{
+  const s = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: s.sketchId,
+    elements: [{ type: 'rect', a: [-20, -20], b: [20, 20] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.selectSketch(s.sketchId);
+  await sleep(40);
+  await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 40 });
+  await idle();
+  const splitSk = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XZ_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: splitSk.sketchId,
+    elements: [{ type: 'line', a: [0, 0], b: [10, 10] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.clearSelection();
+  G.openOp('splitBody');
+  await sleep(50);
+  G.pick({ kind: 'sketch', sketchId: splitSk.sketchId }, false);
+  await sleep(50);
+  const ready = await waitFor(() => G.getState().opReady === true, 4000);
+  assert(ready && okBtnDisabled() === false, 'splitBody: OK gate clears with a sketch tool');
+  let err = null;
+  try {
+    await G.applyOp('splitBody', {});
+  } catch (e) {
+    err = (e && e.message) || String(e);
+  }
+  await idle();
+  G.closeOp();
+  assert(!err, `split by sketch committed (${err || 'ok'})`);
+  assert(G.getState().meshes.length >= 2, 'split by sketch produced pieces');
+}
+
 // ---------------------------------------------------------------- Sweep + Loft
 note('--- Sweep (Operation/Orientation/Transition) + Loft (Operation/Ruled/Closed) ---');
 await rpc('session.reset');

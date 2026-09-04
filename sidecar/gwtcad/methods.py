@@ -1310,6 +1310,19 @@ def _resolve_ref(d, body, ref):
         base = src
         if src.TypeId == "PartDesign::Body":
             base = src.Tip
+            # NOTE: this deliberately returns (Tip, [sub]), not (Body, [sub]).
+            # PartDesign features may only reference sibling objects inside
+            # their own body's Group - handing a new feature's AttachmentSupport
+            # / ReferenceAxis / Base / MirrorPlane the BODY object itself (its
+            # container, not a member) trips "Link(s) ... go out of the allowed
+            # scope" and "The graph must be a DAG.". The cost: Tip.Shape does
+            # NOT include body.Placement, so a cross-body reference to a face of
+            # a body that was moved via Move/Copy resolves its PRE-move geometry.
+            # Callers that read geometry rather than feed it to a new PartDesign
+            # feature in that same body (Split Body, Interference, Align, ...)
+            # should compose src.Placement onto what they get back themselves -
+            # see body_split's placement handling for the pattern.
+            #
             # a feature being built right now has advanced body.Tip to itself but
             # has no shape yet - resolving against it would make a self-reference
             # (DAG error). Fall back to the last feature that actually has a solid.
@@ -3672,14 +3685,31 @@ def body_split(bodyId, planeRef):
     if shape is None or shape.isNull():
         raise RpcError(APP_ERROR, "%r has no solid" % bodyId)
 
-    # build a large plane from the reference's placement / face
+    # build a large plane from the reference's placement / face. A sketch ref
+    # resolves to (sketch, ["Edge1"]) - a real edge sub, not a face - so branch
+    # on the sub TYPE, not just truthiness, or Face-only calls (normalAt(u,v))
+    # land on an Edge and blow up with a wrong-arg-count TypeError.
     resolve_body = src if src.TypeId == "PartDesign::Body" else session.active_body(d)
     ref_obj, subs = _resolve_ref(d, resolve_body, planeRef)
-    if subs and subs[0] and hasattr(ref_obj, "Shape"):
-        face = ref_obj.Shape.getElement(subs[0])
+    sub0 = subs[0] if subs else ""
+    if sub0.startswith("Face") and hasattr(ref_obj, "Shape"):
+        face = ref_obj.Shape.getElement(sub0)
         origin = face.CenterOfMass
         normal = face.normalAt(0.5, 0.5)
+        # ref_obj (a Tip feature) does not carry its own body's Placement -
+        # compose it back in so a face of a body moved via Move/Copy resolves
+        # to where it actually is, not where it was built
+        try:
+            owner = ref_obj.getParentGeoFeatureGroup()
+            if owner is not None and getattr(owner, "TypeId", "") == "PartDesign::Body":
+                origin = owner.Placement.multVec(App.Vector(origin))
+                normal = owner.Placement.Rotation.multVec(App.Vector(normal))
+        except Exception:
+            pass
     else:
+        # origin/datum plane (sub0 == ""), a sketch (flat, its own Placement IS
+        # the plane), or an edge/axis ref - the containing object's placement
+        # is the best available cutting plane
         p = ref_obj.Placement
         origin = p.Base
         normal = p.Rotation.multVec(App.Vector(0, 0, 1))

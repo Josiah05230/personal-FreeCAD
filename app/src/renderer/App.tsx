@@ -81,6 +81,8 @@ const opSelKinds = (k: OpKind | null): SelKind[] | null => {
       return ['sketch', 'face'] // a profile: a sketch outline / filled face, or a flat model face
     case 'sweep':
       return ['sketch', 'edge'] // profile sketch + a path (another sketch or a body edge)
+    case 'splitBody':
+      return ['plane', 'face', 'sketch'] // the splitting tool
     case 'revolve':
       return ['sketch', 'face', 'edge', 'plane'] // profile + an axis (a body edge or a datum)
     case 'fillet':

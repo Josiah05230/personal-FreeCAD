@@ -99,6 +99,12 @@ the seed + step + trace tail to replay.
 
 ## Recent notable changes
 
+- **Fusion-parity pass 4**: Split Body now accepts a face or a sketch as the
+  tool, not just a plane. Found a real bug while wiring it: a face on a body
+  that had been moved via Move/Copy resolved its PRE-move position, because
+  `PartDesign::Body.Tip.Shape` (what refs resolve through) does not include
+  the body's own Placement - only `Body.Shape` does. Fixed in `body_split` by
+  composing the owning body's Placement back onto the resolved face.
 - **Fusion-parity pass 3**: Sweep is now a real dialog (Operation, Orientation,
   Transition), Loft gained Operation + Ruled/Closed. Fixed a real crash in the
   shared cut/intersect/newbody tail (`_finish_transform`) that read a deleted
