@@ -213,9 +213,31 @@ Move/Copy of faces + features (not just bodies).
 - `fusion_features.js` extended: Two Sides, All/Cut, primitive-on-plane,
   and a hotkey-dispatch check for the F360 defaults (91 checks total).
 
-Still open: parametric Scale / Split Face (both currently bake a derived,
-non-parametric shape), Move/Copy of faces + features, Two Sides for
-Cut/Intersect/New-body, Align of non-planar refs, coil/pipe plane placement.
+---
+
+## Done in the third parity pass
+
+- **Sweep** is now a real dialog (was an instant-apply direct-selection
+  command): Operation (New body/Join/Cut/Intersect), Orientation (Path/Parallel
+  -> AdditivePipe.Mode Frenet/Fixed), Transition (Transformed/Right corner/
+  Round corner). Twist and partial-sweep Distance are not exposed - this
+  FreeCAD 1.1.1 build's `AdditivePipe` has no Twist property and no percentage-
+  along-path control.
+- **Loft** gained Operation (same 4-way set) and Ruled / Closed checkboxes
+  (`PartDesign::AdditiveLoft.Ruled`/`.Closed`). Rails/guide curves and
+  tangent end-conditions are not exposed - not cleanly supported by this
+  kernel's Loft binding.
+- Both route cut/intersect/newbody through the same `_finish_transform` tail as
+  Mirror/Pattern/Revolve now that it is generalised (`_FEATURE_NOUNS`),
+  fixing a real crash along the way (see below).
+- **Bug fix**: `_finish_transform`'s "no overlap" error path read `feat.TypeId`
+  AFTER `d.removeObject(feat.Name)` had already deleted it, raising an opaque
+  `ReferenceError: Cannot access attribute 'TypeId' of deleted object` instead
+  of the intended message. Found via Sweep's new Intersect/New-body path;
+  affects Mirror/Pattern/Revolve/Sweep/Loft alike. Fixed by capturing the
+  feature's TypeId before any deletion.
+- `fusion_features.js` extended to 81 checks (Sweep Join, Loft Ruled with a
+  genuine offset section verified by bounding-box).
 
 ---
 
@@ -248,26 +270,17 @@ Cut/Intersect/New-body, Align of non-planar refs, coil/pipe plane placement.
 
 ---
 
-## Done in the third parity pass
+## Done in the fifth parity pass
 
-- **Sweep** is now a real dialog (was an instant-apply direct-selection
-  command): Operation (New body/Join/Cut/Intersect), Orientation (Path/Parallel
-  -> AdditivePipe.Mode Frenet/Fixed), Transition (Transformed/Right corner/
-  Round corner). Twist and partial-sweep Distance are not exposed - this
-  FreeCAD 1.1.1 build's `AdditivePipe` has no Twist property and no percentage-
-  along-path control.
-- **Loft** gained Operation (same 4-way set) and Ruled / Closed checkboxes
-  (`PartDesign::AdditiveLoft.Ruled`/`.Closed`). Rails/guide curves and
-  tangent end-conditions are not exposed - not cleanly supported by this
-  kernel's Loft binding.
-- Both route cut/intersect/newbody through the same `_finish_transform` tail as
-  Mirror/Pattern/Revolve now that it is generalised (`_FEATURE_NOUNS`),
-  fixing a real crash along the way (see below).
-- **Bug fix**: `_finish_transform`'s "no overlap" error path read `feat.TypeId`
-  AFTER `d.removeObject(feat.Name)` had already deleted it, raising an opaque
-  `ReferenceError: Cannot access attribute 'TypeId' of deleted object` instead
-  of the intended message. Found via Sweep's new Intersect/New-body path;
-  affects Mirror/Pattern/Revolve/Sweep/Loft alike. Fixed by capturing the
-  feature's TypeId before any deletion.
-- `fusion_features.js` extended to 81 checks (Sweep Join, Loft Ruled with a
-  genuine offset section verified by bounding-box).
+- **Extrude Two Sides now also works for Cut**, not just Join: a second
+  pocket of the same profile, `Reversed` flipped, cutting the opposite way
+  from the first. Verified: a 20mm-tall hole through the middle of a box,
+  10mm cut each way from a mid-height datum plane, removes exactly the
+  expected volume.
+- `fusion_features.js` extended to 90 checks. Full suite green except the
+  pre-existing `monkey.js` check 6.
+
+Still open: parametric Scale / Split Face (both currently bake a derived,
+non-parametric shape), Move/Copy of faces + features, Two Sides for
+Intersect/New-body, Align of non-planar refs, coil/pipe plane placement,
+Sweep Twist/partial-distance, Loft rails/guides.

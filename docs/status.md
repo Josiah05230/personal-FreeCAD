@@ -99,6 +99,8 @@ the seed + step + trace tail to replay.
 
 ## Recent notable changes
 
+- **Fusion-parity pass 5**: Extrude Two Sides now works for Cut too (a second
+  pocket, reversed, cutting the other way).
 - **Fusion-parity pass 4**: Split Body now accepts a face or a sketch as the
   tool, not just a plane. Found a real bug while wiring it: a face on a body
   that had been moved via Move/Copy resolved its PRE-move position, because

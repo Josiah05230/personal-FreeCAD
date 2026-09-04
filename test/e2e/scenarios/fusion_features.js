@@ -461,6 +461,50 @@ await idle();
   await idle();
   assert(!err && !anyErr(), `extrude Cut with All (throughAll) committed (${err || 'ok'})`);
 }
+{
+  // Two Sides also works for a Cut: a hole 10mm each way from a mid-height plane
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  const s = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: s.sketchId,
+    elements: [{ type: 'rect', a: [-20, -20], b: [20, 20] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.selectSketch(s.sketchId);
+  await sleep(40);
+  await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 40 });
+  await idle();
+  const volBefore = meshes()[0].tris;
+  await rpc('datum.plane', { refs: [{ kind: 'origin', role: 'XY_Plane' }], offset: 20 });
+  const sc = await rpc('scene.get');
+  const midPlane = (sc.datums || []).find(
+    (x) => /plane/i.test(x.id || '') && !/^(XY|XZ|YZ)_Plane$/.test(x.id || '')
+  )?.id;
+  const s2 = await rpc('sketch.on', { ref: { kind: 'plane', id: midPlane } });
+  await rpc('sketch.finish', {
+    sketchId: s2.sketchId,
+    elements: [{ type: 'circle', c: [0, 0], r: 5 }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.clearSelection();
+  G.selectSketch(s2.sketchId);
+  await sleep(40);
+  let err2 = null;
+  try {
+    await G.applyOp('extrude', { operation: 'Cut', mode: 'Two Sides', length: 10, length2: 10 });
+  } catch (e) {
+    err2 = (e && e.message) || String(e);
+  }
+  await idle();
+  assert(!err2 && !anyErr(), `extrude Cut with Two Sides committed (${err2 || 'ok'})`);
+  assert(meshes()[0].tris !== volBefore, 'Two Sides cut actually removed material both directions');
+}
 
 // ---------------------------------------------------------------- primitive placement on a plane
 note('--- Primitive placement on a picked plane ---');

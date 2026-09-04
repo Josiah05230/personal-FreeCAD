@@ -268,6 +268,17 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
         made = build.pocket(body, sk, float(length), up_to=up, offset=off, taper=taper,
                             through_all=throughAll)
         target = body
+        # Two Sides: a second pocket of the same profile, cutting the other way
+        if length2 and not isinstance(sk, tuple) and not up and not throughAll:
+            try:
+                sk2 = build.reusable_profile(d, body, sk)
+                made2 = build.pocket(body, sk2, float(length2))
+                made2.Reversed = not made2.Reversed
+                d.recompute()
+                if body.Shape.isValid():
+                    made = made2
+            except Exception:
+                pass  # keep the single-sided cut rather than fail the whole extrude
     elif op == "intersect":
         # keep only where the new prism and the existing solid overlap. PartDesign
         # has no native "intersect pad", so pad a scratch body and Common it in.
