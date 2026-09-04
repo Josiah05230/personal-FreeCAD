@@ -61,7 +61,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'sketch.create', title: 'Create Sketch', group: 'Create', tab: 'SOLID', icon: 'sketch', hotkey: 'c s', run: () => ctx.createSketch() },
     { id: 'solid.extrude', title: 'Extrude', group: 'Create', tab: 'SOLID', icon: 'extrude', hotkey: 'e', run: op('extrude') },
     { id: 'solid.revolve', title: 'Revolve', group: 'Create', tab: 'SOLID', icon: 'revolve', run: op('revolve') },
-    { id: 'solid.sweep', title: 'Sweep', group: 'Create', tab: 'SOLID', icon: 'sweep', run: () => ctx.sweep() },
+    { id: 'solid.sweep', title: 'Sweep', group: 'Create', tab: 'SOLID', icon: 'sweep', run: op('sweep') },
     { id: 'solid.loft', title: 'Loft', group: 'Create', tab: 'SOLID', icon: 'loft', run: op('loft') },
     { id: 'solid.rib', title: 'Rib', group: 'Create', tab: 'SOLID', icon: 'extrude', run: op('rib') },
     { id: 'solid.hole', title: 'Hole', group: 'Create', tab: 'SOLID', icon: 'hole', hotkey: 'h', run: op('hole') },

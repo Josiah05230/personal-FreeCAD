@@ -557,10 +557,28 @@ def feature_revolve(sketchId=None, angle=360.0, axis="V", axisRef=None,
 
 
 @method("feature.sweep")
-def feature_sweep(profileId, pathId=None, pathRef=None, cut=False):
+def feature_sweep(profileId, pathId=None, pathRef=None, cut=False, operation=None,
+                  orientation="Path", transition="Transformed"):
+    """operation: 'join' (default) | 'cut' | 'newbody' | 'intersect' (same set as
+    extrude). orientation: 'Path' (profile follows the path's curvature, Frenet)
+    or 'Parallel' (profile orientation stays fixed). transition: how corners in
+    the path are handled - 'Transformed' | 'Right corner' | 'Round corner'."""
     d, prof = _obj(profileId)
     body = prof.getParentGeoFeatureGroup()
-    tid = "PartDesign::SubtractivePipe" if cut else "PartDesign::AdditivePipe"
+    if body is None or body.TypeId != "PartDesign::Body":
+        raise RpcError(APP_ERROR, "profile is not inside a Body")
+    op = (operation or ("cut" if cut else "join")).lower()
+    prev_tip = getattr(body, "Tip", None)
+    prev_tip_name = prev_tip.Name if prev_tip is not None else None
+    reexpress = op in ("newbody", "intersect")
+    before = None
+    if reexpress:
+        try:
+            before = body.Shape.copy()
+        except Exception:
+            before = None
+
+    tid = "PartDesign::SubtractivePipe" if op == "cut" else "PartDesign::AdditivePipe"
     pipe = body.newObject(tid, "Sweep")
     pipe.Label = next_label(body, tid)
     pipe.Profile = prof
@@ -573,29 +591,69 @@ def feature_sweep(profileId, pathId=None, pathRef=None, cut=False):
             raise RpcError(APP_ERROR, "sweep needs a path sketch or edge")
         pipe.Spine = (path, [])
         path.Visibility = False
+    try:
+        pipe.Mode = "Frenet" if str(orientation).lower().startswith("path") else "Fixed"
+    except Exception:
+        pass
+    try:
+        pipe.Transition = transition
+    except Exception:
+        pass
     prof.Visibility = False
-    d.recompute()
-    if not body.Shape.isValid():
-        raise RpcError(APP_ERROR, "sweep produced an invalid shape")
+
+    what = "sweep produced an invalid shape"
+    if reexpress and before is not None and not before.isNull():
+        d.recompute()
+        _finish_transform(d, body, pipe, prev_tip_name, before, op, what)
+    else:
+        build.finalize_or_rollback(d, body, pipe, prev_tip_name, [], what, check_made=True)
     return tree_get()
 
 
 @method("feature.loft")
-def feature_loft(sketchIds, cut=False):
+def feature_loft(sketchIds, cut=False, operation=None, ruled=False, closed=False):
+    """operation: 'join' (default) | 'cut' | 'newbody' | 'intersect'. ruled = a
+    straight-line blend between sections instead of a smooth one. closed = loop
+    the last section back to the first."""
     if not sketchIds or len(sketchIds) < 2:
         raise RpcError(APP_ERROR, "loft needs at least two profiles")
     d, first = _obj(sketchIds[0])
     body = first.getParentGeoFeatureGroup()
-    tid = "PartDesign::SubtractiveLoft" if cut else "PartDesign::AdditiveLoft"
+    if body is None or body.TypeId != "PartDesign::Body":
+        raise RpcError(APP_ERROR, "profile is not inside a Body")
+    op = (operation or ("cut" if cut else "join")).lower()
+    prev_tip = getattr(body, "Tip", None)
+    prev_tip_name = prev_tip.Name if prev_tip is not None else None
+    reexpress = op in ("newbody", "intersect")
+    before = None
+    if reexpress:
+        try:
+            before = body.Shape.copy()
+        except Exception:
+            before = None
+
+    tid = "PartDesign::SubtractiveLoft" if op == "cut" else "PartDesign::AdditiveLoft"
     loft = body.newObject(tid, "Loft")
     loft.Label = next_label(body, tid)
     loft.Profile = first
     loft.Sections = [d.getObject(s) for s in sketchIds[1:]]
+    try:
+        loft.Ruled = bool(ruled)
+    except Exception:
+        pass
+    try:
+        loft.Closed = bool(closed)
+    except Exception:
+        pass
     for s in sketchIds:
         d.getObject(s).Visibility = False
-    d.recompute()
-    if not body.Shape.isValid():
-        raise RpcError(APP_ERROR, "loft produced an invalid shape")
+
+    what = "loft produced an invalid shape"
+    if reexpress and before is not None and not before.isNull():
+        d.recompute()
+        _finish_transform(d, body, loft, prev_tip_name, before, op, what)
+    else:
+        build.finalize_or_rollback(d, body, loft, prev_tip_name, [], what, check_made=True)
     return tree_get()
 
 
@@ -1142,11 +1200,24 @@ def _apply_result_boolean(d, body, prev_tip_name, tool_shape, op, what, prev_vol
     return boolean
 
 
+_FEATURE_NOUNS = {
+    "Mirrored": "mirror", "LinearPattern": "pattern", "PolarPattern": "pattern",
+    "Revolution": "revolve", "Groove": "revolve",
+    "AdditivePipe": "sweep", "SubtractivePipe": "sweep",
+    "AdditiveLoft": "loft", "SubtractiveLoft": "loft",
+}
+
+
 def _finish_transform(d, body, feat, prev_tip_name, before_shape, operation, what):
-    """Common tail for Mirror / LinearPattern / PolarPattern. `feat` has been
-    _apply_transformed (fused) already. operation: join keeps it; cut / intersect
-    / newbody re-express the transform's net contribution against the body."""
+    """Common tail for Mirror / LinearPattern / PolarPattern / Revolve / Sweep /
+    Loft. `feat` has already been built (and, for Transformed types, fused via
+    _apply_transformed). operation: join keeps it; cut / intersect / newbody
+    re-express the feature's net contribution against the body."""
     op = (operation or "join").lower()
+    # grab everything we need to describe/read `feat` BEFORE it might be
+    # removed below - a deleted FreeCAD object raises ReferenceError on any
+    # further attribute access, even feat.TypeId
+    noun = next((n for tid, n in _FEATURE_NOUNS.items() if tid in feat.TypeId), "feature")
     if op == "join":
         build.finalize_or_rollback(d, body, feat, prev_tip_name, [], what,
                                    check_made=True)
@@ -1161,7 +1232,7 @@ def _finish_transform(d, body, feat, prev_tip_name, before_shape, operation, wha
         tool = after.cut(before_shape)
     except Exception:
         tool = None
-    # drop the additive transform, restore the pre-transform tip
+    # drop the additive feature, restore the pre-feature tip
     try:
         if prev_tip_name and d.getObject(prev_tip_name) is not None:
             body.Tip = d.getObject(prev_tip_name)
@@ -1171,12 +1242,11 @@ def _finish_transform(d, body, feat, prev_tip_name, before_shape, operation, wha
         pass
     if tool is None or tool.isNull() or getattr(tool, "Volume", 0.0) <= 1e-9:
         raise RpcError(APP_ERROR,
-                       "that %s adds nothing where it can be %s - the copies do "
-                       "not overlap the body" % ("mirror" if "Mirror" in feat.TypeId
-                                                 else "pattern", op))
+                       "that %s adds nothing where it can be %s - it does "
+                       "not overlap the body" % (noun, op))
     _apply_result_boolean(d, body, prev_tip_name, tool, op,
-                          "that %s produced no change - the copies do not "
-                          "overlap the body" % op,
+                          "that %s produced no change - it does not "
+                          "overlap the body" % noun,
                           prev_vol=getattr(before_shape, "Volume", None))
     d.recompute()
 

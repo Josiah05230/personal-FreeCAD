@@ -6,6 +6,7 @@ export type OpKind =
   | 'extrude'
   | 'revolve'
   | 'rib'
+  | 'sweep'
   | 'loft'
   | 'draft'
   | 'combine'
@@ -61,7 +62,7 @@ interface FieldSpec {
 
 interface OpSpec {
   title: string
-  needs: 'none' | 'edges' | 'faces' | 'sketch' | 'sketches2' | 'planeFace' | 'plane' | 'axis'
+  needs: 'none' | 'edges' | 'faces' | 'sketch' | 'sketches2' | 'planeFace' | 'plane' | 'axis' | 'any'
   fields: FieldSpec[]
   hint?: string
 }
@@ -219,10 +220,53 @@ const SPECS: Record<OpKind, OpSpec> = {
       { key: 'reversed', label: 'Flip side', type: 'checkbox', default: false }
     ]
   },
+  sweep: {
+    title: 'Sweep',
+    needs: 'any',
+    hint: 'Click a profile sketch, then click the path: another sketch, or a body edge.',
+    fields: [
+      {
+        key: 'operation',
+        label: 'Operation',
+        type: 'select',
+        default: 'Join',
+        options: ['New body', 'Join', 'Cut', 'Intersect'],
+        wide: true
+      },
+      {
+        key: 'orientation',
+        label: 'Orientation',
+        type: 'select',
+        default: 'Path',
+        options: ['Path', 'Parallel'],
+        wide: true
+      },
+      {
+        key: 'transition',
+        label: 'Transition',
+        type: 'select',
+        default: 'Transformed',
+        options: ['Transformed', 'Right corner', 'Round corner'],
+        wide: true
+      }
+    ]
+  },
   loft: {
     title: 'Loft',
     needs: 'sketches2',
-    fields: [{ key: 'cut', label: 'Cut', type: 'checkbox', default: false }]
+    hint: 'Pick 2+ profile sketches, in order, to loft between.',
+    fields: [
+      {
+        key: 'operation',
+        label: 'Operation',
+        type: 'select',
+        default: 'Join',
+        options: ['New body', 'Join', 'Cut', 'Intersect'],
+        wide: true
+      },
+      { key: 'ruled', label: 'Ruled (straight between sections)', type: 'checkbox', default: false },
+      { key: 'closed', label: 'Closed loop', type: 'checkbox', default: false }
+    ]
   },
   draft: {
     title: 'Draft',
@@ -828,7 +872,11 @@ export function OperationDialog({
                 ? axisSel.length
                   ? 'axis selected'
                   : 'click an axis / edge / plane / face'
-                : null)
+                : spec.needs === 'any'
+                  ? selection.length
+                    ? `${selection.length} reference${selection.length === 1 ? '' : 's'} selected`
+                    : 'select a profile sketch, then click a path (a sketch or edge)'
+                  : null)
 
   const ready =
     // editing a committed feature: its refs are already seeded, Update is always allowed
@@ -847,7 +895,8 @@ export function OperationDialog({
       (!extrudeToObj || faces.length >= (sketchesSel.length ? 1 : 2))) ||
     (spec.needs === 'sketches2' && sketchesSel.length >= 2) ||
     (spec.needs === 'plane' && planeSel.length >= 1) ||
-    (spec.needs === 'axis' && axisSel.length >= 1)
+    (spec.needs === 'axis' && axisSel.length >= 1) ||
+    (spec.needs === 'any' && selection.length >= 1)
 
   // report OK-pressability to the parent. Done inline (not in an effect) so it
   // survives the early `return null` above for an unknown kind without breaking

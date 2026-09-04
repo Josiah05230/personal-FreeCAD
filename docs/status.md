@@ -99,6 +99,11 @@ the seed + step + trace tail to replay.
 
 ## Recent notable changes
 
+- **Fusion-parity pass 3**: Sweep is now a real dialog (Operation, Orientation,
+  Transition), Loft gained Operation + Ruled/Closed. Fixed a real crash in the
+  shared cut/intersect/newbody tail (`_finish_transform`) that read a deleted
+  FreeCAD object's TypeId - affected Mirror/Pattern/Revolve too, just harder to
+  trigger there.
 - **Fusion-parity pass 2**: hotkeys reset to F360's actual documented defaults
   (E extrude, F fillet, Q press pull, H hole, M move, J joint, I measure - was
   wrongly bound to M); Extrude Two Sides (independent per-side distances) and

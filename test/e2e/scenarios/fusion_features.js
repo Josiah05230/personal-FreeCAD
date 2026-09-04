@@ -251,6 +251,93 @@ await openApply('meshRepair', {
 }, { soft: true });
 await openApply('meshToSolid', { mode: 'faceted', sewTolerance: 0.1 }, { soft: true });
 
+// ---------------------------------------------------------------- Sweep + Loft
+note('--- Sweep (Operation/Orientation/Transition) + Loft (Operation/Ruled/Closed) ---');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+{
+  const prof = await rpc('sketch.on', { ref: { kind: 'origin', role: 'YZ_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: prof.sketchId,
+    elements: [{ type: 'circle', c: [0, 0], r: 4 }],
+    constraints: []
+  });
+  const path = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XZ_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: path.sketchId,
+    elements: [{ type: 'line', a: [0, 0], b: [0, 40] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.clearSelection();
+  G.openOp('sweep');
+  await sleep(50);
+  G.pick({ kind: 'sketch', sketchId: prof.sketchId }, false);
+  await sleep(30);
+  G.pick({ kind: 'sketch', sketchId: path.sketchId }, false);
+  await sleep(50);
+  const ready = await waitFor(() => G.getState().opReady === true, 4000);
+  assert(ready && okBtnDisabled() === false, 'sweep: OK gate clears with profile + path');
+  let err = null;
+  try {
+    await G.applyOp('sweep', { operation: 'Join', orientation: 'Path', transition: 'Transformed' });
+  } catch (e) {
+    err = (e && e.message) || String(e);
+  }
+  await idle();
+  G.closeOp();
+  assert(!err && !anyErr(), `sweep committed (${err || 'ok'})`);
+}
+await rpc('session.reset');
+await G.refresh();
+await idle();
+{
+  const s1 = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: s1.sketchId,
+    elements: [{ type: 'rect', a: [-10, -10], b: [10, 10] }],
+    constraints: []
+  });
+  await rpc('datum.plane', { refs: [{ kind: 'origin', role: 'XY_Plane' }], offset: 30 });
+  const sc = await rpc('scene.get');
+  // exclude the 3 world origin planes - we want the NEW datum plane we just made
+  const planeName = (sc.datums || []).find(
+    (x) => /plane/i.test(x.id || '') && !/^(XY|XZ|YZ)_Plane$/.test(x.id || '')
+  )?.id;
+  assert(!!planeName, 'a datum plane exists for the second loft section (' + planeName + ')');
+  const s2 = await rpc('sketch.on', { ref: { kind: 'plane', id: planeName } });
+  await rpc('sketch.finish', {
+    sketchId: s2.sketchId,
+    elements: [{ type: 'circle', c: [0, 0], r: 5 }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.clearSelection();
+  G.openOp('loft');
+  await sleep(50);
+  G.pick({ kind: 'sketch', sketchId: s1.sketchId }, false);
+  await sleep(30);
+  G.pick({ kind: 'sketch', sketchId: s2.sketchId }, false);
+  await sleep(50);
+  const ready = await waitFor(() => G.getState().opReady === true, 4000);
+  assert(ready && okBtnDisabled() === false, 'loft: OK gate clears with 2 sections');
+  let err = null;
+  try {
+    await G.applyOp('loft', { operation: 'Join', ruled: true, closed: false });
+  } catch (e) {
+    err = (e && e.message) || String(e);
+  }
+  await idle();
+  G.closeOp();
+  assert(!err && !anyErr(), `loft with Ruled committed (${err || 'ok'})`);
+  const scLoft = await rpc('scene.get');
+  const zmax = scLoft.meshes[0]?.bbox?.max?.[2] ?? 0;
+  assert(zmax > 25, `loft actually spans up to the offset section (zmax=${zmax})`);
+}
+
 // ---------------------------------------------------------------- Extrude Two Sides + All
 note('--- Extrude: Two Sides, All (through everything) ---');
 await rpc('session.reset');

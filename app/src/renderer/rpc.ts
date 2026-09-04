@@ -620,10 +620,27 @@ export const api = {
     profileId: string,
     pathId: string | null,
     cut = false,
-    pathRef: GeomRef | null = null
-  ) => rpc<{ bodies: BodyTree[] }>('feature.sweep', { profileId, pathId, cut, pathRef }),
-  loft: (sketchIds: string[], cut = false) =>
-    rpc<{ bodies: BodyTree[] }>('feature.loft', { sketchIds, cut }),
+    pathRef: GeomRef | null = null,
+    operation: 'join' | 'cut' | 'intersect' | 'newbody' = 'join',
+    orientation: 'Path' | 'Parallel' = 'Path',
+    transition: 'Transformed' | 'Right corner' | 'Round corner' = 'Transformed'
+  ) =>
+    rpc<{ bodies: BodyTree[] }>('feature.sweep', {
+      profileId,
+      pathId,
+      cut,
+      pathRef,
+      operation,
+      orientation,
+      transition
+    }),
+  loft: (
+    sketchIds: string[],
+    cut = false,
+    operation: 'join' | 'cut' | 'intersect' | 'newbody' = 'join',
+    ruled = false,
+    closed = false
+  ) => rpc<{ bodies: BodyTree[] }>('feature.loft', { sketchIds, cut, operation, ruled, closed }),
   draft: (
     faces: string[],
     angle: number,

@@ -79,6 +79,8 @@ const opSelKinds = (k: OpKind | null): SelKind[] | null => {
     case 'extrude':
     case 'loft':
       return ['sketch', 'face'] // a profile: a sketch outline / filled face, or a flat model face
+    case 'sweep':
+      return ['sketch', 'edge'] // profile sketch + a path (another sketch or a body edge)
     case 'revolve':
       return ['sketch', 'face', 'edge', 'plane'] // profile + an axis (a body edge or a datum)
     case 'fillet':
@@ -1077,9 +1079,51 @@ export function App(): JSX.Element {
             )
             break
           }
-          case 'loft':
-            await api.loft(sketchIds, Boolean(v.cut))
+          case 'loft': {
+            const loftOpMap: Record<string, 'join' | 'cut' | 'intersect' | 'newbody'> = {
+              'New body': 'newbody',
+              Join: 'join',
+              Cut: 'cut',
+              Intersect: 'intersect'
+            }
+            const loftOp = loftOpMap[String(v.operation ?? 'Join')] ?? 'join'
+            await api.loft(sketchIds, loftOp === 'cut', loftOp, Boolean(v.ruled), Boolean(v.closed))
             break
+          }
+          case 'sweep': {
+            const sk2 = sketchIds
+            const pathEdge = selection.find((s) => s.kind === 'edge') as
+              | { bodyId: string; sub: string }
+              | undefined
+            const sweepOpMap: Record<string, 'join' | 'cut' | 'intersect' | 'newbody'> = {
+              'New body': 'newbody',
+              Join: 'join',
+              Cut: 'cut',
+              Intersect: 'intersect'
+            }
+            const sweepOp = sweepOpMap[String(v.operation ?? 'Join')] ?? 'join'
+            const orientation = String(v.orientation ?? 'Path') as 'Path' | 'Parallel'
+            const transition = String(v.transition ?? 'Transformed') as
+              | 'Transformed'
+              | 'Right corner'
+              | 'Round corner'
+            if (sk2.length === 2) {
+              await api.sweep(sk2[0], sk2[1], sweepOp === 'cut', null, sweepOp, orientation, transition)
+            } else if (sk2.length === 1 && pathEdge) {
+              await api.sweep(
+                sk2[0],
+                null,
+                sweepOp === 'cut',
+                { kind: 'edge', bodyId: pathEdge.bodyId, sub: pathEdge.sub },
+                sweepOp,
+                orientation,
+                transition
+              )
+            } else {
+              throw new Error('Select a profile sketch, then click the path (another sketch, or a body edge).')
+            }
+            break
+          }
           case 'draft': {
             // a selected plane, or a face not being drafted, is the neutral plane
             const draftSubs = new Set(faces.map((f) => f.sub))
