@@ -322,6 +322,7 @@ export function OperationDialog({
   onApply,
   onCancel,
   onPreview,
+  onReady,
   onLivePreview,
   onLivePreviewEnd,
   handleDrag,
@@ -333,6 +334,8 @@ export function OperationDialog({
   onApply: (kind: OpKind, values: OpValues, exprs: Record<string, string>) => void
   onCancel: () => void
   onPreview?: (info: { offset: number; angle: number; flip: boolean } | null) => void
+  /** report whether OK is currently pressable (so E2E / callers can observe it) */
+  onReady?: (ready: boolean) => void
   onLivePreview?: (kind: OpKind, values: OpValues) => void
   onLivePreviewEnd?: () => void
   handleDrag?: { delta: number; phase: 'move' | 'end'; seq: number } | null
@@ -463,8 +466,10 @@ export function OperationDialog({
   const faces = selection.filter((s) => s.kind === 'face')
   const sketchesSel = selection.filter((s) => s.kind === 'sketch')
   const extrudeToObj = kind === 'extrude' && values.mode === 'To object'
-  // extrude accepts a sketch OR a flat model face as the profile
+  // extrude and revolve both accept a sketch OR a flat model face as the profile
+  const profileKind = kind === 'extrude' || kind === 'revolve'
   const extrudeProfileOk = kind === 'extrude' && (sketchesSel.length === 1 || faces.length >= 1)
+  const revolveProfileOk = kind === 'revolve' && (sketchesSel.length === 1 || faces.length === 1)
   const planeSel = selection.filter((s) => s.kind === 'plane' || s.kind === 'face')
   const isDatum = kind === 'datumPlane' || kind === 'datumAxis' || kind === 'datumPoint'
   const datumPlaneMsg = isDatum
@@ -480,9 +485,9 @@ export function OperationDialog({
       : spec.needs === 'faces' || spec.needs === 'planeFace'
         ? `${faces.length} face${faces.length === 1 ? '' : 's'} selected`
         : spec.needs === 'sketch'
-          ? kind === 'extrude' && !sketchesSel.length && !faces.length
+          ? profileKind && !sketchesSel.length && !faces.length
             ? 'select a sketch, or a flat face of the model'
-            : !sketchesSel.length && kind !== 'extrude'
+            : !sketchesSel.length && !profileKind
               ? 'select a sketch (click its outline or filled face)'
               : extrudeToObj && faces.length <= (sketchesSel.length ? 0 : 1)
                 ? 'now select the face to extrude up to'
@@ -510,15 +515,21 @@ export function OperationDialog({
     (spec.needs === 'faces' && faces.length > 0) ||
     (spec.needs === 'planeFace' && faces.length === 1) ||
     (spec.needs === 'sketch' &&
-      kind !== 'extrude' &&
-      sketchesSel.length === 1 &&
-      (!extrudeToObj || faces.length >= 1)) ||
+      !profileKind &&
+      sketchesSel.length === 1) ||
+    (kind === 'revolve' && revolveProfileOk) ||
     (kind === 'extrude' &&
       extrudeProfileOk &&
       (!extrudeToObj || faces.length >= (sketchesSel.length ? 1 : 2))) ||
     (spec.needs === 'sketches2' && sketchesSel.length >= 2) ||
     (spec.needs === 'plane' && planeSel.length >= 1) ||
     (spec.needs === 'axis' && axisSel.length >= 1)
+
+  // report OK-pressability to the parent (parent guarantees a non-null kind, so
+  // the early `return null` above is never taken while mounted)
+  useEffect(() => {
+    onReady?.(ready)
+  }, [ready, onReady])
 
   return (
     <div className="opdlg">

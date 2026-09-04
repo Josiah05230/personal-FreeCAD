@@ -37,6 +37,13 @@ clear it as you go.
 
 ## Recently addressed (this session)
 
+- **Revolve OK stayed disabled after the preview rendered** when the profile
+  was a flat model face (not a sketch). The dialog `ready` check only accepted
+  a sketch for revolve; it now accepts a sketch OR one flat face, like extrude.
+  New `op_commit.js` E2E opens every op dialog, makes a valid selection, and
+  asserts the OK button truly enables (`getState().opReady` + the real DOM
+  button `disabled`) before applying - so a "renders but will not commit" bug
+  in any dialog now fails a test.
 - **Sketch geometry points are selectable.** A circle / arc centre (and line
   endpoints) can be picked on their own: dimension centre-to-centre /
   centre-to-line, and Coincident / Horizontal / Vertical between two points.

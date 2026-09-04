@@ -359,6 +359,14 @@ export function App(): JSX.Element {
   measureModeRef.current = measureMode
   const opRef = useRef<OpKind | null>(null)
   opRef.current = op
+  // whether the open operation dialog would let you press OK (mirrors its own
+  // `ready`); surfaced through the test bridge so E2E can catch "preview renders
+  // but OK stays disabled" bugs.
+  const opReadyRef = useRef(false)
+  if (!op) opReadyRef.current = false
+  const setOpReady = useCallback((r: boolean) => {
+    opReadyRef.current = r
+  }, [])
 
   const openOp = useCallback((k: OpKind | null) => {
     trace('ACTION openOp', { k, from: opRef.current, queueBusy: cmdRef.current.busy })
@@ -2333,6 +2341,7 @@ export function App(): JSX.Element {
         busy,
         notice: sketchNotice,
         op,
+        opReady: opReadyRef.current,
         sketchMode: !!sketchSession,
         selection: selection.map(selKey),
         bodies: bodies.map((b) => ({
@@ -2954,6 +2963,7 @@ export function App(): JSX.Element {
                       onApply={applyOp}
                       onCancel={() => openOp(null)}
                       onPreview={onDatumPlanePreview}
+                      onReady={setOpReady}
                       onLivePreview={runLivePreview}
                       onLivePreviewEnd={endLivePreview}
                       handleDrag={planeHandleDrag}

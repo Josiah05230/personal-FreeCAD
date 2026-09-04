@@ -6,7 +6,11 @@ milestones M0-M5 have a working first version; ~85 sidecar RPC methods. Live
 feedback is tracked in `docs/FEEDBACK.md`; per-change detail is in git history.
 Verified each pass by headless engine tests (`scratch/*.py`) + a UI-driven E2E
 suite (`bash test/e2e/run.sh`: `workflow.js`, `repro.js`, `editfeature.js`,
-`monkey.js`, `fuzz.js`). `bash test/e2e/fuzz-loop.sh` runs a seeded random walk
+`monkey.js`, `fuzz.js`, `op_commit.js`, `part_asm.js`). `op_commit.js` opens
+every operation dialog, makes a minimal valid selection, and asserts the OK
+button actually enables (getState().opReady + the real DOM button) then that
+apply keeps the engine healthy - the class of "preview renders but OK stays
+greyed out" bug. `bash test/e2e/fuzz-loop.sh` runs a seeded random walk
 over every action + ribbon command forever until an invariant breaks (engine
 dead / error state / ErrorBoundary / stuck queue / blank viewport), printing
 the seed + step + trace tail to replay.
@@ -95,6 +99,12 @@ the seed + step + trace tail to replay.
 
 ## Recent notable changes
 
+- Revolve would not let you press OK with a flat model face as the profile
+  (only a sketch cleared the dialog's `ready` gate), even though the live
+  preview rendered. Revolve now accepts a sketch OR a single flat face, like
+  extrude. New `op_commit.js` E2E asserts the OK gate for every op so this
+  class of bug cannot recur silently; the dialog reports `opReady` through the
+  test bridge.
 - Sketch geometry points are first-class: `SketchController.pickPoint` /
   `selectedPts`, point handles, point-to-point + point-to-line Distance, and
   Coincident / H / V between two points. Sidecar `_apply_sketch_constraints`
