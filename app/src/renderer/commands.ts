@@ -64,7 +64,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'solid.sweep', title: 'Sweep', group: 'Create', tab: 'SOLID', icon: 'sweep', run: () => ctx.sweep() },
     { id: 'solid.loft', title: 'Loft', group: 'Create', tab: 'SOLID', icon: 'loft', run: op('loft') },
     { id: 'solid.rib', title: 'Rib', group: 'Create', tab: 'SOLID', icon: 'extrude', run: op('rib') },
-    { id: 'solid.hole', title: 'Hole', group: 'Create', tab: 'SOLID', icon: 'hole', run: op('hole') },
+    { id: 'solid.hole', title: 'Hole', group: 'Create', tab: 'SOLID', icon: 'hole', hotkey: 'h', run: op('hole') },
     { id: 'solid.box', title: 'Box', group: 'Create', tab: 'SOLID', icon: 'extrude', run: op('box') },
     { id: 'solid.cylinder', title: 'Cylinder', group: 'Create', tab: 'SOLID', icon: 'revolve', run: op('cylinder') },
     { id: 'solid.sphere', title: 'Sphere', group: 'Create', tab: 'SOLID', icon: 'revolve', run: op('sphere') },
@@ -91,7 +91,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'mod.combine', title: 'Combine', group: 'Modify', tab: 'SOLID', icon: 'combine', run: op('combine') },
     { id: 'mod.offsetFace', title: 'Offset Face', group: 'Modify', tab: 'SOLID', icon: 'draft', run: op('offsetFace') },
     { id: 'mod.splitFace', title: 'Split Face', group: 'Modify', tab: 'SOLID', icon: 'plane', run: op('splitFace') },
-    { id: 'mod.move', title: 'Move/Copy', group: 'Modify', tab: 'SOLID', icon: 'patternRect', run: op('move') },
+    { id: 'mod.move', title: 'Move/Copy', group: 'Modify', tab: 'SOLID', icon: 'patternRect', hotkey: 'm', run: op('move') },
     { id: 'mod.align', title: 'Align', group: 'Modify', tab: 'SOLID', icon: 'combine', run: op('align') },
     // --- pattern ---
     { id: 'pat.rect', title: 'Rectangular Pattern', group: 'Pattern', tab: 'SOLID', icon: 'patternRect', run: op('patternLinear') },
@@ -110,10 +110,10 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'ins.kicadSync', title: 'Re-sync KiCad PCB', group: 'Insert', tab: 'SOLID', icon: 'combine', run: () => ctx.reimportKicad() },
     // --- assemble ---
     { id: 'asm.newComponent', title: 'Insert Component', group: 'Assemble', tab: 'ASSEMBLE', icon: 'combine', run: () => ctx.addComponent() },
-    { id: 'asm.joint', title: 'Joint', group: 'Assemble', tab: 'ASSEMBLE', icon: 'axis', run: () => ctx.addJoint() },
+    { id: 'asm.joint', title: 'Joint', group: 'Assemble', tab: 'ASSEMBLE', icon: 'axis', hotkey: 'j', run: () => ctx.addJoint() },
     { id: 'asm.rigidGroup', title: 'Rigid Group', group: 'Assemble', tab: 'ASSEMBLE', icon: 'combine' },
     // --- inspect (a group on SOLID, F360-style) ---
-    { id: 'insp.measure', title: 'Measure', group: 'Inspect', tab: 'SOLID', icon: 'axis', hotkey: 'm', run: () => ctx.startMeasure() },
+    { id: 'insp.measure', title: 'Measure', group: 'Inspect', tab: 'SOLID', icon: 'axis', hotkey: 'i', run: () => ctx.startMeasure() },
     { id: 'insp.section', title: 'Section', group: 'Inspect', tab: 'SOLID', icon: 'plane', run: () => ctx.toggleSection() },
     { id: 'insp.interference', title: 'Interference', group: 'Inspect', tab: 'SOLID', icon: 'combine', run: () => ctx.interference() },
     { id: 'insp.com', title: 'Center of Mass', group: 'Inspect', tab: 'SOLID', icon: 'point', run: () => ctx.centerOfMass() },

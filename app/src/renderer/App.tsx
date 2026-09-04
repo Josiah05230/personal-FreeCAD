@@ -1029,7 +1029,9 @@ export function App(): JSX.Element {
               operation,
               toObject ? Number(v.offset ?? 0) : 0,
               faceProfile,
-              Number(v.taper ?? 0)
+              Number(v.taper ?? 0),
+              v.mode === 'Two Sides' ? Number(v.length2 ?? 0) : 0,
+              Boolean(v.throughAll)
             )
             break
           }
@@ -1567,7 +1569,9 @@ export function App(): JSX.Element {
             operation,
             0,
             faceProfile,
-            Number(v.taper ?? 0)
+            Number(v.taper ?? 0),
+            v.mode === 'Two Sides' ? Number(v.length2 ?? 0) : 0,
+            Boolean(v.throughAll)
           )
         }
         case 'revolve': {

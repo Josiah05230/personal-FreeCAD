@@ -117,7 +117,7 @@ const SPECS: Record<OpKind, OpSpec> = {
         label: 'Extent',
         type: 'select',
         default: 'Blind',
-        options: ['Blind', 'To object'],
+        options: ['Blind', 'Two Sides', 'To object'],
         wide: true
       },
       {
@@ -127,7 +127,15 @@ const SPECS: Record<OpKind, OpSpec> = {
         default: 10,
         step: 1,
         flipWith: 'reversed',
-        showIf: (v) => v.mode !== 'To object'
+        showIf: (v) => v.mode === 'Blind' || v.mode === 'Two Sides'
+      },
+      {
+        key: 'length2',
+        label: 'Distance (side 2)',
+        type: 'number',
+        default: 10,
+        step: 1,
+        showIf: (v) => v.mode === 'Two Sides'
       },
       {
         key: 'offset',
@@ -142,7 +150,14 @@ const SPECS: Record<OpKind, OpSpec> = {
         label: 'Symmetric',
         type: 'checkbox',
         default: false,
-        showIf: (v) => v.mode !== 'To object'
+        showIf: (v) => v.mode === 'Blind'
+      },
+      {
+        key: 'throughAll',
+        label: 'All (through everything)',
+        type: 'checkbox',
+        default: false,
+        showIf: (v) => v.mode === 'Blind' && v.operation === 'Cut'
       },
       {
         key: 'taper',
@@ -150,7 +165,7 @@ const SPECS: Record<OpKind, OpSpec> = {
         type: 'number',
         default: 0,
         step: 1,
-        showIf: (v) => v.mode !== 'To object'
+        showIf: (v) => v.mode !== 'To object' && !v.throughAll
       },
       { key: 'reversed', label: 'Flip', type: 'checkbox', default: false }
     ]
@@ -218,6 +233,7 @@ const SPECS: Record<OpKind, OpSpec> = {
   combine: {
     title: 'Combine',
     needs: 'none',
+    hint: 'Pick the Target body first, then the Tool body/bodies (in order) - a body is selected by clicking it in the Browser, or a face of it in the viewport.',
     fields: [
       {
         key: 'op',

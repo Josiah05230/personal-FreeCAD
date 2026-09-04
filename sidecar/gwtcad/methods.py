@@ -197,7 +197,8 @@ def _ensure_body_tip(d, body):
 
 @method("feature.extrude")
 def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, cut=False,
-                    upToFaceRef=None, operation=None, offset=0.0, faceRef=None, taper=0.0):
+                    upToFaceRef=None, operation=None, offset=0.0, faceRef=None, taper=0.0,
+                    length2=0.0, throughAll=False):
     """operation: 'join' (add) | 'cut' (remove) | 'intersect' (keep the overlap)
     | 'newBody' (separate solid).
     `cut=True` is kept as a shorthand for operation='cut'. When upToFaceRef is
@@ -264,7 +265,8 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
     made_body = None   # a fresh Body, for the newbody branch
 
     if op == "cut":
-        made = build.pocket(body, sk, float(length), up_to=up, offset=off, taper=taper)
+        made = build.pocket(body, sk, float(length), up_to=up, offset=off, taper=taper,
+                            through_all=throughAll)
         target = body
     elif op == "intersect":
         # keep only where the new prism and the existing solid overlap. PartDesign
@@ -277,7 +279,8 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
         skc = d.copyObject(sk, False)
         nb.addObject(skc)
         pad = build.pad(nb, skc, float(length), reversed_=reversed,
-                        midplane=midplane, up_to=up, offset=off, taper=taper)
+                        midplane=midplane, up_to=up, offset=off, taper=taper,
+                        length2=length2, through_all=throughAll)
         made_body = nb
         d.recompute()
         boolean = body.newObject("PartDesign::Boolean", "Boolean")
@@ -297,7 +300,8 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
         if isinstance(sk, tuple):
             # a model-face profile cannot be copied into a fresh body - just pad
             made = build.pad(body, sk, float(length), reversed_=reversed,
-                             midplane=midplane, up_to=up, offset=off, taper=taper)
+                             midplane=midplane, up_to=up, offset=off, taper=taper,
+                        length2=length2, through_all=throughAll)
             target = body
         elif tip is not None and _kind(tip.TypeId) == "solid":
             # body already has a solid - pad a copy of the sketch in a fresh body
@@ -305,17 +309,33 @@ def feature_extrude(sketchId=None, length=10.0, reversed=False, midplane=False, 
             skc = d.copyObject(sk, False)
             nb.addObject(skc)
             made = build.pad(nb, skc, float(length), reversed_=reversed,
-                             midplane=midplane, up_to=up, offset=off, taper=taper)
+                             midplane=midplane, up_to=up, offset=off, taper=taper,
+                        length2=length2, through_all=throughAll)
             made_body = nb
             target = nb
         else:
             made = build.pad(body, sk, float(length), reversed_=reversed,
-                             midplane=midplane, up_to=up, offset=off, taper=taper)
+                             midplane=midplane, up_to=up, offset=off, taper=taper,
+                        length2=length2, through_all=throughAll)
             target = body
     else:  # join
         made = build.pad(body, sk, float(length), reversed_=reversed,
-                         midplane=midplane, up_to=up, offset=off, taper=taper)
+                         midplane=midplane, up_to=up, offset=off, taper=taper,
+                        length2=length2, through_all=throughAll)
         target = body
+        # Extrude "Two Sides": PartDesign::Pad.Type "TwoLengths" produces a null
+        # shape in this FreeCAD build, so pad the same profile a second time in
+        # the opposite direction instead - two fused additive features standing
+        # in for Fusion's single two-sided one.
+        if length2 and not isinstance(sk, tuple) and not up and not throughAll:
+            try:
+                sk2 = build.reusable_profile(d, body, sk)
+                made2 = build.pad(body, sk2, float(length2), reversed_=(not reversed), taper=taper)
+                d.recompute()
+                if body.Shape.isValid():
+                    made = made2
+            except Exception:
+                pass  # keep the single-sided result rather than fail the whole extrude
 
     if op != "intersect":
         d.recompute()

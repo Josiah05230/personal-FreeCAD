@@ -440,7 +440,9 @@ export const api = {
     operation: 'join' | 'cut' | 'intersect' | 'newBody' = 'join',
     offset = 0,
     faceRef: { bodyId: string; sub: string } | null = null,
-    taper = 0
+    taper = 0,
+    length2 = 0,
+    throughAll = false
   ) =>
     rpc<{ bodies: BodyTree[] }>('feature.extrude', {
       sketchId,
@@ -452,7 +454,9 @@ export const api = {
       operation,
       offset,
       faceRef,
-      taper
+      taper,
+      length2,
+      throughAll
     }),
   fillet: (edges: string[], radius: number) =>
     rpc<{ bodies: BodyTree[] }>('feature.fillet', { edges, radius }),

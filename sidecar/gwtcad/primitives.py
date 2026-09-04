@@ -109,9 +109,17 @@ def _apply_dims(feat, kind, dims):
         feat.Radius2 = dims["section"]  # tube radius
 
 
-def _add_pd_feature(body, tid, kind, dims):
+def _add_pd_feature(body, tid, kind, dims, plane_ref=None):
     feat = body.newObject(tid, kind.capitalize())
     feat.Label = next_label(body, tid)
+    if plane_ref:
+        try:
+            from . import methods as _m
+            attach = _m._resolve_ref(body.Document, body, plane_ref)
+            feat.AttachmentSupport = [attach]
+            feat.MapMode = "FlatFace"
+        except Exception:
+            pass  # bad/unresolvable ref - fall back to the body origin
     try:
         feat.AttachmentOffset = _center_offset(kind, dims)
     except Exception:
@@ -120,7 +128,7 @@ def _add_pd_feature(body, tid, kind, dims):
     return feat
 
 
-def _pd_primitive(kind, dims, operation, name):
+def _pd_primitive(kind, dims, operation, name, plane_ref=None):
     d = _doc()
     op = (operation or "newbody").lower()
     add_tid, sub_tid = _PD[kind]
@@ -132,7 +140,7 @@ def _pd_primitive(kind, dims, operation, name):
         else:
             body = build.new_body(d, name or _TITLE[kind])
             d.recompute()
-        _add_pd_feature(body, add_tid, kind, dims)
+        _add_pd_feature(body, add_tid, kind, dims, plane_ref=plane_ref)
         d.recompute()
         if not _has_solid(body):
             raise RpcError(APP_ERROR, "%s: the result is not a valid solid" % kind)
@@ -143,7 +151,7 @@ def _pd_primitive(kind, dims, operation, name):
         if not _has_solid(body):
             raise RpcError(APP_ERROR,
                            "cut needs an active body with a solid - none found")
-        _add_pd_feature(body, sub_tid, kind, dims)
+        _add_pd_feature(body, sub_tid, kind, dims, plane_ref=plane_ref)
         d.recompute()
         if not _has_solid(body):
             raise RpcError(APP_ERROR,
@@ -157,7 +165,7 @@ def _pd_primitive(kind, dims, operation, name):
                            "intersect needs an active body with a solid - none found")
         scratch = build.new_body(d, next_label(None, "PartDesign::Body"))
         d.recompute()
-        _add_pd_feature(scratch, add_tid, kind, dims)
+        _add_pd_feature(scratch, add_tid, kind, dims, plane_ref=plane_ref)
         d.recompute()
         if not _has_solid(scratch):
             _drop(d, scratch)
@@ -293,41 +301,41 @@ def _section_frame(wire):
 @method("primitive.box")
 def primitive_box(length=40, width=40, height=40, operation="newbody",
                   planeRef=None, name=None):
-    """Fusion Box. planeRef is accepted but ignored - the box is built on the
-    body origin."""
+    """Fusion Box. planeRef (an origin plane, datum plane, or flat face) places
+    it there instead of the body origin."""
     dims = {"length": _pos("length", length), "width": _pos("width", width),
             "height": _pos("height", height)}
-    return _pd_primitive("box", dims, operation, name)
+    return _pd_primitive("box", dims, operation, name, plane_ref=planeRef)
 
 
 @method("primitive.cylinder")
 def primitive_cylinder(diameter=40, height=40, operation="newbody",
                        planeRef=None, name=None):
-    """Fusion Cylinder. planeRef accepted but ignored."""
+    """Fusion Cylinder. planeRef places it on a plane/face instead of the origin."""
     dims = {"radius": _pos("diameter", diameter) / 2.0,
             "height": _pos("height", height)}
-    return _pd_primitive("cylinder", dims, operation, name)
+    return _pd_primitive("cylinder", dims, operation, name, plane_ref=planeRef)
 
 
 @method("primitive.sphere")
 def primitive_sphere(diameter=40, operation="newbody", planeRef=None, name=None):
-    """Fusion Sphere. planeRef accepted but ignored."""
+    """Fusion Sphere. planeRef places its centre-plane instead of the origin."""
     dims = {"radius": _pos("diameter", diameter) / 2.0}
-    return _pd_primitive("sphere", dims, operation, name)
+    return _pd_primitive("sphere", dims, operation, name, plane_ref=planeRef)
 
 
 @method("primitive.torus")
 def primitive_torus(meanDiameter=60, sectionDiameter=15, operation="newbody",
                     planeRef=None, name=None):
     """Fusion Torus. meanDiameter is the centreline circle, sectionDiameter the
-    tube. planeRef accepted but ignored."""
+    tube. planeRef places it on a plane/face instead of the origin."""
     mean = _pos("meanDiameter", meanDiameter) / 2.0
     section = _pos("sectionDiameter", sectionDiameter) / 2.0
     if section >= mean:
         raise RpcError(APP_ERROR,
                        "sectionDiameter must be smaller than meanDiameter")
     return _pd_primitive("torus", {"mean": mean, "section": section},
-                         operation, name)
+                         operation, name, plane_ref=planeRef)
 
 
 @method("primitive.coil")

@@ -251,6 +251,96 @@ await openApply('meshRepair', {
 }, { soft: true });
 await openApply('meshToSolid', { mode: 'faceted', sewTolerance: 0.1 }, { soft: true });
 
+// ---------------------------------------------------------------- Extrude Two Sides + All
+note('--- Extrude: Two Sides, All (through everything) ---');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+{
+  const s = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: s.sketchId,
+    elements: [{ type: 'rect', a: [0, 0], b: [40, 30] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.selectSketch(s.sketchId);
+  await sleep(40);
+  await G.applyOp('extrude', { operation: 'Join', mode: 'Two Sides', length: 10, length2: 15 });
+  await idle();
+}
+{
+  const st = G.getState();
+  const tris = st.meshes[0].tris;
+  assert(!anyErr() && tris > 0, 'extrude Two Sides committed a solid');
+  note('Two Sides tris=' + tris);
+}
+{
+  const bid2 = meshes()[0].id;
+  const s2 = await rpc('sketch.on', { ref: { kind: 'face', bodyId: bid2, sub: 'Face6' } }).catch(() => null);
+  const sk2 = s2 ?? (await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } }));
+  await rpc('sketch.finish', {
+    sketchId: sk2.sketchId,
+    elements: [{ type: 'circle', c: [20, 15], r: 5 }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.clearSelection();
+  G.selectSketch(sk2.sketchId);
+  await sleep(40);
+  let err = null;
+  try {
+    await G.applyOp('extrude', { operation: 'Cut', mode: 'Blind', length: 1, throughAll: true });
+  } catch (e) {
+    err = (e && e.message) || String(e);
+  }
+  await idle();
+  assert(!err && !anyErr(), `extrude Cut with All (throughAll) committed (${err || 'ok'})`);
+}
+
+// ---------------------------------------------------------------- primitive placement on a plane
+note('--- Primitive placement on a picked plane ---');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+await openApply('box', { operation: 'New body', length: 20, width: 20, height: 8 }, {
+  setup: async () => {
+    G.pick({ kind: 'plane', planeId: 'XZ_Plane', role: 'XZ_Plane' }, false);
+  }
+});
+assert(meshes().length >= 1 && !anyErr(), 'box placed on XZ_Plane committed');
+
+// ---------------------------------------------------------------- hotkeys (F360 defaults)
+note('--- Hotkeys match F360 defaults ---');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+G.clearSelection();
+G.closeOp();
+await sleep(30);
+function pressKey(key) {
+  document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+}
+const hotkeyCases = [
+  ['e', 'extrude'],
+  ['f', 'fillet'],
+  ['q', 'pressPull'],
+  ['h', 'hole'],
+  ['m', 'move']
+];
+for (const [key, wantOp] of hotkeyCases) {
+  G.closeOp();
+  await sleep(30);
+  pressKey(key);
+  await sleep(60);
+  const got = G.getState().op;
+  assert(got === wantOp, `hotkey "${key}" opens ${wantOp} (got ${got})`);
+}
+G.closeOp();
+await sleep(20);
+
 // ---------------------------------------------------------------- wrap up
 const fin = G.getState();
 assert(fin.status === 'ready', 'app still ready at end (' + fin.status + ')');

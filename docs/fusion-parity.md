@@ -185,3 +185,35 @@ Still to correct next: Extrude Two Sides + Taper + "All" extent; Shell direction
 rails/guides + end conditions; Combine target-vs-tools UI; primitive placement
 on a picked plane/face; Split Body by face/sketch; parametric Scale / Split Face;
 Move/Copy of faces + features (not just bodies).
+
+---
+
+## Done in the second parity pass
+
+- **Hotkeys reset to F360's actual documented defaults** (help.autodesk.com +
+  the Autodesk shortcuts page - most Fusion commands have NO default binding;
+  only ~20 do). Fixed a real conflict: Measure was wrongly on `M` (that's
+  Move in F360) - now `I` (F360 default). Added `H` Hole, `M` Move/Copy,
+  `J` Joint. Left `E` Extrude, `F` Fillet, `Q` Press Pull as they already
+  matched; kept GWT-CAD's own sketch-tool letters (L/R/C/D/X already match
+  F360 too) and non-conflicting extras (`c s` Create Sketch, `f6` Fit) since
+  F360 leaves those unbound rather than using something else.
+- **Extrude Two Sides**: independent distances per side. `PartDesign::Pad`'s
+  `Type="TwoLengths"` produces a null shape in this FreeCAD 1.1.1 build (a
+  broken `?`-prefixed enum option) - implemented instead as two sequential
+  additive pads of the same profile in opposite directions (join only for now).
+- **Extrude "All"**: a `throughAll` checkbox (Cut + Blind only) -> Pad/Pocket
+  `Type="ThroughAll"`.
+- **Primitive placement**: Box/Cylinder/Sphere/Torus honour a picked plane /
+  datum / face via `AttachmentSupport` + `MapMode="FlatFace"` (was ignored).
+  Coil/Pipe still build on the origin.
+- **Combine** dialog hint clarifies the target-then-tools pick order (the
+  underlying `feature.combine` already treats the first selected body as the
+  target, the rest as tools - this was a documentation gap, not a code one).
+- `fusion_features.js` extended: Two Sides, All/Cut, primitive-on-plane,
+  and a hotkey-dispatch check for the F360 defaults (91 checks total).
+
+Still open: Sweep/Loft richer dialogs, Split Body by face/sketch, parametric
+Scale / Split Face (both currently bake a derived, non-parametric shape),
+Move/Copy of faces + features, Two Sides for Cut/Intersect/New-body, Align of
+non-planar refs, coil/pipe plane placement.

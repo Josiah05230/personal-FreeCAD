@@ -99,6 +99,13 @@ the seed + step + trace tail to replay.
 
 ## Recent notable changes
 
+- **Fusion-parity pass 2**: hotkeys reset to F360's actual documented defaults
+  (E extrude, F fillet, Q press pull, H hole, M move, J joint, I measure - was
+  wrongly bound to M); Extrude Two Sides (independent per-side distances) and
+  an "All" (through everything) extent; primitive Box/Cylinder/Sphere/Torus
+  honour a picked placement plane/face. `docs/fusion-parity.md` tracks what is
+  left (Sweep/Loft dialogs, parametric Scale/Split Face, Move/Copy of
+  faces/features, ...).
 - **Fusion-parity pass 1** (`docs/fusion-parity.md` tracks the full gap list).
   New SOLID commands: Move/Copy (Translate / Rotate / Point-to-Point +
   Create Copy, replaces the old Move + Copy Body), Scale (uniform / per-axis),

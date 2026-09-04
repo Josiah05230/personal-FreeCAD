@@ -227,7 +227,7 @@ def _set_profile(feature, profile):
 
 
 def pad(body, sketch, length, reversed_=False, midplane=False, name="Pad",
-        up_to=None, offset=0.0, taper=0.0):
+        up_to=None, offset=0.0, taper=0.0, length2=0.0, through_all=False):
     p = body.newObject("PartDesign::Pad", name)
     p.Label = next_label(body, "PartDesign::Pad")
     _set_profile(p, sketch)
@@ -237,7 +237,12 @@ def pad(body, sketch, length, reversed_=False, midplane=False, name="Pad",
             p.TaperAngle = float(taper)
         except Exception:
             pass
-    if up_to is not None:
+    if through_all:
+        try:
+            p.Type = "ThroughAll"
+        except Exception:
+            pass
+    elif up_to is not None:
         try:
             p.Type = "UpToFace"
             p.UpToFace = up_to  # (obj, [sub])
@@ -245,6 +250,10 @@ def pad(body, sketch, length, reversed_=False, midplane=False, name="Pad",
                 p.Offset = float(offset)  # extra distance past the face
         except Exception:
             p.Type = "Length"
+    # NOTE: PartDesign::Pad.Type "TwoLengths" is present in FreeCAD 1.1.1's
+    # enumeration but produces a null shape when set (a '?'-prefixed, broken
+    # option in this build) - Two Sides is built as two sequential pads
+    # instead; see feature_extrude's `length2` handling in methods.py.
     if reversed_:
         p.Reversed = True
     # FreeCAD 1.1 replaced the boolean Midplane with the SideType enum.
