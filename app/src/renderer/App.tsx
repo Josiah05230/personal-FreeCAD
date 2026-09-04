@@ -765,7 +765,8 @@ export function App(): JSX.Element {
           else if (pl) refs.axis = { kind: 'plane', id: pl.planeId }
         }
       } else if (kind === 'fillet' || kind === 'chamfer') {
-        refs.edges = ed.map((e) => e.sub)
+        // Face* subs ride in the same list - PartDesign rounds all their edges
+        refs.edges = [...ed.map((e) => e.sub), ...fc.map((f) => f.sub)]
       } else if (kind === 'shell' || kind === 'draft') {
         refs.faces = fc.map((f) => f.sub)
       } else if (kind === 'mirror' || kind === 'patternLinear' || kind === 'patternCircular') {
@@ -1074,10 +1075,12 @@ export function App(): JSX.Element {
             break
           }
           case 'fillet':
-            await api.fillet(edges, Number(v.radius))
+            // a picked face means "round every edge of this face" - PartDesign
+            // takes Face* subs in the same list as Edge* subs
+            await api.fillet([...edges, ...faces.map((f) => f.sub)], Number(v.radius))
             break
           case 'chamfer':
-            await api.chamfer(edges, Number(v.size))
+            await api.chamfer([...edges, ...faces.map((f) => f.sub)], Number(v.size))
             break
           case 'shell':
             await api.shell(faces.map((f) => f.sub), Number(v.thickness))
@@ -1346,11 +1349,13 @@ export function App(): JSX.Element {
         }
         case 'fillet': {
           const rad = num('radius')
-          return edges.length && rad != null ? api.fillet(edges, rad) : null
+          const subs = [...edges, ...faces.map((f) => f.sub)]
+          return subs.length && rad != null ? api.fillet(subs, rad) : null
         }
         case 'chamfer': {
           const sz = num('size')
-          return edges.length && sz != null ? api.chamfer(edges, sz) : null
+          const subs = [...edges, ...faces.map((f) => f.sub)]
+          return subs.length && sz != null ? api.chamfer(subs, sz) : null
         }
         case 'shell': {
           const th = num('thickness')
@@ -1912,7 +1917,14 @@ export function App(): JSX.Element {
           point: [0, 0, 0]
         } as Selection)
       for (const e of r.edges ?? [])
-        sels.push({ kind: 'edge', bodyId: bid, sub: e, point: [0, 0, 0] } as Selection)
+        sels.push({
+          // fillet / chamfer let a Face* sub ride in the edge list ("round all
+          // its edges") - re-seed it as a face pick so highlighting stays right
+          kind: /^Face/i.test(e) ? 'face' : 'edge',
+          bodyId: bid,
+          sub: e,
+          point: [0, 0, 0]
+        } as Selection)
       for (const f of r.faces ?? [])
         sels.push({ kind: 'face', bodyId: bid, sub: f, point: [0, 0, 0] } as Selection)
       if (r.axis?.kind === 'edge')

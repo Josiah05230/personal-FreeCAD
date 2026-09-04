@@ -36,6 +36,9 @@ interface FieldSpec {
   wide?: boolean
   /** only show this field when the predicate passes for the current values */
   showIf?: (v: Record<string, number | string | boolean>) => boolean
+  /** a negative value here means "the other direction": send its magnitude and
+   *  toggle this boolean field instead (so -5 length == 5 length + Flip) */
+  flipWith?: string
 }
 
 interface OpSpec {
@@ -95,6 +98,7 @@ const SPECS: Record<OpKind, OpSpec> = {
         type: 'number',
         default: 10,
         step: 1,
+        flipWith: 'reversed',
         showIf: (v) => v.mode !== 'To object'
       },
       {
@@ -120,7 +124,7 @@ const SPECS: Record<OpKind, OpSpec> = {
     needs: 'sketch',
     hint: 'Profile: a sketch, or a flat face of the model. Axis: pick from the list, or choose "Selected edge / datum" and click a straight edge or datum axis (required when the profile is a face).',
     fields: [
-      { key: 'angle', label: 'Angle', type: 'number', default: 360, step: 15 },
+      { key: 'angle', label: 'Angle', type: 'number', default: 360, step: 15, flipWith: 'reversed' },
       {
         key: 'axis',
         label: 'Axis',
@@ -186,11 +190,13 @@ const SPECS: Record<OpKind, OpSpec> = {
   fillet: {
     title: 'Fillet',
     needs: 'edges',
+    hint: 'Click edges to round. Click a face to round all of its edges. Ctrl-click to add more, plain click replaces.',
     fields: [{ key: 'radius', label: 'Radius', type: 'number', default: 2, min: 0.01, step: 0.5 }]
   },
   chamfer: {
     title: 'Chamfer',
     needs: 'edges',
+    hint: 'Click edges to chamfer. Click a face to chamfer all of its edges. Ctrl-click to add more, plain click replaces.',
     fields: [{ key: 'size', label: 'Distance', type: 'number', default: 2, min: 0.01, step: 0.5 }]
   },
   shell: {
@@ -261,7 +267,7 @@ const SPECS: Record<OpKind, OpSpec> = {
     needs: 'none',
     hint: 'Click geometry to set the reference, Ctrl-click to add another. 1 face = on it (offset); 1 edge = on the edge (tilt by Angle); 2 edges = through both; 2 faces = mid-plane; 3 points = through them.',
     fields: [
-      { key: 'offset', label: 'Offset', type: 'number', default: 0, step: 1 },
+      { key: 'offset', label: 'Offset', type: 'number', default: 0, step: 1, flipWith: 'flip' },
       {
         key: 'angle',
         label: 'Angle',
@@ -303,6 +309,22 @@ const SPECS: Record<OpKind, OpSpec> = {
 }
 
 export type OpValues = Record<string, number | string | boolean>
+
+/** Fold a negative distance / angle into "the other direction": a field with
+ *  `flipWith` set and a negative numeric value is sent as its magnitude with the
+ *  named boolean toggled. Leaves expressions and non-flip fields untouched. */
+function foldNegativeDirections(spec: OpSpec, vals: OpValues): OpValues {
+  const out: OpValues = { ...vals }
+  for (const f of spec.fields) {
+    if (!f.flipWith) continue
+    const n = Number(String(out[f.key] ?? ''))
+    if (Number.isFinite(n) && n < 0) {
+      out[f.key] = Math.abs(n)
+      out[f.flipWith] = !out[f.flipWith]
+    }
+  }
+  return out
+}
 
 /** ops whose result we can re-render live as the number changes */
 const LIVE_PREVIEW: ReadonlySet<OpKind> = new Set<OpKind>([
@@ -348,6 +370,12 @@ export function OperationDialog({
   const [values, setValues] = useState<OpValues>({})
   const [preview, setPreview] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  // put the caret in the first field so Enter / Esc work without a mouse move
+  useEffect(() => {
+    rootRef.current?.querySelector<HTMLElement>('input, select')?.focus()
+  }, [kind])
 
   useEffect(() => {
     if (spec) {
@@ -395,15 +423,16 @@ export function OperationDialog({
       // an unrelated re-render (or React StrictMode) re-runs this effect with an
       // identical kind / values / selection - skip the redundant engine round
       // trip, which is what makes the preview flicker while you drag a number
+      const pv = foldNegativeDirections(SPECS[kind], values)
       const key = JSON.stringify({
         kind,
-        values,
+        values: pv,
         sel: selection.map((s) => JSON.stringify(s)).sort()
       })
       if (key === lastFired.current) return
       lastFired.current = key
-      trace('dialog preview fire', { kind, values })
-      onLivePreview(kind, values)
+      trace('dialog preview fire', { kind, values: pv })
+      onLivePreview(kind, pv)
     }, 130)
     return () => clearTimeout(t)
   }, [kind, selection, values]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -454,7 +483,7 @@ export function OperationDialog({
           out[f.key] = Number(raw)
         }
       }
-      onApply(kind, out, exprs)
+      onApply(kind, foldNegativeDirections(spec, out), exprs)
     } catch (e) {
       window.alert((e as Error).message)
     } finally {
@@ -481,7 +510,10 @@ export function OperationDialog({
   const needMsg =
     datumPlaneMsg ??
     (spec.needs === 'edges'
-      ? `${edges.length} edge${edges.length === 1 ? '' : 's'} selected`
+      ? faces.length
+        ? `${faces.length} face${faces.length === 1 ? '' : 's'} (all their edges)` +
+          (edges.length ? ` + ${edges.length} edge${edges.length === 1 ? '' : 's'}` : '')
+        : `${edges.length} edge${edges.length === 1 ? '' : 's'} selected`
       : spec.needs === 'faces' || spec.needs === 'planeFace'
         ? `${faces.length} face${faces.length === 1 ? '' : 's'} selected`
         : spec.needs === 'sketch'
@@ -511,7 +543,7 @@ export function OperationDialog({
     !!editingLabel ||
     (isDatum && selection.length >= 1) ||
     (spec.needs === 'none' && !isDatum) ||
-    (spec.needs === 'edges' && edges.length > 0) ||
+    (spec.needs === 'edges' && edges.length + faces.length > 0) ||
     (spec.needs === 'faces' && faces.length > 0) ||
     (spec.needs === 'planeFace' && faces.length === 1) ||
     (spec.needs === 'sketch' &&
@@ -531,8 +563,25 @@ export function OperationDialog({
     onReady?.(ready)
   }, [ready, onReady])
 
+  // Enter = OK (when the params are good), Esc = Cancel - from anywhere in the
+  // dialog, no mouse needed
+  const onKeyDown = (e: React.KeyboardEvent): void => {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      onCancel()
+      return
+    }
+    if (e.key === 'Enter') {
+      const tag = (e.target as HTMLElement).tagName
+      if (tag === 'BUTTON' || tag === 'SELECT' || tag === 'TEXTAREA') return
+      e.preventDefault()
+      if (ready && !busy) void submit()
+    }
+  }
+
   return (
-    <div className="opdlg">
+    <div className="opdlg" ref={rootRef} onKeyDown={onKeyDown}>
       <div className="opdlg-title">
         {editingLabel ? `Edit ${editingLabel}` : spec.title}
       </div>

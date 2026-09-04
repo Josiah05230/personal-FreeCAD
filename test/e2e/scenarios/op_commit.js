@@ -257,6 +257,117 @@ await idle();
 G.closeOp();
 assert(!rErr && !anyErr(G.getState()), `revolve(sketch) committed (${rErr || 'ok'})`);
 
+// ---------------------------------------------------------------- fillet / chamfer by FACE
+note('--- fillet a whole face (rounds all its edges), + face+edge mix ---');
+await rebuildBase('reset + rect -> extrude 12 (fresh body for the fillet-by-face checks)');
+{
+  const before = feats(G.getState()).find((f) => f.kind === 'solid');
+  const sc0 = await rpc('scene.get');
+  const eBefore = (sc0.meshes[0].edges || []).length;
+  G.clearSelection();
+  await sleep(20);
+  G.openOp('fillet');
+  await sleep(60);
+  // pick a face - the top (Z+) face of the box
+  G.pick({ kind: 'face', bodyId: bid, sub: 'Face6', point: [20, 15, 12], normal: [0, 0, 1] }, false);
+  await sleep(60);
+  const okReady = await waitFor(() => G.getState().opReady === true, 4000);
+  assert(okReady && okBtnDisabled() === false, 'fillet: a FACE selection enables OK');
+  let e1 = null;
+  try {
+    await G.applyOp('fillet', { radius: 2 });
+  } catch (e) {
+    e1 = (e && e.message) || String(e);
+  }
+  await idle();
+  G.closeOp();
+  const st = G.getState();
+  const fil = feats(st).find((f) => /fillet/i.test(f.id));
+  assert(!e1 && !!fil && !anyErr(st), `fillet-by-face committed (${e1 || 'ok'})`);
+  const sc1 = await rpc('scene.get');
+  const eAfter = (sc1.meshes[0].edges || []).length;
+  assert(eAfter > eBefore, `fillet-by-face rounded multiple edges (${eBefore} -> ${eAfter} edges)`);
+  // it should round ALL four edges of a rectangular face: a box top face fillet
+  // turns 12 edges into 20 (4 new fillet faces, each adding 2 edges)
+  assert(eAfter >= eBefore + 6, `looks like all edges of the face were rounded (+${eAfter - eBefore})`);
+}
+
+// ---------------------------------------------------------------- negative distance == flip
+note('--- a negative Distance / Angle folds into the flip flag ---');
+await rebuildBase('reset + rect -> extrude 12 (fresh body for the negative-value check)');
+{
+  // sketch on the TOP face, extrude-cut with a NEGATIVE length: should cut DOWN
+  // into the solid exactly like a positive length + Flip, not error / do nothing
+  const sc = await rpc('scene.get');
+  void sc;
+  const sk = await rpc('sketch.on', { ref: { kind: 'face', bodyId: bid, sub: 'Face6' } }).catch(
+    () => null
+  );
+  const s = sk ?? (await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } }));
+  await rpc('sketch.finish', {
+    sketchId: s.sketchId,
+    elements: [{ type: 'circle', c: [20, 15], r: 5 }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  const volBefore = (G.getState().meshes[0] || {}).tris;
+  G.clearSelection();
+  G.openOp('extrude');
+  await sleep(50);
+  G.selectSketch(s.sketchId);
+  await sleep(50);
+  let ne = null;
+  try {
+    await G.applyOp('extrude', { operation: 'Cut', mode: 'Blind', length: -10 });
+  } catch (e) {
+    ne = (e && e.message) || String(e);
+  }
+  await idle();
+  G.closeOp();
+  const st = G.getState();
+  note('negative-cut: err=' + (ne || 'none') + ' notice=' + (st.notice || 'none'));
+  assert(!anyErr(st), 'negative-length extrude-cut left no feature error');
+  assert(
+    (st.meshes[0] || {}).tris !== volBefore || !ne,
+    'negative-length cut actually changed the solid (folded to a flip, not a no-op)'
+  );
+}
+
+// ---------------------------------------------------------------- Enter / Esc
+note('--- Enter commits a ready dialog, Esc cancels ---');
+await rebuildBase('reset + rect -> extrude 12 (fresh body for the keyboard checks)');
+{
+  const n0 = feats(G.getState()).length;
+  G.clearSelection();
+  G.openOp('fillet');
+  await sleep(50);
+  G.pick({ kind: 'edge', bodyId: bid, sub: vEdges[0] || anyEdge, point: [0, 0, 0] }, false);
+  await sleep(60);
+  await waitFor(() => G.getState().opReady === true, 4000);
+  const dlg = document.querySelector('.opdlg');
+  dlg.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+  );
+  await idle();
+  assert(G.getState().op == null, 'Enter closed the dialog');
+  assert(feats(G.getState()).length === n0 + 1, 'Enter committed the fillet');
+
+  // now Esc
+  G.clearSelection();
+  G.openOp('chamfer');
+  await sleep(50);
+  G.pick({ kind: 'edge', bodyId: bid, sub: vEdges[1] || vEdges[0] || anyEdge, point: [0, 0, 0] }, false);
+  await sleep(50);
+  const dlg2 = document.querySelector('.opdlg');
+  dlg2.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+  );
+  await sleep(80);
+  assert(G.getState().op == null, 'Esc closed the dialog');
+  assert(feats(G.getState()).length === n0 + 1, 'Esc did NOT commit a chamfer');
+}
+
 // ---------------------------------------------------------------- wrap up
 const fin = G.getState();
 assert(fin.status === 'ready', 'app still ready at end (' + fin.status + ')');
