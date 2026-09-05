@@ -34,6 +34,23 @@ def new_body(doc, label=None):
     return body
 
 
+def scratch_body_from_shape(doc, shp, label="Body"):
+    """A real PartDesign::Body whose tip is a Part::Feature holding `shp` (via a
+    PartDesign::FeatureBase) - a raw shape (a Mirror/Pattern result, a converted
+    mesh, ...) wrapped so it becomes a full body: sketchable, fillet-able, and
+    everything else PartDesign expects, not just a static Part::Feature blob.
+    Returns the body; its helper Part::Feature is hidden (drawn by the body)."""
+    pf = doc.addObject("Part::Feature", label.replace(" ", "") + "_shape")
+    pf.Shape = shp
+    pf.Visibility = False
+    nb = new_body(doc, next_label(None, "PartDesign::Body"))
+    fb = nb.newObject("PartDesign::FeatureBase", "BaseFeat")
+    fb.BaseFeature = pf
+    nb.Tip = fb
+    doc.recompute()
+    return nb
+
+
 def rect_sketch(body, w, h, plane="XY", centered=True):
     sk = body.newObject("Sketcher::SketchObject", "Sketch")
     sk.Label = next_label(body, "Sketcher::SketchObject")

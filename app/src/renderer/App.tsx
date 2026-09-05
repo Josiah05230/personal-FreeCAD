@@ -34,6 +34,7 @@ import { SketchRibbon } from './ui/SketchRibbon'
 import { MeasurePanel, SectionPanel, type SectionState } from './ui/InspectPanels'
 import { PromptHost, promptText, promptForm } from './ui/PromptDialog'
 import { ParametersPanel } from './ui/ParametersPanel'
+import { SettingsPanel } from './ui/SettingsPanel'
 import { MaterialsPanel } from './ui/MaterialsPanel'
 import {
   loadPinned,
@@ -45,6 +46,7 @@ import {
   type PinMap,
   type HotkeyMap
 } from './ribbonPrefs'
+import { loadMeshPrefs } from './meshPrefs'
 import type { MeasureResult, SketchRefGeom, SketchConstraint } from './rpc'
 import type { SketchTool, SketchConstraintType } from './viewport/SketchController'
 import type { SketchFrameDTO } from './rpc'
@@ -207,6 +209,7 @@ export function App(): JSX.Element {
   const [showDrawing, setShowDrawing] = useState(false)
   const [paramsOpen, setParamsOpen] = useState(false)
   const [materialsOpen, setMaterialsOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [canUndo, setCanUndo] = useState(false)
   const [canRedo, setCanRedo] = useState(false)
   const [pins, setPins] = useState<PinMap>(() => loadPinned())
@@ -2350,8 +2353,16 @@ export function App(): JSX.Element {
     ])
     if (!p) return
     try {
-      await api.importModel(p)
+      const prefs = loadMeshPrefs()
+      const r = await api.importModel(p, prefs.importFacetCap, prefs.autoSimplifyOnImport)
       await afterEdit()
+      if (r.simplified.length) {
+        const s = r.simplified[0]
+        window.alert(
+          `Imported mesh was ${s.trisBefore.toLocaleString()} triangles - ` +
+            `auto-simplified to ${s.tris.toLocaleString()} (see Mesh Import settings to change the limit).`
+        )
+      }
     } catch (e) {
       window.alert((e as Error).message)
     }
@@ -2815,6 +2826,7 @@ export function App(): JSX.Element {
         fitView,
         toggleData: () => setDataOpen((v) => !v),
         toggleGit: () => setGitOpen((v) => !v),
+        toggleSettings: () => setSettingsOpen((v) => !v),
         startDrawing,
         startMeasure,
         toggleSection,
@@ -3360,6 +3372,7 @@ export function App(): JSX.Element {
                       onClose={() => setSection(null)}
                     />
                   )}
+                  {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
                   {paramsOpen && (
                     <ParametersPanel
                       onClose={() => setParamsOpen(false)}

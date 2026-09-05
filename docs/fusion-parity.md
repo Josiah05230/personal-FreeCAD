@@ -321,3 +321,58 @@ partial-distance, Loft rails/guides.
   shape) and discarding the rest.
 - `editfeature.js` extended (37 checks): both Scale and Split Face - create,
   edit via the real dialog, close+reopen, confirm still genuinely editable.
+
+---
+
+## Done in the seventh parity pass
+
+- **MESH tab commands are now pinned to the ribbon face by default**
+  (`ribbonPrefs.ts` `DEFAULT_PINNED`) - the tab is short enough that all nine
+  commands fit without a fold-out.
+- **`mesh.toSolid` now produces a real, fully-interactive `PartDesign::Body`**,
+  not a bare `Part::Feature`. This was a real reported bug: a converted mesh
+  used to be unsketchable (`sketch.onFace` calls `.newObject`/reads `.Origin`
+  on the `bodyId` it is given, which only a `PartDesign::Body` has - a plain
+  `Part::Feature` has neither and the call threw). Fixed by routing the
+  converted shape through `build.scratch_body_from_shape` (the same
+  `PartDesign::FeatureBase`-wrapping helper Mirror/Pattern's "New body" result
+  already used) instead of `d.addObject("Part::Feature", ...)` directly.
+  Verified via a headless script: sketch on a face of the converted body,
+  fillet an edge of it (lands as a genuine `PartDesign::Fillet` in its
+  timeline), then re-tessellate the result back to a mesh - all work.
+- **Feature recognition: a new "Flats" conversion mode** rebuilds planar
+  regions of the mesh as real, exact BRep faces instead of leaving them as
+  hundreds of tiny triangle facets. Uses `Mesh.getPlanarSegments` (FreeCAD's
+  own coplanar-region clustering - reliable and well-tested) to find regions,
+  then `MeshPart.wireFromMesh` on a per-region sub-mesh to get each region's
+  exact boundary wire(s), and `Part.Face` to build the real flat face (with
+  holes cut from any interior wires). Only regions above a facet-count floor
+  are accepted, so small planar tessellation noise (say, a rounded corner's
+  tiny near-coplanar triangles) is not mistaken for a real designed flat.
+  Everything left over (genuinely curved or freeform surface) stays faceted
+  and is sewn together with the recognized flats into one shell/solid.
+  Verified on a box-with-a-through-hole test case: 2 real flat faces
+  recognized, remaining facets kept as-is, final solid valid with volume
+  within 0.001% of the source. Round/cylindrical recognition (fitting a real
+  `Part.Cylinder`/`Part.Cone` to a curved region) is NOT implemented - FreeCAD
+  1.1.1's `getSegmentsByCurvature` needs a radius guess up front and did not
+  reliably find anything on realistic test meshes even with a spread of
+  guesses, so it was deferred rather than shipped fragile; "Flats" leaves
+  rounds faceted. `mode="organic"` also degrades to this same flats pass
+  (true NURBS surface fitting is unavailable in this build).
+- **Mesh import fidelity**: a new Settings panel (`SettingsPanel.tsx`,
+  `meshPrefs.ts`, localStorage-backed) lets the user cap imported mesh size -
+  `io.importModel` now accepts `facetCap`/`autoSimplify` and, when a freshly
+  imported `Mesh::Feature` exceeds the cap, decimates it down immediately
+  (reusing `mesh.reduce`'s existing decimation) before it ever reaches the
+  viewport. Default cap 200k triangles, toggle to disable. Guards against a
+  raw scan / dense sculpt export (tens of millions of triangles) freezing the
+  viewport and every mesh tool run on it.
+- `fusion_features.js`'s MESH section gained 3 checks: `mesh.toSolid` with
+  `mode:'flats'` produces a valid result, a new body appears in the tree, and
+  - the actual regression test - picking a face of that body and hitting
+  Create Sketch through the real bridge successfully enters the sketcher.
+
+Still open (feature recognition): cylinder/cone recognition for rounds (fast
+follow once a reliable fitting approach is found), NURBS/organic surface
+fitting.

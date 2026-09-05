@@ -27,6 +27,7 @@ from FreeCAD import Vector
 
 from .registry import method, RpcError, APP_ERROR
 from . import session
+from . import build
 
 _MESH_COLOR = [0.62, 0.68, 0.75]
 
@@ -187,19 +188,115 @@ def mesh_from_brep(bodyId=None, deflection=0.1, angularDeflection=0.5, name=None
     return _tree_with(id=nf.Name, tris=nf.Mesh.CountFacets, source=src.Name, sourceHidden=True)
 
 
+_RECOGNIZE_MIN_FACETS = 20     # ignore planar clusters smaller than this - noise,
+                                # not a real designed flat (a rounded-corner sliver
+                                # tessellates into a handful of near-coplanar tris)
+_RECOGNIZE_PLANAR_DEV = 0.05   # radians - getPlanarSegments' coplanarity tolerance
+
+
+def _submesh(facets, idx):
+    """A standalone Mesh.Mesh holding just the given facet indices, so
+    MeshPart.wireFromMesh (whole-mesh boundary only) can be run per-region."""
+    tris = []
+    for i in idx:
+        p = facets[i].Points
+        tris.append(Vector(*p[0]))
+        tris.append(Vector(*p[1]))
+        tris.append(Vector(*p[2]))
+    with _quiet():
+        return Mesh.Mesh(tris)
+
+
+def _recognize_flats(mesh, min_facets=_RECOGNIZE_MIN_FACETS):
+    """Find planar regions in `mesh` and rebuild each as a real, exact Part.Face
+    (flat, with holes if the region has interior boundaries) instead of dozens/
+    hundreds of triangle facets. Everything left over (rounds, freeform, noise)
+    is returned separately, still faceted, for the caller to tessellate as-is.
+
+    This is feature recognition for flats only - FreeCAD's Mesh module has a
+    solid, reliable API for coplanar clustering (getPlanarSegments) but nothing
+    equally reliable for round/cylindrical detection in this build, so rounds
+    are intentionally left faceted rather than shipping a fragile curve fit.
+    Returns (flat_faces, leftover_facet_indices, notes).
+    """
+    notes = []
+    with _quiet():
+        segs = mesh.getPlanarSegments(_RECOGNIZE_PLANAR_DEV, min_facets)
+    facets = list(mesh.Facets)
+    flats = []
+    used = set()
+    for idx in segs:
+        if len(idx) < min_facets:
+            continue
+        try:
+            sm = _submesh(facets, idx)
+            wires = MeshPart.wireFromMesh(sm)
+            if not wires:
+                continue
+            if len(wires) == 1:
+                f = Part.Face(wires[0])
+            else:
+                # the largest wire is the outer boundary; the rest are holes
+                by_size = sorted(wires, key=lambda w: -w.BoundBox.DiagonalLength)
+                f = Part.Face(by_size[0]).cut([Part.Face(w) for w in by_size[1:]])
+                f = f.Faces[0] if getattr(f, "Faces", None) else f
+            if f is None or f.isNull() or not f.isValid():
+                continue
+        except Exception:
+            continue
+        flats.append(f)
+        used.update(idx)
+    leftover = [i for i in range(len(facets)) if i not in used]
+    if flats:
+        notes.append("recognized %d flat face(s) from %d planar region(s)" %
+                     (len(flats), len(segs)))
+    return flats, leftover, notes
+
+
 @method("mesh.toSolid")
 def mesh_to_solid(id=None, mode="faceted", sewTolerance=0.1, name=None):
-    """Mesh -> BRep as a new Part::Feature. `mode` prismatic / organic degrade to
-    faceted in this build. An invalid result is still returned, with a note."""
+    """Mesh -> BRep as a new PartDesign body (sketchable/fillet-able like any
+    other body - not a bare Part::Feature). `mode`:
+      - "faceted":  every facet becomes its own tiny flat face (old behaviour).
+      - "flats" / "prismatic": recognize planar regions first and rebuild them
+        as real exact faces; only genuinely curved/freeform area stays faceted.
+        ("organic" also lands here - true NURBS surface fitting is unavailable
+        in this build, so it degrades to the same flats-recognition pass.)
+    An invalid result is still returned, with a note, rather than raising.
+    """
     d, obj = _mesh_obj(id)
     notes = []
     mode = (mode or "faceted").lower()
-    if mode in ("prismatic", "organic"):
-        notes.append("%s reconstruction unavailable in this build - degraded to faceted" % mode)
 
-    shape = Part.Shape()
-    with _quiet():
-        shape.makeShapeFromMesh(obj.Mesh.Topology, float(sewTolerance))
+    mesh = obj.Mesh
+    if mode in ("flats", "prismatic", "organic"):
+        if mode == "organic":
+            notes.append("organic (NURBS) reconstruction unavailable in this build - "
+                         "recognizing flats instead, rest stays faceted")
+        flats, leftover, rec_notes = _recognize_flats(mesh)
+        notes.extend(rec_notes)
+        faces = list(flats)
+        if leftover:
+            rest = _submesh(list(mesh.Facets), leftover)
+            rest_shape = Part.Shape()
+            with _quiet():
+                rest_shape.makeShapeFromMesh(rest.Topology, float(sewTolerance))
+            faces.extend(rest_shape.Faces)
+        if not faces:
+            notes.append("nothing recognized or tessellated - falling back to plain faceted")
+            shape = Part.Shape()
+            with _quiet():
+                shape.makeShapeFromMesh(mesh.Topology, float(sewTolerance))
+        else:
+            with _quiet():
+                shell = Part.makeShell(faces)
+                shell.sewShape()
+            shape = shell
+    else:
+        shape = Part.Shape()
+        with _quiet():
+            shape.makeShapeFromMesh(mesh.Topology, float(sewTolerance))
+
     result = shape
     try:
         solid = Part.makeSolid(shape)
@@ -217,16 +314,15 @@ def mesh_to_solid(id=None, mode="faceted", sewTolerance=0.1, name=None):
         notes.append("result is not a valid solid - returned as-is (shell)")
 
     label = name or (obj.Label + " Solid")
-    nf = d.addObject("Part::Feature", label.replace(" ", "") or "MeshSolid")
-    nf.Label = label
-    nf.Shape = result
-    session.set_body_color(nf.Name, session.body_color(obj.Name) or _MESH_COLOR)
+    body = build.scratch_body_from_shape(d, result, label)
+    body.Label = label
+    session.set_body_color(body.Name, session.body_color(obj.Name) or _MESH_COLOR)
     try:
         obj.Visibility = False
     except Exception:
         pass
     d.recompute()
-    return _tree_with(id=nf.Name, source=obj.Name, mode=mode, valid=valid,
+    return _tree_with(id=body.Name, source=obj.Name, mode=mode, valid=valid,
                       solids=len(getattr(result, "Solids", []) or []),
                       faces=len(getattr(result, "Faces", []) or []), notes=notes)
 

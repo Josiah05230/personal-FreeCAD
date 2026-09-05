@@ -251,6 +251,28 @@ await openApply('meshRepair', {
 }, { soft: true });
 await openApply('meshToSolid', { mode: 'faceted', sewTolerance: 0.1 }, { soft: true });
 
+// mesh.toSolid must produce a real, sketchable PartDesign::Body - not a bare
+// Part::Feature you can't do anything with afterward (a real regression: it
+// used to leave you unable to even start a sketch on the converted result).
+{
+  const before = new Set((await rpc('tree.get')).bodies.map((b) => b.id));
+  const r = await rpc('mesh.toSolid', { id: null, mode: 'flats', sewTolerance: 0.1 });
+  assert(r.mesh && r.mesh.valid, `mesh.toSolid flats: valid result (${JSON.stringify(r.mesh)})`);
+  const after = await rpc('tree.get');
+  const newBody = after.bodies.find((b) => !before.has(b.id));
+  assert(newBody, 'mesh.toSolid: a new body appears in the tree');
+  await G.refresh();
+  await idle();
+  G.pick({ kind: 'face', bodyId: newBody.id, sub: 'Face1' }, false);
+  await sleep(30);
+  await G.createSketch();
+  await sleep(80);
+  const st = G.getState();
+  assert(st.sketchMode, 'converted mesh body: face pick + Create Sketch enters the sketcher');
+  await G.cancelSketch();
+  await idle();
+}
+
 // ---------------------------------------------------------------- Split Body by face / sketch
 note('--- Split Body: a plane, a face, and a sketch as the tool ---');
 await rpc('session.reset');

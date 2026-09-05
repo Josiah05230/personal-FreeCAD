@@ -629,14 +629,14 @@ const SPECS: Record<OpKind, OpSpec> = {
   meshToSolid: {
     title: 'Convert Mesh',
     needs: 'none',
-    hint: 'Rebuild a solid BRep from the selected mesh.',
+    hint: 'Rebuild a solid BRep body from the selected mesh - sketchable and editable like any other body afterward.',
     fields: [
       {
         key: 'mode',
         label: 'Result',
         type: 'select',
-        default: 'faceted',
-        options: ['faceted', 'prismatic', 'organic'],
+        default: 'flats',
+        options: ['flats', 'faceted', 'organic'],
         wide: true
       },
       { key: 'sewTolerance', label: 'Sew tolerance', type: 'number', default: 0.1, min: 0.001, step: 0.05 }

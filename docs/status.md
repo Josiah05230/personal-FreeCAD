@@ -99,6 +99,22 @@ the seed + step + trace tail to replay.
 
 ## Recent notable changes
 
+- **MESH tab: pinned by default, real sketchable convert, feature recognition,
+  import fidelity cap.** All nine MESH commands are now pinned to the ribbon
+  face out of the box (the tab is short enough to fit them all). Fixed a real
+  bug: converting a mesh to a solid used to leave you unable to even start a
+  sketch on the result (`mesh.toSolid` built a bare `Part::Feature`, and
+  sketch-on-face needs a real `PartDesign::Body`) - it now produces a genuine
+  body, sketchable and fillet-able like any other. Added a new "Flats"
+  conversion mode: recognizes planar regions in the mesh (FreeCAD's own
+  coplanar clustering) and rebuilds them as real, exact flat BRep faces
+  instead of leaving hundreds of tiny triangles; only genuinely curved or
+  freeform area stays faceted (verified to preserve volume to within 0.001%
+  on a test case). Round/cylindrical recognition is not implemented yet - a
+  reliable fitting approach wasn't available in this FreeCAD build without
+  writing a fragile custom curve fit, so it's deferred. Also added a Settings
+  panel with a mesh-import facet cap (default 200k triangles, auto-simplifies
+  an oversized import immediately) so a huge scan doesn't freeze the viewport.
 - **Scale and Split Face are now real, native, editable PartDesign features**
   (both were baked derived shapes). Uses FreeCAD's scripted-feature support
   (`PartDesign::FeaturePython`), which behaves exactly like a native Pad or

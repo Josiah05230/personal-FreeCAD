@@ -34,6 +34,7 @@ export interface CommandContext {
   fitView: () => void
   toggleData: () => void
   toggleGit: () => void
+  toggleSettings: () => void
   startDrawing: () => Promise<void>
   startMeasure: () => void
   toggleSection: () => void
@@ -141,6 +142,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'file.import', title: 'Import…', group: 'File', tab: 'TOOLS', icon: 'point', run: () => ctx.importStep() },
     { id: 'view.fit', title: 'Fit View', group: 'View', tab: 'TOOLS', icon: 'point', hotkey: 'f6', run: () => ctx.fitView() },
     { id: 'panel.data', title: 'Toggle Data Panel', group: 'View', tab: 'TOOLS', icon: 'point', run: () => ctx.toggleData() },
-    { id: 'panel.git', title: 'Toggle History (Git)', group: 'View', tab: 'TOOLS', icon: 'point', run: () => ctx.toggleGit() }
+    { id: 'panel.git', title: 'Toggle History (Git)', group: 'View', tab: 'TOOLS', icon: 'point', run: () => ctx.toggleGit() },
+    { id: 'panel.settings', title: 'Settings', group: 'View', tab: 'TOOLS', icon: 'point', run: () => ctx.toggleSettings() }
   ]
 }

@@ -29,7 +29,18 @@ export const DEFAULT_PINNED = new Set<string>([
   'file.import',
   'view.fit',
   'panel.data',
-  'panel.git'
+  'panel.git',
+  'panel.settings',
+  // MESH tab - short workspace, room on the ribbon face for everything
+  'mesh.fromBRep',
+  'mesh.insert',
+  'mesh.reduce',
+  'mesh.smooth',
+  'mesh.planeCut',
+  'mesh.flipNormals',
+  'mesh.repair',
+  'mesh.separate',
+  'mesh.toSolid'
 ])
 
 function readJSON<T>(key: string, fallback: T): T {

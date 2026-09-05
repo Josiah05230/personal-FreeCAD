@@ -409,8 +409,13 @@ export const api = {
       frame: SketchFrameDTO
       refGeom: SketchRefGeom | null
     }>('sketch.on', { ref }),
-  importModel: (path: string) =>
-    rpc<{ path: string; imported: string[]; count: number }>('io.importModel', { path }),
+  importModel: (path: string, facetCap = 0, autoSimplify = true) =>
+    rpc<{
+      path: string
+      imported: string[]
+      count: number
+      simplified: { id: string; trisBefore: number; tris: number }[]
+    }>('io.importModel', { path, facetCap, autoSimplify }),
   kicadImport: (path: string) =>
     rpc<{
       bodies: BodyTree[]

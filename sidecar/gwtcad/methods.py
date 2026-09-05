@@ -1122,16 +1122,10 @@ def _transform_originals(body, scope, refs):
 def _scratch_body_from_shape(d, shp, label="__xform"):
     """A throwaway PartDesign::Body whose tip is a Part::Feature holding `shp`,
     for feeding a raw solid into a PartDesign::Boolean or standing alone as a
-    'new body' result. Returns the body; its helper Part::Feature is hidden."""
-    pf = d.addObject("Part::Feature", label + "_shape")
-    pf.Shape = shp
-    pf.Visibility = False
-    nb = build.new_body(d, next_label(None, "PartDesign::Body"))
-    fb = nb.newObject("PartDesign::FeatureBase", "BaseFeat")
-    fb.BaseFeature = pf
-    nb.Tip = fb
-    d.recompute()
-    return nb
+    'new body' result. Returns the body; its helper Part::Feature is hidden.
+    (Thin wrapper - build.scratch_body_from_shape is the one real definition,
+    also used by meshtools.mesh_to_solid to wrap a converted mesh the same way.)"""
+    return build.scratch_body_from_shape(d, shp, label)
 
 
 def _xform_helper_features(d):
@@ -3978,11 +3972,18 @@ def io_import_step(path):
 
 
 @method("io.importModel")
-def io_import_model(path):
+def io_import_model(path, facetCap=0, autoSimplify=True):
     """Import STEP/IGES/BREP (as solids) or STL/OBJ/3MF/PLY/OFF (as meshes).
 
     Multi-body files land as separate objects. Each imported object gets a
     distinct palette colour (file colours are not reliably readable headless).
+
+    A raw scan / dense sculpt export can be tens of millions of triangles -
+    importing it at full density freezes the viewport and every mesh tool on
+    it. When `autoSimplify` and `facetCap` > 0, any imported Mesh::Feature over
+    that count is decimated down to it right away; the client's own preference
+    (mesh import settings) supplies these, so a plain headless/API caller who
+    passes neither still gets the file exactly as it read from disk.
     """
     d = session.doc()
     path = os.path.abspath(os.path.expanduser(path))
@@ -4003,13 +4004,30 @@ def io_import_model(path):
     d.recompute()
     stem = os.path.splitext(os.path.basename(path))[0]
     new = [o for o in d.Objects if o.Name not in before]
+    simplified = []
+    cap = int(facetCap or 0)
+    if autoSimplify and cap > 0:
+        from . import meshtools
+        for o in new:
+            if o.TypeId != "Mesh::Feature":
+                continue
+            before_tris = o.Mesh.CountFacets
+            if before_tris <= cap:
+                continue
+            try:
+                meshtools.mesh_reduce(id=o.Name, targetFactor=0.0, targetCount=cap)
+                simplified.append({"id": o.Name, "trisBefore": before_tris,
+                                   "tris": o.Mesh.CountFacets})
+            except Exception:
+                pass  # keep the full-density mesh rather than fail the import
     for i, o in enumerate(new):
         session.set_body_color(o.Name, _PALETTE[i % len(_PALETTE)])
         try:
             o.Label = stem if len(new) == 1 else "%s %d" % (stem, i + 1)
         except Exception:
             pass
-    return {"path": path, "imported": [o.Name for o in new], "count": len(new)}
+    return {"path": path, "imported": [o.Name for o in new], "count": len(new),
+            "simplified": simplified}
 
 
 def _export_targets(d):
