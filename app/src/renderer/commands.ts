@@ -40,6 +40,7 @@ export interface CommandContext {
   scale: () => Promise<void>
   interference: () => void
   centerOfMass: () => void
+  toggleMaterials: () => void
   insertCanvas: () => Promise<void>
   toggleParams: () => void
   importKicad: () => Promise<void>
@@ -128,6 +129,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'mesh.separate', title: 'Separate', group: 'Modify', tab: 'MESH', icon: 'combine', run: op('meshSeparate') },
     { id: 'mesh.toSolid', title: 'Convert Mesh', group: 'BRep', tab: 'MESH', icon: 'extrude', run: op('meshToSolid') },
     { id: 'mod.params', title: 'Parameters', group: 'Modify', tab: 'SOLID', icon: 'patternRect', run: () => ctx.toggleParams() },
+    { id: 'mod.material', title: 'Material', group: 'Modify', tab: 'SOLID', icon: 'combine', run: () => ctx.toggleMaterials() },
     // --- drawing ---
     { id: 'draw.fromDesign', title: 'Drawing from Design', group: 'Drawing', tab: 'TOOLS', icon: 'sketch', run: () => ctx.startDrawing() },
     // --- file / view ---

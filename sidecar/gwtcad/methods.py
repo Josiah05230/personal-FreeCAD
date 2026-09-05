@@ -3511,6 +3511,11 @@ def document_open(path):
     except Exception:
         pass
     d.recompute()
+    try:
+        from . import materials as _materials
+        _materials.reapply_custom_materials()
+    except Exception:
+        pass
     return {"path": path, "name": d.Name}
 
 
@@ -4043,7 +4048,7 @@ from gwtcad import kicad as _kicad_methods  # noqa: E402,F401
 
 # Fusion-parity feature modules. Each registers its own @method RPCs on import.
 # Guarded so a problem in one module cannot take the whole sidecar down.
-for _mod in ("primitives", "xform", "meshtools"):
+for _mod in ("primitives", "xform", "meshtools", "materials"):
     try:
         __import__("gwtcad." + _mod)
     except Exception as _e:  # pragma: no cover - surfaced in the sidecar log

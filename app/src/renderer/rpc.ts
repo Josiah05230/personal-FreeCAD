@@ -860,5 +860,59 @@ export const api = {
 
   exportStep: (path: string) => rpc<{ path: string; bodies: number }>('io.exportStep', { path }),
   exportStl: (path: string) => rpc<{ path: string; bodies: number }>('io.exportStl', { path }),
-  importStep: (path: string) => rpc<{ path: string }>('io.importStep', { path })
+  importStep: (path: string) => rpc<{ path: string }>('io.importStep', { path }),
+
+  // --- Materials ---
+  materialPresets: () => rpc<{ families: MaterialFamily[]; total: number }>('material.presets'),
+  materialPresetDetail: (uuid: string) => rpc<MaterialDTO>('material.presetDetail', { uuid }),
+  materialGet: (targetId?: string | null) =>
+    rpc<{ assigned: MaterialDTO | null }>('material.get', { targetId }),
+  materialAssign: (targetId: string | null, uuid: string, extra?: Record<string, unknown>) =>
+    rpc<{ bodies: BodyTree[] }>('material.assign', { targetId, uuid, extra }),
+  materialClear: (targetId?: string | null) =>
+    rpc<{ bodies: BodyTree[] }>('material.clear', { targetId }),
+  materialCustomList: () => rpc<{ presets: CustomMaterialPreset[] }>('material.customList'),
+  materialCustomSave: (
+    name: string,
+    baseUuid: string,
+    appearance?: Record<string, unknown>,
+    physical?: Record<string, unknown>,
+    extra?: Record<string, unknown>,
+    id?: string
+  ) =>
+    rpc<CustomMaterialPreset>('material.customSave', {
+      name,
+      baseUuid,
+      appearance,
+      physical,
+      extra,
+      id
+    }),
+  materialCustomDelete: (id: string) => rpc<{ deleted: string }>('material.customDelete', { id }),
+  materialCustomAssign: (targetId: string | null, customId: string) =>
+    rpc<{ bodies: BodyTree[] }>('material.customAssign', { targetId, customId })
+}
+
+export interface MaterialFamily {
+  family: string
+  materials: { uuid: string; name: string }[]
+}
+
+export interface MaterialDTO {
+  uuid: string
+  name: string
+  family?: string
+  physical: Record<string, number | string>
+  appearance: Record<string, number | string>
+  extra?: Record<string, unknown>
+}
+
+export interface CustomMaterialPreset {
+  id: string
+  name: string
+  baseUuid: string
+  baseName: string
+  appearance: Record<string, unknown>
+  physical: Record<string, unknown>
+  extra: Record<string, unknown>
 }

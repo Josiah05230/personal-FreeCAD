@@ -37,6 +37,11 @@ clear it as you go.
 
 ## Recently addressed (this session)
 
+- **Materials panel** (new, user-requested): assign a real FreeCAD material
+  (appearance + physical properties) from ~200 built-in presets or a custom
+  one to a body; custom presets can override colour/glossiness/density and
+  add GWT-CAD-only extras (friction, pattern/finish, notes), saved to a
+  reusable user-level library. Ribbon: Modify > Material.
 - **Fusion-parity pass 1.** Researched the F360 Design workspace SOLID + MESH
   ribbon (`docs/fusion-parity.md` = the full command-by-command gap list) and
   implemented the highest-value missing pieces: Move/Copy done the F360 way

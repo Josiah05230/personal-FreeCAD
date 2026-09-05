@@ -170,6 +170,10 @@ def load_state(blob):
     _feature_exprs.update(blob.get("featureExprs", {}))
     _kicad.clear()
     _kicad.update(blob.get("kicad", {}) or {})
+    _material_extra.clear()
+    _material_extra.update(blob.get("materialExtra", {}) or {})
+    _material_custom.clear()
+    _material_custom.update(blob.get("materialCustom", {}) or {})
     mx = 0
     for cid in _canvases:
         try:
@@ -182,7 +186,8 @@ def load_state(blob):
 def dump_state():
     return {"canvases": list(_canvases.values()), "colors": dict(_colors),
             "params": dict(_params), "featureExprs": all_feature_exprs(),
-            "kicad": dict(_kicad)}
+            "kicad": dict(_kicad), "materialExtra": all_material_extra(),
+            "materialCustom": all_object_custom_materials()}
 
 
 def canvases():
@@ -198,6 +203,58 @@ def update_canvas(cid, **kw):
 
 def remove_canvas(cid):
     _canvases.pop(cid, None)
+
+
+# Per-object material properties FreeCAD's own Material system has no slot for
+# (friction coefficient, a free-text pattern/finish tag, notes, ...). Keyed by
+# object name; the real FreeCAD Material (name/appearance/density/mechanical)
+# still lives natively on obj.ShapeMaterial and needs no help from here.
+_material_extra = {}
+
+
+def set_material_extra(name, extra):
+    if not extra:
+        _material_extra.pop(name, None)
+    else:
+        _material_extra[name] = dict(extra)
+
+
+def material_extra(name):
+    return dict(_material_extra.get(name, {}))
+
+
+def all_material_extra():
+    return {n: dict(m) for n, m in _material_extra.items()}
+
+
+def clear_material_extra():
+    _material_extra.clear()
+
+
+# Which user-library custom material preset (by id) is assigned to an object,
+# if any. FreeCAD's own Material system does not reliably round-trip a
+# custom-named/recoloured material through a real close + reopen of the file
+# (it can revert to the base preset's stock name/colour - a FreeCAD Material
+# system quirk, not something GWT-CAD's serialisation controls) - so on
+# document.open this is replayed to re-materialise and reassign the real
+# custom material, restoring the correct look within GWT-CAD even where plain
+# FreeCAD would show the reverted stock one.
+_material_custom = {}
+
+
+def set_object_custom_material(name, preset_id):
+    if not preset_id:
+        _material_custom.pop(name, None)
+    else:
+        _material_custom[name] = preset_id
+
+
+def all_object_custom_materials():
+    return dict(_material_custom)
+
+
+def clear_object_custom_materials():
+    _material_custom.clear()
 
 
 def _find(name):
@@ -238,6 +295,8 @@ def reset():
     clear_markers()
     clear_params()
     clear_feature_exprs()
+    clear_material_extra()
+    clear_object_custom_materials()
     return d
 
 

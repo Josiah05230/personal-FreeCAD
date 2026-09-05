@@ -99,6 +99,25 @@ the seed + step + trace tail to replay.
 
 ## Recent notable changes
 
+- **Materials.** A Materials panel (ribbon: Modify > Material) assigns a real
+  FreeCAD Material - appearance (colour, glossiness, transparency) AND
+  physical properties (density, Young's modulus, yield strength, ...) - to a
+  body, from the ~200 built-in presets FreeCAD ships (browsable by family:
+  Metal, Wood, Glass, Thermoplast, ...) or a saved custom one. Custom presets
+  are edited from a picked base preset (colour, glossiness, density, plus
+  GWT-CAD-only extras: friction, a free-text finish/pattern tag, notes) and
+  saved to a small user-level library, reusable across projects. The real
+  material rides on `ShapeMaterial`, so it round-trips in any FreeCAD; a few
+  properties FreeCAD has no slot for at all live in the `.gwtcad.json`
+  companion. Found and fixed two real bugs: the sidecar HTTP server would
+  silently drop the connection (client sees "fetch failed") if any RPC result
+  contained a non-JSON-serialisable value - it does now for any future
+  handler, and `material.presetDetail`/`.get` were hitting exactly that with
+  FreeCAD's `Base.Quantity` physical values; and a custom material built by
+  renaming/recolouring a stock preset does not reliably survive FreeCAD's own
+  close+reopen cycle (a FreeCAD Material-system quirk, reproduces with plain
+  FreeCAD API calls) - worked around by replaying recorded custom-material
+  assignments on `document.open`.
 - **Fusion-parity pass 5**: Extrude Two Sides now works for Cut too (a second
   pocket, reversed, cutting the other way).
 - **Fusion-parity pass 4**: Split Body now accepts a face or a sketch as the

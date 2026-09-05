@@ -34,6 +34,7 @@ import { SketchRibbon } from './ui/SketchRibbon'
 import { MeasurePanel, SectionPanel, type SectionState } from './ui/InspectPanels'
 import { PromptHost, promptText, promptForm } from './ui/PromptDialog'
 import { ParametersPanel } from './ui/ParametersPanel'
+import { MaterialsPanel } from './ui/MaterialsPanel'
 import {
   loadPinned,
   savePinned,
@@ -205,6 +206,7 @@ export function App(): JSX.Element {
 
   const [showDrawing, setShowDrawing] = useState(false)
   const [paramsOpen, setParamsOpen] = useState(false)
+  const [materialsOpen, setMaterialsOpen] = useState(false)
   const [canUndo, setCanUndo] = useState(false)
   const [canRedo, setCanRedo] = useState(false)
   const [pins, setPins] = useState<PinMap>(() => loadPinned())
@@ -2817,6 +2819,7 @@ export function App(): JSX.Element {
         centerOfMass: runCenterOfMass,
         insertCanvas,
         toggleParams: () => setParamsOpen((v) => !v),
+        toggleMaterials: () => setMaterialsOpen((v) => !v),
         importKicad,
         reimportKicad,
         surfaceRuled,
@@ -3362,6 +3365,25 @@ export function App(): JSX.Element {
                       }}
                     />
                   )}
+                  {materialsOpen &&
+                    (() => {
+                      const selBody = selection.find(
+                        (s) => s.kind === 'body' || s.kind === 'face'
+                      ) as { bodyId: string } | undefined
+                      const tid = selBody?.bodyId ?? bodies[0]?.id ?? null
+                      const label = bodies.find((b) => b.id === tid)?.id ?? null
+                      return (
+                        <MaterialsPanel
+                          targetId={tid}
+                          targetLabel={label}
+                          onClose={() => setMaterialsOpen(false)}
+                          onModelChanged={() => {
+                            rollCacheRef.current.clear()
+                            void refreshScene()
+                          }}
+                        />
+                      )
+                    })()}
                   <Timeline
                     bodies={bodies}
                     handlers={{

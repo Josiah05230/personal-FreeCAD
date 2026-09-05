@@ -120,7 +120,22 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body_bytes)
 
     def _json(self, code, obj):
-        self._send(code, json.dumps(obj).encode("utf-8"))
+        try:
+            body = json.dumps(obj).encode("utf-8")
+        except Exception as e:
+            # a handler returned something json.dumps chokes on (e.g. a raw
+            # FreeCAD Quantity instead of a plain number/string) - previously
+            # this raised straight out of do_POST with no response ever sent,
+            # which the client just sees as a dropped connection ("fetch
+            # failed"), not a diagnosable error. Never let a bad result kill
+            # the connection - report it as a clean JSON-RPC error instead.
+            _log("response not JSON-serialisable: %r" % (e,))
+            body = json.dumps({"jsonrpc": "2.0", "id": None, "error": {
+                "code": -32000,
+                "message": "internal error: response was not JSON-serialisable (%s)" % e
+            }}).encode("utf-8")
+            code = 200
+        self._send(code, body)
 
     def do_OPTIONS(self):  # noqa: N802
         self._send(204, b"")
