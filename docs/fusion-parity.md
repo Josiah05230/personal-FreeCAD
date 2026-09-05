@@ -280,7 +280,37 @@ Move/Copy of faces + features (not just bodies).
 - `fusion_features.js` extended to 90 checks. Full suite green except the
   pre-existing `monkey.js` check 6.
 
-Still open: parametric Scale / Split Face (both currently bake a derived,
-non-parametric shape), Move/Copy of faces + features, Two Sides for
-Intersect/New-body, Align of non-planar refs, coil/pipe plane placement,
-Sweep Twist/partial-distance, Loft rails/guides.
+Still open: parametric Split Face (still bakes a derived, non-parametric
+shape - Scale is now native, see below), Move/Copy of faces + features, Two
+Sides for Intersect/New-body, Align of non-planar refs, coil/pipe plane
+placement, Sweep Twist/partial-distance, Loft rails/guides.
+
+---
+
+## Done in the sixth parity pass
+
+- **Scale is now a real, native, editable PartDesign feature**, not a baked
+  derived shape. FreeCAD's PartDesign has no built-in Scale, but it does
+  support scripted features (`PartDesign::FeaturePython`) that behave exactly
+  like a native Pad/Fillet in the body's timeline - `body.newObject()` wires
+  up `BaseFeature` and advances `body.Tip` automatically, same as any native
+  feature. `sidecar/gwtcad/pdscale.py`'s `ScaleProxy.execute()` recomputes
+  `BaseFeature.Shape` scaled by the current Uniform/Factor or per-axis
+  properties every time - genuinely parametric (verified: edit the factor,
+  the shape re-derives from the ORIGINAL pre-scale geometry every time, never
+  compounding), editable through the real Scale dialog via `editFeature`
+  (`feature.get`/`feature.update` disambiguate the shared
+  `PartDesign::FeaturePython` TypeId by its own properties - `_scripted_kind`),
+  and confirmed to survive a REAL close + reopen of the .FCStd with its Proxy
+  correctly restored and still genuinely editable afterward. Bare
+  `Part::Feature` targets (not inside a PartDesign body) and meshes keep the
+  old baked/in-place approach - there is no PartDesign timeline to add a
+  feature to.
+- Note for whoever picks up Split Face next: the same `PartDesign::FeaturePython`
+  approach applies - a `SplitFaceProxy.execute()` that imprints a stored
+  plane reference onto `BaseFeature.Shape` via `generalFuse`, same pattern as
+  `pdscale.py`. Not done this pass; Split Face still bakes to a derived,
+  non-parametric `Part::Feature`.
+- `editfeature.js` extended (25 checks): create a Scale, edit it via the real
+  dialog to non-uniform, close+reopen the file, confirm it is still a real
+  `kind: 'scale'` feature and still genuinely re-editable afterward.

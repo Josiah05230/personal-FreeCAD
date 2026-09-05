@@ -1853,6 +1853,17 @@ _TYPE_KIND = {
 }
 
 
+def _scripted_kind(o):
+    """PartDesign::FeaturePython is the generic scripted-feature TypeId, shared
+    by every custom feature this project defines - tell them apart by their
+    own distinctive properties (a Proxy class' own addProperty calls)."""
+    if o.TypeId != "PartDesign::FeaturePython":
+        return None
+    if hasattr(o, "Uniform") and hasattr(o, "Factor"):
+        return "scale"
+    return None
+
+
 def _profile_ref(o):
     """{kind:'sketch',id} or {kind:'face',bodyId,sub} for a feature's Profile.
     A hidden reuse-copy is reported as its SOURCE sketch so the UI re-picks the
@@ -2042,11 +2053,19 @@ def _set_feature_refs(d, o, body, refs):
 def feature_get(id):
     """Everything the operation dialog needs to reopen a committed feature."""
     d, o = _obj(id)
-    kind = _TYPE_KIND.get(o.TypeId)
+    kind = _TYPE_KIND.get(o.TypeId) or _scripted_kind(o)
     if kind is None:
         return {"id": id, "label": o.Label, "kind": None}
     T = o.TypeId
     values, refs = {}, {}
+    if kind == "scale":
+        values["uniform"] = bool(getattr(o, "Uniform", True))
+        values["factor"] = float(getattr(o, "Factor", 1.0))
+        values["fx"] = float(getattr(o, "ScaleX", 1.0))
+        values["fy"] = float(getattr(o, "ScaleY", 1.0))
+        values["fz"] = float(getattr(o, "ScaleZ", 1.0))
+        return {"id": id, "label": o.Label, "kind": kind,
+                "values": values, "refs": refs, "exprs": session.feature_exprs(id)}
     if T in ("PartDesign::Pad", "PartDesign::Pocket"):
         values["length"] = _prop_value(o, "Length")
         values["reversed"] = bool(getattr(o, "Reversed", False))
@@ -2105,10 +2124,22 @@ def feature_update(id, values=None, refs=None, exprs=None):
     """Commit an edit: write params + refs onto the existing feature, full
     recompute, surgical rollback on failure, then return the tree."""
     d, o = _obj(id)
-    if _TYPE_KIND.get(o.TypeId) is None:
+    kind = _TYPE_KIND.get(o.TypeId) or _scripted_kind(o)
+    if kind is None:
         raise RpcError(APP_ERROR, "%s cannot be edited this way" % o.Label)
     body = o.getParentGeoFeatureGroup()
     prev_tip_name = body.Tip.Name if (body is not None and getattr(body, "Tip", None)) else None
+    if kind == "scale":
+        v = values or {}
+        from . import pdscale
+        pdscale.update_scale_feature(
+            o, uniform=v.get("uniform"), factor=v.get("factor"),
+            sx=v.get("fx"), sy=v.get("fy"), sz=v.get("fz"))
+        build.finalize_or_rollback(
+            d, body, o, prev_tip_name, [],
+            "that scale produced an invalid shape - revert it and try again")
+        d.recompute()
+        return tree_get()
     _set_feature_values(o, values or {})
     _set_feature_refs(d, o, body, refs or {})
     for prop, e in (exprs or {}).items():

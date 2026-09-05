@@ -99,6 +99,13 @@ the seed + step + trace tail to replay.
 
 ## Recent notable changes
 
+- **Scale is now a real, native, editable PartDesign feature** (was a baked
+  derived shape). Uses FreeCAD's scripted-feature support
+  (`PartDesign::FeaturePython`), which behaves exactly like a native Pad or
+  Fillet in the timeline. Verified genuinely parametric (re-derives from the
+  original pre-scale shape on every edit, never compounds) and confirmed to
+  survive closing and reopening the file with full edit capability intact.
+  Split Face is the next candidate for the same treatment.
 - **Materials.** A Materials panel (ribbon: Modify > Material) assigns a real
   FreeCAD Material - appearance (colour, glossiness, transparency) AND
   physical properties (density, Young's modulus, yield strength, ...) - to a

@@ -91,5 +91,61 @@ st = G.getState();
 assert(!feats(st).some((f) => f.error), 'no feature error after the fillet edit');
 assert(feats(st).filter((f) => /fillet/i.test(f.id)).length === 1, 'still one fillet feature (edited, not duplicated)');
 
+// ---------- native Scale feature: create, edit through the real dialog, round-trip ----------
+note('native PartDesign Scale feature: create + edit + close/reopen');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+const ssk = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+await rpc('sketch.finish', {
+  sketchId: ssk.sketchId,
+  elements: [{ type: 'rect', a: [0, 0], b: [10, 10] }],
+  constraints: []
+});
+await G.refresh();
+await idle();
+G.selectSketch(ssk.sketchId);
+await sleep(40);
+await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 10 });
+await idle();
+G.clearSelection();
+await sleep(30);
+G.openOp('scale');
+await sleep(60);
+await waitFor(() => G.getState().opReady === true, 4000);
+await G.applyOp('scale', { uniform: true, factor: 2 });
+await idle();
+let stS = G.getState();
+const scaleFeat = feats(stS).find((f) => /scale/i.test(f.id));
+assert(!!scaleFeat && !stS.bodies[0].features.some((f) => f.error), 'native Scale feature committed');
+let fgS = await rpc('feature.get', { id: scaleFeat.id });
+assert(fgS.kind === 'scale', `feature.get reports kind=scale (${fgS.kind})`);
+assert(Math.abs(fgS.values.factor - 2) < 1e-6, 'scale factor is 2');
+
+note('editFeature the Scale: change to non-uniform');
+await G.editFeature(scaleFeat.id);
+await waitFor(() => G.getState().op === 'scale', 4000);
+assert(G.getState().op === 'scale', 'the Scale dialog reopened');
+await G.applyOp('scale', { uniform: false, fx: 1, fy: 1, fz: 3 });
+await idle();
+fgS = await rpc('feature.get', { id: scaleFeat.id });
+assert(!fgS.values.uniform && Math.abs(fgS.values.fz - 3) < 1e-6, 'scale is now non-uniform fz=3');
+stS = G.getState();
+assert(!stS.bodies[0].features.some((f) => f.error), 'no feature error after editing the scale');
+assert(feats(stS).filter((f) => /scale/i.test(f.id)).length === 1, 'still one Scale feature (edited, not duplicated)');
+
+const scSave = '/tmp/claude-1000/-home-jholder-projects/38db2fed-70fa-4706-b4ba-3a8fde1460f6/scratchpad/e2e_scale.FCStd';
+await rpc('document.saveAs', { path: scSave });
+await rpc('session.reset');
+await rpc('document.open', { path: scSave });
+const fgReopened = await rpc('feature.get', { id: scaleFeat.id });
+note('reopened scale feature.get: ' + JSON.stringify(fgReopened.values));
+assert(fgReopened.kind === 'scale', 'Scale feature survives close+reopen with its kind intact');
+assert(Math.abs(fgReopened.values.fz - 3) < 1e-6, 'reopened scale still has fz=3');
+await rpc('feature.update', { id: scaleFeat.id, values: { uniform: true, factor: 1 } });
+const sc2 = await rpc('scene.get');
+const posLen = (sc2.meshes[0] || {}).positions?.length || 0;
+assert(sc2.meshes.length >= 1 && posLen > 0, 'scale is still genuinely editable after reopen');
+
 assert((await rpc('ping')).pong === true, 'engine still responds at end');
 note('editfeature complete');

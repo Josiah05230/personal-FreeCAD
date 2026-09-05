@@ -184,9 +184,11 @@ def move_copy(ids=None, mode="translate",
 @method("body.scaleBody")
 def scale_body(id=None, uniform=True, factor=2.0,
                fx=1, fy=1, fz=1, centerRef=None, center=None):
-    """Scale a body / mesh about a point. Solids: baked to a derived Part::Feature
-    ("<label> scaled") with the original hidden - editing a PartDesign body's
-    internal shape in place is not safe. Meshes: transformed in place."""
+    """Scale a body about a point. PartDesign bodies get a real, native,
+    editable PartDesign::FeaturePython Scale feature in the timeline (see
+    pdscale.py) - not a baked shape. Meshes and bare Part::Feature objects
+    (no PartDesign body to add a timeline feature to) still bake to a derived
+    Part::Feature, transformed in place for a mesh."""
     if not id:
         raise RpcError(APP_ERROR, "scaleBody needs an id")
     d = _doc()
@@ -208,6 +210,31 @@ def scale_body(id=None, uniform=True, factor=2.0,
         mesh.transform(_scale_matrix(sx, sy, sz, c))
         o.Mesh = mesh
         d.recompute()
+        return _tree()
+
+    if o.TypeId == "PartDesign::Body":
+        shp = getattr(o, "Shape", None)
+        if shp is None or shp.isNull():
+            raise RpcError(APP_ERROR, "cannot scale %r - no solid shape" % id)
+        if c is None:
+            try:
+                c = Vector(shp.CenterOfMass)
+            except Exception:
+                c = Vector(shp.BoundBox.Center)
+        from . import pdscale
+        prev_tip = getattr(o, "Tip", None)
+        prev_tip_name = prev_tip.Name if prev_tip is not None else None
+        feat = pdscale.add_scale_feature(o, uniform, factor, sx, sy, sz, (c.x, c.y, c.z))
+        d.recompute()
+        if o.Shape is None or o.Shape.isNull() or not o.Shape.isValid():
+            try:
+                if prev_tip_name and d.getObject(prev_tip_name) is not None:
+                    o.Tip = d.getObject(prev_tip_name)
+                d.removeObject(feat.Name)
+                d.recompute()
+            except Exception:
+                pass
+            raise RpcError(APP_ERROR, "scale produced an invalid shape")
         return _tree()
 
     shp = _solid_of(o)
