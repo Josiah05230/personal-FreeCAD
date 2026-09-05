@@ -845,39 +845,37 @@ def feature_offset_face(faces, distance=2.0):
 @method("feature.splitFace")
 def feature_split_face(faces, planeRef=None):
     """Imprint a plane's intersection onto the selected face(s), splitting them
-    without changing the volume. Non-parametric: emits a derived Part::Feature
-    (PartDesign has no native Split Face in this build)."""
+    without changing the volume. A real PartDesign::FeaturePython feature (see
+    pdsplitface.py) - genuinely parametric, not a baked derived shape."""
     body = _require_body()
     d = body.Document
-    tip = _solid_tip(body)
     if planeRef is None:
         raise RpcError(APP_ERROR, "also pick the splitting plane (a datum / origin plane)")
-    import Part
     from FreeCAD import Vector
+    from . import pdsplitface
 
-    obj, sub = _resolve_ref(d, body, planeRef)
-    # build a big planar face at the reference plane
+    prev_tip = getattr(body, "Tip", None)
+    prev_tip_name = prev_tip.Name if prev_tip is not None else None
+    ref_obj, sub = _resolve_ref(d, body, planeRef)
     if sub and str(sub[0]).startswith("Face"):
-        ref_face = obj.Shape.getElement(sub[0])
-        pl_pt = ref_face.CenterOfMass
-        pl_n = ref_face.normalAt(0, 0)
+        ref_face = ref_obj.Shape.getElement(sub[0])
+        pl_pt, pl_n = ref_face.CenterOfMass, ref_face.normalAt(0.5, 0.5)
     else:
-        pl = obj.Placement
-        pl_pt = pl.Base
-        pl_n = pl.Rotation.multVec(Vector(0, 0, 1))
-    bb = tip.Shape.BoundBox
-    size = bb.DiagonalLength * 2.0 or 100.0
-    plane = Part.makePlane(size, size, Vector(pl_pt).sub(Vector(pl_n).multiply(0)), pl_n)
-    plane.translate(Vector(pl_pt).sub(plane.CenterOfMass))
-    try:
-        pieces = tip.Shape.generalFuse([plane])[0]
-        result = pieces
-    except Exception as e:
-        raise RpcError(APP_ERROR, "split face failed: %s" % e)
-    pf = d.addObject("Part::Feature", "SplitFace")
-    pf.Shape = result
-    body.Visibility = False
+        pl = ref_obj.Placement
+        pl_pt, pl_n = pl.Base, pl.Rotation.multVec(Vector(0, 0, 1))
+
+    feat = pdsplitface.add_split_face_feature(
+        body, (ref_obj, list(sub or [])), (pl_pt.x, pl_pt.y, pl_pt.z), (pl_n.x, pl_n.y, pl_n.z))
     d.recompute()
+    if body.Shape is None or body.Shape.isNull() or not body.Shape.isValid():
+        try:
+            if prev_tip_name and d.getObject(prev_tip_name) is not None:
+                body.Tip = d.getObject(prev_tip_name)
+            d.removeObject(feat.Name)
+            d.recompute()
+        except Exception:
+            pass
+        raise RpcError(APP_ERROR, "split face failed - the plane may not cross the selected face(s)")
     return tree_get()
 
 
@@ -1861,6 +1859,8 @@ def _scripted_kind(o):
         return None
     if hasattr(o, "Uniform") and hasattr(o, "Factor"):
         return "scale"
+    if hasattr(o, "PlaneSupport") and hasattr(o, "PlaneNormal"):
+        return "splitFace"
     return None
 
 
@@ -2066,6 +2066,10 @@ def feature_get(id):
         values["fz"] = float(getattr(o, "ScaleZ", 1.0))
         return {"id": id, "label": o.Label, "kind": kind,
                 "values": values, "refs": refs, "exprs": session.feature_exprs(id)}
+    if kind == "splitFace":
+        refs["planeOrAxis"] = _link_ref(getattr(o, "PlaneSupport", None))
+        return {"id": id, "label": o.Label, "kind": kind,
+                "values": values, "refs": refs, "exprs": session.feature_exprs(id)}
     if T in ("PartDesign::Pad", "PartDesign::Pocket"):
         values["length"] = _prop_value(o, "Length")
         values["reversed"] = bool(getattr(o, "Reversed", False))
@@ -2138,6 +2142,26 @@ def feature_update(id, values=None, refs=None, exprs=None):
         build.finalize_or_rollback(
             d, body, o, prev_tip_name, [],
             "that scale produced an invalid shape - revert it and try again")
+        d.recompute()
+        return tree_get()
+    if kind == "splitFace":
+        r = refs or {}
+        pa = r.get("planeOrAxis")
+        if pa:
+            ref_obj, sub = _resolve_ref(d, body, pa)
+            if sub and str(sub[0]).startswith("Face"):
+                f = ref_obj.Shape.getElement(sub[0])
+                pt, n = f.CenterOfMass, f.normalAt(0.5, 0.5)
+            else:
+                pl = ref_obj.Placement
+                pt, n = pl.Base, pl.Rotation.multVec(App.Vector(0, 0, 1))
+            o.PlaneSupport = (ref_obj, list(sub or []))
+            o.PlaneBase = pt
+            o.PlaneNormal = n
+        o.touch()
+        build.finalize_or_rollback(
+            d, body, o, prev_tip_name, [],
+            "that split produced an invalid shape - revert it and try again")
         d.recompute()
         return tree_get()
     _set_feature_values(o, values or {})

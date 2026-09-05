@@ -793,6 +793,10 @@ export function App(): JSX.Element {
         refs.edges = [...ed.map((e) => e.sub), ...fc.map((f) => f.sub)]
       } else if (kind === 'shell' || kind === 'draft') {
         refs.faces = fc.map((f) => f.sub)
+      } else if (kind === 'splitFace') {
+        if (pl?.role) refs.planeOrAxis = { kind: 'origin', role: pl.role }
+        else if (pl) refs.planeOrAxis = { kind: 'plane', id: pl.planeId }
+        else if (fc[0]) refs.planeOrAxis = { kind: 'face', bodyId: fc[0].bodyId, sub: fc[0].sub }
       } else if (kind === 'mirror' || kind === 'patternLinear' || kind === 'patternCircular') {
         // plane / axis / direction pick: a datum-plane or an edge/face
         if (pl?.role) refs.planeOrAxis = { kind: 'origin', role: pl.role }

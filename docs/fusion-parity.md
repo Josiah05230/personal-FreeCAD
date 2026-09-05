@@ -280,10 +280,9 @@ Move/Copy of faces + features (not just bodies).
 - `fusion_features.js` extended to 90 checks. Full suite green except the
   pre-existing `monkey.js` check 6.
 
-Still open: parametric Split Face (still bakes a derived, non-parametric
-shape - Scale is now native, see below), Move/Copy of faces + features, Two
-Sides for Intersect/New-body, Align of non-planar refs, coil/pipe plane
-placement, Sweep Twist/partial-distance, Loft rails/guides.
+Still open: Move/Copy of faces + features, Two Sides for Intersect/New-body,
+Align of non-planar refs, coil/pipe plane placement, Sweep Twist/
+partial-distance, Loft rails/guides.
 
 ---
 
@@ -306,11 +305,19 @@ placement, Sweep Twist/partial-distance, Loft rails/guides.
   `Part::Feature` targets (not inside a PartDesign body) and meshes keep the
   old baked/in-place approach - there is no PartDesign timeline to add a
   feature to.
-- Note for whoever picks up Split Face next: the same `PartDesign::FeaturePython`
-  approach applies - a `SplitFaceProxy.execute()` that imprints a stored
-  plane reference onto `BaseFeature.Shape` via `generalFuse`, same pattern as
-  `pdscale.py`. Not done this pass; Split Face still bakes to a derived,
-  non-parametric `Part::Feature`.
-- `editfeature.js` extended (25 checks): create a Scale, edit it via the real
-  dialog to non-uniform, close+reopen the file, confirm it is still a real
-  `kind: 'scale'` feature and still genuinely re-editable afterward.
+- **Split Face is now also a real, native, editable PartDesign feature**,
+  same `PartDesign::FeaturePython` approach: `sidecar/gwtcad/pdsplitface.py`'s
+  `SplitFaceProxy.execute()` imprints a LIVE plane reference (an
+  `App::PropertyLinkSub` to whatever it was picked from - an edge/face's
+  owning object, a datum, or an origin plane) onto `BaseFeature.Shape` via
+  `Part.Shape.generalFuse`. Editable (re-point the plane through the real
+  dialog) and confirmed to survive close+reopen with the live reference
+  intact. Found a real bug on the way: `generalFuse(shape, [tool_plane])`
+  returns a compound of EVERY piece from both inputs, including the tool
+  plane's own leftover slice outside the solid - the first version returned
+  that whole compound as the feature's Shape, silently exploding the body's
+  bounding box to the plane's own huge extent while still reading as "valid".
+  Fixed by keeping only `compound.Solids` (the pieces that came from the base
+  shape) and discarding the rest.
+- `editfeature.js` extended (37 checks): both Scale and Split Face - create,
+  edit via the real dialog, close+reopen, confirm still genuinely editable.

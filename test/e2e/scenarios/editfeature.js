@@ -4,6 +4,8 @@
 
 const feats = (st) => (st.bodies[0] ? st.bodies[0].features : []);
 const solids = (st) => feats(st).filter((f) => f.kind === 'solid').length;
+const bboxClose = (a, b) =>
+  a && b && ['min', 'max'].every((k) => a[k].every((v, i) => Math.abs(v - b[k][i]) < 1e-3));
 
 note('reset + sketch rect + extrude 10');
 await rpc('session.reset');
@@ -146,6 +148,78 @@ await rpc('feature.update', { id: scaleFeat.id, values: { uniform: true, factor:
 const sc2 = await rpc('scene.get');
 const posLen = (sc2.meshes[0] || {}).positions?.length || 0;
 assert(sc2.meshes.length >= 1 && posLen > 0, 'scale is still genuinely editable after reopen');
+
+// ---------- native Split Face feature: create, edit through the real dialog, round-trip ----------
+note('native PartDesign Split Face feature: create + edit + close/reopen');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+const fsk = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+await rpc('sketch.finish', {
+  sketchId: fsk.sketchId,
+  elements: [{ type: 'rect', a: [-20, -20], b: [20, 20] }],
+  constraints: []
+});
+await G.refresh();
+await idle();
+G.selectSketch(fsk.sketchId);
+await sleep(40);
+await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 40 });
+await idle();
+const bboxBeforeSplit = (await rpc('scene.get')).meshes[0].bbox;
+
+const fBid = G.getState().bodies[0].id;
+G.clearSelection();
+await sleep(30);
+G.openOp('splitFace');
+await sleep(60);
+G.pick({ kind: 'face', bodyId: fBid, sub: 'Face1', point: [0, 0, 0] }, false);
+await sleep(40);
+G.pick({ kind: 'plane', planeId: 'XZ_Plane', role: 'XZ_Plane' }, true);
+await sleep(50);
+await waitFor(() => G.getState().opReady === true, 4000);
+await G.applyOp('splitFace', {});
+await idle();
+let stF = G.getState();
+const splitFeat = feats(stF).find((f) => /splitface/i.test(f.id));
+assert(!!splitFeat && !stF.bodies[0].features.some((f) => f.error), 'native Split Face feature committed');
+const bboxAfterSplit = (await rpc('scene.get')).meshes[0].bbox;
+note('bbox before=' + JSON.stringify(bboxBeforeSplit) + ' after=' + JSON.stringify(bboxAfterSplit));
+assert(bboxClose(bboxAfterSplit, bboxBeforeSplit), 'split face did not change the solid (imprint only, same bbox)');
+let fgF = await rpc('feature.get', { id: splitFeat.id });
+assert(fgF.kind === 'splitFace', `feature.get reports kind=splitFace (${fgF.kind})`);
+assert(fgF.refs.planeOrAxis && fgF.refs.planeOrAxis.role === 'XZ_Plane', 'split plane ref is XZ_Plane');
+
+note('editFeature the Split Face: re-point it at YZ_Plane');
+await G.editFeature(splitFeat.id);
+await waitFor(() => G.getState().op === 'splitFace', 4000);
+assert(G.getState().op === 'splitFace', 'the Split Face dialog reopened');
+G.clearSelection();
+await sleep(30);
+G.pick({ kind: 'face', bodyId: fBid, sub: 'Face1', point: [0, 0, 0] }, false);
+await sleep(40);
+G.pick({ kind: 'plane', planeId: 'YZ_Plane', role: 'YZ_Plane' }, true);
+await sleep(40);
+await G.applyOp('splitFace', {});
+await idle();
+fgF = await rpc('feature.get', { id: splitFeat.id });
+assert(fgF.refs.planeOrAxis && fgF.refs.planeOrAxis.role === 'YZ_Plane', 'split plane ref is now YZ_Plane');
+stF = G.getState();
+assert(!stF.bodies[0].features.some((f) => f.error), 'no feature error after editing the split');
+const bboxAfterEdit = (await rpc('scene.get')).meshes[0].bbox;
+assert(bboxClose(bboxAfterEdit, bboxBeforeSplit), 'still no volume change after the edit (same bbox)');
+assert(feats(stF).filter((f) => /splitface/i.test(f.id)).length === 1, 'still one Split Face feature (edited, not duplicated)');
+
+const sfSave = '/tmp/claude-1000/-home-jholder-projects/38db2fed-70fa-4706-b4ba-3a8fde1460f6/scratchpad/e2e_splitface.FCStd';
+await rpc('document.saveAs', { path: sfSave });
+await rpc('session.reset');
+await rpc('document.open', { path: sfSave });
+const fgFReopened = await rpc('feature.get', { id: splitFeat.id });
+assert(fgFReopened.kind === 'splitFace', 'Split Face feature survives close+reopen with its kind intact');
+assert(fgFReopened.refs.planeOrAxis && fgFReopened.refs.planeOrAxis.role === 'YZ_Plane', 'reopened split still references YZ_Plane');
+await rpc('feature.update', { id: splitFeat.id, refs: { planeOrAxis: { kind: 'origin', role: 'XY_Plane' } } });
+const scF2 = await rpc('scene.get');
+assert((scF2.meshes[0] || {}).positions?.length > 0, 'split face is still genuinely editable after reopen');
 
 assert((await rpc('ping')).pong === true, 'engine still responds at end');
 note('editfeature complete');
