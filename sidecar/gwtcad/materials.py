@@ -164,18 +164,43 @@ def material_get(targetId=None):
         return {"assigned": None}
     uid = getattr(m, "UUID", "") or ""
     extra = session.material_extra(o.Name)
-    return {"assigned": _mat_dto(uid, m, extra)}
+    dto = _mat_dto(uid, m, extra)
+    prop_only = session.all_object_property_only_materials().get(o.Name)
+    if prop_only:
+        dto["propertiesOnly"] = True
+    return {"assigned": dto}
 
 
 @method("material.assign")
-def material_assign(targetId, uuid, extra=None):
-    """Assign a built-in preset as-is (no overrides) to a body/feature."""
+def material_assign(targetId, uuid, extra=None, propertiesOnly=False):
+    """Assign a built-in preset to a body/feature. With `propertiesOnly=True`
+    the material's PHYSICAL properties (density, Young's modulus, ...) are
+    applied for mass-props / analysis, but the body keeps its current
+    appearance (colour / finish) - the assigned material's appearance is
+    overwritten back to whatever the object had. Physical-only assignments are
+    recorded so mass properties still see the density."""
     d, o = _target_obj(targetId)
     mm = _mgr()
     m = mm.getMaterial(uuid)
     if m is None:
         raise RpcError(APP_ERROR, "no material %r" % uuid)
-    o.ShapeMaterial = m
+
+    if propertiesOnly:
+        prev = getattr(o, "ShapeMaterial", None)
+        o.ShapeMaterial = m
+        # restore the previous appearance so only the physical model changes
+        try:
+            if prev is not None:
+                for k in _APPEARANCE_KEYS:
+                    if prev.hasAppearanceProperty(k) and m.hasAppearanceProperty(k):
+                        o.ShapeMaterial.setValue(k, prev.getAppearanceValue(k))
+        except Exception:
+            pass
+        session.set_object_property_only_material(o.Name, uuid)
+    else:
+        o.ShapeMaterial = m
+        session.set_object_property_only_material(o.Name, None)
+
     session.set_material_extra(o.Name, {k: v for k, v in (extra or {}).items() if k in _EXTRA_KEYS})
     session.set_object_custom_material(o.Name, None)  # a stock preset, not a custom one
     d.recompute()

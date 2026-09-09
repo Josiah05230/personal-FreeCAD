@@ -209,7 +209,35 @@ function buildBody(m: RenderMesh): THREE.Object3D[] {
     opacity,
     depthWrite: !transparent
   })
-  const mesh = new THREE.Mesh(geom, mat)
+  // per-face colour overrides (view layer). Split the index buffer into groups
+  // and give each overridden face its own material clone tinted to its colour.
+  const faceCols = m.appearance?.faces
+  let meshMat: THREE.Material | THREE.Material[] = mat
+  if (faceCols && Object.keys(faceCols).length && m.faceGroups.length && geom.getIndex()) {
+    const mats: THREE.Material[] = [mat]
+    const idxForSub = new Map<string, number>()
+    geom.clearGroups()
+    // sort groups by start so the whole index range is covered in order
+    const groups = [...m.faceGroups].sort((a, b) => a.start - b.start)
+    for (const g of groups) {
+      const sub = `Face${g.face + 1}`
+      const col = faceCols[sub]
+      let mi = 0
+      if (col) {
+        mi = idxForSub.get(sub) ?? -1
+        if (mi < 0) {
+          const fm = mat.clone()
+          fm.color = toColor(col as RGB, SOLID_COLOR)
+          mats.push(fm)
+          mi = mats.length - 1
+          idxForSub.set(sub, mi)
+        }
+      }
+      geom.addGroup(g.start, g.count, mi)
+    }
+    meshMat = mats
+  }
+  const mesh = new THREE.Mesh(geom, meshMat)
   mesh.name = `body:${m.id}`
   mesh.userData = { pick: 'face', bodyId: m.id, faceGroups: m.faceGroups }
   // in wireframe / hidden-line modes the filled surface is suppressed (in

@@ -2347,6 +2347,30 @@ export function App(): JSX.Element {
     [markDirty]
   )
 
+  // per-face colour: `color` null clears that face's override
+  const setFaceColor = useCallback(
+    (targetId: string, subs: string[], color: [number, number, number] | null) => {
+      const facesPatch: Record<string, [number, number, number] | null> = {}
+      for (const s of subs) facesPatch[s] = color
+      setMeshes((ms) =>
+        ms.map((m) => {
+          if (m.id !== targetId) return m
+          const faces = { ...(m.appearance?.faces ?? {}) }
+          for (const s of subs) {
+            if (color) faces[s] = color
+            else delete faces[s]
+          }
+          return { ...m, appearance: { ...(m.appearance ?? {}), faces } }
+        })
+      )
+      markDirty(true)
+      void apiQuiet
+        .appearanceSet(targetId, { faces: facesPatch } as ObjectAppearance, true)
+        .catch((e) => flashSketchNotice(`face colour: ${(e as Error).message}`))
+    },
+    [markDirty, flashSketchNotice]
+  )
+
   const applyRenderSettings = useCallback(
     (patch: RenderSettings, merge = true) => {
       setRenderSettings((cur) => {
@@ -3559,18 +3583,23 @@ export function App(): JSX.Element {
                     (() => {
                       const selBody = selection.find(
                         (s) => s.kind === 'body' || s.kind === 'face'
-                      ) as { bodyId: string } | undefined
+                      ) as { bodyId: string; sub?: string } | undefined
                       const tid = selBody?.bodyId ?? meshes[0]?.id ?? null
                       const target = meshes.find((m) => m.id === tid) ?? null
+                      const selFaces = selection
+                        .filter((s) => s.kind === 'face' && s.bodyId === tid)
+                        .map((s) => (s as { sub: string }).sub)
                       return (
                         <AppearancePanel
                           targetId={tid}
                           targetLabel={target?.label ?? tid}
                           appearance={target?.appearance}
+                          selectedFaces={selFaces}
                           renderSettings={renderSettings}
                           vpApi={vpApi}
                           docPath={docPath}
                           onSetAppearance={setObjectAppearance}
+                          onSetFaceColor={setFaceColor}
                           onClearAppearance={clearObjectAppearance}
                           onSetRender={applyRenderSettings}
                           onClose={() => setShowAppearance(false)}

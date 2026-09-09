@@ -2720,6 +2720,15 @@ code {
   padding: 8px 10px;
   color: #e0774a;
 }
+.materials-propsonly {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--line-soft);
+}
 
 /* ---- Appearance panel ---- */
 .appearance-panel {
@@ -2852,6 +2861,18 @@ code {
 .appr-preview img {
   display: block;
   width: 100%;
+}
+.appr-faceblock {
+  margin-top: 12px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 8px;
+}
+.appr-faceblock h4 {
+  margin: 0 0 4px;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  text-transform: uppercase;
 }
 
 /* ---- First-run wizard ---- */

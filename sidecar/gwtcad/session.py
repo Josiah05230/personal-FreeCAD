@@ -231,6 +231,8 @@ def load_state(blob):
     _material_extra.update(blob.get("materialExtra", {}) or {})
     _material_custom.clear()
     _material_custom.update(blob.get("materialCustom", {}) or {})
+    _material_prop_only.clear()
+    _material_prop_only.update(blob.get("materialPropOnly", {}) or {})
     _appearance.clear()
     _appearance.update(blob.get("appearance", {}) or {})
     _render_settings.clear()
@@ -251,6 +253,7 @@ def dump_state():
             "params": dict(_params), "featureExprs": all_feature_exprs(),
             "kicad": dict(_kicad), "materialExtra": all_material_extra(),
             "materialCustom": all_object_custom_materials(),
+            "materialPropOnly": all_object_property_only_materials(),
             "appearance": all_object_appearances(),
             "renderSettings": render_settings(),
             "appearancePresets": appearance_presets()}
@@ -323,6 +326,27 @@ def clear_object_custom_materials():
     _material_custom.clear()
 
 
+# Objects whose assigned material is "properties only" - its physical model is
+# applied (density -> mass props) but its appearance was NOT (the body kept its
+# own colour/finish). {objName: presetUuid}.
+_material_prop_only = {}
+
+
+def set_object_property_only_material(name, uuid):
+    if not uuid:
+        _material_prop_only.pop(name, None)
+    else:
+        _material_prop_only[name] = uuid
+
+
+def all_object_property_only_materials():
+    return dict(_material_prop_only)
+
+
+def clear_object_property_only_materials():
+    _material_prop_only.clear()
+
+
 def _find(name):
     for d in App.listDocuments().values():
         if d.Name == name:
@@ -363,6 +387,7 @@ def reset():
     clear_feature_exprs()
     clear_material_extra()
     clear_object_custom_materials()
+    clear_object_property_only_materials()
     _colors.clear()
     _appearance.clear()
     _render_settings.clear()

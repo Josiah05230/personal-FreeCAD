@@ -37,6 +37,22 @@ const got = await rpc('material.get', { targetId: bid });
 assert(got.assigned && got.assigned.name === alu.name, `assigned preset name matches (${got.assigned && got.assigned.name})`);
 assert(got.assigned.extra && got.assigned.extra.pattern === 'brushed', 'extra (pattern) round-trips through material.get');
 
+// properties-only assign: physical props applied, appearance kept
+note('--- properties-only material ---');
+await rpc('appearance.set', { targetId: bid, appearance: { color: [0.1, 0.8, 0.2], finish: 'metal' } });
+await rpc('material.assign', { targetId: bid, uuid: alu.uuid, propertiesOnly: true });
+const gpo = await rpc('material.get', { targetId: bid });
+assert(gpo.assigned && gpo.assigned.propertiesOnly === true, 'material.get flags propertiesOnly');
+const apKept = await rpc('appearance.get', { targetId: bid });
+assert(
+  apKept.appearance.color && Math.abs(apKept.appearance.color[1] - 0.8) < 1e-6,
+  'the body keeps its own appearance colour under a properties-only material'
+);
+// a normal assign clears the flag
+await rpc('material.assign', { targetId: bid, uuid: alu.uuid });
+const gno = await rpc('material.get', { targetId: bid });
+assert(!gno.assigned.propertiesOnly, 'a normal assign is not properties-only');
+
 const custom = await rpc('material.customSave', {
   name: 'E2E Custom Red',
   baseUuid: alu.uuid,

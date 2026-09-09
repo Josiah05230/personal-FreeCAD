@@ -27,6 +27,7 @@ export function MaterialsPanel({
   const [family, setFamily] = useState<string>('')
   const [detail, setDetail] = useState<MaterialDTO | null>(null)
   const [editing, setEditing] = useState(false)
+  const [propsOnly, setPropsOnly] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   const load = (): void => {
@@ -57,7 +58,7 @@ export function MaterialsPanel({
   const assign = async (): Promise<void> => {
     if (!detail) return
     try {
-      await api.materialAssign(targetId, detail.uuid, assigned?.extra ?? {})
+      await api.materialAssign(targetId, detail.uuid, assigned?.extra ?? {}, propsOnly)
       onModelChanged()
       load()
     } catch (e) {
@@ -105,12 +106,26 @@ export function MaterialsPanel({
             className="materials-swatch"
             style={{ background: swatchColor(String(assigned.appearance.DiffuseColor ?? '')) }}
           />
-          <span className="materials-current-name">{assigned.name}</span>
+          <span className="materials-current-name">
+            {assigned.name}
+            {(assigned as { propertiesOnly?: boolean }).propertiesOnly && (
+              <em style={{ color: 'var(--text-dim)', fontStyle: 'normal' }}> · properties only</em>
+            )}
+          </span>
           <button className="materials-clear" onClick={() => void clear()} title="Remove material">
             Clear
           </button>
         </div>
       )}
+
+      <label className="materials-propsonly">
+        <input
+          type="checkbox"
+          checked={propsOnly}
+          onChange={(e) => setPropsOnly(e.target.checked)}
+        />
+        Properties only (density &amp; mechanical - keep this body&apos;s appearance)
+      </label>
 
       <div className="materials-body">
         <div className="materials-families">

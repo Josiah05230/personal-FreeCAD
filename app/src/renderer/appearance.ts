@@ -173,7 +173,7 @@ export const FINISH_NAMES = Object.keys(FINISHES) as FinishName[]
 
 export const DEFAULT_SOLID_RGB: RGB = [0.54, 0.56, 0.59]
 
-export const DEFAULT_APPEARANCE: Required<Omit<ObjectAppearance, 'edges'>> & {
+export const DEFAULT_APPEARANCE: Required<Omit<ObjectAppearance, 'edges' | 'faces'>> & {
   edges: Required<EdgeAppearance>
 } = {
   color: DEFAULT_SOLID_RGB,
@@ -271,6 +271,14 @@ export function mergeAppearance(
   if (patch.opacity !== undefined) out.opacity = patch.opacity
   if (patch.finish !== undefined) out.finish = patch.finish
   if (patch.edges !== undefined) out.edges = { ...(out.edges ?? {}), ...patch.edges }
+  if (patch.faces !== undefined) {
+    const faces = { ...(out.faces ?? {}) }
+    for (const [k, v] of Object.entries(patch.faces)) {
+      if (v === null) delete faces[k]
+      else faces[k] = v
+    }
+    out.faces = faces
+  }
   return out
 }
 

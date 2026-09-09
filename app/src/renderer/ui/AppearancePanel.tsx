@@ -36,10 +36,12 @@ export function AppearancePanel({
   targetId,
   targetLabel,
   appearance,
+  selectedFaces = [],
   renderSettings,
   vpApi,
   docPath,
   onSetAppearance,
+  onSetFaceColor,
   onClearAppearance,
   onSetRender,
   onClose
@@ -47,10 +49,16 @@ export function AppearancePanel({
   targetId: string | null
   targetLabel: string | null
   appearance: ObjectAppearance | undefined
+  selectedFaces?: string[]
   renderSettings: RenderSettings
   vpApi: { current: ViewportApi | null }
   docPath: string | null
   onSetAppearance: (targetId: string, patch: ObjectAppearance, merge?: boolean) => void
+  onSetFaceColor: (
+    targetId: string,
+    subs: string[],
+    color: [number, number, number] | null
+  ) => void
   onClearAppearance: (targetId: string) => void
   onSetRender: (patch: RenderSettings, merge?: boolean) => void
   onClose: () => void
@@ -123,6 +131,9 @@ export function AppearancePanel({
             disabled={!targetId}
             onChange={setA}
             onReset={() => targetId && onClearAppearance(targetId)}
+            selectedFaces={selectedFaces}
+            faceColors={appearance?.faces}
+            onSetFaceColor={(subs, c) => targetId && onSetFaceColor(targetId, subs, c)}
           />
         )}
         {tab === 'edges' && <EdgesTab eff={eff} disabled={!targetId} onChange={setA} R={R} onR={setR} />}
@@ -170,19 +181,30 @@ function ObjectTab({
   hasRecord,
   disabled,
   onChange,
-  onReset
+  onReset,
+  selectedFaces = [],
+  faceColors,
+  onSetFaceColor
 }: {
   eff: ObjectAppearance
   hasRecord: boolean
   disabled: boolean
   onChange: (p: ObjectAppearance) => void
   onReset: () => void
+  selectedFaces?: string[]
+  faceColors?: Record<string, [number, number, number] | null>
+  onSetFaceColor?: (subs: string[], color: [number, number, number] | null) => void
 }): JSX.Element {
   const rgb = (eff.color ?? DEFAULT_APPEARANCE.color) as RGB
   const opacity = eff.opacity ?? 1
   const [mode, setMode] = useState<'rgb' | 'hex' | 'cmyk' | 'hsv'>('hex')
 
   const setColor = (c: RGB): void => onChange({ color: c })
+  const nFaceOverrides = faceColors ? Object.keys(faceColors).length : 0
+  const firstFaceCol =
+    selectedFaces[0] && faceColors?.[selectedFaces[0]]
+      ? (faceColors[selectedFaces[0]] as RGB)
+      : rgb
 
   return (
     <div className="appr-section">
@@ -326,6 +348,44 @@ function ObjectTab({
           </select>
         </label>
       </fieldset>
+
+      {onSetFaceColor && (
+        <div className="appr-faceblock">
+          <h4>Face colour</h4>
+          {selectedFaces.length ? (
+            <>
+              <p className="appr-hint">
+                {selectedFaces.length === 1
+                  ? selectedFaces[0]
+                  : `${selectedFaces.length} faces selected`}
+              </p>
+              <div className="appr-fields">
+                <label>
+                  <span>Colour</span>
+                  <input
+                    type="color"
+                    value={rgbToHex(firstFaceCol)}
+                    onChange={(e) => onSetFaceColor(selectedFaces, hexToRgb(e.target.value))}
+                  />
+                  <button onClick={() => onSetFaceColor(selectedFaces, null)}>Clear</button>
+                </label>
+              </div>
+            </>
+          ) : (
+            <p className="appr-hint">Select one or more faces in the viewport to colour them.</p>
+          )}
+          {nFaceOverrides > 0 && (
+            <button
+              className="materials-clear"
+              onClick={() =>
+                faceColors && onSetFaceColor(Object.keys(faceColors), null)
+              }
+            >
+              Clear all {nFaceOverrides} face colour{nFaceOverrides > 1 ? 's' : ''}
+            </button>
+          )}
+        </div>
+      )}
 
       {hasRecord && (
         <button className="materials-clear" onClick={onReset}>

@@ -50,6 +50,22 @@ let m0 = scene.meshes.find((m) => m.id === bid);
 assert(m0 && m0.appearance && m0.appearance.finish === 'matte', 'scene.get mesh carries appearance');
 assert(m0.edges.every((e) => 'kind' in e), 'every edge has a kind classification');
 
+// per-face colour (view layer) - set two faces, deep-merges, one clears
+await rpc('appearance.set', {
+  targetId: bid,
+  appearance: { faces: { Face1: [1, 0, 0], Face2: [0, 0, 1] } }
+});
+g = await rpc('appearance.get', { targetId: bid });
+assert(g.appearance.faces && g.appearance.faces.Face1 && g.appearance.faces.Face1[0] === 1, 'Face1 colour stored');
+assert(g.appearance.faces.Face2 && g.appearance.faces.Face2[2] === 1, 'Face2 colour stored');
+await rpc('appearance.set', { targetId: bid, appearance: { faces: { Face1: null } } });
+g = await rpc('appearance.get', { targetId: bid });
+assert(!g.appearance.faces.Face1 && g.appearance.faces.Face2, 'null clears one face, keeps the other (deep merge)');
+assert(g.appearance.finish === 'matte', 'setting a face colour did not wipe the object finish');
+scene = await rpc('scene.get');
+m0 = scene.meshes.find((m) => m.id === bid);
+assert(m0.appearance.faces && m0.appearance.faces.Face2, 'scene.get mesh carries per-face colours');
+
 // render settings
 await rpc('appearance.renderSet', {
   render: { shading: 'hidden-line', lighting: 'three-point', background: 'transparent' }

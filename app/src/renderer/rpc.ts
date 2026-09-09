@@ -82,6 +82,9 @@ export interface ObjectAppearance {
   opacity?: number
   finish?: FinishName
   edges?: EdgeAppearance
+  /** per-face colour overrides, keyed by FreeCAD face sub-name ("Face3"). A
+   *  null value clears that face's override. */
+  faces?: Record<string, [number, number, number] | null>
 }
 
 export type FinishName =
@@ -998,8 +1001,13 @@ export const api = {
   materialPresetDetail: (uuid: string) => rpc<MaterialDTO>('material.presetDetail', { uuid }),
   materialGet: (targetId?: string | null) =>
     rpc<{ assigned: MaterialDTO | null }>('material.get', { targetId }),
-  materialAssign: (targetId: string | null, uuid: string, extra?: Record<string, unknown>) =>
-    rpc<{ bodies: BodyTree[] }>('material.assign', { targetId, uuid, extra }),
+  materialAssign: (
+    targetId: string | null,
+    uuid: string,
+    extra?: Record<string, unknown>,
+    propertiesOnly?: boolean
+  ) =>
+    rpc<{ bodies: BodyTree[] }>('material.assign', { targetId, uuid, extra, propertiesOnly }),
   materialClear: (targetId?: string | null) =>
     rpc<{ bodies: BodyTree[] }>('material.clear', { targetId }),
   materialCustomList: () => rpc<{ presets: CustomMaterialPreset[] }>('material.customList'),

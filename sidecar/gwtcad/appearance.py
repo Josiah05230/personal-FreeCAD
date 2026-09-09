@@ -28,7 +28,7 @@ FINISHES = (
     "anodized", "painted", "wireframe-only",
 )
 
-_APPEARANCE_KEYS = ("color", "opacity", "finish", "edges")
+_APPEARANCE_KEYS = ("color", "opacity", "finish", "edges", "faces")
 _RENDER_KEYS = (
     "shading", "lighting", "background", "backgroundColor", "edgeMode",
     "edgeColor", "tangentEdges", "hiddenEdges", "outlineOnly", "ao", "exposure",
@@ -68,6 +68,17 @@ def _clean_appearance(rec):
                 out["edges"] = {kk: e[kk] for kk in
                                 ("show", "color", "width", "tangent", "hidden")
                                 if kk in e}
+        elif k == "faces":
+            # {"Face3": [r,g,b] | null, ...} - null clears one face override
+            f = rec[k]
+            if isinstance(f, dict):
+                clean = {}
+                for sub, col in f.items():
+                    if col is None:
+                        clean[sub] = None
+                    elif isinstance(col, (list, tuple)) and len(col) == 3:
+                        clean[sub] = [max(0.0, min(1.0, float(x))) for x in col]
+                out["faces"] = clean
     return out
 
 
@@ -128,6 +139,17 @@ def appearance_set(targetId=None, appearance=None, merge=True):
     incoming = _clean_appearance(appearance or {})
     if merge:
         rec = session.object_appearance(o.Name) or {}
+        # deep-merge the sub-dicts so setting one face / one edge style does not
+        # wipe the rest
+        for sub_key in ("edges", "faces"):
+            if sub_key in incoming and isinstance(rec.get(sub_key), dict):
+                merged = dict(rec[sub_key])
+                for kk, vv in incoming[sub_key].items():
+                    if vv is None:
+                        merged.pop(kk, None)
+                    else:
+                        merged[kk] = vv
+                incoming[sub_key] = merged
         rec.update(incoming)
     else:
         rec = incoming
