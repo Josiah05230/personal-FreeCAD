@@ -220,6 +220,15 @@ export interface SketchRefGeom {
   points: number[][] // [point][u,v]
 }
 
+/** One piece of projected (external) geometry: a real edge/vertex from the
+ *  model projected into the sketch plane, addressed by its negative geoId. */
+export type ProjectedEntity = { geoId: number } & (
+  | { type: 'line'; a: [number, number]; b: [number, number]; projected: true }
+  | { type: 'circle'; c: [number, number]; r: number; projected: true }
+  | { type: 'arc'; c: [number, number]; r: number; a0: number; a1: number; projected: true }
+  | { type: 'spline'; pts: [number, number][]; projected: true }
+)
+
 /** Manual constraint recorded in the 2D editor, resolved on sketch.finish.
  *  refs address geometry drawn this session by `new` (index) or pre-existing
  *  geometry by raw `geo` id; `pt` is 1=start 2=end 3=centre for point constraints. */
@@ -451,6 +460,16 @@ export const apiQuiet = {
     ),
   sketchSolve: (elements: unknown[], constraints: unknown[]) =>
     rpcQuiet<SketchSolveDTO>('sketch.solve', { elements, constraints }),
+  sketchProject: (sketchId: string, refs: { bodyId: string; sub: string }[]) =>
+    rpcQuiet<{ sketchId: string; added: number; projected: ProjectedEntity[] }>(
+      'sketch.project',
+      { sketchId, refs }
+    ),
+  sketchUnproject: (sketchId: string, geoIds?: number[]) =>
+    rpcQuiet<{ sketchId: string; removed: number; projected: ProjectedEntity[] }>(
+      'sketch.unproject',
+      { sketchId, geoIds }
+    ),
   /**
    * Fast live-edit path: change an existing feature's params in place and get
    * back only the affected body's mesh. Creates no undo step (see the sidecar's
@@ -698,6 +717,7 @@ export const api = {
       bodyId: string | null
       frame: SketchFrameDTO
       entities: unknown[]
+      projected?: ProjectedEntity[]
       constraints: SketchConstraint[]
       refGeom: SketchRefGeom | null
     }>('sketch.reopen', { sketchId }),

@@ -20,6 +20,7 @@ export type SketchTool =
   | 'arc-3p'
   | 'spline'
   | 'dimension'
+  | 'project'
 
 type SnapKind = 'grid' | 'origin' | 'point' | 'edge' | 'axis'
 type DragHandle = 'a' | 'b' | 'ab' | 'ba' | 'c' | 'r' | 'whole'
@@ -76,7 +77,7 @@ export type SketchEntity = (
   | { type: 'circle'; c: [number, number]; r: number }
   | { type: 'arc'; c: [number, number]; r: number; a0: number; a1: number }
   | { type: 'spline'; pts: [number, number][] }
-) & { construction?: boolean }
+) & { construction?: boolean; projected?: boolean }
 
 export interface RecordedConstraint {
   type:
@@ -97,9 +98,13 @@ export const ORIGIN_PT: PtRef = { e: -1, pt: 1 }
 
 const GRID = 1 // mm snap
 const SNAP_PX = 12
+/** selection indices >= this address projected geometry: idx - PROJ_BASE is the
+ *  slot in `this.projected`. Keeps the positive-index selection machinery. */
+const PROJ_BASE = 100000
 
-const isCurve = (e: SketchEntity): boolean => e.type === 'circle' || e.type === 'arc'
-const isLine = (e: SketchEntity): boolean => e.type === 'line'
+const isCurve = (e: SketchEntity | undefined): boolean =>
+  !!e && (e.type === 'circle' || e.type === 'arc')
+const isLine = (e: SketchEntity | undefined): boolean => !!e && e.type === 'line'
 
 export class SketchController {
   private group = new THREE.Group()
@@ -148,6 +153,11 @@ export class SketchController {
 
   private refPolys: [number, number][][] = []
   private refPoints: [number, number][] = []
+  /** projected (external) geometry from the model - real FreeCAD external
+   *  geometry, addressed by its negative geoId. Kept OUT of `entities` so the
+   *  drag / delete / local-solve paths never touch it; it is a snap + constraint
+   *  target only, and is removed via "unproject", not Delete. */
+  private projected: Array<{ geoId: number; ent: SketchEntity }> = []
   private selected: number[] = []
   /** individually-selected geometry points (line ends, circle/arc centres) */
   private selectedPts: PtRef[] = []
@@ -462,7 +472,11 @@ export class SketchController {
     return this.selected.length
   }
 
-  loadExisting(ents: SketchEntity[], cons: RecordedConstraint[] = []): void {
+  loadExisting(
+    ents: SketchEntity[],
+    cons: RecordedConstraint[] = [],
+    projected: Array<{ geoId: number } & SketchEntity> = []
+  ): void {
     this.entities = ents.slice()
     this.baseCount = this.entities.length
     this.constraints = cons.map((c) => ({ ...c, refs: c.refs.map((r) => ({ ...r })) }))
@@ -471,10 +485,25 @@ export class SketchController {
     this.removedBaseEntities = []
     this.deletedBaseSet = new Set()
     this.convertedBase = new Map()
+    this.setProjected(projected)
     this.undoStack = []
     this.geomV++
     this.redraw()
     this.scheduleSolve()
+  }
+
+  /** Replace the projected-geometry set (from sketch.on / reopen / project). */
+  setProjected(projected: Array<{ geoId: number } & SketchEntity>): void {
+    this.projected = (projected ?? []).map((p) => {
+      const { geoId, ...rest } = p
+      return { geoId, ent: { ...(rest as SketchEntity), projected: true } as SketchEntity }
+    })
+    this.geomV++
+    this.redraw()
+  }
+
+  getProjected(): Array<{ geoId: number; ent: SketchEntity }> {
+    return this.projected
   }
 
   /** Full pre-action snapshot, so one Ctrl+Z reverts one user action (a
@@ -641,6 +670,16 @@ export class SketchController {
     for (const p of this.refPoints) cands.push({ p, ref: null })
     for (const poly of this.refPolys) for (const p of poly) cands.push({ p, ref: null })
     for (const p of this.pending) cands.push({ p, ref: null })
+    // projected geometry endpoints / centres are snap targets too
+    this.projected.forEach(({ ent }) => {
+      if (ent.type === 'line') {
+        cands.push({ p: ent.a, ref: null })
+        cands.push({ p: ent.b, ref: null })
+        cands.push({ p: [(ent.a[0] + ent.b[0]) / 2, (ent.a[1] + ent.b[1]) / 2], ref: null })
+      } else if (ent.type === 'circle' || ent.type === 'arc') {
+        cands.push({ p: ent.c, ref: null })
+      }
+    })
     this.entities.forEach((e, idx) => {
       if (e.type === 'line') {
         cands.push({ p: e.a, ref: { idx, pt: 1 } })
@@ -787,7 +826,20 @@ export class SketchController {
         best = i
       }
     }
+    // projected geometry is pickable as a constraint / dimension target
+    for (let k = 0; k < this.projected.length; k++) {
+      const d = this.distToEntity(uv, this.projected[k].ent)
+      if (d < bestD) {
+        bestD = d
+        best = PROJ_BASE + k
+      }
+    }
     return best
+  }
+
+  /** entity behind a selection index - real, or projected when idx >= PROJ_BASE */
+  private entAt(idx: number): SketchEntity | undefined {
+    return idx >= PROJ_BASE ? this.projected[idx - PROJ_BASE]?.ent : this.entities[idx]
   }
 
   /** the selectable points of one entity (line ends, circle/arc centre, arc ends) */
@@ -940,6 +992,9 @@ export class SketchController {
   // --- input ---
   private onDown = (ev: PointerEvent): void => {
     if (ev.button !== 0) return
+    // the "Project geometry" tool picks MODEL geometry - let the click bubble to
+    // the Viewport's handler which has the model picker
+    if (this.tool === 'project') return
     if (this.tool === 'dimension') {
       ev.stopPropagation()
       const raw = this.rawPointerUV(ev)
@@ -2195,17 +2250,22 @@ export class SketchController {
         // a point + a whole entity: coincident (to its nearest point / centre),
         // or - if the entity is a curve - point-on-curve
         out.push('Coincident')
-        if (isCurve(this.entities[this.selected[0]])) out.push('PointOnObject')
+        if (isCurve(this.entAt(this.selected[0]))) out.push('PointOnObject')
       }
       return out
     }
-    const sel = this.selected.map((i) => this.entities[i]).filter(Boolean)
+    const sel = this.selected.map((i) => this.entAt(i)).filter(Boolean)
     if (!sel.length) return []
+    const anyProj = this.selected.some((i) => i >= PROJ_BASE)
     const out: SketchConstraintType[] = []
-    if (sel.length === 1 && isLine(sel[0])) out.push('Horizontal', 'Vertical')
+    // a single projected line has no self-constraints (it is read-only)
+    if (sel.length === 1 && isLine(sel[0]) && !anyProj) out.push('Horizontal', 'Vertical')
     if (sel.length === 2) {
       const [a, b] = sel
-      if (isLine(a) && isLine(b)) out.push('Parallel', 'Perpendicular', 'Equal', 'Coincident', 'Midpoint')
+      if (isLine(a) && isLine(b)) {
+        out.push('Parallel', 'Perpendicular', 'Equal', 'Coincident')
+        if (!(this.selected[0] >= PROJ_BASE && this.selected[1] >= PROJ_BASE)) out.push('Midpoint')
+      }
       if (isCurve(a) && isCurve(b)) out.push('Equal', 'Concentric', 'Tangent')
       if ((isLine(a) && isCurve(b)) || (isCurve(a) && isLine(b)))
         out.push('Tangent', 'Coincident', 'Midpoint')
@@ -2460,13 +2520,24 @@ export class SketchController {
       // fall through only if the point path did not handle this type
     }
     const idxs = this.selected.slice()
-    const ents = idxs.map((i) => this.entities[i])
+    const ents = idxs.map((i) => this.entAt(i))
     if (ents.some((e) => !e)) return false
     this.snapshot()
-    const ref = (i: number, pt?: number): RecordedConstraint['refs'][number] =>
-      i < this.baseCount ? { geo: i, pt } : { new: i - this.baseCount, sub: 0, pt }
+    const ref = (i: number, pt?: number): RecordedConstraint['refs'][number] => {
+      if (i >= PROJ_BASE) return { geo: this.projected[i - PROJ_BASE].geoId, pt }
+      return i < this.baseCount ? { geo: i, pt } : { new: i - this.baseCount, sub: 0, pt }
+    }
+    // a projected entity is read-only geometry: don't mutate its coords, only
+    // record the constraint. Branches below that write `this.entities[idxs[k]]`
+    // are skipped for projected refs by the isProj guard.
+    const isProj = (k: number): boolean => idxs[k] >= PROJ_BASE
 
-    if ((type === 'Horizontal' || type === 'Vertical') && ents.length === 1 && isLine(ents[0])) {
+    if (
+      (type === 'Horizontal' || type === 'Vertical') &&
+      ents.length === 1 &&
+      isLine(ents[0]) &&
+      !isProj(0)
+    ) {
       const e = this.entities[idxs[0]] as { type: 'line'; a: [number, number]; b: [number, number] }
       if (type === 'Horizontal') e.b = [e.b[0], e.a[1]]
       else e.b = [e.a[0], e.b[1]]
@@ -2477,23 +2548,29 @@ export class SketchController {
       isLine(ents[0]) &&
       isLine(ents[1])
     ) {
-      const a = this.entities[idxs[0]] as { a: [number, number]; b: [number, number] }
-      const b = this.entities[idxs[1]] as { a: [number, number]; b: [number, number] }
-      let ang = Math.atan2(a.b[1] - a.a[1], a.b[0] - a.a[0])
-      if (type === 'Perpendicular') ang += Math.PI / 2
-      const len = Math.hypot(b.b[0] - b.a[0], b.b[1] - b.a[1])
-      b.b = [b.a[0] + Math.cos(ang) * len, b.a[1] + Math.sin(ang) * len]
+      const a = ents[0] as { a: [number, number]; b: [number, number] }
+      // orient the SECOND line to the first; if the second is projected
+      // (read-only) orient the first instead, or just record the constraint
+      const bIdx = isProj(1) ? (isProj(0) ? -1 : 0) : 1
+      if (bIdx >= 0) {
+        const src = bIdx === 1 ? a : (ents[1] as { a: [number, number]; b: [number, number] })
+        const b = ents[bIdx] as { a: [number, number]; b: [number, number] }
+        let ang = Math.atan2(src.b[1] - src.a[1], src.b[0] - src.a[0])
+        if (type === 'Perpendicular') ang += Math.PI / 2
+        const len = Math.hypot(b.b[0] - b.a[0], b.b[1] - b.a[1])
+        b.b = [b.a[0] + Math.cos(ang) * len, b.a[1] + Math.sin(ang) * len]
+      }
       this.constraints.push({ type, refs: [ref(idxs[0]), ref(idxs[1])] })
     } else if (type === 'Equal' && ents.length === 2) {
-      const a = this.entities[idxs[0]]
-      const b = this.entities[idxs[1]]
-      if (isLine(a) && isLine(b)) {
+      const a = ents[0]!
+      const b = ents[1]!
+      if (isLine(a) && isLine(b) && !isProj(1)) {
         const la = a as { a: [number, number]; b: [number, number] }
         const lb = b as { a: [number, number]; b: [number, number] }
         const len = Math.hypot(la.b[0] - la.a[0], la.b[1] - la.a[1])
         const ang = Math.atan2(lb.b[1] - lb.a[1], lb.b[0] - lb.a[0])
         lb.b = [lb.a[0] + Math.cos(ang) * len, lb.a[1] + Math.sin(ang) * len]
-      } else if (isCurve(a) && isCurve(b)) {
+      } else if (isCurve(a) && isCurve(b) && !isProj(1)) {
         ;(b as { r: number }).r = (a as { r: number }).r
       }
       this.constraints.push({ type, refs: [ref(idxs[0]), ref(idxs[1])] })
@@ -2506,9 +2583,9 @@ export class SketchController {
         refs: [ref(idxs[0], 3), ref(idxs[1], 3)]
       })
     } else if (type === 'Coincident' && ents.length === 2 && isLine(ents[0]) && isLine(ents[1])) {
-      // weld the two nearest endpoints
-      const a = this.entities[idxs[0]] as { a: [number, number]; b: [number, number] }
-      const b = this.entities[idxs[1]] as { a: [number, number]; b: [number, number] }
+      // weld the two nearest endpoints; move the non-projected line's endpoint
+      const a = ents[0] as { a: [number, number]; b: [number, number] }
+      const b = ents[1] as { a: [number, number]; b: [number, number] }
       const pairs: Array<[1 | 2, 1 | 2, number]> = [
         [1, 1, Math.hypot(a.a[0] - b.a[0], a.a[1] - b.a[1])],
         [1, 2, Math.hypot(a.a[0] - b.b[0], a.a[1] - b.b[1])],
@@ -2517,9 +2594,15 @@ export class SketchController {
       ]
       pairs.sort((x, y) => x[2] - y[2])
       const [pa, pb] = pairs[0]
-      const target = pa === 1 ? a.a : a.b
-      if (pb === 1) b.a = [...target] as [number, number]
-      else b.b = [...target] as [number, number]
+      if (!isProj(1)) {
+        const target = pa === 1 ? a.a : a.b
+        if (pb === 1) b.a = [...target] as [number, number]
+        else b.b = [...target] as [number, number]
+      } else if (!isProj(0)) {
+        const target = pb === 1 ? b.a : b.b
+        if (pa === 1) a.a = [...target] as [number, number]
+        else a.b = [...target] as [number, number]
+      }
       this.constraints.push({ type, refs: [ref(idxs[0], pa), ref(idxs[1], pb)] })
     } else if (
       type === 'Coincident' &&
@@ -2527,39 +2610,46 @@ export class SketchController {
       ((isLine(ents[0]) && isCurve(ents[1])) || (isCurve(ents[0]) && isLine(ents[1])))
     ) {
       // line endpoint welded to a circle / arc CENTRE
-      const li = isLine(ents[0]) ? idxs[0] : idxs[1]
-      const ci = li === idxs[0] ? idxs[1] : idxs[0]
-      const ln = this.entities[li] as { a: [number, number]; b: [number, number] }
-      const cv = this.entities[ci] as { c: [number, number] }
+      const lk = isLine(ents[0]) ? 0 : 1
+      const li = idxs[lk]
+      const ci = idxs[1 - lk]
+      const ln = ents[lk] as { a: [number, number]; b: [number, number] }
+      const cv = ents[1 - lk] as { c: [number, number] }
       const near =
         Math.hypot(ln.a[0] - cv.c[0], ln.a[1] - cv.c[1]) <=
         Math.hypot(ln.b[0] - cv.c[0], ln.b[1] - cv.c[1])
           ? 1
           : 2
-      if (near === 1) ln.a = [...cv.c] as [number, number]
-      else ln.b = [...cv.c] as [number, number]
+      if (!isProj(lk)) {
+        if (near === 1) ln.a = [...cv.c] as [number, number]
+        else ln.b = [...cv.c] as [number, number]
+      }
       this.constraints.push({ type, refs: [ref(li, near), ref(ci, 3)] })
     } else if (type === 'Tangent' && ents.length === 2) {
       this.constraints.push({ type, refs: [ref(idxs[0]), ref(idxs[1])] })
     } else if (type === 'Midpoint' && ents.length === 2) {
       // one line + one other entity: put that entity's nearest endpoint at the
       // line's midpoint (recorded as a Symmetric-about-the-endpoints constraint)
-      const li = isLine(ents[0]) ? idxs[0] : isLine(ents[1]) ? idxs[1] : -1
-      const oi = li === idxs[0] ? idxs[1] : idxs[0]
-      if (li < 0) return false
-      const ln = this.entities[li] as { a: [number, number]; b: [number, number] }
+      const lk = isLine(ents[0]) ? 0 : isLine(ents[1]) ? 1 : -1
+      if (lk < 0) return false
+      const li = idxs[lk]
+      const oi = idxs[1 - lk]
+      const ln = ents[lk] as { a: [number, number]; b: [number, number] }
       const mid: [number, number] = [(ln.a[0] + ln.b[0]) / 2, (ln.a[1] + ln.b[1]) / 2]
-      const oe = this.entities[oi]
+      const oe = ents[1 - lk]!
       let opt: 1 | 2 | 3 = 3
+      const canMove = !isProj(1 - lk)
       if (oe.type === 'line') {
         opt =
           Math.hypot(oe.a[0] - mid[0], oe.a[1] - mid[1]) <=
           Math.hypot(oe.b[0] - mid[0], oe.b[1] - mid[1])
             ? 1
             : 2
-        if (opt === 1) oe.a = [...mid] as [number, number]
-        else oe.b = [...mid] as [number, number]
-      } else if (oe.type === 'circle' || oe.type === 'arc') {
+        if (canMove) {
+          if (opt === 1) oe.a = [...mid] as [number, number]
+          else oe.b = [...mid] as [number, number]
+        }
+      } else if ((oe.type === 'circle' || oe.type === 'arc') && canMove) {
         oe.c = [...mid] as [number, number]
       }
       this.constraints.push({
@@ -2588,6 +2678,8 @@ export class SketchController {
   private selMat = new THREE.LineBasicMaterial({ color: 0xffb020, linewidth: 2 })
   // fully-constrained geometry reads as "done" - drawn grey like FreeCAD's green
   private constrainedMat = new THREE.LineBasicMaterial({ color: 0x8b93a0 })
+  // projected / external reference geometry - amber, dashed
+  private projMat = new THREE.LineDashedMaterial({ color: 0xe0a24a, dashSize: 2.4, gapSize: 1.6 })
   private hoverMat = new THREE.LineBasicMaterial({ color: 0x9fe0ff })
   private bandMat = new THREE.LineDashedMaterial({ color: 0x9fb4c8, dashSize: 2, gapSize: 1.5 })
   private conHoverMat = new THREE.LineBasicMaterial({ color: 0x7fe0ff, linewidth: 2 })
@@ -3252,6 +3344,16 @@ export class SketchController {
                 ? this.constrainedMat
                 : this.lineMat
       this.entGroup.add(this.entityObj(this.entities[i], mat))
+    }
+    // projected (external) geometry - drawn as a distinct amber reference line
+    for (let k = 0; k < this.projected.length; k++) {
+      const pIdx = PROJ_BASE + k
+      const mat = this.selected.includes(pIdx)
+        ? this.selMat
+        : pIdx === this.hoverIdx
+          ? this.hoverMat
+          : this.projMat
+      this.entGroup.add(this.entityObj(this.projected[k].ent, mat))
     }
     this.redrawDims()
     this.rebuildSyms()

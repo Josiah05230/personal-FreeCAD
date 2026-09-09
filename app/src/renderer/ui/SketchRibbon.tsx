@@ -14,10 +14,19 @@ const DRAW: DrawItem[] = [
   { id: 'arc', label: 'Center Arc', glyph: '⌒', key: 'A', pin: 'sk.arc' },
   { id: 'arc-3p', label: '3-Point Arc', glyph: '⌓', pin: 'sk.arc3' },
   { id: 'spline', label: 'Spline', glyph: '∿', pin: 'sk.spline' },
-  { id: 'dimension', label: 'Dimension', glyph: '⇤⇥', key: 'D', pin: 'sk.dim' }
+  { id: 'dimension', label: 'Dimension', glyph: '⇤⇥', key: 'D', pin: 'sk.dim' },
+  { id: 'project', label: 'Project Geometry', glyph: '⧉', key: 'P', pin: 'sk.project' }
 ]
 // shown on the group face by default; the rest live in the fold-out until pinned
-const DRAW_DEFAULT = new Set(['sk.select', 'sk.line', 'sk.rect', 'sk.circle', 'sk.arc', 'sk.dim'])
+const DRAW_DEFAULT = new Set([
+  'sk.select',
+  'sk.line',
+  'sk.rect',
+  'sk.circle',
+  'sk.arc',
+  'sk.dim',
+  'sk.project'
+])
 
 const CONSTRAINTS: { id: SketchConstraintType; label: string; glyph: string; pin: string }[] = [
   { id: 'Horizontal', label: 'Horizontal', glyph: '—', pin: 'skc.h' },

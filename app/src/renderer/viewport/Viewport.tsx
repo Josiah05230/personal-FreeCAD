@@ -108,7 +108,9 @@ export function Viewport({
   sketchRefGeom = null,
   sketchInitialEntities,
   sketchInitialConstraints,
+  sketchInitialProjected,
   sketchTool = 'line',
+  onSketchProject,
   onSketchChange,
   onSketchDimensionRequest,
   onSketchSolve,
@@ -146,6 +148,9 @@ export function Viewport({
   sketchRefGeom?: SketchRefGeom | null
   sketchInitialEntities?: unknown[]
   sketchInitialConstraints?: unknown[]
+  sketchInitialProjected?: unknown[]
+  /** sketch "Project geometry" tool: a model edge/face was clicked */
+  onSketchProject?: (bodyId: string, sub: string) => void
   sketchTool?: SketchTool
   onSketchChange?: () => void
   onSketchDimensionRequest?: (
@@ -170,6 +175,10 @@ export function Viewport({
   onSketchSolveRef.current = onSketchSolve
   const onSketchNoticeRef = useRef(onSketchNotice)
   onSketchNoticeRef.current = onSketchNotice
+  const sketchToolRef = useRef(sketchTool)
+  sketchToolRef.current = sketchTool
+  const onSketchProjectRef = useRef(onSketchProject)
+  onSketchProjectRef.current = onSketchProject
   const planePickRef = useRef<{ mode: boolean; cb?: (r: SketchRef) => void }>({ mode: false })
   planePickRef.current = { mode: planePickMode, cb: onPickPlane }
   void pickPlanes // retained as a prop for compatibility; planes are real datums now
@@ -383,7 +392,10 @@ export function Viewport({
           stateRef.current?.sketch?.testSelectDim(owner) ?? false,
         testDeleteSketchSelection: () => stateRef.current?.sketch?.testDeleteSelected(),
         testToggleSketchConstruction: () =>
-          stateRef.current?.sketch?.testToggleConstruction() ?? false
+          stateRef.current?.sketch?.testToggleConstruction() ?? false,
+        setSketchProjected: (projected) =>
+          stateRef.current?.sketch?.setProjected(projected),
+        getSketchProjected: () => stateRef.current?.sketch?.getProjected() ?? []
       }
     }
 
@@ -570,9 +582,19 @@ export function Viewport({
         }
         return
       }
-      if (!st || st.sketch) return // sketch mode owns clicks
       if (downBtn !== 0 || e.button !== 0) return
       if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 4) return
+
+      // sketch "Project geometry" tool: a click on a model edge/face while a
+      // sketch is open is a projection pick, not a sketch action
+      if (st && st.sketch && sketchToolRef.current === 'project' && st.content) {
+        const hit = st.picker.pick(e, st.content)
+        if (hit && (hit.kind === 'edge' || hit.kind === 'face') && hit.bodyId) {
+          onSketchProjectRef.current?.(hit.bodyId, hit.sub)
+        }
+        return
+      }
+      if (!st || st.sketch) return // sketch mode owns clicks
 
       // canvas calibration: click two points on the canvas plane
       const cal = calibRef.current
@@ -927,10 +949,14 @@ export function Viewport({
             : Promise.resolve(null),
         (msg) => onSketchNoticeRef.current?.(msg)
       )
-      if (sketchInitialEntities && sketchInitialEntities.length) {
+      if (
+        (sketchInitialEntities && sketchInitialEntities.length) ||
+        (sketchInitialProjected && sketchInitialProjected.length)
+      ) {
         st.sketch.loadExisting(
-          sketchInitialEntities as never[],
-          (sketchInitialConstraints ?? []) as never[]
+          (sketchInitialEntities ?? []) as never[],
+          (sketchInitialConstraints ?? []) as never[],
+          (sketchInitialProjected ?? []) as never[]
         )
       }
       st.sketch.setTool(sketchTool)

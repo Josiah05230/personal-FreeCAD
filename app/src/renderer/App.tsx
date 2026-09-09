@@ -250,6 +250,9 @@ export function App(): JSX.Element {
   const [sketchCount, setSketchCount] = useState(0)
   const [sketchInitial, setSketchInitial] = useState<unknown[]>([])
   const [sketchInitialCons, setSketchInitialCons] = useState<SketchConstraint[]>([])
+  const [sketchInitialProjected, setSketchInitialProjected] = useState<
+    import('./rpc').ProjectedEntity[]
+  >([])
   const [sketchConstruction, setSketchConstruction] = useState(false)
   const [sketchAvail, setSketchAvail] = useState<SketchConstraintType[]>([])
   const [sketchConstraintCount, setSketchConstraintCount] = useState(0)
@@ -576,6 +579,7 @@ export function App(): JSX.Element {
       | undefined
     setSketchInitial([])
     setSketchInitialCons([])
+    setSketchInitialProjected([])
     if (face) {
       void beginSketch({ kind: 'face', bodyId: face.bodyId, sub: face.sub })
     } else {
@@ -622,6 +626,7 @@ export function App(): JSX.Element {
       const r = await api.sketchReopen(sketchId)
       setSketchInitial(r.entities)
       setSketchInitialCons(r.constraints ?? [])
+      setSketchInitialProjected(r.projected ?? [])
       setSketchSession({
         sketchId,
         bodyId: r.bodyId ?? '',
@@ -668,6 +673,7 @@ export function App(): JSX.Element {
     setSketchSession(null)
     setSketchInitial([])
     setSketchInitialCons([])
+    setSketchInitialProjected([])
     resetSketchUi()
     setSelection([{ kind: 'sketch', sketchId: id }])
     markDirty()
@@ -719,6 +725,7 @@ export function App(): JSX.Element {
     setSketchSession(null)
     setSketchInitial([])
     setSketchInitialCons([])
+    setSketchInitialProjected([])
     sketchOnRef.current = null
   }, [sketchSession, refreshScene])
 
@@ -2778,6 +2785,23 @@ export function App(): JSX.Element {
         deleteSelection: () => vpApi.current?.testDeleteSketchSelection(),
         toggleConstruction: () => vpApi.current?.testToggleSketchConstruction() ?? false,
         convertedEntities: () => vpApi.current?.getConvertedSketchEntities() ?? [],
+        project: async (bodyId: string, sub: string) => {
+          const sid = sketchSession?.sketchId
+          if (!sid) return []
+          const r = await apiQuiet.sketchProject(sid, [{ bodyId, sub }])
+          vpApi.current?.setSketchProjected(r.projected)
+          markDirty()
+          return r.projected
+        },
+        unproject: async (geoIds?: number[]) => {
+          const sid = sketchSession?.sketchId
+          if (!sid) return []
+          const r = await apiQuiet.sketchUnproject(sid, geoIds)
+          vpApi.current?.setSketchProjected(r.projected)
+          return r.projected
+        },
+        projected: () =>
+          (vpApi.current?.getSketchProjected() ?? []).map((p) => ({ geoId: p.geoId, ...p.ent })),
         entities: () => vpApi.current?.getSketchEntities() ?? [],
         constraints: () => vpApi.current?.getSketchConstraints() ?? [],
         newConstraints: () => vpApi.current?.getNewSketchConstraints() ?? [],
@@ -2975,6 +2999,7 @@ export function App(): JSX.Element {
         else if (k === 'c') setSketchTool('circle')
         else if (k === 'a') setSketchTool('arc')
         else if (k === 'd') setSketchTool('dimension')
+        else if (k === 'p') setSketchTool('project')
         else if (k === 'x' && !ctrl) {
           const on = vpApi.current?.toggleSketchConstruction() ?? !sketchConstruction
           setSketchConstruction(on)
@@ -3055,6 +3080,24 @@ export function App(): JSX.Element {
     setSketchConstraintCount(vpApi.current?.getSketchConstraints().length ?? 0)
     setSketchPendingCon(vpApi.current?.pendingSketchConstraint() ?? null)
   }, [])
+
+  // sketch "Project geometry" tool: a model edge/face was clicked -> project it
+  // as real external geometry (survives save/reopen) and push it into the editor
+  const onSketchProject = useCallback(
+    async (bodyId: string, sub: string) => {
+      const sid = sketchSession?.sketchId
+      if (!sid) return
+      try {
+        const r = await apiQuiet.sketchProject(sid, [{ bodyId, sub }])
+        vpApi.current?.setSketchProjected(r.projected)
+        markDirty()
+        if (!r.added) flashSketchNotice('That geometry could not be projected.')
+      } catch (e) {
+        flashSketchNotice(`project: ${(e as Error).message}`)
+      }
+    },
+    [sketchSession, markDirty, flashSketchNotice]
+  )
 
   // --- Offset Plane live preview ---
   const [previewPlane, setPreviewPlane] = useState<{
@@ -3373,6 +3416,8 @@ export function App(): JSX.Element {
                     sketchRefGeom={sketchSession?.refGeom ?? null}
                     sketchInitialEntities={sketchInitial}
                     sketchInitialConstraints={sketchInitialCons}
+                    sketchInitialProjected={sketchInitialProjected}
+                    onSketchProject={(bodyId, sub) => void onSketchProject(bodyId, sub)}
                     sketchTool={sketchTool}
                     onSketchChange={onSketchChange}
                     onSketchDimensionRequest={(i, k) => void onSketchDimensionRequest(i, k)}

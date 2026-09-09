@@ -215,6 +215,58 @@ await sleep(250);
 const cRe = await rpc('sketch.reopen', { sketchId: cId });
 assert(cRe.entities[1] && cRe.entities[1].construction === true, 'the real sketch line is now construction after Finish');
 
+// ---------------------------------------------------------------- projected geometry
+note('--- project model geometry into a sketch and round-trip it ---');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+const ps = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+await rpc('sketch.finish', {
+  sketchId: ps.sketchId,
+  elements: [{ type: 'rect', a: [0, 0], b: [40, 30] }],
+  constraints: []
+});
+G.selectSketch(ps.sketchId);
+await sleep(40);
+await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 10 });
+await idle();
+const pbid = G.getState().bodies[0].id;
+// a sketch on the TOP face - its own top edges project as real lines
+const scAfter = await rpc('scene.get');
+const mm = scAfter.meshes.find((x) => x.id === pbid);
+// top face = the faceGroup whose triangles are highest in Z; just use the last
+// face group's face index as a heuristic, then let the sidecar resolve it
+const topFaceSub = `Face${mm.faceGroups[mm.faceGroups.length - 1].face + 1}`;
+const fsk = await rpc('sketch.onFace', { bodyId: pbid, face: topFaceSub });
+await G.editSketch(fsk.sketchId);
+await waitFor(() => G.getState().sketchMode, 4000);
+await sleep(100);
+// project a top edge (Edge1..Edge12 - the top-face ones come back as real lines)
+let proj = [];
+for (const en of ['Edge1', 'Edge2', 'Edge3', 'Edge5', 'Edge7']) {
+  proj = await G.sketch.project(pbid, en);
+  if (proj.some((p) => p.type === 'line' && (p.a[0] !== p.b[0] || p.a[1] !== p.b[1]))) break;
+}
+assert(proj.length >= 1, `projection produced geometry (${proj.length})`);
+assert(proj[0].geoId < 0, 'projected geometry has a negative geoId');
+assert(proj[0].projected === true, 'projected entity is flagged projected');
+await G.finishSketch();
+await idle();
+await sleep(200);
+const pro = await rpc('sketch.reopen', { sketchId: fsk.sketchId });
+assert((pro.projected || []).length >= 1, 'projected geometry survives Finish + reopen');
+// unproject removes it
+await G.editSketch(fsk.sketchId);
+await waitFor(() => G.getState().sketchMode, 4000);
+await sleep(80);
+const afterUn = await G.sketch.unproject();
+assert(afterUn.length === 0, 'unproject clears the projected geometry');
+await G.finishSketch();
+await idle();
+await sleep(150);
+const pro2 = await rpc('sketch.reopen', { sketchId: fsk.sketchId });
+assert((pro2.projected || []).length === 0, 'the real sketch has no projections after unproject + Finish');
+
 // ---------------------------------------------------------------- health
 note('--- editor + engine healthy at end ---');
 const fin = G.getState();

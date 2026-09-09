@@ -2355,13 +2355,18 @@ def _reopen_constraints(sk, geo_to_ent):
     geometry by the editor entity index (`geo`). geoIds the editor does not know
     (datum axes: -1/-2, or filtered geometry) pass straight through as `geo`."""
     def ref(gid, pos):
-        r = {"geo": geo_to_ent.get(gid, gid)}  # datum ids (<0) pass straight through
+        # datum axes (-1/-2) and projected external geometry (<= -3) pass
+        # straight through as raw geoIds; drawn geometry maps to its editor index
+        r = {"geo": geo_to_ent.get(gid, gid)}
         if pos:
             r["pt"] = int(pos)
         return r
 
-    def real(g):  # -1/-2 are the datum axes; anything past that is "unset"
-        return g is not None and g >= -2
+    def real(g):
+        # FreeCAD uses -2000 as the "unset" sentinel for Second/Third. Anything
+        # above that is a genuine ref: drawn geo (>=0), a datum axis (-1/-2), or
+        # projected external geometry (-3, -4, ...).
+        return g is not None and g > -2000
 
     out = []
     for c in sk.Constraints:
@@ -2383,6 +2388,129 @@ def _reopen_constraints(sk, geo_to_ent):
             item["value"] = float(c.Value)
         out.append(item)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# projected (external) geometry
+# --------------------------------------------------------------------------- #
+
+# FreeCAD keeps 2 default external geos (the sketch's own X/Y axes) at the front
+# of ExternalGeo; real projections start after them, at geoId -3, -4, ...
+_EXT_DEFAULT_COUNT = 2
+
+
+def _ext_entity(g):
+    """One ExternalGeo Part geometry -> an editor entity dict, or None."""
+    t = g.TypeId
+    if t == "Part::GeomLineSegment":
+        return {"type": "line",
+                "a": [g.StartPoint.x, g.StartPoint.y],
+                "b": [g.EndPoint.x, g.EndPoint.y], "projected": True}
+    if t == "Part::GeomPoint":
+        # a model edge / vertex that projects to a single point on the plane
+        # (e.g. an edge perpendicular to the sketch) - a degenerate zero-length
+        # "line" so it is still a snap + coincident target
+        p = getattr(g, "X", None)
+        if p is not None:
+            xy = [g.X, g.Y]
+        else:
+            v = g.toShape().Point
+            xy = [v.x, v.y]
+        return {"type": "line", "a": list(xy), "b": list(xy), "projected": True}
+    if t == "Part::GeomCircle":
+        return {"type": "circle", "c": [g.Center.x, g.Center.y],
+                "r": g.Radius, "projected": True}
+    if t == "Part::GeomArcOfCircle":
+        return {"type": "arc", "c": [g.Center.x, g.Center.y], "r": g.Radius,
+                "a0": g.FirstParameter, "a1": g.LastParameter, "projected": True}
+    if t == "Part::GeomBSplineCurve":
+        try:
+            pts = [[p.x, p.y] for p in g.discretize(Number=max(4, g.NbPoles * 3))]
+        except Exception:
+            pts = [[p.x, p.y] for p in g.getPoles()]
+        return {"type": "spline", "pts": pts, "projected": True}
+    return None
+
+
+def _projected_entities(sk):
+    """Every projection currently on the sketch, as [(geoId, entity), ...].
+    geoId is the negative id constraints address (-3, -4, ...)."""
+    out = []
+    try:
+        eg = list(sk.ExternalGeo)
+    except Exception:
+        return out
+    for idx, g in enumerate(eg):
+        if idx < _EXT_DEFAULT_COUNT:
+            continue
+        ent = _ext_entity(g)
+        if ent is None:
+            continue
+        # dedupe: FreeCAD sometimes stores a projected edge twice
+        if out and out[-1][1].get("type") == ent.get("type"):
+            prev = out[-1][1]
+            if ent.get("type") == "line" and prev.get("a") == ent.get("a") and prev.get("b") == ent.get("b"):
+                continue
+        out.append((-(idx + 1), ent))
+    return out
+
+
+@method("sketch.project")
+def sketch_project(sketchId, refs):
+    """Project model geometry into the sketch as external (reference) geometry.
+    refs = [{"bodyId": ..., "sub": "Edge3"|"Face2"|"Vertex5"}, ...].
+    Returns the full projected-entity list so the editor can show them; they
+    survive save/reopen (FreeCAD stores the ExternalGeometry link)."""
+    d, sk = _obj(sketchId)
+    if sk.TypeId != "Sketcher::SketchObject":
+        raise RpcError(APP_ERROR, "%r is not a sketch" % sketchId)
+    added = 0
+    for r in refs or []:
+        bid, sub = r.get("bodyId"), r.get("sub")
+        if not bid or not sub:
+            continue
+        body = d.getObject(bid)
+        if body is None:
+            continue
+        # addExternal rejects the Body itself - use its tip feature
+        tgt = _solid_tip(body) if body.TypeId == "PartDesign::Body" else body
+        subs = [sub] if isinstance(sub, str) else list(sub)
+        for s in subs:
+            try:
+                sk.addExternal(tgt.Name, s)
+                added += 1
+            except Exception:
+                pass
+    d.recompute()
+    proj = _projected_entities(sk)
+    return {"sketchId": sketchId,
+            "projected": [{"geoId": gid, **ent} for gid, ent in proj],
+            "added": added}
+
+
+@method("sketch.unproject")
+def sketch_unproject(sketchId, geoIds=None):
+    """Remove projections. geoIds = the negative ids from sketch.project /
+    reopen (None = remove all). ExternalGeo is a stack - delExternal takes the
+    0-based position AFTER the default axes, so map back."""
+    d, sk = _obj(sketchId)
+    proj = _projected_entities(sk)
+    want = set(geoIds) if geoIds else {gid for gid, _ in proj}
+    # delete high position first so lower ones stay valid
+    positions = sorted(
+        [(-(gid) - 1 - _EXT_DEFAULT_COUNT) for gid, _ in proj if gid in want],
+        reverse=True,
+    )
+    n = 0
+    for pos in positions:
+        try:
+            sk.delExternal(pos)
+            n += 1
+        except Exception:
+            pass
+    d.recompute()
+    return {"sketchId": sketchId, "removed": n,
+            "projected": [{"geoId": gid, **ent} for gid, ent in _projected_entities(sk)]}
 
 
 @method("sketch.reopen")
@@ -2429,8 +2557,9 @@ def sketch_reopen(sketchId):
     d.recompute()
     body = sk.getParentGeoFeatureGroup()
     fr = _frame(sk)
+    projected = [{"geoId": gid, **ent} for gid, ent in _projected_entities(sk)]
     return {"sketchId": sketchId, "bodyId": body.Name if body else None,
-            "frame": fr, "entities": ents,
+            "frame": fr, "entities": ents, "projected": projected,
             "constraints": _reopen_constraints(sk, geo_to_ent),
             "refGeom": _face_ref_geom(sk, fr)}
 

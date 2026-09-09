@@ -72,4 +72,9 @@ export interface ViewportApi {
   testSelectSketchDim: (owner: number) => boolean
   testDeleteSketchSelection: () => void
   testToggleSketchConstruction: () => boolean
+  /** replace the projected-geometry set (after a sketch.project / unproject) */
+  setSketchProjected: (
+    projected: Array<{ geoId: number } & SketchEntity>
+  ) => void
+  getSketchProjected: () => Array<{ geoId: number; ent: SketchEntity }>
 }
