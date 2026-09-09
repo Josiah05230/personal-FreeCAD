@@ -346,13 +346,18 @@ export function Viewport({
         getNewSketchConstraints: () => stateRef.current?.sketch?.getNewConstraints() ?? [],
         getRemovedSketchConstraints: () =>
           stateRef.current?.sketch?.getRemovedConstraints() ?? [],
+        getRemovedSketchEntities: () =>
+          stateRef.current?.sketch?.getRemovedEntities() ?? [],
         applySketchConstraint: (t) => stateRef.current?.sketch?.applyConstraint(t) ?? false,
         startSketchConstraint: (t) => stateRef.current?.sketch?.beginConstraint(t),
         pendingSketchConstraint: () =>
           stateRef.current?.sketch?.pendingConstraint ?? null,
         availableSketchConstraints: () =>
           stateRef.current?.sketch?.availableConstraints() ?? [],
-        setSketchDimension: (i, v) => stateRef.current?.sketch?.setDimension(i, v) ?? false,
+        setSketchDimension: (i, v, as) =>
+          stateRef.current?.sketch?.setDimension(i, v, as) ?? false,
+        toggleSketchDimKind: () =>
+          stateRef.current?.sketch?.toggleSelectedDimKind() ?? null,
         checkSketchDimension: (i) =>
           stateRef.current?.sketch?.dimensionPrecheck(i) ?? Promise.resolve(null),
         setSketchDistanceDimension: (v) =>
@@ -367,7 +372,14 @@ export function Viewport({
           renderSettingsRef.current = r
           applyRenderRef.current?.(r)
         },
-        renderImage: (opts: RenderImageOptions) => renderSceneImage(opts)
+        renderImage: (opts: RenderImageOptions) => renderSceneImage(opts),
+        testAddSketchEntity: (ent, snapTo) =>
+          stateRef.current?.sketch?.testAddEntity(ent, snapTo) ?? -1,
+        testSelectSketch: (idx) => stateRef.current?.sketch?.testSelect(idx),
+        testSelectSketchPoints: (pts) => stateRef.current?.sketch?.testSelectPoints(pts),
+        testSelectSketchDim: (owner) =>
+          stateRef.current?.sketch?.testSelectDim(owner) ?? false,
+        testDeleteSketchSelection: () => stateRef.current?.sketch?.testDeleteSelected()
       }
     }
 

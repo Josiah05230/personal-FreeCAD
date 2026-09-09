@@ -34,6 +34,7 @@ export type SketchConstraintType =
   | 'Coincident'
   | 'Concentric'
   | 'Midpoint'
+  | 'PointOnObject'
 
 /** Result of a round-trip to the headless constraint solver. */
 export interface SketchSolveResult {
@@ -78,13 +79,21 @@ export type SketchEntity = (
 ) & { construction?: boolean }
 
 export interface RecordedConstraint {
-  type: SketchConstraintType | 'Distance' | 'Radius' | 'PointOnObject' | 'Symmetric'
+  type:
+    | SketchConstraintType
+    | 'Distance'
+    | 'Radius'
+    | 'Diameter'
+    | 'PointOnObject'
+    | 'Symmetric'
   refs: Array<{ new?: number; geo?: number; sub?: number; pt?: number }>
   value?: number
 }
 
-/** an individual geometry point: pt 1 = start, 2 = end, 3 = centre */
+/** an individual geometry point: pt 1 = start, 2 = end, 3 = centre.
+ *  `e: -1` is the sketch ORIGIN point (pt is 1 by convention). */
 export type PtRef = { e: number; pt: 1 | 2 | 3 }
+export const ORIGIN_PT: PtRef = { e: -1, pt: 1 }
 
 const GRID = 1 // mm snap
 const SNAP_PX = 12
@@ -158,6 +167,14 @@ export class SketchController {
   /** reopen-era constraints the user deleted this session - sent to sketch.finish
    *  so they are removed from the real sketch too */
   private removedBaseConstraints: RecordedConstraint[] = []
+  /** reopen-era geometry the user deleted this session, as entity indices into
+   *  the reopened list - sent to sketch.finish (removedElements) so the real
+   *  sketch loses them too */
+  private removedBaseEntities: number[] = []
+  /** same set as removedBaseEntities, for O(1) "is this base entity gone?"
+   *  checks in the draw / pick / solve loops (its slot in `entities` stays so
+   *  indices are stable, but it must not render or be pickable) */
+  private deletedBaseSet = new Set<number>()
   /** index in `constraints` of the last one the user explicitly added, so the
    *  solver can veto it if it over-constrains; -1 once cleared */
   private lastUserConstraint = -1
@@ -307,6 +324,73 @@ export class SketchController {
     return this.entities
   }
 
+  // --------------------------------------------------------------------- //
+  // Test / automation hooks. These drive the SAME code paths the pointer
+  // handlers do (applyConstraint / setDimension / deleteSelected / commit),
+  // so an E2E scenario can exercise the real controller without synthesising
+  // pointer events. Not used by the UI.
+  // --------------------------------------------------------------------- //
+
+  /** Append a session entity as if it had just been drawn, running the same
+   *  auto-constraint inference `commit()` does for that shape. Returns its
+   *  entity index. `snapTo` = entity indices whose nearest point this entity's
+   *  endpoints snapped onto (for auto-coincident / tangent). */
+  testAddEntity(
+    ent: SketchEntity,
+    snapTo: Array<{ idx: number; pt: 1 | 2 | 3 } | null> = []
+  ): number {
+    this.snapshot()
+    this.entities.push({ ...ent, ...(this.construction ? { construction: true } : {}) })
+    const i = this.entities.length - 1
+    const nw = i - this.baseCount
+    if (ent.type === 'line') {
+      this.anchorToAxes(i)
+      this.autoCoincident(i, [snapTo[0] ?? null, snapTo[1] ?? null])
+      this.autoAngle(i)
+      this.autoTangent(i, [snapTo[0] ?? null, snapTo[1] ?? null])
+    } else if (ent.type === 'circle' || ent.type === 'arc') {
+      this.anchorToAxes(i)
+      this.autoCoincident(i, [snapTo[0] ?? null])
+    }
+    void nw
+    this.geomV++
+    this.redraw()
+    this.scheduleSolve()
+    this.onChange()
+    return i
+  }
+
+  /** Set the whole-entity selection by index (test hook). Does NOT clear a
+   *  point selection - a point + an entity is a valid combined selection
+   *  (point-on-object, coincident-to-centre). */
+  testSelect(indices: number[]): void {
+    this.selected = indices.slice()
+    this.selectedDim = null
+    this.redraw()
+  }
+
+  /** Set the geometry-point selection (test hook). Clears whole-entity
+   *  selection unless you follow with testSelect(). */
+  testSelectPoints(pts: Array<{ e: number; pt: 1 | 2 | 3 }>): void {
+    this.selectedPts = pts.map((p) => ({ e: p.e, pt: p.pt }))
+    this.selected = []
+    this.redraw()
+  }
+
+  /** Select the dimension constraint driving entity `owner` (test hook). */
+  testSelectDim(owner: number): boolean {
+    const ci = this.dimConstraintIndex(owner)
+    if (ci < 0) return false
+    this.selectedDim = ci
+    this.redraw()
+    return true
+  }
+
+  /** Delete the current selection (test hook - same path as the Delete key). */
+  testDeleteSelected(): void {
+    this.deleteSelected()
+  }
+
   /** Entities added since the session began (for reopen -> only push the new). */
   getNewEntities(): SketchEntity[] {
     return this.entities.slice(this.baseCount)
@@ -326,6 +410,12 @@ export class SketchController {
     return this.removedBaseConstraints.slice()
   }
 
+  /** Reopen-era geometry the user deleted this session, as reopened-entity
+   *  indices (for sketch.finish removedElements). */
+  getRemovedEntities(): number[] {
+    return this.removedBaseEntities.slice()
+  }
+
   get constraintCount(): number {
     return this.constraints.length
   }
@@ -340,6 +430,8 @@ export class SketchController {
     this.constraints = cons.map((c) => ({ ...c, refs: c.refs.map((r) => ({ ...r })) }))
     this.baseConstraintCount = this.constraints.length
     this.removedBaseConstraints = []
+    this.removedBaseEntities = []
+    this.deletedBaseSet = new Set()
     this.undoStack = []
     this.geomV++
     this.redraw()
@@ -649,6 +741,7 @@ export class SketchController {
     let best = -1
     let bestD = tolMm
     for (let i = 0; i < this.entities.length; i++) {
+      if (this.deletedBaseSet.has(i)) continue
       const d = this.distToEntity(uv, this.entities[i])
       if (d < bestD) {
         bestD = d
@@ -670,6 +763,7 @@ export class SketchController {
 
   /** world-uv of a geometry point */
   private ptUV(pr: PtRef): [number, number] {
+    if (pr.e === -1) return [0, 0] // sketch origin
     const e = this.entities[pr.e]
     if (!e) return [0, 0]
     if (pr.pt === 3) return e.type === 'circle' || e.type === 'arc' ? [...e.c] : this.endpointOf(e, 1)
@@ -689,7 +783,16 @@ export class SketchController {
     const tol = SNAP_PX / Math.max(this.pxPerMm(), 0.001)
     let best: PtRef | null = null
     let bestD = tol
+    // the sketch origin is always a selectable point (so you can constrain to it)
+    {
+      const d = Math.hypot(uv[0], uv[1])
+      if (d < bestD) {
+        bestD = d
+        best = { e: -1, pt: 1 }
+      }
+    }
     for (let i = 0; i < this.entities.length; i++) {
+      if (this.deletedBaseSet.has(i)) continue
       for (const pr of this.entityPts(i)) {
         const p = this.ptUV(pr)
         const d = Math.hypot(p[0] - uv[0], p[1] - uv[1])
@@ -708,6 +811,7 @@ export class SketchController {
 
   /** ref shape (geo / new + pt) for a recorded constraint */
   private ptRecRef(pr: PtRef): RecordedConstraint['refs'][number] {
+    if (pr.e === -1) return { geo: -1, pt: 1 } // sketch origin point
     return pr.e < this.baseCount
       ? { geo: pr.e, pt: pr.pt }
       : { new: pr.e - this.baseCount, sub: 0, pt: pr.pt }
@@ -765,7 +869,7 @@ export class SketchController {
   /** constraint index of the Distance / Radius dimension driving entity `owner` */
   private dimConstraintIndex(owner: number): number {
     return this.constraints.findIndex((c) => {
-      if (c.type !== 'Distance' && c.type !== 'Radius') return false
+      if (c.type !== 'Distance' && c.type !== 'Radius' && c.type !== 'Diameter') return false
       const r0 = c.refs[0]
       if (!r0) return false
       // point-to-point / point-to-line distances are not an entity's own linear dim
@@ -947,7 +1051,7 @@ export class SketchController {
   /** true if the entity carries a locked-in dimension (Distance / Radius) */
   private entityHasDimension(idx: number): boolean {
     return this.constraints.some((c) => {
-      if (c.type !== 'Distance' && c.type !== 'Radius') return false
+      if (c.type !== 'Distance' && c.type !== 'Radius' && c.type !== 'Diameter') return false
       const r0 = c.refs[0]
       if (c.type === 'Distance' && (c.refs.length >= 2 || r0?.pt != null)) return false
       const ei = r0?.geo != null ? r0.geo : (r0?.new ?? -999) + this.baseCount
@@ -1301,6 +1405,15 @@ export class SketchController {
     ) {
       ev.preventDefault()
       this.deleteDimension()
+    } else if (
+      (ev.key === 'd' || ev.key === 'D') &&
+      this.tool === 'select' &&
+      this.selectedDim != null &&
+      !ev.ctrlKey &&
+      !ev.metaKey
+    ) {
+      // toggle the selected circle/arc dimension between radius and diameter
+      if (this.toggleSelectedDimKind()) ev.preventDefault()
     } else if (ev.key === 'Enter' && this.tool === 'spline' && this.pending.length >= 2) {
       this.commit()
       this.redraw()
@@ -1312,7 +1425,7 @@ export class SketchController {
     } else if (
       (ev.key === 'Delete' || ev.key === 'Backspace') &&
       this.tool === 'select' &&
-      this.selected.length
+      (this.selected.length || this.selectedPts.length)
     ) {
       ev.preventDefault()
       this.deleteSelected()
@@ -1346,26 +1459,62 @@ export class SketchController {
     this.onChange()
   }
 
-  /** Delete the selected entities (only ones added this session) and drop /
-   *  reindex any constraints that referenced them. */
+  /** Delete the selected entities - session-drawn ones are spliced out; a
+   *  reopened (base) one is queued for removal from the real sketch on Finish
+   *  (removedElements) and hidden locally. Constraints that referenced a deleted
+   *  entity are dropped; session-entity `new` refs are reindexed. Points-only
+   *  selections resolve to their owning entities. */
   private deleteSelected(): void {
-    const rel = this.selected
-      .filter((i) => i >= this.baseCount)
-      .map((i) => i - this.baseCount)
-      .sort((a, b) => b - a)
-    if (!rel.length) {
-      this.selected = []
+    // a points-only selection deletes the owning entities
+    const targets = new Set<number>(this.selected)
+    for (const pt of this.selectedPts) targets.add(pt.e)
+    if (!targets.size) {
+      this.selectedPts = []
       this.redraw()
       return
     }
     this.snapshot()
-    for (const r of rel) {
+
+    const baseIdx = [...targets].filter((i) => i < this.baseCount).sort((a, b) => a - b)
+    const sessRel = [...targets]
+      .filter((i) => i >= this.baseCount)
+      .map((i) => i - this.baseCount)
+      .sort((a, b) => b - a)
+
+    // base geometry: cannot splice (indices are the reopen contract) - mark it
+    // removed, drop constraints touching it, and blank it so it stops drawing
+    for (const bi of baseIdx) {
+      if (!this.removedBaseEntities.includes(bi)) this.removedBaseEntities.push(bi)
+      // any base constraint on it must also be removed from the real sketch
+      for (const c of this.constraints) {
+        if (
+          this.constraints.indexOf(c) < this.baseConstraintCount &&
+          c.refs.some((rf) => rf.geo === bi)
+        ) {
+          this.removedBaseConstraints.push({
+            type: c.type,
+            refs: c.refs.map((r) => ({ ...r }))
+          })
+        }
+      }
+      this.constraints = this.constraints.filter((c) => !c.refs.some((rf) => rf.geo === bi))
+      this.baseConstraintCount = Math.min(this.baseConstraintCount, this.constraints.length)
+    }
+    // hide the deleted base entities locally without changing indices
+    for (const bi of baseIdx) this.deletedBaseSet.add(bi)
+
+    // session geometry: real splice + reindex
+    for (const r of sessRel) {
       this.entities.splice(this.baseCount + r, 1)
       this.constraints = this.constraints.filter((c) => !c.refs.some((rf) => rf.new === r))
       for (const c of this.constraints)
         for (const rf of c.refs) if (rf.new != null && rf.new > r) rf.new--
     }
+
     this.selected = []
+    this.selectedPts = []
+    this.selectedDim = null
+    this.dimOffsets.clear()
     this.geomV++
     this.redraw()
     this.scheduleSolve()
@@ -1385,6 +1534,8 @@ export class SketchController {
       this.anchorToAxes(li)
       this.autoCoincident(li, [snaps[0] ?? null, snaps[1] ?? null])
       this.autoMidpoint(li, [mids[0] ?? null, mids[1] ?? null])
+      this.autoAngle(li) // near-horizontal / near-vertical -> real H/V constraint
+      this.autoTangent(li, [snaps[0] ?? null, snaps[1] ?? null])
       this.pending = [p[1]] // chain
       this.pendingSnaps = [snaps[1] ?? null]
       this.pendingMids = [mids[1] ?? null]
@@ -1623,6 +1774,65 @@ export class SketchController {
         refs: [lref(1), lref(2), { new: nw, sub: 0, pt: myPt }]
       })
     })
+  }
+
+  /** A freshly drawn line within ANGLE_SNAP_DEG of horizontal / vertical gets a
+   *  real Horizontal / Vertical constraint and is snapped exactly onto that
+   *  axis direction, matching Fusion's inference-while-drawing. Skips a line
+   *  that already carries H/V (e.g. a rectangle side) or is fully dimensioned. */
+  private autoAngle(entIdx: number): void {
+    const e = this.entities[entIdx]
+    if (!e || e.type !== 'line') return
+    const nw = entIdx - this.baseCount
+    if (nw < 0) return
+    const dx = e.b[0] - e.a[0]
+    const dy = e.b[1] - e.a[1]
+    const len = Math.hypot(dx, dy)
+    if (len < 1e-6) return
+    const ANGLE_SNAP_DEG = 3
+    const t = Math.tan((ANGLE_SNAP_DEG * Math.PI) / 180)
+    const already = (type: 'Horizontal' | 'Vertical'): boolean =>
+      this.constraints.some(
+        (c) => c.type === type && (c.refs[0]?.new === nw || c.refs[0]?.geo === entIdx)
+      )
+    if (Math.abs(dy) <= Math.abs(dx) * t && !already('Horizontal')) {
+      e.b = [e.b[0], e.a[1]]
+      this.constraints.push({ type: 'Horizontal', refs: [{ new: nw, sub: 0 }] })
+    } else if (Math.abs(dx) <= Math.abs(dy) * t && !already('Vertical')) {
+      e.b = [e.a[0], e.b[1]]
+      this.constraints.push({ type: 'Vertical', refs: [{ new: nw, sub: 0 }] })
+    }
+  }
+
+  /** If a freshly drawn line's endpoint snapped to a circle / arc, add a
+   *  Tangent so the line touches the curve cleanly. */
+  private autoTangent(
+    entIdx: number,
+    snaps: Array<{ idx: number; pt: number } | null>
+  ): void {
+    const e = this.entities[entIdx]
+    if (!e || e.type !== 'line') return
+    const nw = entIdx - this.baseCount
+    if (nw < 0) return
+    for (const s of snaps) {
+      if (!s || s.idx === entIdx) continue
+      const t = this.entities[s.idx]
+      if (!t || !isCurve(t)) continue
+      // only when the endpoint landed on the RIM (pt not the centre, pt!==3)
+      if (s.pt === 3) continue
+      const tref =
+        s.idx < this.baseCount
+          ? { geo: s.idx }
+          : { new: s.idx - this.baseCount, sub: 0 }
+      const dup = this.constraints.some(
+        (c) =>
+          c.type === 'Tangent' &&
+          c.refs.some((r) => r.new === nw || r.geo === entIdx) &&
+          c.refs.some((r) => (r.new ?? r.geo) === (tref.new ?? tref.geo))
+      )
+      if (dup) continue
+      this.constraints.push({ type: 'Tangent', refs: [{ new: nw, sub: 0 }, tref] })
+    }
   }
 
   /** If an entity's point sits on the origin or an axis (snapping / dragging put
@@ -1902,10 +2112,12 @@ export class SketchController {
     }
     this.lastUserConstraint = -1
 
-    // reconcile: adopt the solved coordinates (indices are absolute now)
+    // reconcile: adopt the solved coordinates (indices are absolute now).
+    // Construction geometry is solved and adopted too - it can carry real
+    // constraints (H/V, coincident, dimensions) and must move to satisfy them.
     res.geometry.forEach((g, i) => {
       const ent = this.entities[i]
-      if (!ent || !g || ent.type !== g.type || ent.construction) return
+      if (!ent || !g || ent.type !== g.type) return
       if (g.type === 'line' && ent.type === 'line') {
         ent.a = [g.a[0], g.a[1]]
         ent.b = [g.b[0], g.b[1]]
@@ -1931,7 +2143,12 @@ export class SketchController {
     if (this.selectedPts.length) {
       const out: SketchConstraintType[] = []
       if (this.selectedPts.length === 2) out.push('Coincident', 'Horizontal', 'Vertical')
-      if (this.selectedPts.length === 1 && this.selected.length === 1) out.push('Coincident')
+      if (this.selectedPts.length === 1 && this.selected.length === 1) {
+        // a point + a whole entity: coincident (to its nearest point / centre),
+        // or - if the entity is a curve - point-on-curve
+        out.push('Coincident')
+        if (isCurve(this.entities[this.selected[0]])) out.push('PointOnObject')
+      }
       return out
     }
     const sel = this.selected.map((i) => this.entities[i]).filter(Boolean)
@@ -1941,8 +2158,9 @@ export class SketchController {
     if (sel.length === 2) {
       const [a, b] = sel
       if (isLine(a) && isLine(b)) out.push('Parallel', 'Perpendicular', 'Equal', 'Coincident', 'Midpoint')
-      if (isCurve(a) && isCurve(b)) out.push('Equal', 'Concentric')
-      if ((isLine(a) && isCurve(b)) || (isCurve(a) && isLine(b))) out.push('Tangent', 'Midpoint')
+      if (isCurve(a) && isCurve(b)) out.push('Equal', 'Concentric', 'Tangent')
+      if ((isLine(a) && isCurve(b)) || (isCurve(a) && isLine(b)))
+        out.push('Tangent', 'Coincident', 'Midpoint')
     }
     return out
   }
@@ -1962,6 +2180,8 @@ export class SketchController {
         ? Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1])
         : (e as { r: number }).r
     if (!(cur > 0)) return null
+    // Radius vs Diameter does not change whether the geometry is over-defined,
+    // so the precheck can use Radius for either.
     const kind: RecordedConstraint['type'] = e.type === 'line' ? 'Distance' : 'Radius'
     const cons = this.constraints.map((c) => ({
       ...c,
@@ -1990,18 +2210,25 @@ export class SketchController {
   }
 
   /** Set a numeric dimension on an entity (value already resolved from any
-   *  expression). Line -> length; circle/arc -> radius. */
-  setDimension(index: number, value: number): boolean {
+   *  expression). Line -> length; circle/arc -> radius or diameter.
+   *  `as` forces 'radius' | 'diameter' for a circle/arc; default keeps the
+   *  entity's current radius/diameter kind, or 'radius' if it has none yet. */
+  setDimension(index: number, value: number, as?: 'radius' | 'diameter'): boolean {
     const e = this.entities[index]
     if (!e || !(value > 0)) return false
     this.snapshot()
+    let kind: RecordedConstraint['type']
     if (e.type === 'line') {
       const dx = e.b[0] - e.a[0]
       const dy = e.b[1] - e.a[1]
       const len = Math.hypot(dx, dy) || 1
       e.b = [e.a[0] + (dx / len) * value, e.a[1] + (dy / len) * value]
+      kind = 'Distance'
     } else if (e.type === 'circle' || e.type === 'arc') {
-      ;(e as { r: number }).r = value
+      const existing = this.entityDimKind(index)
+      const dk = as ?? existing ?? 'radius'
+      kind = dk === 'diameter' ? 'Diameter' : 'Radius'
+      ;(e as { r: number }).r = dk === 'diameter' ? value / 2 : value
     } else {
       return false
     }
@@ -2009,9 +2236,12 @@ export class SketchController {
       index < this.baseCount
         ? { geo: index }
         : { new: index - this.baseCount, sub: 0 }
-    const kind: RecordedConstraint['type'] = e.type === 'line' ? 'Distance' : 'Radius'
     this.constraints = this.constraints.filter(
-      (c) => !((c.type === 'Distance' || c.type === 'Radius') && JSON.stringify(c.refs[0]) === JSON.stringify(ref))
+      (c) =>
+        !(
+          (c.type === 'Distance' || c.type === 'Radius' || c.type === 'Diameter') &&
+          JSON.stringify(c.refs[0]) === JSON.stringify(ref)
+        )
     )
     this.constraints.push({ type: kind, refs: [ref], value })
     this.lastUserConstraint = this.constraints.length - 1
@@ -2025,11 +2255,107 @@ export class SketchController {
     return true
   }
 
-  /** Coincident / Horizontal / Vertical / Symmetric on selected geometry
-   *  points. Returns false if `type` is not a point constraint. */
+  /** 'radius' | 'diameter' if a circle/arc entity currently has a dimensional
+   *  constraint, else null. */
+  private entityDimKind(index: number): 'radius' | 'diameter' | null {
+    const ref =
+      index < this.baseCount ? { geo: index } : { new: index - this.baseCount, sub: 0 }
+    const key = JSON.stringify(ref)
+    for (const c of this.constraints) {
+      if ((c.type === 'Radius' || c.type === 'Diameter') && JSON.stringify(c.refs[0]) === key)
+        return c.type === 'Diameter' ? 'diameter' : 'radius'
+    }
+    return null
+  }
+
+  /** Flip the selected circle/arc dimension between radius and diameter,
+   *  keeping the geometry the same size. Returns the new kind, or null if the
+   *  selected dimension is not a radius/diameter. */
+  toggleSelectedDimKind(): 'radius' | 'diameter' | null {
+    const ci = this.selectedDim
+    if (ci == null || ci < 0 || ci >= this.constraints.length) return null
+    const c = this.constraints[ci]
+    if (c.type !== 'Radius' && c.type !== 'Diameter') return null
+    this.snapshot()
+    const i = c.refs[0].geo != null ? c.refs[0].geo : (c.refs[0].new ?? 0) + this.baseCount
+    const e = this.entities[i]
+    const r = (e as { r?: number })?.r ?? (c.value ?? 0) / (c.type === 'Diameter' ? 2 : 1)
+    if (c.type === 'Radius') {
+      c.type = 'Diameter'
+      c.value = r * 2
+    } else {
+      c.type = 'Radius'
+      c.value = r
+    }
+    if (ci < this.baseConstraintCount) {
+      // a reopened dimension changed kind: the sidecar matches removals on
+      // type + geoId, so queue the OLD one for removal and let the changed one
+      // re-apply as new
+      this.removedBaseConstraints.push({
+        type: c.type === 'Radius' ? 'Diameter' : 'Radius',
+        refs: [{ ...c.refs[0] }]
+      })
+      this.baseConstraintCount--
+      // move it out of the base range so getNewConstraints picks it up
+      this.constraints.splice(ci, 1)
+      this.constraints.push(c)
+      this.selectedDim = this.constraints.length - 1
+    }
+    this.geomV++
+    this.redraw()
+    void this.runSolve()
+    this.scheduleSolve()
+    this.onChange()
+    return c.type === 'Diameter' ? 'diameter' : 'radius'
+  }
+
+  /** Coincident / Horizontal / Vertical / Symmetric / PointOnObject on selected
+   *  geometry points. Returns false if `type` is not a point constraint. */
   private applyPointConstraint(type: SketchConstraintType): boolean {
     const pts = this.selectedPts.slice()
-    // a point + a whole entity -> treat the entity's nearest end as the 2nd pt
+
+    // one point + one whole CURVE entity -> PointOnObject (endpoint lies on the
+    // circle / arc rim), or Coincident (endpoint welds to the curve's centre)
+    if (pts.length === 1 && this.selected.length === 1) {
+      const oi = this.selected[0]
+      const oe = this.entities[oi]
+      if (type === 'PointOnObject' && oe && isCurve(oe)) {
+        const p = pts[0]
+        const pa = this.ptUV(p)
+        const c = (oe as { c: [number, number]; r: number }).c
+        const r = (oe as { r: number }).r
+        const d = Math.hypot(pa[0] - c[0], pa[1] - c[1]) || 1
+        // pull the point onto the rim now so the solve has a good start
+        const on: [number, number] = [
+          c[0] + ((pa[0] - c[0]) / d) * r,
+          c[1] + ((pa[1] - c[1]) / d) * r
+        ]
+        const e = this.entities[p.e]
+        if (e && e.type === 'line') {
+          if (p.pt === 2) e.b = on
+          else e.a = on
+        }
+        const curveRef =
+          oi < this.baseCount ? { geo: oi } : { new: oi - this.baseCount, sub: 0 }
+        this.snapshot()
+        this.constraints.push({
+          type: 'PointOnObject',
+          refs: [this.ptRecRef(p), curveRef]
+        })
+        this.lastUserConstraint = this.constraints.length - 1
+        this.selectedPts = []
+        this.selected = []
+        this.geomV++
+        this.redraw()
+        void this.runSolve()
+        this.scheduleSolve()
+        this.onChange()
+        return true
+      }
+    }
+
+    // a point + a whole entity -> treat the entity's nearest point as the 2nd pt
+    // (for a circle/arc that nearest point is its centre)
     if (pts.length === 1 && this.selected.length === 1 && type === 'Coincident') {
       const oi = this.selected[0]
       const a = this.ptUV(pts[0])
@@ -2147,6 +2473,24 @@ export class SketchController {
       if (pb === 1) b.a = [...target] as [number, number]
       else b.b = [...target] as [number, number]
       this.constraints.push({ type, refs: [ref(idxs[0], pa), ref(idxs[1], pb)] })
+    } else if (
+      type === 'Coincident' &&
+      ents.length === 2 &&
+      ((isLine(ents[0]) && isCurve(ents[1])) || (isCurve(ents[0]) && isLine(ents[1])))
+    ) {
+      // line endpoint welded to a circle / arc CENTRE
+      const li = isLine(ents[0]) ? idxs[0] : idxs[1]
+      const ci = li === idxs[0] ? idxs[1] : idxs[0]
+      const ln = this.entities[li] as { a: [number, number]; b: [number, number] }
+      const cv = this.entities[ci] as { c: [number, number] }
+      const near =
+        Math.hypot(ln.a[0] - cv.c[0], ln.a[1] - cv.c[1]) <=
+        Math.hypot(ln.b[0] - cv.c[0], ln.b[1] - cv.c[1])
+          ? 1
+          : 2
+      if (near === 1) ln.a = [...cv.c] as [number, number]
+      else ln.b = [...cv.c] as [number, number]
+      this.constraints.push({ type, refs: [ref(li, near), ref(ci, 3)] })
     } else if (type === 'Tangent' && ents.length === 2) {
       this.constraints.push({ type, refs: [ref(idxs[0]), ref(idxs[1])] })
     } else if (type === 'Midpoint' && ents.length === 2) {
@@ -2445,7 +2789,7 @@ export class SketchController {
     this.symEnts.clear()
 
     this.constraints.forEach((con, ci) => {
-      if (con.type === 'Distance' || con.type === 'Radius') return // shown as dims
+      if (con.type === 'Distance' || con.type === 'Radius' || con.type === 'Diameter') return // shown as dims
       const glyph = SketchController.SYM_GLYPH[con.type]
       if (!glyph) return
       const key = `con${ci}`
@@ -2678,7 +3022,7 @@ export class SketchController {
     for (let ci = 0; ci < this.constraints.length; ci++) {
       const con = this.constraints[ci]
       if (con.value == null) continue
-      if (con.type !== 'Distance' && con.type !== 'Radius') continue
+      if (con.type !== 'Distance' && con.type !== 'Radius' && con.type !== 'Diameter') continue
       const r0 = con.refs[0]
       // point-to-point / point-to-line distances have no dimension glyph yet -
       // the constraint still drives the solver
@@ -2691,7 +3035,12 @@ export class SketchController {
       if (e.type === 'line') {
         this.dimGroup.add(this.makeDim(e.a, e.b, 1, this.fmt(con.value), true, i, nudge, sel))
       } else if (e.type === 'circle' || e.type === 'arc') {
-        this.dimGroup.add(this.makeRadial(e.c, e.r, `R ${this.fmt(con.value)}`, true, i, nudge, sel))
+        // Radius glyph is drawn at the stored radius; a Diameter constraint's
+        // value IS the diameter, so halve it for the glyph geometry but label
+        // it with the diameter number and a Ø prefix.
+        const isDia = con.type === 'Diameter'
+        const label = `${isDia ? 'Ø' : 'R'} ${this.fmt(con.value)}`
+        this.dimGroup.add(this.makeRadial(e.c, e.r, label, true, i, nudge, sel))
       }
     }
 
@@ -2842,6 +3191,7 @@ export class SketchController {
     this.rebuildFills()
 
     for (let i = 0; i < this.entities.length; i++) {
+      if (this.deletedBaseSet.has(i)) continue
       const mat = this.selected.includes(i)
         ? this.selMat
         : this.hoverSymEnts.has(i)

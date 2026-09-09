@@ -2369,16 +2369,17 @@ def _reopen_constraints(sk, geo_to_ent):
         if t not in _REOPEN_CONSTRAINTS:
             continue
         et = ("Distance" if t in ("Distance", "DistanceX", "DistanceY")
-              else "Radius" if t in ("Radius", "Diameter") else t)
+              else t)  # Radius / Diameter kept distinct so the editor can
+                       # round-trip a real diameter dimension without doubling it
         refs = [ref(c.First, c.FirstPos)]
-        # Radius is always single-ref; a plain line-length Distance has no
-        # Second, but a point-to-point / point-to-line Distance does - keep it
-        if et != "Radius" and real(getattr(c, "Second", None)):
+        # Radius/Diameter are always single-ref; a plain line-length Distance has
+        # no Second, but a point-to-point / point-to-line Distance does - keep it
+        if et not in ("Radius", "Diameter") and real(getattr(c, "Second", None)):
             refs.append(ref(c.Second, c.SecondPos))
         if t == "Symmetric" and real(getattr(c, "Third", None)):
             refs.append(ref(c.Third, c.ThirdPos))
         item = {"type": et, "refs": refs}
-        if et in ("Distance", "Radius"):
+        if et in ("Distance", "Radius", "Diameter"):
             item["value"] = float(c.Value)
         out.append(item)
     return out
@@ -2524,7 +2525,10 @@ def _apply_sketch_constraints(sk, constraints, emap):
         try:
             if ct in ("Distance", "Radius", "Diameter") and refs:
                 v = float(c.get("value", 0) or 0)
-                if v > 0 and len(refs) >= 2:
+                if ct in ("Radius", "Diameter") and v > 0:
+                    # single-ref dimensional constraint on a circle/arc
+                    sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0]), v))
+                elif v > 0 and len(refs) >= 2:
                     # point-to-point, or point-to-line (2nd ref has no pt)
                     p2 = refs[1].get("pt")
                     if p2 is not None:
@@ -2559,10 +2563,12 @@ def _apply_sketch_constraints(sk, constraints, emap):
                 else:
                     sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0])))
             elif ct == "PointOnObject" and len(refs) >= 2:
+                # 2nd ref is the target curve/line/axis - resolve it through
+                # gid() so a session curve ({new:k}) works, not just a raw geoId
                 sk.addConstraint(Sketcher.Constraint(
                     "PointOnObject",
                     gid(refs[0]), int(refs[0].get("pt", 1)),
-                    int(refs[1].get("geo", -1))))
+                    gid(refs[1])))
             elif ct in _LINE_PAIR_CONSTRAINTS and len(refs) >= 2:
                 sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0]), gid(refs[1])))
             elif ct == "Coincident" and len(refs) >= 2:
@@ -2666,14 +2672,43 @@ def _strip_redundant_constraints(sk, d, max_passes=8):
     return dropped
 
 
+def _remove_matching_elements(sk, removed_indices):
+    """Delete geometry the editor removed from a reopened sketch. The editor
+    addresses geometry by entity index (same order sketch.reopen produced);
+    delete highest-first so earlier indices stay valid. FreeCAD drops any
+    constraint that referenced a deleted geometry automatically."""
+    if not removed_indices:
+        return 0
+    ent_to_geo = {}
+    ei = 0
+    for gid, g in enumerate(sk.Geometry):
+        if g.TypeId in _REOPEN_GEO_TIDS:
+            ent_to_geo[ei] = gid
+            ei += 1
+    geo_ids = sorted(
+        {ent_to_geo[int(i)] for i in removed_indices if int(i) in ent_to_geo},
+        reverse=True,
+    )
+    n = 0
+    for g in geo_ids:
+        try:
+            sk.delGeometry(g)
+            n += 1
+        except Exception:
+            pass
+    return n
+
+
 @method("sketch.finish")
 def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None,
-                  removedConstraints=None):
+                  removedConstraints=None, removedElements=None):
     """Commit geometry + manual constraints and close the sketch in one call
     (editor sends everything at once so there is a single recompute)."""
     d, sk = _obj(sketchId)
     if removedConstraints:
         _remove_matching_constraints(sk, removedConstraints)
+    if removedElements:
+        _remove_matching_elements(sk, removedElements)
     emap = _add_sketch_elements(sk, elements) if elements else []
     if constraints:
         _apply_sketch_constraints(sk, constraints, emap)

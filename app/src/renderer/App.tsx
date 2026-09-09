@@ -642,6 +642,7 @@ export function App(): JSX.Element {
     const allEnts = vpApi.current?.getSketchEntities() ?? []
     const cons = (vpApi.current?.getNewSketchConstraints() ?? []) as SketchConstraint[]
     const removedCons = (vpApi.current?.getRemovedSketchConstraints() ?? []) as SketchConstraint[]
+    const removedEnts = vpApi.current?.getRemovedSketchEntities() ?? []
     const { frame } = sketchSession
     // optimistic origin-plane entry may not have the real id back yet
     let id = sketchSession.sketchId
@@ -673,7 +674,7 @@ export function App(): JSX.Element {
     // 2. commit to the engine in the background, then reconcile with the real
     //    (constraint-solved) geometry. Uses the quiet RPC path - no spinner.
     try {
-      await apiQuiet.sketchFinish(id, newEnts, cons, removedCons)
+      await apiQuiet.sketchFinish(id, newEnts, cons, removedCons, removedEnts)
       const [scene, tree] = await Promise.all([apiQuiet.sceneGet(), apiQuiet.treeGet()])
       setMeshes(scene.meshes)
       setSketches(scene.sketches ?? [])
@@ -2759,6 +2760,30 @@ export function App(): JSX.Element {
         c?.run?.()
       },
 
+      // --- sketch controller (test-drives the real 2D editor) ---
+      sketch: {
+        addEntity: (
+          ent: import('./viewport/SketchController').SketchEntity,
+          snapTo?: Array<{ idx: number; pt: 1 | 2 | 3 } | null>
+        ) => vpApi.current?.testAddSketchEntity(ent, snapTo) ?? -1,
+        select: (indices: number[]) => vpApi.current?.testSelectSketch(indices),
+        selectPoints: (pts: Array<{ e: number; pt: 1 | 2 | 3 }>) =>
+          vpApi.current?.testSelectSketchPoints(pts),
+        selectDim: (owner: number) => vpApi.current?.testSelectSketchDim(owner) ?? false,
+        available: () => vpApi.current?.availableSketchConstraints() ?? [],
+        applyConstraint: (t: import('./viewport/SketchController').SketchConstraintType) =>
+          vpApi.current?.applySketchConstraint(t) ?? false,
+        setDimension: (i: number, v: number, as?: 'radius' | 'diameter') =>
+          vpApi.current?.setSketchDimension(i, v, as) ?? false,
+        toggleDimKind: () => vpApi.current?.toggleSketchDimKind() ?? null,
+        deleteSelection: () => vpApi.current?.testDeleteSketchSelection(),
+        entities: () => vpApi.current?.getSketchEntities() ?? [],
+        constraints: () => vpApi.current?.getSketchConstraints() ?? [],
+        newConstraints: () => vpApi.current?.getNewSketchConstraints() ?? [],
+        removedEntities: () => vpApi.current?.getRemovedSketchEntities() ?? [],
+        setConstruction: (on: boolean) => vpApi.current?.setSketchConstruction(on)
+      },
+
       // --- observe ---
       getState: () => ({
         status: status.phase,
@@ -3137,9 +3162,24 @@ export function App(): JSX.Element {
         flashSketchNotice(block)
         return
       }
-      const label = kind === 'radius' ? 'Radius' : 'Length'
-      const txt = await promptText(`${label} (number or expression)`, '')
+      // circle/arc: let the user type "d 20" / "20 dia" / "Ø20" for a diameter,
+      // or a plain number for a radius. "r 20" forces radius.
+      let dimAs: 'radius' | 'diameter' | undefined
+      const label = kind === 'radius' ? 'Radius / Diameter' : 'Length'
+      const hint =
+        kind === 'radius' ? ' (number = radius; "d20" or "Ø20" = diameter)' : ''
+      let txt = await promptText(`${label}${hint} (number or expression)`, '')
       if (!txt) return
+      if (kind === 'radius') {
+        const m = txt.trim().match(/^(?:d|dia|diam|diameter|Ø|⌀)\s*(.+)$|^(.+?)\s*(?:d|dia|diameter)$/i)
+        if (m) {
+          dimAs = 'diameter'
+          txt = (m[1] ?? m[2]).trim()
+        } else if (/^r\s+/i.test(txt.trim())) {
+          dimAs = 'radius'
+          txt = txt.trim().replace(/^r\s+/i, '')
+        }
+      }
       let value = Number(txt)
       if (isNaN(value)) {
         try {
@@ -3149,7 +3189,7 @@ export function App(): JSX.Element {
           return
         }
       }
-      vpApi.current?.setSketchDimension(entityIndex as number, value)
+      vpApi.current?.setSketchDimension(entityIndex as number, value, dimAs)
       onSketchChange()
     },
     [onSketchChange, flashSketchNotice]

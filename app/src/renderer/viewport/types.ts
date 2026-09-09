@@ -13,7 +13,7 @@ export interface RenderImageOptions {
 }
 
 export interface RecordedSketchConstraint {
-  type: SketchConstraintType | 'Distance' | 'Radius' | 'PointOnObject' | 'Symmetric'
+  type: SketchConstraintType | 'Distance' | 'Radius' | 'Diameter' | 'Symmetric'
   refs: Array<{ new?: number; geo?: number; sub?: number; pt?: number }>
   value?: number
 }
@@ -31,12 +31,20 @@ export interface ViewportApi {
   getNewSketchConstraints: () => RecordedSketchConstraint[]
   /** reopen-era constraints the user deleted this session (removed on finish) */
   getRemovedSketchConstraints: () => RecordedSketchConstraint[]
+  /** reopen-era geometry the user deleted this session, as entity indices */
+  getRemovedSketchEntities: () => number[]
   applySketchConstraint: (type: SketchConstraintType) => boolean
   /** enter "pick the geometry" mode for a constraint (no live selection) */
   startSketchConstraint: (type: SketchConstraintType) => void
   pendingSketchConstraint: () => SketchConstraintType | null
   availableSketchConstraints: () => SketchConstraintType[]
-  setSketchDimension: (entityIndex: number, value: number) => boolean
+  setSketchDimension: (
+    entityIndex: number,
+    value: number,
+    as?: 'radius' | 'diameter'
+  ) => boolean
+  /** flip the selected circle/arc dimension radius<->diameter; new kind or null */
+  toggleSketchDimKind: () => 'radius' | 'diameter' | null
   /** would a new dimension on this entity over-constrain it? message or null */
   checkSketchDimension: (entityIndex: number) => Promise<string | null>
   /** commit the pending point-to-point / point-to-line distance dimension */
@@ -51,4 +59,14 @@ export interface ViewportApi {
   setRenderSettings: (r: RenderSettings) => void
   /** render the current view to a PNG/JPEG data URL at an arbitrary size + background */
   renderImage: (opts: RenderImageOptions) => Promise<string>
+
+  // --- test hooks: drive the real SketchController without pointer events ---
+  testAddSketchEntity: (
+    ent: SketchEntity,
+    snapTo?: Array<{ idx: number; pt: 1 | 2 | 3 } | null>
+  ) => number
+  testSelectSketch: (indices: number[]) => void
+  testSelectSketchPoints: (pts: Array<{ e: number; pt: 1 | 2 | 3 }>) => void
+  testSelectSketchDim: (owner: number) => boolean
+  testDeleteSketchSelection: () => void
 }
