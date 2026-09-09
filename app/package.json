@@ -1,9 +1,13 @@
 {
   "name": "gwt-cad",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Fusion-360-style CAD front-end over a headless FreeCAD kernel",
   "main": "./out/main/index.js",
-  "author": "GrainWave Technologies",
+  "author": {
+    "name": "GrainWave Technologies",
+    "email": "support@grainwave.tech"
+  },
+  "homepage": "https://github.com/Josiah05230/personal-FreeCAD",
   "license": "MIT",
   "scripts": {
     "dev": "electron-vite dev",
@@ -12,7 +16,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "pack:dir": "electron-vite build && electron-builder --dir",
-    "pack:linux": "electron-vite build && electron-builder --linux AppImage",
+    "pack:linux": "electron-vite build && electron-builder --linux AppImage deb",
+    "pack:appimage": "electron-vite build && electron-builder --linux AppImage",
+    "pack:deb": "electron-vite build && electron-builder --linux deb",
     "pack:win": "electron-vite build && electron-builder --win nsis"
   },
   "devDependencies": {

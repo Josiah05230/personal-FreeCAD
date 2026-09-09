@@ -1,5 +1,6 @@
 appId: tech.grainwave.gwtcad
 productName: GWT-CAD
+copyright: © GrainWave Technologies
 directories:
   output: release
   buildResources: build
@@ -15,26 +16,70 @@ files:
 extraResources:
   - from: ../sidecar
     to: sidecar
+    filter:
+      - "**/*"
+      - "!**/__pycache__/**"
+      - "!**/*.pyc"
   - from: resources/freecad
     to: freecad
     filter:
       - "**/*"
 
+# a self-contained double-click experience: no separate FreeCAD download, a
+# desktop + menu shortcut, and (Windows) an ordinary install wizard.
 linux:
   target:
     - AppImage
+    - deb
   category: Graphics
+  icon: build/icon.png
+  synopsis: Fusion-360-style CAD, self-contained
+  description: >
+    A daily-driver parametric CAD application with a Fusion 360-style interface.
+    The headless FreeCAD geometry kernel is bundled - nothing else to install.
+  desktop:
+    Name: GWT-CAD
+    StartupWMClass: GWT-CAD
+    MimeType: application/x-extension-fcstd
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+deb:
+  maintainer: GrainWave Technologies <support@grainwave.tech>
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libdrm2
+    - libgbm1
+    - libxcb-dri3-0
+
+appImage:
   artifactName: ${productName}-${version}-${arch}.AppImage
 
 win:
   target:
     - nsis
+  icon: build/icon.ico
   artifactName: ${productName}-Setup-${version}.exe
 
 nsis:
   oneClick: false
-  allowToChangeInstallationDirectory: true
   perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: GWT-CAD
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
 
-# code signing is configured per-machine via env (CSC_LINK / CSC_KEY_PASSWORD
-# on Windows); left unset here so unsigned dev builds still produce.
+# Code signing is configured per-machine via env:
+#   Windows: CSC_LINK + CSC_KEY_PASSWORD (a .pfx). Left unset here so unsigned
+#            dev builds still produce - Windows SmartScreen will warn on those.
+#   macOS:   not targeted (see docs/roadmap.md).

@@ -39,6 +39,7 @@ import { ParametersPanel } from './ui/ParametersPanel'
 import { SettingsPanel } from './ui/SettingsPanel'
 import { MaterialsPanel } from './ui/MaterialsPanel'
 import { AppearancePanel } from './ui/AppearancePanel'
+import { FirstRun, firstRunDone } from './ui/FirstRun'
 import {
   loadPinned,
   savePinned,
@@ -274,6 +275,9 @@ export function App(): JSX.Element {
   const [canvases, setCanvases] = useState<CanvasDTO[]>([])
   const [renderSettings, setRenderSettings] = useState<RenderSettings>({})
   const [showAppearance, setShowAppearance] = useState(false)
+  const [showFirstRun, setShowFirstRun] = useState(
+    () => !window.cad.isE2E && !firstRunDone()
+  )
   const [busy, setBusy] = useState(0)
 
   useEffect(() => onBusyChange(setBusy), [])
@@ -3153,6 +3157,14 @@ export function App(): JSX.Element {
 
   return (
     <div className="app">
+      {showFirstRun && (
+        <FirstRun
+          onDone={(initial) => {
+            setShowFirstRun(false)
+            if (initial && Object.keys(initial).length) applyRenderSettings(initial)
+          }}
+        />
+      )}
       <AppBar
         dataOpen={dataOpen}
         onToggleData={() => setDataOpen((v) => !v)}

@@ -32,6 +32,9 @@ export interface GitBranch {
 }
 
 const cad = {
+  /** true when launched by the E2E harness (`--e2e <scenario>`) - the renderer
+   *  suppresses one-shot modals like the first-run wizard so scenarios run clean */
+  isE2E: process.argv.includes('--e2e'),
   rpc<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     return ipcRenderer.invoke('cad:rpc', method, params) as Promise<T>
   },

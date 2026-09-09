@@ -88,9 +88,19 @@ bash test/e2e/fuzz-loop.sh            # seeded random walker, runs until it find
 
 ### Packaging a standalone build
 
-`scripts/package.sh` builds an installer (AppImage / NSIS) via electron-builder
-with FreeCAD bundled, so an end user does not need FreeCAD installed at all.
-This is still early - see `docs/status.md`'s known gaps before relying on it.
+```bash
+scripts/package.sh linux    # -> app/release/GWT-CAD-<ver>-x86_64.AppImage
+                            #    app/release/GWT-CAD-<ver>-amd64.deb
+scripts/package.sh win      # -> app/release/GWT-CAD-Setup-<ver>.exe  (needs wine on Linux)
+scripts/package.sh dir      # fast unpacked build for smoke testing
+```
+
+The headless FreeCAD engine named in `config.local.json` is copied into the
+bundle (GUI-only parts trimmed, ~2.3 GB) so the end user installs **nothing
+else**: download, run the AppImage or the installer, click the desktop
+shortcut. First launch shows a short setup wizard (viewport look + mesh import
+cap). Full detail, code-signing, and the trim list are in
+[`docs/packaging.md`](docs/packaging.md).
 
 ## Viewport controls (Fusion default map)
 

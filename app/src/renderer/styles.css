@@ -2822,6 +2822,96 @@ code {
   width: 100%;
 }
 
+/* ---- First-run wizard ---- */
+.firstrun-backdrop {
+  position: fixed;
+  inset: 0;
+  background: #0b0d10cc;
+  backdrop-filter: blur(3px);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.firstrun {
+  width: 460px;
+  background: #23262a;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 24px 60px #000a;
+  padding: 20px;
+  font-size: 12px;
+}
+.firstrun-brand {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+.firstrun-brand img {
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+.firstrun-brand h2 {
+  margin: 0 0 3px;
+  font-size: 16px;
+}
+.firstrun-brand p {
+  margin: 0;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+.firstrun-step h3 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.firstrun-step label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.firstrun-step label > span:first-child {
+  flex: 0 0 110px;
+  color: var(--text-dim);
+}
+.firstrun-step select,
+.firstrun-step input {
+  flex: 1;
+  background: #1b1e22;
+  border: 1px solid var(--line-soft);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+.firstrun-hint {
+  color: var(--text-dim);
+  line-height: 1.45;
+  margin: 8px 0 0;
+}
+.firstrun-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+}
+.firstrun-actions button {
+  padding: 6px 14px;
+  border-radius: 5px;
+  border: 1px solid var(--line-soft);
+  background: #2a2e34;
+  color: var(--text);
+  cursor: pointer;
+}
+.firstrun-primary {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #fff !important;
+}
+
 /* ---- Batch 13: suppressed feature chip ---- */
 .tl-chip.suppressed {
   opacity: 0.4;

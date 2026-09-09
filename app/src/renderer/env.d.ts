@@ -32,6 +32,7 @@ interface GitBranch {
 }
 
 interface CadBridge {
+  isE2E: boolean
   rpc<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>
   sidecarStatus(): Promise<{ started: boolean }>
   onSidecarRespawned(fn: () => void): () => void
