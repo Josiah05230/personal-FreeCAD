@@ -348,6 +348,8 @@ export function Viewport({
           stateRef.current?.sketch?.getRemovedConstraints() ?? [],
         getRemovedSketchEntities: () =>
           stateRef.current?.sketch?.getRemovedEntities() ?? [],
+        getConvertedSketchEntities: () =>
+          stateRef.current?.sketch?.getConvertedEntities() ?? [],
         applySketchConstraint: (t) => stateRef.current?.sketch?.applyConstraint(t) ?? false,
         startSketchConstraint: (t) => stateRef.current?.sketch?.beginConstraint(t),
         pendingSketchConstraint: () =>
@@ -379,7 +381,9 @@ export function Viewport({
         testSelectSketchPoints: (pts) => stateRef.current?.sketch?.testSelectPoints(pts),
         testSelectSketchDim: (owner) =>
           stateRef.current?.sketch?.testSelectDim(owner) ?? false,
-        testDeleteSketchSelection: () => stateRef.current?.sketch?.testDeleteSelected()
+        testDeleteSketchSelection: () => stateRef.current?.sketch?.testDeleteSelected(),
+        testToggleSketchConstruction: () =>
+          stateRef.current?.sketch?.testToggleConstruction() ?? false
       }
     }
 

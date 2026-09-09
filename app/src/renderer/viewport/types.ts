@@ -33,6 +33,8 @@ export interface ViewportApi {
   getRemovedSketchConstraints: () => RecordedSketchConstraint[]
   /** reopen-era geometry the user deleted this session, as entity indices */
   getRemovedSketchEntities: () => number[]
+  /** reopen-era geometry whose construction flag was flipped this session */
+  getConvertedSketchEntities: () => Array<[number, boolean]>
   applySketchConstraint: (type: SketchConstraintType) => boolean
   /** enter "pick the geometry" mode for a constraint (no live selection) */
   startSketchConstraint: (type: SketchConstraintType) => void
@@ -69,4 +71,5 @@ export interface ViewportApi {
   testSelectSketchPoints: (pts: Array<{ e: number; pt: 1 | 2 | 3 }>) => void
   testSelectSketchDim: (owner: number) => boolean
   testDeleteSketchSelection: () => void
+  testToggleSketchConstruction: () => boolean
 }

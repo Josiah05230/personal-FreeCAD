@@ -2415,7 +2415,14 @@ def sketch_reopen(sketchId):
             ent = {"type": "spline", "pts": pts}
         else:
             continue
-        if getattr(g, "Construction", False):
+        # construction state lives on the Sketch, not the geometry object, in
+        # this FreeCAD build - getConstruction(gid), with getattr as a fallback
+        is_con = False
+        try:
+            is_con = bool(sk.getConstruction(gid))
+        except Exception:
+            is_con = bool(getattr(g, "Construction", False))
+        if is_con:
             ent["construction"] = True
         geo_to_ent[gid] = len(ents)
         ents.append(ent)
@@ -2699,9 +2706,34 @@ def _remove_matching_elements(sk, removed_indices):
     return n
 
 
+def _convert_elements(sk, converted):
+    """Flip the construction flag on reopened geometry the user converted.
+    `converted` = [[entityIndex, isConstruction], ...] against the reopen order."""
+    if not converted:
+        return 0
+    ent_to_geo = {}
+    ei = 0
+    for gid, g in enumerate(sk.Geometry):
+        if g.TypeId in _REOPEN_GEO_TIDS:
+            ent_to_geo[ei] = gid
+            ei += 1
+    n = 0
+    for pair in converted:
+        try:
+            idx, is_con = int(pair[0]), bool(pair[1])
+            gid = ent_to_geo.get(idx)
+            if gid is None:
+                continue
+            sk.setConstruction(gid, is_con)
+            n += 1
+        except Exception:
+            pass
+    return n
+
+
 @method("sketch.finish")
 def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None,
-                  removedConstraints=None, removedElements=None):
+                  removedConstraints=None, removedElements=None, convertedElements=None):
     """Commit geometry + manual constraints and close the sketch in one call
     (editor sends everything at once so there is a single recompute)."""
     d, sk = _obj(sketchId)
@@ -2709,6 +2741,8 @@ def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None,
         _remove_matching_constraints(sk, removedConstraints)
     if removedElements:
         _remove_matching_elements(sk, removedElements)
+    if convertedElements:
+        _convert_elements(sk, convertedElements)
     emap = _add_sketch_elements(sk, elements) if elements else []
     if constraints:
         _apply_sketch_constraints(sk, constraints, emap)

@@ -175,6 +175,9 @@ export class SketchController {
    *  checks in the draw / pick / solve loops (its slot in `entities` stays so
    *  indices are stable, but it must not render or be pickable) */
   private deletedBaseSet = new Set<number>()
+  /** reopened entity index -> new construction flag, for base geometry the user
+   *  converted this session (sent to sketch.finish as convertedElements) */
+  private convertedBase = new Map<number, boolean>()
   /** index in `constraints` of the last one the user explicitly added, so the
    *  solver can veto it if it over-constrains; -1 once cleared */
   private lastUserConstraint = -1
@@ -310,6 +313,28 @@ export class SketchController {
   }
 
   toggleConstruction(): boolean {
+    // If entities are selected, flip THEIR construction flag (Fusion / FreeCAD
+    // behaviour: select geometry, hit the Construction button, it converts).
+    // Otherwise flip the "draw as construction" mode for new geometry.
+    const sel = this.selected.filter((i) => this.entities[i])
+    if (sel.length) {
+      this.snapshot()
+      // if any selected entity is normal, make them all construction; else all normal
+      const anyNormal = sel.some((i) => !this.entities[i].construction)
+      for (const i of sel) {
+        if (anyNormal) this.entities[i].construction = true
+        else delete this.entities[i].construction
+        // a base entity converting -> it must be re-sent so the real sketch's
+        // geoId gets setConstruction; track it as removed+re-added is overkill,
+        // instead record a light marker the finish path reads
+        if (i < this.baseCount) this.convertedBase.set(i, !!this.entities[i].construction)
+      }
+      this.geomV++
+      this.redraw()
+      this.scheduleSolve()
+      this.onChange()
+      return this.construction
+    }
     this.construction = !this.construction
     this.geomV++
     this.redraw()
@@ -391,6 +416,12 @@ export class SketchController {
     this.deleteSelected()
   }
 
+  /** Toggle construction (test hook - same as the Construction button: converts
+   *  the selection if any, else flips draw-as-construction mode). */
+  testToggleConstruction(): boolean {
+    return this.toggleConstruction()
+  }
+
   /** Entities added since the session began (for reopen -> only push the new). */
   getNewEntities(): SketchEntity[] {
     return this.entities.slice(this.baseCount)
@@ -416,6 +447,13 @@ export class SketchController {
     return this.removedBaseEntities.slice()
   }
 
+  /** Reopen-era geometry whose construction flag the user flipped this session,
+   *  as [entityIndex, isConstruction] pairs (for sketch.finish
+   *  convertedElements). */
+  getConvertedEntities(): Array<[number, boolean]> {
+    return [...this.convertedBase.entries()]
+  }
+
   get constraintCount(): number {
     return this.constraints.length
   }
@@ -432,6 +470,7 @@ export class SketchController {
     this.removedBaseConstraints = []
     this.removedBaseEntities = []
     this.deletedBaseSet = new Set()
+    this.convertedBase = new Map()
     this.undoStack = []
     this.geomV++
     this.redraw()
@@ -1160,7 +1199,16 @@ export class SketchController {
     // rectangle side stays a rectangle side (the sidecar still re-solves later)
     this.solveLocal(this.draggedKeys(), this.rectHoldKeys())
     this.dragMoved = true
-    this.drag.last = uv
+    // Anchor the next delta to where the dragged handle ACTUALLY ended up after
+    // the local solve, not where the cursor is. Without this, dragging against a
+    // constraint lets the cursor run away from the geometry (it snaps back on
+    // release) - misleading. Now the handle stays glued to the constrained
+    // position and the drag simply resists.
+    const dh = this.drag.handle
+    if (dh === 'a' && (e.type === 'line' || e.type === 'rect')) this.drag.last = [...e.a]
+    else if (dh === 'b' && (e.type === 'line' || e.type === 'rect')) this.drag.last = [...e.b]
+    else if (dh === 'c' && (e.type === 'circle' || e.type === 'arc')) this.drag.last = [...e.c]
+    else this.drag.last = uv
     this.geomV++
     this.redraw()
   }

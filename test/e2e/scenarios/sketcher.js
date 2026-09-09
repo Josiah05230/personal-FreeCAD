@@ -187,6 +187,34 @@ await sleep(250);
 const sk2 = await rpc('sketch.reopen', { sketchId: skId });
 assert(sk2.entities.length === 3, 'the real sketch lost a line on Finish (' + sk2.entities.length + ' left)');
 
+// ---------------------------------------------------------------- convert to construction
+note('--- toggle selected geometry to/from construction, round-tripped ---');
+await freshSketch();
+G.sketch.addEntity({ type: 'line', a: [0, 0], b: [40, 0] });
+G.sketch.addEntity({ type: 'line', a: [0, 10], b: [40, 10] });
+await sleep(60);
+await G.finishSketch();
+await idle();
+await sleep(200);
+const cId = (G.getState().selection.find((s) => s.startsWith('sketch:')) || '').slice(7);
+await G.editSketch(cId);
+await waitFor(() => G.getState().sketchMode, 4000);
+await sleep(120);
+assert(G.sketch.entities().every((e) => !e.construction), 'both reopened lines start as real geometry');
+G.sketch.select([1]);
+G.sketch.toggleConstruction(); // the Construction button, with a selection -> converts it
+await sleep(40);
+assert(G.sketch.entities()[1].construction === true, 'the selected line converted to construction');
+assert(
+  G.sketch.convertedEntities().some((p) => p[0] === 1 && p[1] === true),
+  'the conversion is queued for the sidecar (convertedElements)'
+);
+await G.finishSketch();
+await idle();
+await sleep(250);
+const cRe = await rpc('sketch.reopen', { sketchId: cId });
+assert(cRe.entities[1] && cRe.entities[1].construction === true, 'the real sketch line is now construction after Finish');
+
 // ---------------------------------------------------------------- health
 note('--- editor + engine healthy at end ---');
 const fin = G.getState();

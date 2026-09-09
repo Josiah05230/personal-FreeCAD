@@ -644,6 +644,7 @@ export function App(): JSX.Element {
     const cons = (vpApi.current?.getNewSketchConstraints() ?? []) as SketchConstraint[]
     const removedCons = (vpApi.current?.getRemovedSketchConstraints() ?? []) as SketchConstraint[]
     const removedEnts = vpApi.current?.getRemovedSketchEntities() ?? []
+    const convertedEnts = vpApi.current?.getConvertedSketchEntities() ?? []
     const { frame } = sketchSession
     // optimistic origin-plane entry may not have the real id back yet
     let id = sketchSession.sketchId
@@ -675,7 +676,7 @@ export function App(): JSX.Element {
     // 2. commit to the engine in the background, then reconcile with the real
     //    (constraint-solved) geometry. Uses the quiet RPC path - no spinner.
     try {
-      await apiQuiet.sketchFinish(id, newEnts, cons, removedCons, removedEnts)
+      await apiQuiet.sketchFinish(id, newEnts, cons, removedCons, removedEnts, convertedEnts)
       const [scene, tree] = await Promise.all([apiQuiet.sceneGet(), apiQuiet.treeGet()])
       setMeshes(scene.meshes)
       setSketches(scene.sketches ?? [])
@@ -2775,6 +2776,8 @@ export function App(): JSX.Element {
           vpApi.current?.setSketchDimension(i, v, as) ?? false,
         toggleDimKind: () => vpApi.current?.toggleSketchDimKind() ?? null,
         deleteSelection: () => vpApi.current?.testDeleteSketchSelection(),
+        toggleConstruction: () => vpApi.current?.testToggleSketchConstruction() ?? false,
+        convertedEntities: () => vpApi.current?.getConvertedSketchEntities() ?? [],
         entities: () => vpApi.current?.getSketchEntities() ?? [],
         constraints: () => vpApi.current?.getSketchConstraints() ?? [],
         newConstraints: () => vpApi.current?.getNewSketchConstraints() ?? [],
