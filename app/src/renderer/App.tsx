@@ -33,7 +33,7 @@ import { OperationDialog, type OpKind, type OpValues } from './ui/OperationDialo
 import { DrawingSheet } from './ui/DrawingSheet'
 import { AssemblyPanel } from './ui/AssemblyPanel'
 import { SketchRibbon } from './ui/SketchRibbon'
-import { MeasurePanel, SectionPanel, type SectionState } from './ui/InspectPanels'
+import { MeasurePanel, SectionPanel, MassPropsPanel, type SectionState } from './ui/InspectPanels'
 import { PromptHost, promptText, promptForm } from './ui/PromptDialog'
 import { ParametersPanel } from './ui/ParametersPanel'
 import { SettingsPanel } from './ui/SettingsPanel'
@@ -271,6 +271,7 @@ export function App(): JSX.Element {
   const timelineSelRef = useRef<string[]>([])
   timelineSelRef.current = timelineSel
   const [measureResult, setMeasureResult] = useState<MeasureResult | null>(null)
+  const [massProps, setMassProps] = useState<import('./rpc').MassProperties | null>(null)
   const [section, setSection] = useState<SectionState | null>(null)
   const [canvases, setCanvases] = useState<CanvasDTO[]>([])
   const [renderSettings, setRenderSettings] = useState<RenderSettings>({})
@@ -2553,18 +2554,15 @@ export function App(): JSX.Element {
     void (async () => {
       try {
         const sel = selection
-          .filter((s) => s.kind === 'body')
+          .filter((s) => s.kind === 'body' || s.kind === 'face')
           .map((s) => (s as { bodyId: string }).bodyId)
-        const r = await api.centerOfMass(sel)
-        const c = r.combined.com
-        flashSketchNotice(
-          `Center of mass: (${c[0].toFixed(2)}, ${c[1].toFixed(2)}, ${c[2].toFixed(2)}) mm - volume ${r.combined.volume.toFixed(1)} mm3`
-        )
+        const r = await api.centerOfMass([...new Set(sel)])
+        setMassProps(r)
       } catch (e) {
         window.alert((e as Error).message)
       }
     })()
-  }, [selection, flashSketchNotice])
+  }, [selection])
 
   const newDesign = useCallback(() => {
     const id = `d${Date.now()}`
@@ -3476,6 +3474,9 @@ export function App(): JSX.Element {
                       onChange={setSection}
                       onClose={() => setSection(null)}
                     />
+                  )}
+                  {massProps && (
+                    <MassPropsPanel data={massProps} onClose={() => setMassProps(null)} />
                   )}
                   {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
                   {paramsOpen && (

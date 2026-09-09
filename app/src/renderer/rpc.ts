@@ -294,6 +294,35 @@ export function selectionToRef(s: Selection): GeomRef | null {
   return null
 }
 
+export interface BodyMass {
+  id: string
+  label: string
+  com: number[]
+  volume: number
+  area: number
+  /** kg/mm^3 from the assigned material, or null if none / no density */
+  density: number | null
+  /** volume * density, kg; null when density is null */
+  mass: number | null
+  /** 3x3 moment-of-inertia tensor about the CoG (kg*mm^2 when mass known, else unit-density) */
+  inertia?: number[][]
+  principal?: {
+    moments: number[]
+    axes: number[][]
+    radiusOfGyration: number[]
+  }
+}
+
+export interface MassProperties {
+  bodies: BodyMass[]
+  combined: {
+    com: number[]
+    volume: number
+    mass?: number
+    comMass?: number[]
+  }
+}
+
 export interface MeasureResult {
   refs: string[]
   kind?: 'length' | 'area' | 'point' | 'distance'
@@ -781,10 +810,7 @@ export const api = {
       { ids }
     ),
   centerOfMass: (ids: string[] = []) =>
-    rpc<{
-      bodies: { id: string; com: number[]; volume: number; area: number }[]
-      combined: { com: number[]; volume: number }
-    }>('inspect.centerOfMass', { ids }),
+    rpc<MassProperties>('inspect.centerOfMass', { ids }),
 
   // --- Modify panel additions ---
   offsetFace: (faces: string[], distance: number) =>

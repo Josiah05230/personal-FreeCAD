@@ -1172,6 +1172,38 @@ code {
   color: var(--accent-hi);
 }
 
+.mass-body {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mass-body:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.mass-body-name {
+  font-weight: 600;
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+.mass-tensor {
+  margin-top: 4px;
+}
+.mass-tensor table {
+  border-collapse: collapse;
+  margin: 3px 0;
+  font-family: 'SF Mono', Consolas, monospace;
+  font-size: 10px;
+}
+.mass-tensor td {
+  border: 1px solid var(--line-soft);
+  padding: 2px 6px;
+  text-align: right;
+  color: var(--accent-hi);
+}
+
 .inspect-field {
   display: flex;
   align-items: center;

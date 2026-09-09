@@ -119,7 +119,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'insp.measure', title: 'Measure', group: 'Inspect', tab: 'SOLID', icon: 'axis', hotkey: 'i', run: () => ctx.startMeasure() },
     { id: 'insp.section', title: 'Section', group: 'Inspect', tab: 'SOLID', icon: 'plane', run: () => ctx.toggleSection() },
     { id: 'insp.interference', title: 'Interference', group: 'Inspect', tab: 'SOLID', icon: 'combine', run: () => ctx.interference() },
-    { id: 'insp.com', title: 'Center of Mass', group: 'Inspect', tab: 'SOLID', icon: 'point', run: () => ctx.centerOfMass() },
+    { id: 'insp.com', title: 'Mass Properties', group: 'Inspect', tab: 'SOLID', icon: 'point', run: () => ctx.centerOfMass() },
     // --- MESH tab (Fusion mesh workspace) ---
     { id: 'mesh.fromBRep', title: 'BRep to Mesh', group: 'Create', tab: 'MESH', icon: 'extrude', run: op('meshFromBRep') },
     { id: 'mesh.insert', title: 'Insert Mesh', group: 'Create', tab: 'MESH', icon: 'point', run: () => ctx.importStep() },

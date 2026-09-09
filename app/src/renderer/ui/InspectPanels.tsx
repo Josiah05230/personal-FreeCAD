@@ -1,4 +1,4 @@
-import type { MeasureResult } from '../rpc'
+import type { MeasureResult, MassProperties } from '../rpc'
 
 export function MeasurePanel({
   result,
@@ -59,6 +59,95 @@ function Row({ k, v }: { k: string; v: string }): JSX.Element {
     <div className="inspect-row">
       <span className="inspect-k">{k}</span>
       <span className="inspect-v">{v}</span>
+    </div>
+  )
+}
+
+const g = (n: number): string => n.toLocaleString(undefined, { maximumSignificantDigits: 5 })
+const xyz = (a: number[]): string => a.map((n) => n.toFixed(3)).join(', ')
+
+/** Volume / area / centre of mass, and - when a material with a density is
+ *  assigned - real mass and the moment-of-inertia tensor. */
+export function MassPropsPanel({
+  data,
+  onClose
+}: {
+  data: MassProperties | null
+  onClose: () => void
+}): JSX.Element {
+  return (
+    <div className="inspect-panel">
+      <div className="inspect-head">
+        MASS PROPERTIES
+        <button className="inspect-x" onClick={onClose}>
+          ×
+        </button>
+      </div>
+      {!data && <div className="inspect-hint">Select one or more bodies.</div>}
+      {data && (
+        <div className="inspect-body">
+          {data.bodies.map((b) => (
+            <div key={b.id} className="mass-body">
+              <div className="mass-body-name">{b.label}</div>
+              <Row k="Volume" v={`${g(b.volume)} mm³`} />
+              <Row k="Surface area" v={`${g(b.area)} mm²`} />
+              <Row k="Center of mass" v={xyz(b.com)} />
+              {b.density != null ? (
+                <>
+                  <Row k="Density" v={`${(b.density * 1e6).toFixed(3)} g/cm³`} />
+                  <Row k="Mass" v={`${g((b.mass ?? 0) * 1000)} g`} />
+                  {b.principal && (
+                    <Row
+                      k="Principal moments"
+                      v={b.principal.moments.map((m) => g(m)).join(', ') + ' g·cm²'}
+                    />
+                  )}
+                  {b.inertia && (
+                    <div className="mass-tensor">
+                      <span className="inspect-k">Inertia tensor (about CoG)</span>
+                      <table>
+                        <tbody>
+                          {b.inertia.map((row, i) => (
+                            <tr key={i}>
+                              {row.map((c, j) => (
+                                <td key={j}>{g(c * 1e6)}</td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      <span className="inspect-hint">g·mm² · 10³</span>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="inspect-hint">
+                  Assign a material with a density (Modify → Material) for mass and
+                  inertia.
+                </div>
+              )}
+            </div>
+          ))}
+          {data.bodies.length > 1 && (
+            <div className="mass-body">
+              <div className="mass-body-name">Combined</div>
+              <Row k="Volume" v={`${g(data.combined.volume)} mm³`} />
+              <Row
+                k="Center of mass (by volume)"
+                v={xyz(data.combined.com)}
+              />
+              {data.combined.mass != null && (
+                <>
+                  <Row k="Total mass" v={`${g(data.combined.mass * 1000)} g`} />
+                  {data.combined.comMass && (
+                    <Row k="Center of mass (by mass)" v={xyz(data.combined.comMass)} />
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

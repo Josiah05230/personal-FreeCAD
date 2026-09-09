@@ -325,10 +325,87 @@ def interference(ids=None):
 # inspect.centerOfMass   (QUERY)
 # --------------------------------------------------------------------------- #
 
+def _density_kg_mm3(o):
+    """kg/mm^3 from the object's assigned FreeCAD material, or None. Not every
+    preset carries a Density (some only have e.g. machining data)."""
+    m = getattr(o, "ShapeMaterial", None)
+    if m is None or not getattr(m, "Name", None) or m.Name == "Default":
+        return None
+    q = None
+    try:
+        if m.hasPhysicalProperty("Density"):
+            q = m.getPhysicalValue("Density")
+    except Exception:
+        q = None
+    if q is None:
+        # some builds expose it only through the raw properties dict as a string
+        try:
+            raw = m.PhysicalProperties.get("Density")
+            if raw:
+                from FreeCAD import Units
+                q = Units.Quantity(str(raw))
+        except Exception:
+            q = None
+    if q is None:
+        return None
+    try:
+        return float(q.getValueAs("kg/mm^3"))
+    except Exception:
+        try:
+            # last resort: assume kg/m^3 magnitude
+            return float(q) / 1.0e9
+        except Exception:
+            return None
+
+
+def _inertia_tensor(shape, density):
+    """OCCT MatrixOfInertia is about the CoG for unit density; scale by density.
+    Returns the 3x3 tensor (kg*mm^2 when density is kg/mm^3) and the principal
+    moments + axes."""
+    try:
+        M = shape.MatrixOfInertia  # FreeCAD.Matrix, mass-normalised for unit rho
+        rho = density if density else 1.0
+        t = [
+            [M.A11 * rho, M.A12 * rho, M.A13 * rho],
+            [M.A21 * rho, M.A22 * rho, M.A23 * rho],
+            [M.A31 * rho, M.A32 * rho, M.A33 * rho],
+        ]
+    except Exception:
+        return None, None
+    principal = None
+
+    def _vec3(x, default):
+        try:
+            if hasattr(x, "x"):  # Base.Vector
+                return [float(x.x), float(x.y), float(x.z)]
+            return [float(v) for v in x][:3] or list(default)
+        except Exception:
+            return list(default)
+
+    try:
+        pp = shape.PrincipalProperties  # dict
+        rho = density if density else 1.0
+        principal = {
+            "moments": [float(v) * rho for v in _vec3(pp.get("Moments"), (0, 0, 0))],
+            "axes": [
+                _vec3(pp.get("FirstAxisOfInertia"), (1, 0, 0)),
+                _vec3(pp.get("SecondAxisOfInertia"), (0, 1, 0)),
+                _vec3(pp.get("ThirdAxisOfInertia"), (0, 0, 1)),
+            ],
+            "radiusOfGyration": _vec3(pp.get("RadiusOfGyration"), (0, 0, 0)),
+        }
+    except Exception:
+        pass
+    return t, principal
+
+
 @method("inspect.centerOfMass")
 def center_of_mass(ids=None):
-    """Per-body COM / volume / area plus a volume-weighted combined COM.
-    Default: every solid body in the doc."""
+    """Per-body mass properties: volume, area, centre of mass, and - when the
+    body has an assigned material with a density - real mass and a moment-of-
+    inertia tensor (about the CoG) with principal moments/axes. Plus a
+    volume-weighted (and, where all bodies have a density, mass-weighted)
+    combined centre. Default: every solid body in the doc."""
     d = _doc()
     if ids:
         objs = [_need(d, n) for n in ids]
@@ -336,8 +413,11 @@ def center_of_mass(ids=None):
         objs = _default_solids(d)
 
     out = []
-    acc = Vector(0, 0, 0)
+    acc_v = Vector(0, 0, 0)
+    acc_m = Vector(0, 0, 0)
     tv = 0.0
+    tm = 0.0
+    all_have_density = True
     for o in objs:
         s = _solid_of(o)
         if s is None or s.isNull():
@@ -348,10 +428,29 @@ def center_of_mass(ids=None):
             a = float(s.Area)
         except Exception:
             continue
-        out.append({"id": o.Name, "com": [com.x, com.y, com.z],
-                    "volume": v, "area": a})
+        rho = _density_kg_mm3(o)
+        mass = v * rho if rho else None
+        entry = {"id": o.Name, "label": getattr(o, "Label", o.Name),
+                 "com": [com.x, com.y, com.z], "volume": v, "area": a,
+                 "density": rho, "mass": mass}
+        tensor, principal = _inertia_tensor(s, rho)
+        if tensor is not None:
+            entry["inertia"] = tensor
+        if principal is not None:
+            entry["principal"] = principal
+        out.append(entry)
         if v > 1e-12:
-            acc = acc + com.multiply(v)
+            acc_v = acc_v + Vector(com.x * v, com.y * v, com.z * v)
             tv += v
-    ccom = [acc.x / tv, acc.y / tv, acc.z / tv] if tv > 1e-12 else [0.0, 0.0, 0.0]
-    return {"bodies": out, "combined": {"com": ccom, "volume": tv}}
+        if mass:
+            acc_m = acc_m + Vector(com.x * mass, com.y * mass, com.z * mass)
+            tm += mass
+        else:
+            all_have_density = False
+
+    ccom_v = [acc_v.x / tv, acc_v.y / tv, acc_v.z / tv] if tv > 1e-12 else [0.0, 0.0, 0.0]
+    combined = {"com": ccom_v, "volume": tv}
+    if all_have_density and tm > 1e-12:
+        combined["mass"] = tm
+        combined["comMass"] = [acc_m.x / tm, acc_m.y / tm, acc_m.z / tm]
+    return {"bodies": out, "combined": combined}
