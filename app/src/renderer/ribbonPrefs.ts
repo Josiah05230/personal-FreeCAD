@@ -31,6 +31,10 @@ export const DEFAULT_PINNED = new Set<string>([
   'panel.data',
   'panel.git',
   'panel.settings',
+  // APPEARANCE tab - both tools on the ribbon face
+  'appr.appearance',
+  'appr.render',
+  'mod.appearance',
   // MESH tab - short workspace, room on the ribbon face for everything
   'mesh.fromBRep',
   'mesh.insert',

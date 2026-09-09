@@ -1,5 +1,12 @@
 import * as THREE from 'three'
-import type { RenderMesh, SketchRender, DatumDTO, CanvasDTO } from '../rpc'
+import type { RenderMesh, SketchRender, DatumDTO, CanvasDTO, RenderSettings } from '../rpc'
+import {
+  effectiveAppearance,
+  effectiveRender,
+  FINISHES,
+  DEFAULT_RENDER,
+  type RGB
+} from '../appearance'
 
 export interface BuiltScene {
   group: THREE.Group
@@ -29,6 +36,25 @@ const AXIS_COLOR: Record<string, number> = {
 const SOLID_COLOR = 0x8a8f96
 const EDGE_COLOR = 0x1c1f24
 const SKETCH_COLOR = 0x2f9fe0
+
+/** Module-level render settings, updated by the viewport each frame it changes.
+ *  buildBody reads this so a shading-mode / global-edge change re-styles bodies
+ *  on the next syncScene without every call site having to thread it through. */
+let RENDER: Required<RenderSettings> = { ...DEFAULT_RENDER }
+export function setSceneRender(r: RenderSettings | undefined): void {
+  RENDER = effectiveRender(r)
+}
+export function currentSceneRender(): Required<RenderSettings> {
+  return RENDER
+}
+
+function toColor(c: RGB | string | undefined, fallback: number): THREE.Color {
+  if (!c) return new THREE.Color(fallback)
+  if (typeof c === 'string') return new THREE.Color(c)
+  return new THREE.Color(c[0], c[1], c[2])
+}
+
+const EDGE_DASH = { dashSize: 1.6, gapSize: 1.1 }
 
 function boxOf(objs: THREE.Object3D[]): THREE.Box3 {
   const b = new THREE.Box3()
@@ -137,13 +163,19 @@ function buildCanvas(c: CanvasDTO): THREE.Object3D {
 /** mesh + per-edge lines + invisible pickable vertex points for one body */
 function buildBody(m: RenderMesh): THREE.Object3D[] {
   const objs: THREE.Object3D[] = []
+  const R = RENDER
+  const A = effectiveAppearance(m.appearance)
+  const fin = FINISHES[A.finish ?? 'plastic'] ?? FINISHES.plastic
+
   // a non-finite vertex from the tessellator would poison the bounding box and
   // blank the viewport when the camera frames it - drop such a mesh's geometry
   const posOk = m.positions.every((v) => Number.isFinite(v))
   const geom = new THREE.BufferGeometry()
   geom.setAttribute('position', new THREE.Float32BufferAttribute(posOk ? m.positions : [], 3))
-  if (posOk && (m.needsNormals || m.normals.length !== m.positions.length)) {
+  const wantFlat = fin.flatShading || R.shading === 'flat'
+  if (posOk && (m.needsNormals || wantFlat || m.normals.length !== m.positions.length)) {
     geom.setIndex(m.indices)
+    if (wantFlat) geom.deleteAttribute('normal')
     geom.computeVertexNormals()
   } else if (posOk) {
     geom.setAttribute('normal', new THREE.Float32BufferAttribute(m.normals, 3))
@@ -151,15 +183,49 @@ function buildBody(m: RenderMesh): THREE.Object3D[] {
   }
   geom.userData = { bodyId: m.id, faceGroups: m.faceGroups }
 
-  const color = m.color
-    ? new THREE.Color(m.color[0], m.color[1], m.color[2])
-    : new THREE.Color(SOLID_COLOR)
-  const mesh = new THREE.Mesh(
-    geom,
-    new THREE.MeshStandardMaterial({ color, metalness: 0.15, roughness: 0.5, side: THREE.DoubleSide })
-  )
+  // colour: appearance record wins, else the sidecar's per-body colour, else theme
+  const baseColor = m.appearance?.color
+    ? toColor(m.appearance.color, SOLID_COLOR)
+    : m.color
+      ? new THREE.Color(m.color[0], m.color[1], m.color[2])
+      : new THREE.Color(SOLID_COLOR)
+
+  const opacity = A.opacity ?? fin.opacity ?? 1
+  const transparent = opacity < 0.999
+  const wireOnly =
+    fin.wireframeOnly || R.shading === 'wireframe' || R.shading === 'hidden-line'
+
+  const mat = new THREE.MeshPhysicalMaterial({
+    color: baseColor,
+    metalness: fin.metalness,
+    roughness: fin.roughness,
+    clearcoat: fin.clearcoat,
+    clearcoatRoughness: fin.clearcoatRoughness,
+    reflectivity: fin.reflectivity ?? 0.5,
+    sheen: fin.sheen ?? 0,
+    side: THREE.DoubleSide,
+    flatShading: wantFlat,
+    transparent,
+    opacity,
+    depthWrite: !transparent
+  })
+  const mesh = new THREE.Mesh(geom, mat)
   mesh.name = `body:${m.id}`
   mesh.userData = { pick: 'face', bodyId: m.id, faceGroups: m.faceGroups }
+  // in wireframe / hidden-line modes the filled surface is suppressed (in
+  // hidden-line it stays as an invisible depth mask so back edges are occluded)
+  if (wireOnly) {
+    if (R.shading === 'hidden-line') {
+      mat.colorWrite = false
+      mat.opacity = 1
+      mat.transparent = false
+      mat.polygonOffset = true
+      mat.polygonOffsetFactor = 1
+      mat.polygonOffsetUnits = 1
+    } else {
+      mesh.visible = false
+    }
+  }
   objs.push(mesh)
 
   if (m.vertices && m.vertices.length) {
@@ -181,14 +247,60 @@ function buildBody(m: RenderMesh): THREE.Object3D[] {
     objs.push(pts)
   }
 
-  for (const e of m.edges) {
-    const g = new THREE.BufferGeometry()
-    g.setAttribute('position', new THREE.Float32BufferAttribute(e.points, 3))
-    const line = new THREE.Line(g, new THREE.LineBasicMaterial({ color: EDGE_COLOR }))
-    line.name = `edge:${m.id}:${e.edge}`
-    line.userData = { pick: 'edge', bodyId: m.id, sub: `Edge${e.edge + 1}` }
-    line.renderOrder = 1
-    objs.push(line)
+  // ---- edges ----
+  // per-body override (A.edges) layered over the document edge settings (R).
+  const eA = A.edges ?? {}
+  const bodyEdgesOn = eA.show ?? (R.edgeMode !== 'none')
+  const showEdgesForMode =
+    R.shading === 'shaded-edges' ||
+    R.shading === 'wireframe' ||
+    R.shading === 'hidden-line' ||
+    R.edgeMode === 'all'
+  const drawEdges =
+    bodyEdgesOn && (showEdgesForMode || R.edgeMode === 'all' || R.shading === 'shaded-edges')
+
+  const edgeColor = eA.color
+    ? toColor(eA.color, EDGE_COLOR)
+    : toColor(R.edgeColor, EDGE_COLOR)
+  const tangentStyle = eA.tangent ?? R.tangentEdges ?? 'show'
+
+  if (drawEdges) {
+    for (const e of m.edges) {
+      const isTangent = e.kind === 'tangent' || e.kind === 'free'
+      const style = isTangent ? tangentStyle : 'show'
+      if (style === 'hide') continue
+      const g = new THREE.BufferGeometry()
+      g.setAttribute('position', new THREE.Float32BufferAttribute(e.points, 3))
+      let line: THREE.Line
+      if (style === 'dashed') {
+        line = new THREE.Line(
+          g,
+          new THREE.LineDashedMaterial({ color: edgeColor, ...EDGE_DASH })
+        )
+        line.computeLineDistances()
+      } else {
+        line = new THREE.Line(g, new THREE.LineBasicMaterial({ color: edgeColor }))
+      }
+      line.name = `edge:${m.id}:${e.edge}`
+      line.userData = { pick: 'edge', bodyId: m.id, sub: `Edge${e.edge + 1}`, edgeKind: e.kind }
+      line.renderOrder = 1
+      objs.push(line)
+    }
+  } else {
+    // still emit invisible pickable edge lines so selection keeps working when
+    // the visible overlay is off (e.g. plain "shaded" mode)
+    for (const e of m.edges) {
+      const g = new THREE.BufferGeometry()
+      g.setAttribute('position', new THREE.Float32BufferAttribute(e.points, 3))
+      const line = new THREE.Line(
+        g,
+        new THREE.LineBasicMaterial({ color: edgeColor, transparent: true, opacity: 0 })
+      )
+      line.name = `edge:${m.id}:${e.edge}`
+      line.userData = { pick: 'edge', bodyId: m.id, sub: `Edge${e.edge + 1}`, edgeKind: e.kind }
+      line.renderOrder = 1
+      objs.push(line)
+    }
   }
   return objs
 }
@@ -236,10 +348,24 @@ function buildSketch(s: SketchRender): THREE.Object3D[] {
 // signatures - everything the visual for one item depends on
 // --------------------------------------------------------------------------- //
 
+function renderSig(): string {
+  const r = RENDER
+  return [
+    r.shading,
+    r.edgeMode,
+    r.edgeColor,
+    r.tangentEdges,
+    r.hiddenEdges,
+    r.outlineOnly ? 1 : 0
+  ].join('|')
+}
+
 function bodySig(m: RenderMesh): string {
   return [
     m.sig ?? m.positions.length,
     m.color ? m.color.join('/') : '-',
+    m.appearance ? JSON.stringify(m.appearance) : '-',
+    renderSig(),
     m.vertices?.length ?? 0,
     m.edges.length
   ].join('~')

@@ -19,23 +19,48 @@ import {
   type SketchTool,
   type SketchRefGeom
 } from './SketchController'
-import { syncScene, type SceneNode } from './sceneBuilder'
+import { syncScene, setSceneRender, type SceneNode } from './sceneBuilder'
 import { perfProfile } from '../perfProfile'
+import type { RenderSettings } from '../rpc'
+import { effectiveRender, resolveBackground } from '../appearance'
+import type { RenderImageOptions } from './types'
 
-function gradientBackground(): THREE.Texture {
+function gradientBackground(top = '#20242b', mid = '#2b3038', bot = '#3a4048'): THREE.Texture {
   const c = document.createElement('canvas')
   c.width = 2
   c.height = 256
   const ctx = c.getContext('2d')!
   const g = ctx.createLinearGradient(0, 0, 0, 256)
-  g.addColorStop(0, '#20242b')
-  g.addColorStop(0.55, '#2b3038')
-  g.addColorStop(1, '#3a4048')
+  g.addColorStop(0, top)
+  g.addColorStop(0.55, mid)
+  g.addColorStop(1, bot)
   ctx.fillStyle = g
   ctx.fillRect(0, 0, 2, 256)
   const tex = new THREE.CanvasTexture(c)
   tex.colorSpace = THREE.SRGBColorSpace
   return tex
+}
+
+interface LightRig {
+  hemi: number
+  key: number
+  fill: number
+  keyPos: [number, number, number]
+  fillPos: [number, number, number]
+}
+const LIGHT_RIGS: Record<string, LightRig> = {
+  studio: { hemi: 2.4, key: 2.0, fill: 0.8, keyPos: [0.6, -1, 1.4], fillPos: [-1.2, 0.8, 0.4] },
+  soft: { hemi: 3.2, key: 1.1, fill: 1.1, keyPos: [0.4, -0.6, 1.2], fillPos: [-0.8, 0.9, 0.6] },
+  hard: { hemi: 1.2, key: 3.2, fill: 0.25, keyPos: [0.8, -1.1, 1.0], fillPos: [-1.4, 0.6, 0.2] },
+  'three-point': {
+    hemi: 1.6,
+    key: 2.4,
+    fill: 1.0,
+    keyPos: [1.0, -1.2, 1.3],
+    fillPos: [-1.3, 0.4, 0.5]
+  },
+  outdoor: { hemi: 2.0, key: 2.8, fill: 0.6, keyPos: [0.3, -0.4, 1.8], fillPos: [-0.5, 1.2, 0.3] },
+  flat: { hemi: 4.0, key: 0.2, fill: 0.2, keyPos: [0, 0, 1], fillPos: [0, 0, -1] }
 }
 
 /** 45-degree section hatching, one 14mm tile, tiled by the caller. */
@@ -88,6 +113,7 @@ export function Viewport({
   onSketchDimensionRequest,
   onSketchSolve,
   onSketchNotice,
+  renderSettings,
   apiRef
 }: {
   meshes: RenderMesh[]
@@ -129,6 +155,7 @@ export function Viewport({
   ) => void
   onSketchSolve?: import('./SketchController').SketchSolveFn
   onSketchNotice?: (msg: string) => void
+  renderSettings?: RenderSettings
   apiRef?: { current: ViewportApi | null }
 }): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -196,7 +223,15 @@ export function Viewport({
     lastRadius: number
     preSketchCam: { pos: THREE.Vector3; up: THREE.Vector3; pivot: THREE.Vector3 } | null
     sectionCap: THREE.Mesh | null
+    hemi: THREE.HemisphereLight
+    key: THREE.DirectionalLight
+    fill: THREE.DirectionalLight
+    render: Required<RenderSettings>
   } | null>(null)
+
+  const renderSettingsRef = useRef(renderSettings)
+  renderSettingsRef.current = renderSettings
+  const applyRenderRef = useRef<((r: RenderSettings | undefined) => void) | null>(null)
 
   useEffect(() => {
     const host = hostRef.current!
@@ -208,13 +243,14 @@ export function Viewport({
     host.appendChild(renderer.domElement)
 
     const scene = new THREE.Scene()
-    scene.background = gradientBackground()
+    // background is set by applyRender() below once stateRef exists
 
     const camera = new THREE.PerspectiveCamera(35, host.clientWidth / host.clientHeight, 0.1, 100000)
     camera.up.set(0, 0, 1)
     camera.position.set(220, -260, 180)
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x30343c, 2.4))
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x30343c, 2.4)
+    scene.add(hemi)
     const key = new THREE.DirectionalLight(0xffffff, 2.0)
     key.position.set(0.6, -1, 1.4)
     scene.add(key)
@@ -249,8 +285,50 @@ export function Viewport({
       lastCenter: new THREE.Vector3(),
       lastRadius: 60,
       preSketchCam: null,
-      sectionCap: null
+      sectionCap: null,
+      hemi,
+      key,
+      fill,
+      render: effectiveRender(renderSettingsRef.current)
     }
+
+    // apply the whole render-settings bundle to lights + background + tone map
+    const applyRender = (rs: RenderSettings | undefined): void => {
+      const st = stateRef.current
+      if (!st) return
+      const R = effectiveRender(rs)
+      st.render = R
+      setSceneRender(rs) // sceneBuilder reads this for shading mode + edges
+
+      const rig = LIGHT_RIGS[R.lighting] ?? LIGHT_RIGS.studio
+      st.hemi.intensity = rig.hemi
+      st.key.intensity = rig.key
+      st.fill.intensity = rig.fill
+      st.key.position.set(...rig.keyPos)
+      st.fill.position.set(...rig.fillPos)
+
+      st.renderer.toneMapping =
+        R.exposure && R.exposure !== 1 ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping
+      st.renderer.toneMappingExposure = R.exposure ?? 1
+
+      // background
+      const bg = resolveBackground(R)
+      if (bg.gradient) {
+        ;(st.scene.background as THREE.Texture | null)?.dispose?.()
+        st.scene.background = gradientBackground()
+        st.renderer.setClearAlpha(1)
+      } else if (bg.cssColor == null) {
+        ;(st.scene.background as THREE.Texture | null)?.dispose?.()
+        st.scene.background = null
+        st.renderer.setClearColor(0x000000, 0)
+      } else {
+        ;(st.scene.background as THREE.Texture | null)?.dispose?.()
+        st.scene.background = new THREE.Color(bg.cssColor)
+        st.renderer.setClearAlpha(1)
+      }
+    }
+    applyRenderRef.current = applyRender
+    applyRender(renderSettingsRef.current)
 
     if (apiRef) {
       apiRef.current = {
@@ -284,8 +362,67 @@ export function Viewport({
         sketchSelectedCount: () => stateRef.current?.sketch?.selectedCount ?? 0,
         setSketchConstruction: (on) => stateRef.current?.sketch?.setConstruction(on),
         toggleSketchConstruction: () =>
-          stateRef.current?.sketch?.toggleConstruction() ?? false
+          stateRef.current?.sketch?.toggleConstruction() ?? false,
+        setRenderSettings: (r) => {
+          renderSettingsRef.current = r
+          applyRenderRef.current?.(r)
+        },
+        renderImage: (opts: RenderImageOptions) => renderSceneImage(opts)
       }
+    }
+
+    /** Render the live scene to a data URL at an arbitrary size / background,
+     *  via a throwaway offscreen WebGLRenderer so the on-screen view is
+     *  untouched. Supersamples then downscales for clean edges. */
+    const renderSceneImage = async (opts: RenderImageOptions): Promise<string> => {
+      const st = stateRef.current
+      if (!st) throw new Error('viewport not ready')
+      const ss = Math.max(1, Math.min(4, Math.round(opts.supersample ?? 2)))
+      const W = Math.max(16, Math.round(opts.width)) * ss
+      const H = Math.max(16, Math.round(opts.height)) * ss
+      const transparent = opts.background == null
+
+      const off = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: transparent,
+        preserveDrawingBuffer: true
+      })
+      off.setPixelRatio(1)
+      off.setSize(W, H, false)
+      off.outputColorSpace = THREE.SRGBColorSpace
+      off.toneMapping = st.renderer.toneMapping
+      off.toneMappingExposure = st.renderer.toneMappingExposure
+      off.localClippingEnabled = true
+      if (transparent) off.setClearColor(0x000000, 0)
+      else off.setClearColor(new THREE.Color(opts.background as string), 1)
+
+      const cam = st.camera.clone() as THREE.PerspectiveCamera
+      cam.aspect = opts.width / opts.height
+      cam.updateProjectionMatrix()
+
+      // if the scene background is a gradient texture and the caller wants a
+      // solid/transparent bg, temporarily null it for the capture
+      const savedBg = st.scene.background
+      if (!transparent && opts.background) st.scene.background = new THREE.Color(opts.background)
+      else if (transparent) st.scene.background = null
+
+      off.render(st.scene, cam)
+      st.scene.background = savedBg
+
+      // downscale through a 2D canvas
+      const src = off.domElement
+      const out = document.createElement('canvas')
+      out.width = Math.round(opts.width)
+      out.height = Math.round(opts.height)
+      const ctx = out.getContext('2d')!
+      ctx.imageSmoothingQuality = 'high'
+      ctx.drawImage(src, 0, 0, W, H, 0, 0, out.width, out.height)
+      const url =
+        opts.format === 'jpeg'
+          ? out.toDataURL('image/jpeg', opts.quality ?? 0.92)
+          : out.toDataURL('image/png')
+      off.dispose()
+      return url
     }
 
     // click-to-select (left button, negligible drag)
@@ -817,6 +954,23 @@ export function Viewport({
   useEffect(() => {
     stateRef.current?.sketch?.setTool(sketchTool)
   }, [sketchTool])
+
+  // re-apply document render settings (shading / lighting / background) when they
+  // change, and force a scene re-sync so shading-mode / edge changes take (the
+  // sceneBuilder body sig now folds in renderSig()).
+  useEffect(() => {
+    applyRenderRef.current?.(renderSettings)
+    const st = stateRef.current
+    if (st?.content) {
+      try {
+        const res = syncScene(st.content, nodesRef.current, meshes, sketches, datums, canvases)
+        nodesRef.current = res.nodes
+      } catch (e) {
+        console.error('render-settings re-sync failed', e)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renderSettings])
 
   // tidy the calibration rubber line when leaving calibrate mode
   useEffect(() => {

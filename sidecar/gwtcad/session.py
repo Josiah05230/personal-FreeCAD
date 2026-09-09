@@ -130,6 +130,63 @@ def body_color(name):
     return _colors.get(name)
 
 
+# --------------------------------------------------------------------------- #
+# Appearances (view state): per-object visual record + document render settings.
+# All of this is a GWT-CAD view concern - three.js renders it live - but it is
+# persisted in the .gwtcad companion so it round-trips, and colour/opacity are
+# additionally mirrored onto obj.ShapeAppearance by gwtcad.appearance so a bare
+# FreeCAD shows something close.
+# --------------------------------------------------------------------------- #
+
+# {objName: {"color":[r,g,b]|None, "opacity":0..1, "finish":str,
+#            "edges": {...}|None}}
+_appearance = {}
+
+# Document-wide render settings; None keys fall back to the client defaults.
+_render_settings = {}
+
+# Saved appearance presets: {id: {"id","name","scope":"object"|"document",
+#   "appearance": {partial}, "render": {partial}}}. Persisted with the document
+# for now (a user-level library can come later).
+_appearance_presets = {}
+
+
+def object_appearance(name):
+    return dict(_appearance.get(name, {})) if name in _appearance else None
+
+
+def set_object_appearance(name, rec):
+    if rec is None:
+        _appearance.pop(name, None)
+    else:
+        _appearance[name] = dict(rec)
+
+
+def all_object_appearances():
+    return {n: dict(r) for n, r in _appearance.items()}
+
+
+def render_settings():
+    return dict(_render_settings)
+
+
+def set_render_settings(rec):
+    _render_settings.clear()
+    if rec:
+        _render_settings.update(rec)
+
+
+def appearance_presets():
+    return {k: dict(v) for k, v in _appearance_presets.items()}
+
+
+def set_appearance_preset(pid, preset):
+    if preset is None:
+        _appearance_presets.pop(pid, None)
+    else:
+        _appearance_presets[pid] = dict(preset)
+
+
 # Linked KiCad board: {"path": ..., "placements": {ref: [x, y, rot, side]}}
 _kicad = {}
 
@@ -174,6 +231,12 @@ def load_state(blob):
     _material_extra.update(blob.get("materialExtra", {}) or {})
     _material_custom.clear()
     _material_custom.update(blob.get("materialCustom", {}) or {})
+    _appearance.clear()
+    _appearance.update(blob.get("appearance", {}) or {})
+    _render_settings.clear()
+    _render_settings.update(blob.get("renderSettings", {}) or {})
+    _appearance_presets.clear()
+    _appearance_presets.update(blob.get("appearancePresets", {}) or {})
     mx = 0
     for cid in _canvases:
         try:
@@ -187,7 +250,10 @@ def dump_state():
     return {"canvases": list(_canvases.values()), "colors": dict(_colors),
             "params": dict(_params), "featureExprs": all_feature_exprs(),
             "kicad": dict(_kicad), "materialExtra": all_material_extra(),
-            "materialCustom": all_object_custom_materials()}
+            "materialCustom": all_object_custom_materials(),
+            "appearance": all_object_appearances(),
+            "renderSettings": render_settings(),
+            "appearancePresets": appearance_presets()}
 
 
 def canvases():
@@ -297,6 +363,10 @@ def reset():
     clear_feature_exprs()
     clear_material_extra()
     clear_object_custom_materials()
+    _colors.clear()
+    _appearance.clear()
+    _render_settings.clear()
+    _appearance_presets.clear()
     return d
 
 

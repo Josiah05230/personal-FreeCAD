@@ -39,6 +39,11 @@ interface CadBridge {
   saveDialog(defaultPath?: string): Promise<string | null>
   openDialog(filters?: { name: string; extensions: string[] }[]): Promise<string | null>
   exportDialog(defaultPath?: string): Promise<string | null>
+  saveRender(
+    dataUrl: string,
+    defaultPath?: string,
+    format?: 'png' | 'jpeg'
+  ): Promise<string | null>
   gitStatus(filePath: string): Promise<GitStatus>
   gitLog(filePath: string, limit?: number): Promise<GitCommit[]>
   gitBranches(filePath: string): Promise<GitBranch[]>

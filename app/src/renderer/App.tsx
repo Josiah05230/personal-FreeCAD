@@ -13,6 +13,8 @@ import {
   type PickPlane,
   type SketchRef,
   type CanvasDTO,
+  type RenderSettings,
+  type ObjectAppearance,
   selectionToRef
 } from './rpc'
 import { SelectModeToggle, SelectKindList, type SelKind, type SelectMode } from './ui/SelectFilterMenu'
@@ -36,6 +38,7 @@ import { PromptHost, promptText, promptForm } from './ui/PromptDialog'
 import { ParametersPanel } from './ui/ParametersPanel'
 import { SettingsPanel } from './ui/SettingsPanel'
 import { MaterialsPanel } from './ui/MaterialsPanel'
+import { AppearancePanel } from './ui/AppearancePanel'
 import {
   loadPinned,
   savePinned,
@@ -269,6 +272,8 @@ export function App(): JSX.Element {
   const [measureResult, setMeasureResult] = useState<MeasureResult | null>(null)
   const [section, setSection] = useState<SectionState | null>(null)
   const [canvases, setCanvases] = useState<CanvasDTO[]>([])
+  const [renderSettings, setRenderSettings] = useState<RenderSettings>({})
+  const [showAppearance, setShowAppearance] = useState(false)
   const [busy, setBusy] = useState(0)
 
   useEffect(() => onBusyChange(setBusy), [])
@@ -306,6 +311,7 @@ export function App(): JSX.Element {
       setDatums(scene.datums ?? [])
       setPickPlanes(scene.pickPlanes ?? [])
       setCanvases(scene.canvases ?? [])
+      if (scene.renderSettings) setRenderSettings(scene.renderSettings)
       setBodies(tree.bodies)
       setDocPath(tree.path)
       if ('canUndo' in tree) setCanUndo(!!tree.canUndo)
@@ -2295,6 +2301,51 @@ export function App(): JSX.Element {
     setVisOverride((m) => ({ ...m, [id]: visible }))
   }, [])
 
+  // ---- appearances (view layer; also queued to the engine for persistence) ----
+  // apply instantly to the local mesh, then fire the RPC quietly so it lands in
+  // the .gwtcad companion + on the FreeCAD object. merge=true means the change
+  // touches only the keys given.
+  const setObjectAppearance = useCallback(
+    (targetId: string, patch: ObjectAppearance, merge = true) => {
+      setMeshes((ms) =>
+        ms.map((m) =>
+          m.id === targetId
+            ? { ...m, appearance: merge ? { ...(m.appearance ?? {}), ...patch } : patch }
+            : m
+        )
+      )
+      markDirty(true)
+      void apiQuiet
+        .appearanceSet(targetId, patch, merge)
+        .catch((e) => flashSketchNotice(`appearance: ${(e as Error).message}`))
+    },
+    [markDirty, flashSketchNotice]
+  )
+
+  const clearObjectAppearance = useCallback(
+    (targetId: string) => {
+      setMeshes((ms) =>
+        ms.map((m) => (m.id === targetId ? { ...m, appearance: undefined } : m))
+      )
+      markDirty(true)
+      void apiQuiet.appearanceClear(targetId).catch(() => undefined)
+    },
+    [markDirty]
+  )
+
+  const applyRenderSettings = useCallback(
+    (patch: RenderSettings, merge = true) => {
+      setRenderSettings((cur) => {
+        const next = merge ? { ...cur, ...patch } : patch
+        vpApi.current?.setRenderSettings(next)
+        return next
+      })
+      markDirty(true)
+      void apiQuiet.appearanceRenderSet(patch, merge).catch(() => undefined)
+    },
+    [markDirty]
+  )
+
   // ---- file ops ----
   const saveAs = useCallback(async () => {
     const p = await window.cad.saveDialog(docPath ?? undefined)
@@ -2836,6 +2887,7 @@ export function App(): JSX.Element {
         insertCanvas,
         toggleParams: () => setParamsOpen((v) => !v),
         toggleMaterials: () => setMaterialsOpen((v) => !v),
+        toggleAppearance: () => setShowAppearance((v) => !v),
         importKicad,
         reimportKicad,
         surfaceRuled,
@@ -3282,6 +3334,7 @@ export function App(): JSX.Element {
                       }
                     }}
                     onSketchNotice={flashSketchNotice}
+                    renderSettings={renderSettings}
                     apiRef={vpApi}
                   />
                   {sketchNotice && (
@@ -3398,6 +3451,28 @@ export function App(): JSX.Element {
                             rollCacheRef.current.clear()
                             void refreshScene()
                           }}
+                        />
+                      )
+                    })()}
+                  {showAppearance &&
+                    (() => {
+                      const selBody = selection.find(
+                        (s) => s.kind === 'body' || s.kind === 'face'
+                      ) as { bodyId: string } | undefined
+                      const tid = selBody?.bodyId ?? meshes[0]?.id ?? null
+                      const target = meshes.find((m) => m.id === tid) ?? null
+                      return (
+                        <AppearancePanel
+                          targetId={tid}
+                          targetLabel={target?.label ?? tid}
+                          appearance={target?.appearance}
+                          renderSettings={renderSettings}
+                          vpApi={vpApi}
+                          docPath={docPath}
+                          onSetAppearance={setObjectAppearance}
+                          onClearAppearance={clearObjectAppearance}
+                          onSetRender={applyRenderSettings}
+                          onClose={() => setShowAppearance(false)}
                         />
                       )
                     })()}

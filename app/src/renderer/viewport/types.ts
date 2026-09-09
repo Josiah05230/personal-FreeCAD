@@ -1,4 +1,16 @@
 import type { SketchEntity, SketchConstraintType } from './SketchController'
+import type { RenderSettings } from '../rpc'
+
+export interface RenderImageOptions {
+  width: number
+  height: number
+  /** null => transparent background */
+  background: string | null
+  /** supersample factor (1-4); the buffer is rendered at width*ss then downscaled */
+  supersample?: number
+  format: 'png' | 'jpeg'
+  quality?: number
+}
 
 export interface RecordedSketchConstraint {
   type: SketchConstraintType | 'Distance' | 'Radius' | 'PointOnObject' | 'Symmetric'
@@ -35,4 +47,8 @@ export interface ViewportApi {
   /** construction-geometry mode for newly drawn entities */
   setSketchConstruction: (on: boolean) => void
   toggleSketchConstruction: () => boolean
+  /** apply document render settings (shading mode, lighting rig, background) live */
+  setRenderSettings: (r: RenderSettings) => void
+  /** render the current view to a PNG/JPEG data URL at an arbitrary size + background */
+  renderImage: (opts: RenderImageOptions) => Promise<string>
 }

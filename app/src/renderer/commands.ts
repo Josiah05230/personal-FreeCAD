@@ -42,6 +42,7 @@ export interface CommandContext {
   interference: () => void
   centerOfMass: () => void
   toggleMaterials: () => void
+  toggleAppearance: () => void
   insertCanvas: () => Promise<void>
   toggleParams: () => void
   importKicad: () => Promise<void>
@@ -131,6 +132,10 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'mesh.toSolid', title: 'Convert Mesh', group: 'BRep', tab: 'MESH', icon: 'extrude', run: op('meshToSolid') },
     { id: 'mod.params', title: 'Parameters', group: 'Modify', tab: 'SOLID', icon: 'patternRect', run: () => ctx.toggleParams() },
     { id: 'mod.material', title: 'Material', group: 'Modify', tab: 'SOLID', icon: 'combine', run: () => ctx.toggleMaterials() },
+    { id: 'mod.appearance', title: 'Appearance', group: 'Modify', tab: 'SOLID', icon: 'draft', hotkey: 'a', run: () => ctx.toggleAppearance() },
+    // --- APPEARANCE tab (rendering / viewing / export) ---
+    { id: 'appr.appearance', title: 'Appearance', group: 'Appearance', tab: 'APPEARANCE', icon: 'draft', run: () => ctx.toggleAppearance() },
+    { id: 'appr.render', title: 'Render Image', group: 'Export', tab: 'APPEARANCE', icon: 'canvas', run: () => ctx.toggleAppearance() },
     // --- drawing ---
     { id: 'draw.fromDesign', title: 'Drawing from Design', group: 'Drawing', tab: 'TOOLS', icon: 'sketch', run: () => ctx.startDrawing() },
     // --- file / view ---

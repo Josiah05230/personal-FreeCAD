@@ -146,6 +146,26 @@ app.whenReady().then(async () => {
     return r.canceled ? null : r.filePath
   })
 
+  // save a rendered image (data URL from the viewport's offscreen capture)
+  ipcMain.handle(
+    'render:save',
+    async (_e, dataUrl: string, defaultPath?: string, format?: 'png' | 'jpeg') => {
+      if (E2E) return null
+      const ext = format === 'jpeg' ? 'jpg' : 'png'
+      const r = await dialog.showSaveDialog(win!, {
+        defaultPath: defaultPath ?? `render.${ext}`,
+        filters: [
+          { name: 'PNG image', extensions: ['png'] },
+          { name: 'JPEG image', extensions: ['jpg', 'jpeg'] }
+        ]
+      })
+      if (r.canceled || !r.filePath) return null
+      const b64 = dataUrl.replace(/^data:image\/\w+;base64,/, '')
+      await writeFile(r.filePath, Buffer.from(b64, 'base64'))
+      return r.filePath
+    }
+  )
+
   ipcMain.handle('git:status', (_e, filePath: string) => gitw.status(filePath))
   ipcMain.handle('git:log', (_e, filePath: string, limit?: number) => gitw.log(filePath, limit))
   ipcMain.handle('git:branches', (_e, filePath: string) => gitw.branches(filePath))

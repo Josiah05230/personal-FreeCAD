@@ -58,6 +58,74 @@ export interface FaceGroup {
 export interface EdgePoly {
   edge: number
   points: number[]
+  /** sidecar edge classification: designed crease vs smooth blend vs open */
+  kind?: 'sharp' | 'tangent' | 'free'
+}
+
+/** How one edge class is drawn. */
+export type EdgeStyle = 'show' | 'hide' | 'dashed'
+
+export interface EdgeAppearance {
+  show?: boolean
+  color?: [number, number, number] | string
+  width?: number
+  /** tangent (smooth-blend) edges: shown, hidden, or dashed */
+  tangent?: EdgeStyle
+  /** edges occluded by the body ("hidden lines"): usually hidden or dashed */
+  hidden?: EdgeStyle
+}
+
+/** Per-object visual record. Every field optional - a preset overrules only
+ *  the ones it sets. */
+export interface ObjectAppearance {
+  color?: [number, number, number]
+  opacity?: number
+  finish?: FinishName
+  edges?: EdgeAppearance
+}
+
+export type FinishName =
+  | 'plastic'
+  | 'matte'
+  | 'glossy'
+  | 'satin'
+  | 'metal'
+  | 'brushed-metal'
+  | 'polished-metal'
+  | 'glass'
+  | 'rubber'
+  | 'ceramic'
+  | 'clay'
+  | 'chrome'
+  | 'anodized'
+  | 'painted'
+  | 'wireframe-only'
+
+export type ShadingMode = 'shaded' | 'shaded-edges' | 'flat' | 'wireframe' | 'hidden-line'
+export type LightingRig = 'studio' | 'soft' | 'hard' | 'three-point' | 'outdoor' | 'flat'
+export type BackgroundMode = 'gradient' | 'transparent' | 'white' | 'black' | 'gray' | 'custom'
+
+/** Document-wide render settings. */
+export interface RenderSettings {
+  shading?: ShadingMode
+  lighting?: LightingRig
+  background?: BackgroundMode
+  backgroundColor?: string
+  edgeMode?: 'auto' | 'all' | 'none'
+  edgeColor?: string
+  tangentEdges?: EdgeStyle
+  hiddenEdges?: EdgeStyle
+  outlineOnly?: boolean
+  ao?: boolean
+  exposure?: number
+}
+
+export interface AppearancePreset {
+  id: string
+  name: string
+  scope: 'object' | 'document' | 'both'
+  appearance: ObjectAppearance
+  render: RenderSettings
 }
 
 export interface MeshVertex {
@@ -76,6 +144,7 @@ export interface RenderMesh {
   vertices?: MeshVertex[]
   bbox: { min: [number, number, number]; max: [number, number, number] }
   color?: [number, number, number]
+  appearance?: ObjectAppearance
   needsNormals?: boolean
   component?: boolean
   visible?: boolean
@@ -332,6 +401,13 @@ const rpcQuiet = async <T,>(m: string, p: Record<string, unknown> = {}): Promise
 export const apiQuiet = {
   rollTo: (bodyId: string, featureId: string | null) =>
     rpcQuiet<{ tip: string | null }>('history.rollTo', { bodyId, featureId }),
+  // appearances: pure view state, persisted to the companion - no trace noise
+  appearanceSet: (targetId: string | null, appearance: ObjectAppearance, merge = true) =>
+    rpcQuiet<{ bodies: BodyTree[] }>('appearance.set', { targetId, appearance, merge }),
+  appearanceClear: (targetId?: string | null) =>
+    rpcQuiet<{ bodies: BodyTree[] }>('appearance.clear', { targetId }),
+  appearanceRenderSet: (render: RenderSettings, merge = true) =>
+    rpcQuiet<{ render: RenderSettings }>('appearance.renderSet', { render, merge }),
   sketchFinish: (
     sketchId: string,
     elements?: unknown[],
@@ -372,6 +448,7 @@ export const apiQuiet = {
       datums: DatumDTO[]
       pickPlanes: PickPlane[]
       canvases: CanvasDTO[]
+      renderSettings?: RenderSettings
     }>('scene.get'),
   treeGet: () => rpcQuiet<{ bodies: BodyTree[]; path: string | null }>('tree.get')
 }
@@ -388,6 +465,7 @@ export const api = {
       datums: DatumDTO[]
       pickPlanes: PickPlane[]
       canvases: CanvasDTO[]
+      renderSettings?: RenderSettings
     }>('scene.get'),
   treeGet: () =>
     rpc<{ bodies: BodyTree[]; path: string | null; canUndo?: boolean; canRedo?: boolean }>(
@@ -895,7 +973,37 @@ export const api = {
     }),
   materialCustomDelete: (id: string) => rpc<{ deleted: string }>('material.customDelete', { id }),
   materialCustomAssign: (targetId: string | null, customId: string) =>
-    rpc<{ bodies: BodyTree[] }>('material.customAssign', { targetId, customId })
+    rpc<{ bodies: BodyTree[] }>('material.customAssign', { targetId, customId }),
+
+  // --- Appearances (view layer; also persisted to the .gwtcad companion) ---
+  appearanceGet: (targetId?: string | null) =>
+    rpc<{ targetId: string; label: string; appearance: ObjectAppearance; render: RenderSettings }>(
+      'appearance.get',
+      { targetId }
+    ),
+  appearanceSet: (
+    targetId: string | null,
+    appearance: ObjectAppearance,
+    merge = true
+  ) => rpc<{ bodies: BodyTree[] }>('appearance.set', { targetId, appearance, merge }),
+  appearanceClear: (targetId?: string | null) =>
+    rpc<{ bodies: BodyTree[] }>('appearance.clear', { targetId }),
+  appearanceRenderGet: () =>
+    rpc<{ render: RenderSettings; finishes: string[] }>('appearance.renderGet'),
+  appearanceRenderSet: (render: RenderSettings, merge = true) =>
+    rpc<{ render: RenderSettings }>('appearance.renderSet', { render, merge }),
+  appearancePresetList: () =>
+    rpc<{ presets: AppearancePreset[] }>('appearance.presetList'),
+  appearancePresetSave: (
+    name: string,
+    appearance: ObjectAppearance,
+    render: RenderSettings,
+    scope: AppearancePreset['scope'] = 'object',
+    id?: string
+  ) =>
+    rpc<AppearancePreset>('appearance.presetSave', { name, appearance, render, scope, id }),
+  appearancePresetDelete: (id: string) =>
+    rpc<{ deleted: string }>('appearance.presetDelete', { id })
 }
 
 export interface MaterialFamily {

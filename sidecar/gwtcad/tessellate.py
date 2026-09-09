@@ -87,6 +87,57 @@ def tessellate_face(face):
     return positions, normals, indices
 
 
+# dihedral angle (deg) below which a shared edge counts as a smooth / tangent
+# transition rather than a designed crease.
+TANGENT_ANGLE_DEG = 12.0
+
+
+def _classify_edges(shape):
+    """{edgeIndex: "sharp"|"tangent"|"free"} - "free" = an edge with fewer than
+    two adjacent faces (open wire / lamina boundary)."""
+    out = {}
+    try:
+        edges = shape.Edges
+        faces = shape.Faces
+    except Exception:
+        return out
+    # map each edge (by hash) to the faces that use it
+    by_edge = {}
+    for face in faces:
+        try:
+            for e in face.Edges:
+                by_edge.setdefault(e.hashCode(), []).append(face)
+        except Exception:
+            continue
+    cos_lim = math.cos(math.radians(TANGENT_ANGLE_DEG))
+    for ei, edge in enumerate(edges):
+        adj = by_edge.get(edge.hashCode(), [])
+        if len(adj) < 2:
+            out[ei] = "free"
+            continue
+        try:
+            mid = edge.valueAt((edge.FirstParameter + edge.LastParameter) * 0.5)
+            n1 = _surf_normal_near(adj[0], mid)
+            n2 = _surf_normal_near(adj[1], mid)
+            if n1 is None or n2 is None:
+                out[ei] = "sharp"
+                continue
+            d = abs(n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2])
+            out[ei] = "tangent" if d >= cos_lim else "sharp"
+        except Exception:
+            out[ei] = "sharp"
+    return out
+
+
+def _surf_normal_near(face, pnt):
+    try:
+        u, v = face.Surface.parameter(pnt)
+        nrm = face.normalAt(u, v)
+        return _normalize(nrm.x, nrm.y, nrm.z)
+    except Exception:
+        return _face_outward_normal(face)
+
+
 def tessellate_shape(shape):
     """Return a render mesh for a whole shape.
 
@@ -128,6 +179,11 @@ def tessellate_shape(shape):
         except Exception:
             continue
 
+    # classify each edge as sharp / tangent (smooth) / other so the client can
+    # style tangent edges independently (hide them, dash them, ...). "tangent"
+    # = the two faces sharing the edge meet at a near-zero dihedral angle.
+    kinds = _classify_edges(shape)
+
     edges = []
     for ei, edge in enumerate(shape.Edges):
         pts = []
@@ -142,7 +198,7 @@ def tessellate_shape(shape):
             except Exception:
                 continue
         if len(pts) >= 6:
-            edges.append({"edge": ei, "points": pts})
+            edges.append({"edge": ei, "points": pts, "kind": kinds.get(ei, "sharp")})
 
     bb = shape.BoundBox
     return {

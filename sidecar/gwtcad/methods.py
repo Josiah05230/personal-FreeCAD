@@ -1821,6 +1821,9 @@ def _owner_mesh(owner, shape):
     col = session.body_color(owner.Name)
     if col:
         buf["color"] = col
+    appr = session.object_appearance(owner.Name)
+    if appr:
+        buf["appearance"] = appr
     return buf
 
 
@@ -3011,6 +3014,9 @@ def scene_get():
             col = session.body_color(o.Name)
             if col:
                 buf["color"] = col
+            appr = session.object_appearance(o.Name)
+            if appr:
+                buf["appearance"] = appr
             meshes.append(buf)
         elif tid == "Sketcher::SketchObject":
             if build.is_ref_copy(o):
@@ -3051,6 +3057,7 @@ def scene_get():
         "datums": datums,
         "pickPlanes": _pick_planes(d),
         "canvases": canv,
+        "renderSettings": session.render_settings(),
     }
 
 
@@ -4121,7 +4128,7 @@ from gwtcad import kicad as _kicad_methods  # noqa: E402,F401
 
 # Fusion-parity feature modules. Each registers its own @method RPCs on import.
 # Guarded so a problem in one module cannot take the whole sidecar down.
-for _mod in ("primitives", "xform", "meshtools", "materials"):
+for _mod in ("primitives", "xform", "meshtools", "materials", "appearance"):
     try:
         __import__("gwtcad." + _mod)
     except Exception as _e:  # pragma: no cover - surfaced in the sidecar log

@@ -77,6 +77,9 @@ _NO_TXN = {
     "datum.planePreview", "kicad.status", "sketch.solve",
     "feature.previewUpdate", "feature.editPreview", "feature.get",
     "feature.previewSetBase",
+    "appearance.get", "appearance.set", "appearance.clear",
+    "appearance.renderGet", "appearance.renderSet",
+    "appearance.presetList", "appearance.presetSave", "appearance.presetDelete",
 }
 
 

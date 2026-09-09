@@ -2689,6 +2689,139 @@ code {
   color: #e0774a;
 }
 
+/* ---- Appearance panel ---- */
+.appearance-panel {
+  width: 380px;
+}
+.appr-tabs {
+  flex-wrap: wrap;
+}
+.appr-body {
+  overflow-y: auto;
+  padding: 8px 10px 12px;
+}
+.appr-section h4 {
+  margin: 10px 0 4px;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+.appr-hint {
+  margin: 2px 0 8px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+.appr-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+.appr-fields label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.appr-fields label > span:first-child {
+  flex: 0 0 118px;
+  color: var(--text-dim);
+}
+.appr-fields input[type='range'] {
+  flex: 1;
+}
+.appr-fields input[type='text'],
+.appr-fields input[type='number'],
+.appr-fields select {
+  flex: 1;
+  background: #1b1e22;
+  border: 1px solid var(--line-soft);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 3px 5px;
+}
+.appr-fields label > b {
+  flex: 0 0 42px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.appr-fields label.appr-check {
+  gap: 6px;
+}
+.appr-fields label.appr-check span {
+  flex: 1;
+}
+.appr-wh input {
+  max-width: 72px;
+}
+.appr-swatch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.appr-swatch-big {
+  width: 46px;
+  height: 46px;
+  border-radius: 6px;
+  border: 1px solid var(--line-soft);
+  background-image: linear-gradient(45deg, #444 25%, transparent 25%),
+    linear-gradient(-45deg, #444 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #444 75%),
+    linear-gradient(-45deg, transparent 75%, #444 75%);
+  background-size: 10px 10px;
+  background-position: 0 0, 0 5px, 5px -5px, -5px 0;
+  flex-shrink: 0;
+}
+.appr-color-modes,
+.appr-quickops {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin: 6px 0;
+}
+.appr-color-modes button,
+.appr-quickops button {
+  padding: 3px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--line-soft);
+  background: #2a2e34;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 10px;
+}
+.appr-color-modes button.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.appr-preset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 10px;
+}
+.appr-preset-list em {
+  color: var(--text-dim);
+  font-style: normal;
+}
+.appr-save-preset {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 8px;
+}
+.appr-preview {
+  margin-top: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.appr-preview img {
+  display: block;
+  width: 100%;
+}
+
 /* ---- Batch 13: suppressed feature chip ---- */
 .tl-chip.suppressed {
   opacity: 0.4;
