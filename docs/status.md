@@ -99,6 +99,32 @@ the seed + step + trace tail to replay.
 
 ## Recent notable changes
 
+- **Appearances / rendering system** (APPEARANCE ribbon tab): per-body + per-face
+  colour (RGB / HEX / CMYK / HSV + opacity), 15 surface finishes, tangent /
+  hidden edge display, shading modes (shaded / +edges / flat / wireframe /
+  hidden-line), lighting rigs + exposure + AO, backgrounds, partial-override
+  presets (built-in "Clear 10%" etc), and render-image export (offscreen WebGL,
+  up to 4K, SSAA, PNG / JPEG, tunable background). Applied live client-side and
+  queued to the engine, persisted in the `.gwtcad` companion.
+- **One-click packaging**: `scripts/package.sh` + `scripts/build-install.sh`
+  produce a self-contained AppImage / `.deb` / Windows NSIS installer with the
+  headless FreeCAD engine bundled (trimmed 3.1 GB -> 2.3 GB). No FreeCAD, Python
+  or CLI needed by the end user; a first-run wizard covers viewport look + mesh
+  import cap. See `docs/packaging.md`.
+- **Sketcher fixes**: constraints on construction lines (no longer visually
+  frozen), constrain to the sketch origin, line<->circle Coincident /
+  PointOnObject, radius vs diameter dimensioning + a toggle, auto Horizontal /
+  Vertical / Tangent while drawing, deleting reopened geometry, convert any
+  selected geometry to / from construction, drag that resists constraints
+  instead of free-dragging then snapping, and a **Project Geometry** tool
+  (model edges / faces -> real external reference geometry that survives
+  save / reopen). Backed by a new interactive E2E scenario (`sketcher.js`, 42
+  checks) driving the real 2D editor.
+- **Mass properties** (Inspect > Mass Properties): volume / area / centre of
+  mass always; real mass + moment-of-inertia tensor + principal axes when the
+  body has a material with a density.
+- **Material properties-only mode**: assign a material's density / mechanical
+  model for mass-props without changing the body's appearance.
 - **MESH tab: pinned by default, real sketchable convert, feature recognition,
   import fidelity cap.** All nine MESH commands are now pinned to the ribbon
   face out of the box (the tab is short enough to fit them all). Fixed a real
