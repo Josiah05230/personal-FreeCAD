@@ -293,34 +293,119 @@ await rebuildBase('reset + rect -> extrude 12 (fresh body for the fillet-by-face
 }
 
 // ------------------------------------------------ multiple edges, one Fillet feature
-note('--- Ctrl-click several edges -> a single Fillet feature commits ---');
-await rebuildBase('reset + rect -> extrude 12 (fresh body for the multi-edge fillet check)');
+// This mimics the REAL interactive flow that was broken: open the dialog, pick an
+// edge, TYPE A RADIUS (which fires the live preview -> a real Fillet feature lands
+// on the body and its Edge* numbering shifts), THEN Ctrl-click more edges whose
+// 3D points are read off the now-filleted mesh, then OK. The earlier version of
+// this test skipped the live preview entirely, so it never reproduced the bug.
+note('--- interactive multi-edge fillet: pick, preview, add more edges, commit ---');
+await rebuildBase('reset + rect -> extrude 12 (fresh body for the interactive multi-fillet check)');
 {
   await sleep(20);
-  // all four vertical edges of the box
-  const sc0 = await rpc('scene.get');
-  const vlist = [];
-  for (const e of sc0.meshes[0].edges || []) {
-    const p = e.polyline || e.pts || [];
-    if (p.length >= 2) {
-      const dz = Math.abs(p[0][2] - p[p.length - 1][2]);
-      const dxy = Math.hypot(p[0][0] - p[p.length - 1][0], p[0][1] - p[p.length - 1][1]);
-      if (dz > 1 && dxy < 1e-3) vlist.push('Edge' + (e.edge + 1));
+
+  // a point at the true PARAMETRIC MIDDLE of every edge (half its polyline
+  // arc-length), in world xyz - this is what the viewport Picker hands onSelect
+  // as `point` for a click in the middle of an edge. NOT an endpoint (a vertex
+  // is ambiguous between several edges).
+  const edgeMid = (sc) => {
+    const out = [];
+    for (const e of sc.meshes[0].edges || []) {
+      const pts = e.points || [];
+      const n = pts.length / 3;
+      if (n < 2) continue;
+      // walk half the total length
+      let total = 0;
+      for (let i = 1; i < n; i++) {
+        total += Math.hypot(
+          pts[i * 3] - pts[(i - 1) * 3],
+          pts[i * 3 + 1] - pts[(i - 1) * 3 + 1],
+          pts[i * 3 + 2] - pts[(i - 1) * 3 + 2]
+        );
+      }
+      let acc = 0;
+      let mp = [pts[0], pts[1], pts[2]];
+      for (let i = 1; i < n; i++) {
+        const seg = Math.hypot(
+          pts[i * 3] - pts[(i - 1) * 3],
+          pts[i * 3 + 1] - pts[(i - 1) * 3 + 1],
+          pts[i * 3 + 2] - pts[(i - 1) * 3 + 2]
+        );
+        if (acc + seg >= total / 2) {
+          const t = (total / 2 - acc) / (seg || 1);
+          mp = [
+            pts[(i - 1) * 3] + t * (pts[i * 3] - pts[(i - 1) * 3]),
+            pts[(i - 1) * 3 + 1] + t * (pts[i * 3 + 1] - pts[(i - 1) * 3 + 1]),
+            pts[(i - 1) * 3 + 2] + t * (pts[i * 3 + 2] - pts[(i - 1) * 3 + 2])
+          ];
+          break;
+        }
+        acc += seg;
+      }
+      out.push({ sub: 'Edge' + (e.edge + 1), point: mp });
     }
-  }
-  const edges = (vlist.length >= 2 ? vlist : vEdges).slice(0, 4);
-  note('multi-fillet edges: ' + JSON.stringify(edges));
+    return out;
+  };
+
+  let sc0 = await rpc('scene.get');
   const eBefore = (sc0.meshes[0].edges || []).length;
   const fBefore = feats(G.getState()).filter((f) => /fillet/i.test(f.id)).length;
+  // pick 3 distinct edges spread around the box (by their world midpoints)
+  const all0 = edgeMid(sc0);
+  assert(all0.length >= 6, `scene has edges with geometry (${all0.length})`);
+  const want = [all0[0], all0[2], all0[4]];
+  note('interactive multi-fillet picks: ' + JSON.stringify(want.map((w) => w.sub)));
+
   G.clearSelection();
   await sleep(20);
   G.openOp('fillet');
   await sleep(60);
-  // first pick plain (replaces), the rest Ctrl-click (additive)
-  edges.forEach((sub, i) => G.pick({ kind: 'edge', bodyId: bid, sub, point: [0, 0, 0] }, i > 0));
-  await sleep(120);
+
+  // 1) plain-pick the first edge
+  G.pick({ kind: 'edge', bodyId: bid, sub: want[0].sub, point: want[0].point }, false);
+  await sleep(40);
+  // 2) type a radius -> fire the SAME live-preview path the dialog fires
+  await G.livePreview('fillet', { radius: 2 });
+  // wait for the preview Fillet feature to actually land on the body
+  const gotPreview = await waitFor(
+    () => (G.livePreviewState().featureId != null) || (G.getState().meshes[0].tris > 0),
+    5000
+  );
+  assert(gotPreview, 'the live preview ran (a preview Fillet feature is on the body)');
+  await sleep(150);
+
+  // 3) the body is now filleted on edge 0 - re-read the scene and Ctrl-click
+  //    two MORE edges using points taken from the FILLETED mesh (numbering has
+  //    shifted; only the 3D point is trustworthy now)
+  const scP = await rpc('scene.get');
+  const allP = edgeMid(scP);
+  // match the remaining wanted edges to the nearest current edge by point
+  const nearest = (p) => {
+    let best = null,
+      bd = 1e9;
+    for (const c of allP) {
+      const d = Math.hypot(c.point[0] - p[0], c.point[1] - p[1], c.point[2] - p[2]);
+      if (d < bd) {
+        bd = d;
+        best = c;
+      }
+    }
+    return best;
+  };
+  for (let i = 1; i < want.length; i++) {
+    const c = nearest(want[i].point) || want[i];
+    G.pick({ kind: 'edge', bodyId: bid, sub: c.sub, point: want[i].point }, true); // Ctrl-click = additive
+    await sleep(40);
+    await G.livePreview('fillet', { radius: 2 }); // dialog re-fires preview on every change
+    await sleep(150);
+  }
+
+  const selCount = G.getState().selection.filter((s) => s.startsWith('edge:')).length;
+  assert(selCount >= 3, `all 3 edges stay selected through the previews (${selCount})`);
+
   const ready = await waitFor(() => G.getState().opReady === true, 5000);
-  assert(ready && okBtnDisabled() === false, 'multi-edge fillet: OK enables with 2+ edges picked');
+  assert(ready && okBtnDisabled() === false, 'OK is enabled with 3 edges picked');
+
+  // 4) commit
   let mErr = null;
   try {
     await G.applyOp('fillet', { radius: 2 });
@@ -329,17 +414,19 @@ await rebuildBase('reset + rect -> extrude 12 (fresh body for the multi-edge fil
   }
   await idle();
   G.closeOp();
-  await sleep(30);
+  await sleep(40);
   const st = G.getState();
-  assert(!mErr, `multi-edge fillet applied without an error (${mErr || 'ok'})`);
-  assert(!anyErr(st), 'multi-edge fillet: no feature error after apply');
+  assert(!mErr, `interactive multi-edge fillet committed without an error (${mErr || 'ok'})`);
+  assert(!anyErr(st), 'no feature error after the commit');
   const fAfter = feats(st).filter((f) => /fillet/i.test(f.id)).length;
-  assert(fAfter === fBefore + 1, `exactly one Fillet feature was added (${fBefore} -> ${fAfter})`);
+  assert(fAfter === fBefore + 1, `exactly ONE Fillet feature was added (${fBefore} -> ${fAfter})`);
+  assert(st.meshes.length >= 1 && st.meshes[0].tris > 0, 'the body still renders (it did not vanish)');
   const sc1 = await rpc('scene.get');
   const eAfter2 = (sc1.meshes[0].edges || []).length;
+  // 3 rounded edges add well over 4 new edges; a silent no-op would leave it unchanged
   assert(
-    eAfter2 >= eBefore + (edges.length >= 2 ? 4 : 2),
-    `several edges got rounded in one feature (${eBefore} -> ${eAfter2})`
+    eAfter2 >= eBefore + 6,
+    `3 edges actually got rounded in that one feature (${eBefore} -> ${eAfter2} edges)`
   );
 }
 

@@ -482,8 +482,8 @@ export const apiQuiet = {
     rpcQuiet<{ mesh: RenderMesh }>('feature.previewUpdate', { featureId, props }),
   /** live preview when a dress-up's edge / face set changed: re-point its Base
    * in place (no drain + rebuild), returns the body's fresh mesh */
-  previewSetBase: (id: string, subs: string[]) =>
-    rpcQuiet<{ mesh: RenderMesh; subs?: string[] }>('feature.previewSetBase', { id, subs }),
+  previewSetBase: (id: string, subs: string[], points?: ([number, number, number] | null)[]) =>
+    rpcQuiet<{ mesh: RenderMesh; subs?: string[] }>('feature.previewSetBase', { id, subs, points }),
   /** delete one feature by id, no spinner - used to discard a live-preview feature */
   deleteFeature: (id: string) => rpcQuiet<{ deleted: string }>('feature.delete', { id }),
   /** read a committed feature's params + refs so its dialog can reopen */
@@ -613,8 +613,8 @@ export const api = {
       length2,
       throughAll
     }),
-  fillet: (edges: string[], radius: number) =>
-    rpc<{ bodies: BodyTree[] }>('feature.fillet', { edges, radius }),
+  fillet: (edges: string[], radius: number, points?: ([number, number, number] | null)[]) =>
+    rpc<{ bodies: BodyTree[] }>('feature.fillet', { edges, radius, points }),
   /** commit an edit to an existing feature (params + references) in place */
   featureUpdate: (
     id: string,
@@ -627,8 +627,9 @@ export const api = {
     size: number,
     mode: 'Equal' | 'Two distances' | 'Distance and angle' = 'Equal',
     size2 = 0,
-    angle = 45
-  ) => rpc<{ bodies: BodyTree[] }>('feature.chamfer', { edges, size, mode, size2, angle }),
+    angle = 45,
+    points?: ([number, number, number] | null)[]
+  ) => rpc<{ bodies: BodyTree[] }>('feature.chamfer', { edges, size, mode, size2, angle, points }),
   shell: (faces: string[], thickness: number, direction: 'Inside' | 'Outside' | 'Both' = 'Inside') =>
     rpc<{ bodies: BodyTree[] }>('feature.shell', { faces, thickness, direction }),
   hole: (

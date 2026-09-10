@@ -746,15 +746,16 @@ def pattern_circular(count=4, angle=360.0, axisRef=None, axisPlane="XY",
     return tree_get()
 
 
-def _dressup_edges(tip, subs, kind):
-    """Filter/repair a dress-up sub list against the feature's real base `tip`.
-    Any sub that already resolves on tip.Shape is kept; the rest are dropped
-    (a stale name left over from a live-preview shape whose numbering shifted).
-    Raises if nothing usable is left."""
+def _dressup_edges(tip, subs, kind, points=None, want_faces=False):
+    """Resolve a dress-up edge/face set against the feature's real base `tip`.
+    `points` (world [x,y,z] of each viewport click) is authoritative and
+    numbering-independent - the client's Edge*/Face* names may have been picked
+    against a live-preview shape whose numbering has since shifted. `subs` is the
+    fallback. Raises if nothing usable is left."""
     ts = getattr(tip, "Shape", None)
     if ts is None or ts.isNull():
         return list(subs or [])
-    good = _valid_subs_on(ts, subs)
+    good = _resolve_dressup_subs(ts, subs, points, want_faces)
     if not good:
         raise RpcError(APP_ERROR,
                        "none of the picked %s edges are on this body's current "
@@ -763,10 +764,10 @@ def _dressup_edges(tip, subs, kind):
 
 
 @method("feature.fillet")
-def feature_fillet(edges, radius=2.0):
+def feature_fillet(edges, radius=2.0, points=None):
     body = _require_body()
     tip = _solid_tip(body)
-    edges = _dressup_edges(tip, edges, "fillet")
+    edges = _dressup_edges(tip, edges, "fillet", points)
     f = build.dress_up(body, "PartDesign::Fillet", tip, edges, "Fillet")
     f.Radius = float(radius)
     body.Document.recompute()
@@ -776,12 +777,12 @@ def feature_fillet(edges, radius=2.0):
 
 
 @method("feature.chamfer")
-def feature_chamfer(edges, size=2.0, mode="Equal", size2=0.0, angle=45.0):
+def feature_chamfer(edges, size=2.0, mode="Equal", size2=0.0, angle=45.0, points=None):
     """mode: 'Equal' (one distance), 'Two distances' (Size + Size2), or
     'Distance and angle' (Size + Angle)."""
     body = _require_body()
     tip = _solid_tip(body)
-    edges = _dressup_edges(tip, edges, "chamfer")
+    edges = _dressup_edges(tip, edges, "chamfer", points)
     f = build.dress_up(body, "PartDesign::Chamfer", tip, edges, "Chamfer")
     f.Size = float(size)
     m = str(mode or "Equal").lower()
@@ -1788,71 +1789,105 @@ def _valid_subs_on(shape, subs):
     return out
 
 
-def _sub_point(shape, sub):
-    """A representative point for an Edge* / Face* sub of `shape`, or None."""
-    try:
-        el = shape.getElement(sub)
-    except Exception:
-        return None
-    try:
-        if sub.startswith("Edge"):
-            p = el.valueAt(0.5 * (el.FirstParameter + el.LastParameter))
-            return (p.x, p.y, p.z)
-        if sub.startswith("Face"):
-            u0, u1, v0, v1 = el.ParameterRange
-            p = el.valueAt(0.5 * (u0 + u1), 0.5 * (v0 + v1))
-            return (p.x, p.y, p.z)
-    except Exception:
-        return None
-    return None
-
-
-def _remap_subs_to_shape(target_shape, subs, from_shape):
-    """Given `subs` (Edge*/Face* names) that may address geometry on `from_shape`
-    - e.g. a live-preview solid whose element numbering has already shifted -
-    return the equivalent sub names on `target_shape` (the dress-up feature's
-    real Base). A sub that already resolves on `target_shape` is kept as-is; one
-    that does not is matched to the nearest same-type element by a representative
-    point. Subs that still cannot be matched are dropped."""
-    if target_shape is None or from_shape is None:
-        return list(subs or [])
-    out = []
-    for sub in subs or []:
+def _nearest_edge_on(shape, pt):
+    """Index (1-based Edge name) of the edge of `shape` closest to world point
+    `pt`, or None. Distance is to the edge curve, not a sampled midpoint, so a
+    click anywhere along the edge resolves correctly."""
+    import Part
+    from FreeCAD import Vector
+    v = Part.Vertex(Vector(pt[0], pt[1], pt[2]))
+    best_i, best_d = None, 1e18
+    for i, e in enumerate(shape.Edges):
         try:
-            target_shape.getElement(sub)
-            out.append(sub)
-            continue
+            d = e.distToShape(v)[0]
         except Exception:
-            pass
-        want = _sub_point(from_shape, sub)
-        if want is None:
             continue
-        kind = "Edge" if sub.startswith("Edge") else "Face" if sub.startswith("Face") else None
-        if kind is None:
+        if d < best_d:
+            best_d, best_i = d, i
+    return ("Edge%d" % (best_i + 1)) if best_i is not None else None
+
+
+def _nearest_face_on(shape, pt):
+    import Part
+    from FreeCAD import Vector
+    v = Part.Vertex(Vector(pt[0], pt[1], pt[2]))
+    best_i, best_d = None, 1e18
+    for i, f in enumerate(shape.Faces):
+        try:
+            d = f.distToShape(v)[0]
+        except Exception:
             continue
-        coll = target_shape.Edges if kind == "Edge" else target_shape.Faces
-        best_i, best_d = None, 1e9
-        for i, _el in enumerate(coll):
-            name = "%s%d" % (kind, i + 1)
-            p = _sub_point(target_shape, name)
-            if p is None:
-                continue
-            d = ((p[0] - want[0]) ** 2 + (p[1] - want[1]) ** 2 + (p[2] - want[2]) ** 2) ** 0.5
-            if d < best_d:
-                best_d, best_i = d, i
-        if best_i is not None and best_d < 1e-3:
-            out.append("%s%d" % (kind, best_i + 1))
-    # de-dupe, keep order
+        if d < best_d:
+            best_d, best_i = d, i
+    return ("Face%d" % (best_i + 1)) if best_i is not None else None
+
+
+def _resolve_dressup_subs(base_shape, subs=None, points=None, want_faces=False):
+    """Resolve a dress-up edge/face set against `base_shape` (the feature's real
+    Base).
+
+    Resolution order per pick (subs[i] paired with points[i]):
+
+    1. If points[i] is a real world [x,y,z], resolve it to the nearest Edge
+       (or Face, for shell / draft, or when subs[i] names a Face) on
+       `base_shape`. Points win because they are numbering-independent - a live
+       preview may have renumbered the body's Edge*/Face* out from under the
+       stale `subs[i]` name (which can even collide with a DIFFERENT real edge).
+    2. Otherwise fall back to subs[i] if it still resolves on `base_shape`.
+
+    Order preserved, de-duped. Nothing usable -> whatever subs still validate."""
+    subs = list(subs or [])
+    points = list(points or [])
+
+    def _real_point(p):
+        # [0,0,0] (and None / wrong shape) is the "no pick location" sentinel
+        # used all over the client + tests - never treat it as a click
+        if not (isinstance(p, (list, tuple)) and len(p) == 3):
+            return None
+        if abs(p[0]) < 1e-9 and abs(p[1]) < 1e-9 and abs(p[2]) < 1e-9:
+            return None
+        return p
+
+    out = []
+    for i in range(max(len(subs), len(points))):
+        s = subs[i] if i < len(subs) else ""
+        p = _real_point(points[i] if i < len(points) else None)
+        resolved = None
+        # a REAL click location wins: it is numbering-independent, so it is
+        # correct even when a live preview has renumbered Edge*/Face* out from
+        # under the stale `s` name (which can even collide with another edge).
+        if p is not None:
+            resolved = (_nearest_face_on(base_shape, p)
+                        if (want_faces or s.startswith("Face"))
+                        else _nearest_edge_on(base_shape, p))
+        # no usable point (older client / [0,0,0] sentinel / tests) -> the name,
+        # if it still resolves on the base
+        if resolved is None and s:
+            try:
+                base_shape.getElement(s)
+                resolved = s
+            except Exception:
+                resolved = None
+        if resolved:
+            out.append(resolved)
+    if not out:
+        out = _valid_subs_on(base_shape, subs)
     seen = set()
     return [s for s in out if not (s in seen or seen.add(s))]
 
 
 @method("feature.previewSetBase")
-def feature_preview_set_base(id=None, subs=None):
+def feature_preview_set_base(id=None, subs=None, points=None):
     """Live-preview path for a dress-up (fillet / chamfer / shell / draft / hole)
-    whose EDGE or FACE set changed: re-point its Base to `subs` and recompute
-    once, in place. No drain, no rebuild - so adding a second fillet edge just
-    restyles the existing preview instead of it blinking away. In registry._NO_TXN."""
+    whose EDGE or FACE set changed: re-point its Base and recompute once, in
+    place. No drain, no rebuild - so adding a second fillet edge just restyles
+    the current preview instead of it blinking away. In registry._NO_TXN.
+
+    `points` (world [x,y,z] of each viewport click) is the authoritative,
+    numbering-independent selector: the live preview has ALREADY changed the
+    body's Edge/Face numbering, so a name resolved against the current mesh is
+    meaningless for a 2nd / 3rd pick. `subs` is only a fallback for callers that
+    send no points."""
     d = session.doc(create=False)
     if d is None:
         raise RpcError(APP_ERROR, "no document")
@@ -1862,16 +1897,14 @@ def feature_preview_set_base(id=None, subs=None):
     base = getattr(o, "Base", None)
     if not base or not isinstance(base, tuple):
         raise RpcError(APP_ERROR, "%r has no editable Base" % id)
-    want = [s for s in (subs or []) if s]
-    # the picks were resolved against whatever the viewport currently shows -
-    # which, mid-preview, is this feature's OWN output (already filleted), so its
-    # Edge* / Face* numbering has shifted off the real Base. Remap each pick back
-    # onto base[0]'s shape so a 2nd / 3rd Ctrl-clicked edge is not an
-    # "Invalid edge link".
     base_shape = getattr(base[0], "Shape", None)
-    cur_shape = getattr(o, "Shape", None)
-    if base_shape is not None and cur_shape is not None and not cur_shape.isNull():
-        want = _remap_subs_to_shape(base_shape, want, cur_shape) or want
+    want_faces = o.TypeId in ("PartDesign::Thickness", "PartDesign::Draft")
+    if base_shape is not None and not base_shape.isNull():
+        want = _resolve_dressup_subs(base_shape, subs, points, want_faces)
+    else:
+        want = [s for s in (subs or []) if s]
+    if not want:
+        raise RpcError(APP_ERROR, "no usable edges / faces in that selection")
     o.Base = (base[0], want)
     d.recompute()
     body = None

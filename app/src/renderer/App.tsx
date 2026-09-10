@@ -485,10 +485,33 @@ export function App(): JSX.Element {
         opRef.current === 'datumAxis' ||
         opRef.current === 'datumPoint'
       if (opRef.current != null && !refPickOp) additive = true
+      // for a dress-up op the live preview renumbers the body's Edge*/Face*
+      // names, so two clicks on the SAME real edge can come back with different
+      // sub names, and two clicks on DIFFERENT edges can collide on one name.
+      // Match by the 3D click point instead while such a dialog is open.
+      const dressUpPick =
+        opRef.current === 'fillet' ||
+        opRef.current === 'chamfer' ||
+        opRef.current === 'shell' ||
+        opRef.current === 'draft'
+      const realPt = (p?: number[]): p is number[] =>
+        !!p && (Math.abs(p[0]) > 1e-9 || Math.abs(p[1]) > 1e-9 || Math.abs(p[2]) > 1e-9)
+      const samePick = (a: Selection, b: Selection): boolean => {
+        if (a.kind !== b.kind) return false
+        const pa = (a as { point?: number[] }).point
+        const pb = (b as { point?: number[] }).point
+        // for a dress-up op the live preview renumbers Edge*/Face*, so two
+        // clicks on the same real edge can carry different sub names - match by
+        // the 3D click point instead. Only when BOTH points are real (a
+        // [0,0,0] sentinel from a test / non-viewport caller must never match).
+        if (dressUpPick && realPt(pa) && realPt(pb)) {
+          return Math.hypot(pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]) < 1.0
+        }
+        return selKey(a) === selKey(b)
+      }
       setSelection((cur) => {
         if (!additive) return [sel]
-        const k = selKey(sel)
-        if (cur.some((s) => selKey(s) === k)) return cur.filter((s) => selKey(s) !== k)
+        if (cur.some((s) => samePick(s, sel))) return cur.filter((s) => !samePick(s, sel))
         // extrude / revolve / loft already have a sketch profile: a face click
         // is almost always a stray hit on the live-preview solid. Allow at most
         // ONE extra face (an "up to" target) and never let a face pile up or
@@ -989,7 +1012,15 @@ export function App(): JSX.Element {
       // fast path that feature IS the thing we are committing
       lp.committing = true
       const fastProps = previewProps(kind, v)
+      // dress-up ops (fillet / chamfer / shell / draft) NEVER take the promote
+      // fast path: the preview feature's Base can lag the current pick set by a
+      // click (the live preview is debounced / async), and promoting it would
+      // freeze that stale edge set into the commit. They rebuild from the full
+      // current selection instead - cheap, and always correct.
+      const dressUpCommit =
+        kind === 'fillet' || kind === 'chamfer' || kind === 'shell' || kind === 'draft'
       if (
+        !dressUpCommit &&
         lp.featureId != null &&
         lp.kind === kind &&
         lp.opSig === previewSig(kind, v) &&
@@ -1038,13 +1069,26 @@ export function App(): JSX.Element {
       // scene refresh run behind the status spinner and reconcile when they land
       if (kind === 'datumPlane') setDatumGhostHold(true) // keep the ghost until the real datum lands
       setOp(null)
-      const edges = selection.filter((s) => s.kind === 'edge').map((s) => (s as { sub: string }).sub)
+      const edgeSels = selection.filter((s) => s.kind === 'edge') as Array<{
+        sub: string
+        point?: [number, number, number]
+      }>
+      const edges = edgeSels.map((s) => s.sub)
       const faces = selection.filter((s) => s.kind === 'face') as Array<{
         bodyId: string
         sub: string
         point: [number, number, number]
         normal?: [number, number, number]
       }>
+      // the exact 3D click point for every picked edge / face, POSITIONALLY
+      // paired with the sub-name list above - a numbering-independent selector
+      // the sidecar uses to resolve a dress-up set against the feature's real
+      // base (the live preview shifts Edge* numbering, so names alone break for
+      // a 2nd / 3rd Ctrl-clicked edge). Keep nulls so positions stay aligned.
+      const dressUpPoints = [
+        ...edgeSels.map((s) => s.point ?? null),
+        ...faces.map((f) => f.point ?? null)
+      ] as ([number, number, number] | null)[]
       const sketchIds = selection
         .filter((s) => s.kind === 'sketch')
         .map((s) => (s as { sketchId: string }).sketchId)
@@ -1206,7 +1250,11 @@ export function App(): JSX.Element {
           case 'fillet':
             // a picked face means "round every edge of this face" - PartDesign
             // takes Face* subs in the same list as Edge* subs
-            await api.fillet([...edges, ...faces.map((f) => f.sub)], Number(v.radius))
+            await api.fillet(
+              [...edges, ...faces.map((f) => f.sub)],
+              Number(v.radius),
+              dressUpPoints
+            )
             break
           case 'chamfer':
             await api.chamfer(
@@ -1214,7 +1262,8 @@ export function App(): JSX.Element {
               Number(v.size),
               String(v.mode ?? 'Equal') as 'Equal' | 'Two distances' | 'Distance and angle',
               Number(v.size2 ?? 0),
-              Number(v.angle ?? 45)
+              Number(v.angle ?? 45),
+              dressUpPoints
             )
             break
           case 'shell':
@@ -1630,7 +1679,15 @@ export function App(): JSX.Element {
         sub: string
         point: [number, number, number]
       }>
-      const edges = selection.filter((s) => s.kind === 'edge').map((s) => (s as { sub: string }).sub)
+      const edgeSels = selection.filter((s) => s.kind === 'edge') as Array<{
+        sub: string
+        point?: [number, number, number]
+      }>
+      const edges = edgeSels.map((s) => s.sub)
+      const dressUpPoints = [
+        ...edgeSels.map((s) => s.point ?? null),
+        ...faces.map((f) => f.point ?? null)
+      ] as ([number, number, number] | null)[]
       const sk = selection.find((s) => s.kind === 'sketch') as { sketchId: string } | undefined
       // preview only with plain finite numbers - a half-typed value or an
       // expression ("10mm") would send NaN to the engine and blank the result
@@ -1695,12 +1752,14 @@ export function App(): JSX.Element {
         case 'fillet': {
           const rad = num('radius')
           const subs = [...edges, ...faces.map((f) => f.sub)]
-          return subs.length && rad != null ? api.fillet(subs, rad) : null
+          return subs.length && rad != null ? api.fillet(subs, rad, dressUpPoints) : null
         }
         case 'chamfer': {
           const sz = num('size')
           const subs = [...edges, ...faces.map((f) => f.sub)]
-          return subs.length && sz != null ? api.chamfer(subs, sz) : null
+          return subs.length && sz != null
+            ? api.chamfer(subs, sz, 'Equal', 0, 45, dressUpPoints)
+            : null
         }
         case 'shell': {
           const th = num('thickness')
@@ -1821,32 +1880,31 @@ export function App(): JSX.Element {
               args.kind === 'hole'
             if (dressUp && lp.featureId && lp.kind === args.kind) {
               const wantEdges = args.kind === 'fillet' || args.kind === 'chamfer'
-              const subs = selection
-                .filter((s) => (wantEdges ? s.kind === 'edge' : s.kind === 'face'))
-                .map((s) => (s as { sub: string }).sub)
-                .sort()
-              const baseSig = subs.join(',')
+              const picks = selection.filter((s) =>
+                wantEdges ? s.kind === 'edge' : s.kind === 'face'
+              ) as Array<{ sub: string; point?: [number, number, number] }>
+              const subs = picks.map((s) => s.sub)
+              // positionally paired with `subs`; key the "did this change" sig
+              // off the 3D points (rounded), NOT the Edge* names - once the
+              // preview feature is on the body its names shift, so a name-based
+              // sig would never register the 2nd / 3rd edge as "new"
+              const points = picks.map((s) => s.point ?? null) as (
+                | [number, number, number]
+                | null
+              )[]
+              const allPts = points.every(Boolean)
+              const baseSig = allPts
+                ? (points as [number, number, number][])
+                    .map((p) => p.map((n) => n.toFixed(2)).join(':'))
+                    .sort()
+                    .join('|')
+                : subs.slice().sort().join(',')
               try {
-                if (subs.length && baseSig !== lp.baseSig) {
-                  trace('preview dress-up setBase', { id: lp.featureId, subs })
-                  const { mesh, subs: eff } = await apiQuiet.previewSetBase(lp.featureId, subs)
+                if (picks.length && baseSig !== lp.baseSig) {
+                  trace('preview dress-up setBase', { id: lp.featureId, subs, points })
+                  const { mesh } = await apiQuiet.previewSetBase(lp.featureId, subs, points)
                   if (seq !== lp.seq) continue
-                  // the sidecar may have remapped stale picks (numbering shifts
-                  // once the preview fillet is on the body) - adopt what it
-                  // actually references so a later add / the commit match
-                  if (eff && eff.length && eff.join(',') !== subs.join(',')) {
-                    const kept = new Set(eff)
-                    setSelection((cur) =>
-                      cur.filter(
-                        (s) =>
-                          !((wantEdges ? s.kind === 'edge' : s.kind === 'face')) ||
-                          kept.has((s as { sub: string }).sub)
-                      )
-                    )
-                    lp.baseSig = eff.slice().sort().join(',')
-                  } else {
-                    lp.baseSig = baseSig
-                  }
+                  lp.baseSig = baseSig
                   setMeshes((ms) => {
                     const hit = ms.some((m) => m.id === mesh.id)
                     return hit ? ms.map((m) => (m.id === mesh.id ? mesh : m)) : [...ms, mesh]
@@ -1911,8 +1969,9 @@ export function App(): JSX.Element {
             lp.featureId = newest?.id ?? null // only ever a brand-new feature
             lp.kind = args.kind
             lp.opSig = sig
-            // remember the dress-up edge/face set so a later add updates Base in
-            // place instead of coming back through this rebuild path
+            // remember the dress-up pick set (by 3D point, so the sig still
+            // matches after the preview feature shifts Edge* numbering) so a
+            // later add updates Base in place instead of rebuilding
             {
               const we = args.kind === 'fillet' || args.kind === 'chamfer'
               const du =
@@ -1921,13 +1980,26 @@ export function App(): JSX.Element {
                 args.kind === 'shell' ||
                 args.kind === 'draft' ||
                 args.kind === 'hole'
-              lp.baseSig = du
-                ? selection
-                    .filter((s) => (we ? s.kind === 'edge' : s.kind === 'face'))
-                    .map((s) => (s as { sub: string }).sub)
-                    .sort()
-                    .join(',')
-                : ''
+              if (du) {
+                const dpicks = selection.filter((s) =>
+                  we ? s.kind === 'edge' : s.kind === 'face'
+                ) as Array<{ sub: string; point?: [number, number, number] }>
+                const dpts = dpicks
+                  .map((s) => s.point)
+                  .filter(Boolean) as [number, number, number][]
+                lp.baseSig =
+                  dpts.length === dpicks.length
+                    ? dpts
+                        .map((p) => p.map((n) => n.toFixed(2)).join(':'))
+                        .sort()
+                        .join('|')
+                    : dpicks
+                        .map((s) => s.sub)
+                        .sort()
+                        .join(',')
+              } else {
+                lp.baseSig = ''
+              }
             }
             if (seq !== lp.seq) {
               await drainPreview() // a newer value already superseded this build
@@ -2852,6 +2924,14 @@ export function App(): JSX.Element {
       openOp: (k: OpKind) => openOp(k),
       closeOp: () => openOp(null),
       applyOp: (k: OpKind, v: OpValues, exprs?: Record<string, string>) => applyOp(k, v, exprs),
+      // drive the SAME live-preview path the OperationDialog fires on a value
+      // change - so an E2E can exercise "preview feature on the body, then add
+      // another edge" exactly like the real dialog does
+      livePreview: (k: OpKind, v: OpValues) => runLivePreview(k, v),
+      livePreviewState: () => {
+        const lp = livePreviewRef.current
+        return { featureId: lp.featureId, kind: lp.kind, running: lp.running, baseSig: lp.baseSig }
+      },
 
       // --- selection ---
       select: (sels: Selection[]) => setSelection(sels ?? []),
@@ -2985,6 +3065,7 @@ export function App(): JSX.Element {
     rollTo,
     onSelect,
     openOp,
+    runLivePreview,
     addComponentFile,
     sketchSession,
     status.phase,
