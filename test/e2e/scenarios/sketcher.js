@@ -191,6 +191,76 @@ ents = G.sketch.entities();
 let rr = Math.hypot(ents[ln2].a[0] - ents[circ2].c[0], ents[ln2].a[1] - ents[circ2].c[1]);
 assert(Math.abs(rr - 20) < 0.2, 'the line start sits on the circle rim, r=' + rr.toFixed(2) + ' (want ~20)');
 
+// ---------------------------------------------------------------- tangent
+note('--- manual Tangent: a line becomes tangent to a circle and round-trips ---');
+await freshSketch();
+const tcirc = G.sketch.addEntity({ type: 'circle', c: [0, 0], r: 15 });
+// a line that PASSES THROUGH the circle - Tangent must push it out to just touch
+const tln = G.sketch.addEntity({ type: 'line', a: [-30, 8], b: [30, 8] });
+await sleep(40);
+G.sketch.select([tln, tcirc]);
+assert(G.sketch.available().includes('Tangent'), 'Tangent is offered for a line + a circle');
+assert(G.sketch.applyConstraint('Tangent'), 'Tangent(line, circle) applies');
+await sleep(200);
+{
+  ents = G.sketch.entities();
+  const c = ents[tcirc].c;
+  const A = ents[tln].a;
+  const B = ents[tln].b;
+  // distance from the circle centre to the (infinite) line = radius, for tangency
+  const dx = B[0] - A[0];
+  const dy = B[1] - A[1];
+  const L = Math.hypot(dx, dy) || 1;
+  const dist = Math.abs((c[0] - A[0]) * dy - (c[1] - A[1]) * dx) / L;
+  assert(
+    Math.abs(dist - ents[tcirc].r) < 0.3,
+    `the line is now tangent to the circle (gap ${(dist - ents[tcirc].r).toFixed(3)})`
+  );
+  // finish + reopen: the Tangent constraint must survive
+  await G.finishSketch();
+  await idle();
+  await sleep(220);
+  const tId = (G.getState().selection.find((s) => s.startsWith('sketch:')) || '').slice(7);
+  const tRe = await rpc('sketch.reopen', { sketchId: tId });
+  assert(
+    (tRe.constraints || []).some((k) => k.type === 'Tangent'),
+    'the real sketch kept a Tangent constraint after Finish + reopen'
+  );
+}
+
+// auto-tangent while drawing: a line whose end lands on an arc endpoint
+note('--- auto-tangent: a line ending on an arc endpoint gets ONE Tangent, no conflict ---');
+await freshSketch();
+{
+  // an arc, then a line whose END snaps to the arc's start point
+  const aArc = G.sketch.addEntity({ type: 'arc', c: [20, 0], r: 10, a0: Math.PI, a1: 1.5 * Math.PI });
+  await sleep(40);
+  const aEnts = G.sketch.entities();
+  // arc start (pt 1) world position
+  const as = [
+    aEnts[aArc].c[0] + Math.cos(aEnts[aArc].a0) * aEnts[aArc].r,
+    aEnts[aArc].c[1] + Math.sin(aEnts[aArc].a0) * aEnts[aArc].r
+  ];
+  // draw a line ending exactly there, telling the controller its end snapped to the arc start
+  const aLn = G.sketch.addEntity({ type: 'line', a: [-15, as[1]], b: as }, [null, { idx: aArc, pt: 1 }]);
+  await sleep(120);
+  const nc = G.sketch.newConstraints().filter(
+    (k) => (k.refs || []).some((r) => r.new === aLn || r.geo === aLn)
+  );
+  const tanCount = nc.filter((k) => k.type === 'Tangent').length;
+  const coinCount = nc.filter((k) => k.type === 'Coincident').length;
+  assert(tanCount === 1, `exactly one auto Tangent for the line->arc snap (${tanCount})`);
+  assert(coinCount === 0, `NO separate Coincident (endpoint tangent implies it) - got ${coinCount}`);
+  // and the whole set must actually solve without a conflict
+  await G.finishSketch();
+  await idle();
+  await sleep(200);
+  const atId = (G.getState().selection.find((s) => s.startsWith('sketch:')) || '').slice(7);
+  const atRe = await rpc('sketch.reopen', { sketchId: atId });
+  assert((atRe.constraints || []).some((k) => k.type === 'Tangent'), 'the auto Tangent survived Finish + reopen (it solved)');
+  assert(atRe.entities.length >= 2, 'both the arc and the line are still there after Finish');
+}
+
 // ---------------------------------------------------------------- radius/diameter
 note('--- radius vs diameter dimensioning and toggle ---');
 await freshSketch();

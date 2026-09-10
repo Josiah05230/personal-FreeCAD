@@ -1900,6 +1900,10 @@ export class SketchController {
       if (!target || target.construction) return
       const myPt = myPts[k]
       if (myPt == null) return
+      // a line endpoint that snapped to a curve's RIM (pt 1/2, not its centre)
+      // is handled by autoTangent as an endpoint-tangent, which already implies
+      // coincidence - a Coincident here would over-constrain it
+      if (e.type === 'line' && isCurve(target) && (s.pt === 1 || s.pt === 2)) return
       const tref = s.idx < this.baseCount ? { geo: s.idx, pt: s.pt } : { new: s.idx - this.baseCount, sub: 0, pt: s.pt }
       const dup = this.constraints.some(
         (c) =>
@@ -1971,8 +1975,11 @@ export class SketchController {
     }
   }
 
-  /** If a freshly drawn line's endpoint snapped to a circle / arc, add a
-   *  Tangent so the line touches the curve cleanly. */
+  /** If a freshly drawn line's endpoint snapped to a circle / arc, add an
+   *  ENDPOINT tangent (line.end <-> curve endpoint). FreeCAD's endpoint-tangent
+   *  already implies coincidence, so this must NOT be paired with a separate
+   *  Coincident (that over-constrains: DoF goes negative and the sketch shows
+   *  "conflicting"). `autoCoincident` skips the same rim snap for that reason. */
   private autoTangent(
     entIdx: number,
     snaps: Array<{ idx: number; pt: number } | null>
@@ -1981,12 +1988,16 @@ export class SketchController {
     if (!e || e.type !== 'line') return
     const nw = entIdx - this.baseCount
     if (nw < 0) return
-    for (const s of snaps) {
-      if (!s || s.idx === entIdx) continue
+    // snaps[0] -> our start (pt 1), snaps[1] -> our end (pt 2)
+    snaps.forEach((s, k) => {
+      if (!s || s.idx === entIdx) return
       const t = this.entities[s.idx]
-      if (!t || !isCurve(t)) continue
-      // only when the endpoint landed on the RIM (pt not the centre, pt!==3)
-      if (s.pt === 3) continue
+      if (!t || !isCurve(t)) return
+      const myPt = k === 0 ? 1 : 2
+      // a full circle has no endpoints - fall back to an edge tangent + a
+      // PointOnObject so the line still meets the rim
+      const curveIsArc = t.type === 'arc'
+      const curvePt = s.pt === 1 || s.pt === 2 ? s.pt : 1
       const tref =
         s.idx < this.baseCount
           ? { geo: s.idx }
@@ -1997,9 +2008,22 @@ export class SketchController {
           c.refs.some((r) => r.new === nw || r.geo === entIdx) &&
           c.refs.some((r) => (r.new ?? r.geo) === (tref.new ?? tref.geo))
       )
-      if (dup) continue
-      this.constraints.push({ type: 'Tangent', refs: [{ new: nw, sub: 0 }, tref] })
-    }
+      if (dup) return
+      if (curveIsArc) {
+        // endpoint tangent - line.end <-> arc endpoint, implies coincidence
+        this.constraints.push({
+          type: 'Tangent',
+          refs: [{ new: nw, sub: 0, pt: myPt }, { ...tref, pt: curvePt }]
+        })
+      } else {
+        // circle: keep the endpoint ON the rim + an edge tangent
+        this.constraints.push({
+          type: 'PointOnObject',
+          refs: [{ new: nw, sub: 0, pt: myPt }, tref]
+        })
+        this.constraints.push({ type: 'Tangent', refs: [{ new: nw, sub: 0 }, tref] })
+      }
+    })
   }
 
   /** If an entity's point sits on the origin or an axis (snapping / dragging put
@@ -2690,7 +2714,52 @@ export class SketchController {
       }
       this.constraints.push({ type, refs: [ref(li, near), ref(ci, 3)] })
     } else if (type === 'Tangent' && ents.length === 2) {
+      // pre-position the geometry so the solver lands on the NEARBY tangent
+      // solution, not some far-off one (and so the change is visible before
+      // Finish). line + curve: slide the line parallel to itself until its
+      // distance to the curve centre equals the radius. curve + curve: move
+      // the 2nd centre so the circles are externally tangent.
+      const a = ents[0]!
+      const b = ents[1]!
+      if ((isLine(a) && isCurve(b)) || (isCurve(a) && isLine(b))) {
+        const lk = isLine(a) ? 0 : 1
+        const ln = ents[lk] as { a: [number, number]; b: [number, number] }
+        const cv = ents[1 - lk] as { c: [number, number]; r: number }
+        if (!isProj(lk)) {
+          const dx = ln.b[0] - ln.a[0]
+          const dy = ln.b[1] - ln.a[1]
+          const L = Math.hypot(dx, dy) || 1
+          // unit normal to the line
+          let nx = -dy / L
+          let ny = dx / L
+          // signed distance from centre to the line
+          const sd = (cv.c[0] - ln.a[0]) * nx + (cv.c[1] - ln.a[1]) * ny
+          if (sd < 0) {
+            nx = -nx
+            ny = -ny
+          }
+          const move = Math.abs(sd) - cv.r // shift the line by this along +n
+          ln.a = [ln.a[0] + nx * move, ln.a[1] + ny * move]
+          ln.b = [ln.b[0] + nx * move, ln.b[1] + ny * move]
+        }
+      } else if (isCurve(a) && isCurve(b) && !isProj(1)) {
+        const ca = a as { c: [number, number]; r: number }
+        const cb = b as { c: [number, number]; r: number }
+        const dx = cb.c[0] - ca.c[0]
+        const dy = cb.c[1] - ca.c[1]
+        const D = Math.hypot(dx, dy) || 1
+        const target = ca.r + cb.r // external tangency
+        cb.c = [ca.c[0] + (dx / D) * target, ca.c[1] + (dy / D) * target]
+      }
       this.constraints.push({ type, refs: [ref(idxs[0]), ref(idxs[1])] })
+      this.lastUserConstraint = this.constraints.length - 1
+      this.selected = []
+      this.geomV++
+      this.redraw()
+      void this.runSolve()
+      this.scheduleSolve()
+      this.onChange()
+      return true
     } else if (type === 'Midpoint' && ents.length === 2) {
       // one line + one other entity: put that entity's nearest endpoint at the
       // line's midpoint (recorded as a Symmetric-about-the-endpoints constraint)

@@ -2905,6 +2905,19 @@ def _apply_sketch_constraints(sk, constraints, emap):
                     "PointOnObject",
                     gid(refs[0]), int(refs[0].get("pt", 1)),
                     gid(refs[1])))
+            elif ct == "Tangent" and len(refs) >= 2 and refs[0].get("pt") is not None \
+                    and refs[1].get("pt") is not None:
+                # ENDPOINT tangent: line end <-> curve endpoint. This form
+                # already implies coincidence, so the client must not also send
+                # a Coincident for the same pair (that over-constrains). Fall
+                # back to the plain edge tangent if FreeCAD rejects it.
+                try:
+                    sk.addConstraint(Sketcher.Constraint(
+                        "Tangent",
+                        gid(refs[0]), int(refs[0].get("pt", 2)),
+                        gid(refs[1]), int(refs[1].get("pt", 1))))
+                except Exception:
+                    sk.addConstraint(Sketcher.Constraint("Tangent", gid(refs[0]), gid(refs[1])))
             elif ct in _LINE_PAIR_CONSTRAINTS and len(refs) >= 2:
                 sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0]), gid(refs[1])))
             elif ct == "Coincident" and len(refs) >= 2:
