@@ -335,6 +335,35 @@ await sleep(150);
 const pro2 = await rpc('sketch.reopen', { sketchId: fsk.sketchId });
 assert((pro2.projected || []).length === 0, 'the real sketch has no projections after unproject + Finish');
 
+// ---------------------------------------------------------------- project a perpendicular edge -> a point
+note('--- an edge perpendicular to the sketch plane projects to a point on it ---');
+{
+  // a sketch back on the XY plane; a vertical edge of the pad pierces it
+  const xsk = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await G.editSketch(xsk.sketchId);
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(100);
+  let pt = [];
+  for (const en of ['Edge1', 'Edge2', 'Edge3', 'Edge4', 'Edge9', 'Edge10', 'Edge11', 'Edge12']) {
+    pt = await G.sketch.project(pbid, en);
+    // a perpendicular edge -> a zero-length "line" (a point marker in the editor)
+    if (pt.some((p) => p.type === 'line' && p.a[0] === p.b[0] && p.a[1] === p.b[1])) break;
+  }
+  assert(
+    pt.some((p) => p.a[0] === p.b[0] && p.a[1] === p.b[1]),
+    'a perpendicular edge projected to a point (zero-length entity)'
+  );
+  assert(pt.every((p) => p.projected === true), 'the projected point is flagged projected');
+  await G.finishSketch();
+  await idle();
+  await sleep(200);
+  const xre = await rpc('sketch.reopen', { sketchId: xsk.sketchId });
+  assert(
+    (xre.projected || []).some((p) => p.a && p.a[0] === p.b[0] && p.a[1] === p.b[1]),
+    'the projected point survives Finish + reopen'
+  );
+}
+
 // ---------------------------------------------------------------- health
 note('--- editor + engine healthy at end ---');
 const fin = G.getState();

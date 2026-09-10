@@ -2816,7 +2816,22 @@ export class SketchController {
   }
 
   private entityObj(e: SketchEntity, mat: THREE.Material): THREE.Line {
-    if (e.type === 'line') return this.polyToObj([e.a, e.b], mat)
+    if (e.type === 'line') {
+      // a projected point comes back as a zero-length line (a model edge / vertex
+      // perpendicular to the plane pierced it here) - draw a visible cross marker
+      if (Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1]) < 1e-6) {
+        const r = 6 / Math.max(this.pxPerMm(), 0.001) // ~6px on screen
+        const [x, y] = e.a
+        const g = new THREE.BufferGeometry().setFromPoints([
+          this.toWorld(x - r, y),
+          this.toWorld(x + r, y),
+          this.toWorld(x, y - r),
+          this.toWorld(x, y + r)
+        ])
+        return new THREE.LineSegments(g, mat) as unknown as THREE.Line
+      }
+      return this.polyToObj([e.a, e.b], mat)
+    }
     if (e.type === 'rect')
       return this.polyToObj([e.a, [e.b[0], e.a[1]], e.b, [e.a[0], e.b[1]]], mat, true)
     if (e.type === 'circle') return this.polyToObj(this.circleUVs(e.c, e.r), mat, true)
