@@ -502,8 +502,25 @@ export const apiQuiet = {
       pickPlanes: PickPlane[]
       canvases: CanvasDTO[]
       renderSettings?: RenderSettings
+      sections?: SectionDTO[]
     }>('scene.get'),
-  treeGet: () => rpcQuiet<{ bodies: BodyTree[]; path: string | null }>('tree.get')
+  treeGet: () => rpcQuiet<{ bodies: BodyTree[]; path: string | null }>('tree.get'),
+  sectionCreate: (plane: string, offset: number, flip: boolean) =>
+    rpcQuiet<SectionDTO>('section.create', { plane, offset, flip }),
+  sectionSet: (
+    id: string,
+    patch: { plane?: string; offset?: number; flip?: boolean; visible?: boolean; label?: string }
+  ) => rpcQuiet<SectionDTO>('section.set', { id, ...patch }),
+  sectionDelete: (id: string) => rpcQuiet<{ deleted: string }>('section.delete', { id })
+}
+
+export interface SectionDTO {
+  id: string
+  label: string
+  plane: 'XY' | 'XZ' | 'YZ'
+  offset: number
+  flip: boolean
+  visible: boolean
 }
 
 export const api = {
@@ -519,6 +536,7 @@ export const api = {
       pickPlanes: PickPlane[]
       canvases: CanvasDTO[]
       renderSettings?: RenderSettings
+      sections?: SectionDTO[]
     }>('scene.get'),
   treeGet: () =>
     rpc<{ bodies: BodyTree[]; path: string | null; canUndo?: boolean; canRedo?: boolean }>(

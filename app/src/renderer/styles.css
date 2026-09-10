@@ -1144,6 +1144,30 @@ code {
   font-size: 11px;
 }
 
+.inspect-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 0 2px;
+}
+.inspect-actions .btn {
+  flex: 1;
+  padding: 5px 10px;
+  font-size: 11px;
+  border: 1px solid var(--border, #3a4048);
+  border-radius: 4px;
+  background: var(--panel-2, #2a2f37);
+  color: var(--text, #e7e9ec);
+  cursor: pointer;
+}
+.inspect-actions .btn.primary {
+  background: var(--accent, #2f80c8);
+  border-color: var(--accent, #2f80c8);
+  color: #fff;
+}
+.inspect-actions .btn:hover {
+  filter: brightness(1.1);
+}
+
 .inspect-k {
   color: var(--text-dim);
 }

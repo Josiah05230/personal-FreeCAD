@@ -3367,6 +3367,7 @@ def scene_get():
         "pickPlanes": _pick_planes(d),
         "canvases": canv,
         "renderSettings": session.render_settings(),
+        "sections": session.sections(),
     }
 
 
@@ -3404,6 +3405,33 @@ def canvas_update(id, w=None, h=None, offset=None, rot=None):
 @method("canvas.delete")
 def canvas_delete(id):
     session.remove_canvas(id)
+    return {"deleted": id}
+
+
+# --------------------------------------------------------------------------- #
+# section views - a saved cut plane that lives in the model tree like a datum
+# (the clip itself is a live three.js plane in the renderer; we persist it)
+# --------------------------------------------------------------------------- #
+
+@method("section.list")
+def section_list():
+    return {"sections": session.sections()}
+
+
+@method("section.create")
+def section_create(plane="XY", offset=0.0, flip=False, label=None):
+    return session.add_section(plane, offset, flip, label)
+
+
+@method("section.set")
+def section_set(id, plane=None, offset=None, flip=None, visible=None, label=None):
+    return session.set_section(id, plane=plane, offset=offset, flip=flip,
+                               visible=visible, label=label)
+
+
+@method("section.delete")
+def section_delete(id):
+    session.remove_section(id)
     return {"deleted": id}
 
 

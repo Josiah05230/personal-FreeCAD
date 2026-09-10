@@ -294,5 +294,59 @@ note('face-revolve tree: ' + JSON.stringify(st8.bodies[0].features.map((f) => f.
 assert(!anyErr(st8), 'no feature in error after revolving a face');
 assert(st8.meshes.length >= 1 && st8.meshes[0].tris > 0, 'a solid still renders after the face revolve');
 
+// ---------------------------------------------------------------- section views
+note('--- section view: saved object, show/hide, edit, survives save+reopen ---');
+{
+  const TMP = '/tmp/gwtcad-section-e2e.FCStd';
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  const ss = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: ss.sketchId,
+    elements: [{ type: 'rect', a: [0, 0], b: [30, 20] }],
+    constraints: []
+  });
+  await G.refresh(); await idle();
+  G.selectSketch(ss.sketchId);
+  await sleep(40);
+  await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 12 });
+  await idle();
+
+  // no sections yet
+  let sc = await rpc('scene.get');
+  assert((sc.sections || []).length === 0, 'no section views to start');
+
+  // create one via the RPC the OK button uses
+  const made = await rpc('section.create', { plane: 'XZ', offset: 5, flip: false });
+  assert(made.id && made.visible === true, 'section.create returns a visible tree object');
+  sc = await rpc('scene.get');
+  assert((sc.sections || []).some((x) => x.id === made.id && x.plane === 'XZ'), 'scene.get lists the new section');
+
+  // hide it (the eye toggle in the tree)
+  await rpc('section.set', { id: made.id, visible: false });
+  sc = await rpc('scene.get');
+  assert(sc.sections.find((x) => x.id === made.id).visible === false, 'section can be hidden from the tree');
+
+  // edit it (double-click -> panel -> Update)
+  await rpc('section.set', { id: made.id, offset: -8, flip: true, visible: true });
+  sc = await rpc('scene.get');
+  const edited = sc.sections.find((x) => x.id === made.id);
+  assert(edited.offset === -8 && edited.flip === true && edited.visible === true, 'section edits (offset / flip / visible) stick');
+
+  // survives save + reopen (it lives in the .gwtcad companion)
+  await rpc('document.saveAs', { path: TMP });
+  await rpc('session.reset');
+  await rpc('document.open', { path: TMP });
+  sc = await rpc('scene.get');
+  const reopened = (sc.sections || []).find((x) => x.id === made.id);
+  assert(!!reopened && reopened.plane === 'XZ' && reopened.offset === -8, 'the section view survives save + reopen');
+
+  // delete it
+  await rpc('section.delete', { id: made.id });
+  sc = await rpc('scene.get');
+  assert((sc.sections || []).length === 0, 'section.delete removes it from the tree');
+}
+
 assert((await rpc('ping')).pong === true, 'engine still responds at end');
 note('repro complete');

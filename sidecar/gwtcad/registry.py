@@ -80,6 +80,7 @@ _NO_TXN = {
     "appearance.get", "appearance.set", "appearance.clear",
     "appearance.renderGet", "appearance.renderSet",
     "appearance.presetList", "appearance.presetSave", "appearance.presetDelete",
+    "section.list", "section.create", "section.set", "section.delete",
 }
 
 

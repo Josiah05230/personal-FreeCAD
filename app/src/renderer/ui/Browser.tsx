@@ -2,6 +2,12 @@ import { useState } from 'react'
 import type { BodyTree, CanvasDTO, Selection } from '../rpc'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 
+export interface SectionNode {
+  id: string
+  label: string
+  visible: boolean
+}
+
 export interface BrowserHandlers {
   onToggleVisibility: (id: string, visible: boolean) => void
   onToggleGroup: (group: 'bodies' | 'sketches' | 'origin', visible: boolean) => void
@@ -12,6 +18,9 @@ export interface BrowserHandlers {
   onSelect: (sel: Selection, additive: boolean) => void
   onCalibrateCanvas: (id: string) => void
   onDeleteCanvas: (id: string) => void
+  onToggleSection?: (id: string, visible: boolean) => void
+  onEditSection?: (id: string) => void
+  onDeleteSection?: (id: string) => void
 }
 
 const Eye = ({ on }: { on: boolean }): JSX.Element =>
@@ -110,12 +119,14 @@ function Row({
 export function Browser({
   bodies,
   canvases = [],
+  sections = [],
   handlers,
   visibility,
   selection
 }: {
   bodies: BodyTree[]
   canvases?: CanvasDTO[]
+  sections?: SectionNode[]
   handlers: BrowserHandlers
   visibility: Record<string, boolean>
   selection: Selection[]
@@ -294,6 +305,31 @@ export function Browser({
                   { label: 'Calibrate…', onClick: () => handlers.onCalibrateCanvas(c.id) },
                   { separator: true, label: '' },
                   { label: 'Delete', danger: true, onClick: () => handlers.onDeleteCanvas(c.id) }
+                ]}
+              />
+            ))}
+          </Row>
+        )}
+
+        {sections.length > 0 && (
+          <Row depth={1} label="Section Views" glyph="⌗" defaultOpen>
+            {sections.map((s) => (
+              <Row
+                key={s.id}
+                depth={2}
+                label={s.label}
+                glyph="⌗"
+                visible={s.visible}
+                onToggle={(v) => handlers.onToggleSection?.(s.id, v)}
+                onEditDbl={() => handlers.onEditSection?.(s.id)}
+                menu={[
+                  { label: 'Edit…', onClick: () => handlers.onEditSection?.(s.id) },
+                  {
+                    label: s.visible ? 'Hide' : 'Show',
+                    onClick: () => handlers.onToggleSection?.(s.id, !s.visible)
+                  },
+                  { separator: true, label: '' },
+                  { label: 'Delete', danger: true, onClick: () => handlers.onDeleteSection?.(s.id) }
                 ]}
               />
             ))}

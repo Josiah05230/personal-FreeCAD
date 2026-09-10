@@ -205,6 +205,50 @@ def kicad_link():
 _canvases = {}
 _canvas_seq = [0]
 
+# Section views. The cut itself is a live three.js clip in the renderer; the
+# sidecar just persists each one (plane / offset / flip / visible / label) in the
+# .gwtcad companion so it round-trips like a datum plane and shows in the tree.
+_sections = {}
+_section_seq = [0]
+
+
+def add_section(plane="XY", offset=0.0, flip=False, label=None):
+    _section_seq[0] += 1
+    sid = "Section%d" % _section_seq[0]
+    _sections[sid] = {
+        "id": sid,
+        "label": label or ("Section %d" % _section_seq[0]),
+        "plane": str(plane),
+        "offset": float(offset),
+        "flip": bool(flip),
+        "visible": True,
+    }
+    return _sections[sid]
+
+
+def set_section(sid, **kw):
+    if sid not in _sections:
+        # allow the client to define one with its own id (e.g. restored on open)
+        _sections[sid] = {"id": sid, "label": kw.get("label") or sid,
+                          "plane": "XY", "offset": 0.0, "flip": False, "visible": True}
+        try:
+            n = int(sid.replace("Section", ""))
+            _section_seq[0] = max(_section_seq[0], n)
+        except Exception:
+            pass
+    for k, v in kw.items():
+        if v is not None:
+            _sections[sid][k] = v
+    return _sections[sid]
+
+
+def sections():
+    return list(_sections.values())
+
+
+def remove_section(sid):
+    _sections.pop(sid, None)
+
 
 def add_canvas(plane_role, w_mm, h_mm, image=None):
     _canvas_seq[0] += 1
@@ -219,6 +263,16 @@ def load_state(blob):
     _canvases.clear()
     for c in blob.get("canvases", []):
         _canvases[c["id"]] = c
+    _sections.clear()
+    for s in blob.get("sections", []):
+        if s.get("id"):
+            _sections[s["id"]] = s
+    _section_seq[0] = 0
+    for sid in _sections:
+        try:
+            _section_seq[0] = max(_section_seq[0], int(sid.replace("Section", "")))
+        except Exception:
+            pass
     _colors.clear()
     _colors.update(blob.get("colors", {}))
     _params.clear()
@@ -256,7 +310,8 @@ def dump_state():
             "materialPropOnly": all_object_property_only_materials(),
             "appearance": all_object_appearances(),
             "renderSettings": render_settings(),
-            "appearancePresets": appearance_presets()}
+            "appearancePresets": appearance_presets(),
+            "sections": list(_sections.values())}
 
 
 def canvases():
@@ -392,6 +447,10 @@ def reset():
     _appearance.clear()
     _render_settings.clear()
     _appearance_presets.clear()
+    _canvases.clear()
+    _canvas_seq[0] = 0
+    _sections.clear()
+    _section_seq[0] = 0
     return d
 
 

@@ -293,6 +293,11 @@ export function App(): JSX.Element {
   const [measureResult, setMeasureResult] = useState<MeasureResult | null>(null)
   const [massProps, setMassProps] = useState<import('./rpc').MassProperties | null>(null)
   const [section, setSection] = useState<SectionState | null>(null)
+  const [sections, setSections] = useState<SectionState[]>([])
+  const sectionRef = useRef<SectionState | null>(null)
+  sectionRef.current = section
+  const sectionsRef = useRef<SectionState[]>([])
+  sectionsRef.current = sections
   const [canvases, setCanvases] = useState<CanvasDTO[]>([])
   const [renderSettings, setRenderSettings] = useState<RenderSettings>({})
   const [showAppearance, setShowAppearance] = useState(false)
@@ -336,6 +341,7 @@ export function App(): JSX.Element {
       setDatums(scene.datums ?? [])
       setPickPlanes(scene.pickPlanes ?? [])
       setCanvases(scene.canvases ?? [])
+      setSections((scene.sections ?? []) as SectionState[])
       if (scene.renderSettings) setRenderSettings(scene.renderSettings)
       setBodies(tree.bodies)
       setDocPath(tree.path)
@@ -385,6 +391,7 @@ export function App(): JSX.Element {
     setSketches(scene.sketches ?? [])
     setDatums(scene.datums ?? [])
     setPickPlanes(scene.pickPlanes ?? [])
+    setSections((scene.sections ?? []) as SectionState[])
     setBodies(tree.bodies)
     done()
     // keep the user's client-side hide/show across a mesh refresh
@@ -2697,8 +2704,63 @@ export function App(): JSX.Element {
     setSelection([])
   }, [])
 
+  // Section views are saved objects (model tree, .gwtcad companion). `sections`
+  // mirrors what the engine has; `section` is the panel's live working copy for
+  // a NEW cut or one being edited (its `id` says which).
   const toggleSection = useCallback(() => {
     setSection((s) => (s ? null : { plane: 'XY', offset: 0, flip: false }))
+  }, [])
+
+  const commitSection = useCallback(async () => {
+    const draft = sectionRef.current
+    if (!draft) return
+    try {
+      if (draft.id) {
+        await apiQuiet.sectionSet(draft.id, {
+          plane: draft.plane,
+          offset: draft.offset,
+          flip: draft.flip,
+          visible: true
+        })
+      } else {
+        await apiQuiet.sectionCreate(draft.plane, draft.offset, draft.flip)
+      }
+      markDirty()
+      const scene = await api.sceneGet()
+      setSections((scene.sections ?? []) as SectionState[])
+    } catch (e) {
+      flashSketchNotice(`Section: ${(e as Error).message}`)
+    }
+    setSection(null)
+  }, [])
+
+  const editSection = useCallback(
+    (id: string) => {
+      const s = sectionsRef.current.find((x) => x.id === id)
+      if (s) setSection({ ...s })
+    },
+    []
+  )
+
+  const toggleSectionVisible = useCallback(async (id: string, visible: boolean) => {
+    setSections((cur) => cur.map((s) => (s.id === id ? { ...s, visible } : s)))
+    try {
+      await apiQuiet.sectionSet(id, { visible })
+      markDirty()
+    } catch {
+      /* keep the optimistic state; a refresh will reconcile */
+    }
+  }, [])
+
+  const deleteSection = useCallback(async (id: string) => {
+    setSections((cur) => cur.filter((s) => s.id !== id))
+    setSection((d) => (d && d.id === id ? null : d))
+    try {
+      await apiQuiet.sectionDelete(id)
+      markDirty()
+    } catch {
+      /* ignore */
+    }
   }, [])
 
   useEffect(() => {
@@ -3210,6 +3272,13 @@ export function App(): JSX.Element {
     [op]
   )
 
+  // which cut the viewport actually clips with: the panel's live draft while it
+  // is open, otherwise the first visible saved section
+  const activeSection = useMemo<SectionState | null>(() => {
+    if (section) return section
+    return sections.find((s) => s.visible) ?? null
+  }, [section, sections])
+
   // ghost plane for an active section cut (no RPC - it is just an origin plane)
   const sectionGhost = useMemo(() => {
     if (!section) return null
@@ -3468,7 +3537,7 @@ export function App(): JSX.Element {
                     hiddenIds={hiddenIds}
                     selection={selection}
                     onSelect={onSelect}
-                    section={section}
+                    section={activeSection}
                     planePickMode={planePickMode}
                     pickPlanes={pickPlanes}
                     onPickPlane={(ref) => void beginSketch(ref)}
@@ -3534,6 +3603,11 @@ export function App(): JSX.Element {
                   <Browser
                     bodies={bodies}
                     canvases={canvases}
+                    sections={sections.map((s) => ({
+                      id: s.id!,
+                      label: s.label ?? s.id!,
+                      visible: s.visible ?? true
+                    }))}
                     visibility={visOverride}
                     selection={selection}
                     handlers={{
@@ -3545,7 +3619,10 @@ export function App(): JSX.Element {
                       onEditDim: (id) => void editFeatureDim(id),
                       onSelect: (sel, add) => onSelect(sel, add),
                       onCalibrateCanvas: (id) => startCalibrate(id),
-                      onDeleteCanvas: (id) => void api.canvasDelete(id).then(() => refreshMeshesOnly())
+                      onDeleteCanvas: (id) => void api.canvasDelete(id).then(() => refreshMeshesOnly()),
+                      onToggleSection: (id, v) => void toggleSectionVisible(id, v),
+                      onEditSection: (id) => editSection(id),
+                      onDeleteSection: (id) => void deleteSection(id)
                     }}
                   />
                   {asmTree && (
@@ -3597,7 +3674,8 @@ export function App(): JSX.Element {
                     <SectionPanel
                       state={section}
                       onChange={setSection}
-                      onClose={() => setSection(null)}
+                      onOk={() => void commitSection()}
+                      onCancel={() => setSection(null)}
                     />
                   )}
                   {massProps && (

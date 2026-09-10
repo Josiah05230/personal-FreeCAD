@@ -153,6 +153,11 @@ export function MassPropsPanel({
 }
 
 export interface SectionState {
+  /** set once the cut is committed to the model tree; absent while it is a
+   *  brand-new, uncommitted cut */
+  id?: string
+  label?: string
+  visible?: boolean
   plane: 'XY' | 'XZ' | 'YZ'
   offset: number
   flip: boolean
@@ -161,17 +166,22 @@ export interface SectionState {
 export function SectionPanel({
   state,
   onChange,
-  onClose
+  onOk,
+  onCancel
 }: {
   state: SectionState
   onChange: (s: SectionState) => void
-  onClose: () => void
+  /** commit: keep the cut, add / update it in the model tree, close the panel */
+  onOk: () => void
+  /** discard an uncommitted cut, or just close the panel when editing one */
+  onCancel: () => void
 }): JSX.Element {
+  const committed = !!state.id
   return (
     <div className="inspect-panel">
       <div className="inspect-head">
-        SECTION
-        <button className="inspect-x" onClick={onClose}>
+        {committed ? (state.label ?? 'SECTION') : 'SECTION'}
+        <button className="inspect-x" onClick={onCancel}>
           ×
         </button>
       </div>
@@ -206,6 +216,14 @@ export function SectionPanel({
           />
         </label>
         <div className="inspect-hint">{state.offset} mm</div>
+        <div className="inspect-actions">
+          <button className="btn primary" onClick={onOk}>
+            {committed ? 'Update' : 'OK'}
+          </button>
+          <button className="btn" onClick={onCancel}>
+            {committed ? 'Close' : 'Cancel'}
+          </button>
+        </div>
       </div>
     </div>
   )
