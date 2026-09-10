@@ -1805,9 +1805,24 @@ export function App(): JSX.Element {
               try {
                 if (subs.length && baseSig !== lp.baseSig) {
                   trace('preview dress-up setBase', { id: lp.featureId, subs })
-                  const { mesh } = await apiQuiet.previewSetBase(lp.featureId, subs)
+                  const { mesh, subs: eff } = await apiQuiet.previewSetBase(lp.featureId, subs)
                   if (seq !== lp.seq) continue
-                  lp.baseSig = baseSig
+                  // the sidecar may have remapped stale picks (numbering shifts
+                  // once the preview fillet is on the body) - adopt what it
+                  // actually references so a later add / the commit match
+                  if (eff && eff.length && eff.join(',') !== subs.join(',')) {
+                    const kept = new Set(eff)
+                    setSelection((cur) =>
+                      cur.filter(
+                        (s) =>
+                          !((wantEdges ? s.kind === 'edge' : s.kind === 'face')) ||
+                          kept.has((s as { sub: string }).sub)
+                      )
+                    )
+                    lp.baseSig = eff.slice().sort().join(',')
+                  } else {
+                    lp.baseSig = baseSig
+                  }
                   setMeshes((ms) => {
                     const hit = ms.some((m) => m.id === mesh.id)
                     return hit ? ms.map((m) => (m.id === mesh.id ? mesh : m)) : [...ms, mesh]
@@ -2796,6 +2811,11 @@ export function App(): JSX.Element {
           ent: import('./viewport/SketchController').SketchEntity,
           snapTo?: Array<{ idx: number; pt: 1 | 2 | 3 } | null>
         ) => vpApi.current?.testAddSketchEntity(ent, snapTo) ?? -1,
+        commitTool: (
+          tool: import('./viewport/SketchController').SketchTool,
+          points: [number, number][],
+          snapTo?: Array<{ idx: number; pt: 1 | 2 | 3 } | null>
+        ) => vpApi.current?.testCommitSketchTool(tool, points, snapTo) ?? -1,
         select: (indices: number[]) => vpApi.current?.testSelectSketch(indices),
         selectPoints: (pts: Array<{ e: number; pt: 1 | 2 | 3 }>) =>
           vpApi.current?.testSelectSketchPoints(pts),

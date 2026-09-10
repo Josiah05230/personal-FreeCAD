@@ -386,6 +386,8 @@ export function Viewport({
         renderImage: (opts: RenderImageOptions) => renderSceneImage(opts),
         testAddSketchEntity: (ent, snapTo) =>
           stateRef.current?.sketch?.testAddEntity(ent, snapTo) ?? -1,
+        testCommitSketchTool: (tool, points, snapTo) =>
+          stateRef.current?.sketch?.testCommitTool(tool, points, snapTo) ?? -1,
         testSelectSketch: (idx) => stateRef.current?.sketch?.testSelect(idx),
         testSelectSketchPoints: (pts) => stateRef.current?.sketch?.testSelectPoints(pts),
         testSelectSketchDim: (owner) =>

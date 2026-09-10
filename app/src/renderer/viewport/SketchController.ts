@@ -188,6 +188,10 @@ export class SketchController {
   /** reopened entity index -> new construction flag, for base geometry the user
    *  converted this session (sent to sketch.finish as convertedElements) */
   private convertedBase = new Map<number, boolean>()
+  /** set by pushRect for a Center Rectangle so commit() can anchor the crossing
+   *  of its construction diagonals to the origin / axis / point the first pick
+   *  landed on. Cleared right after it is consumed. */
+  private centerRectAnchor: { d0: number; d1: number } | null = null
   /** index in `constraints` of the last one the user explicitly added, so the
    *  solver can veto it if it over-constrains; -1 once cleared */
   private lastUserConstraint = -1
@@ -393,6 +397,39 @@ export class SketchController {
     this.scheduleSolve()
     this.onChange()
     return i
+  }
+
+  /** Draw a multi-click tool (rect / rect-center / circle / arc / spline) through
+   *  the real commit() path (test hook). `points` are the tool's clicks in world
+   *  UV; `snapTo` optionally ties click k to an existing entity point so the
+   *  same auto-constraints fire as an interactive draw. Returns the index of the
+   *  first entity produced. */
+  testCommitTool(
+    tool: SketchTool,
+    points: [number, number][],
+    snapTo: Array<{ idx: number; pt: 1 | 2 | 3 } | null> = []
+  ): number {
+    const prevTool = this.tool
+    this.tool = tool
+    this.pending = points.slice(0, -1)
+    this.cursorUV = points[points.length - 1]
+    this.pending = points.slice()
+    this.pendingSnaps = points.map((_, k) => {
+      const s = snapTo[k]
+      return s ? { idx: s.idx, pt: s.pt } : null
+    })
+    this.pendingMids = points.map(() => null)
+    const before = this.entities.length
+    this.commit()
+    this.tool = prevTool
+    this.pending = []
+    this.pendingSnaps = []
+    this.pendingMids = []
+    this.geomV++
+    this.redraw()
+    this.scheduleSolve()
+    this.onChange()
+    return before - this.baseCount
   }
 
   /** Set the whole-entity selection by index (test hook). Does NOT clear a
@@ -1666,6 +1703,27 @@ export class SketchController {
         ],
         this.tool === 'rect-center'
       )
+      // anchor a Center Rectangle's centre to whatever the first pick landed on
+      if (this.tool === 'rect-center' && this.centerRectAnchor) {
+        const { d0, d1 } = this.centerRectAnchor
+        const s0 = snaps[0] ?? null
+        const wasOrigin = Math.hypot(p[0][0], p[0][1]) < 1e-6
+        if (wasOrigin) {
+          // crossing on the origin: each diagonal passes through it
+          this.constraints.push({ type: 'PointOnObject', refs: [{ geo: -1, pt: 1 }, { new: d0, sub: 0 }] })
+          this.constraints.push({ type: 'PointOnObject', refs: [{ geo: -1, pt: 1 }, { new: d1, sub: 0 }] })
+        } else if (s0) {
+          // crossing on a real geometry point: mirror it about the other
+          // diagonal so the crossing tracks that point
+          const tref =
+            s0.idx < this.baseCount
+              ? { geo: s0.idx, pt: s0.pt }
+              : { new: s0.idx - this.baseCount, sub: 0, pt: s0.pt }
+          this.constraints.push({ type: 'PointOnObject', refs: [tref, { new: d0, sub: 0 }] })
+          this.constraints.push({ type: 'PointOnObject', refs: [tref, { new: d1, sub: 0 }] })
+        }
+      }
+      this.centerRectAnchor = null
       this.pending = []
       this.pendingSnaps = []
       this.pendingMids = []
@@ -1776,6 +1834,12 @@ export class SketchController {
         weld(d0, 2, 2)
         weld(d0 + 1, 1, 1)
         weld(d0 + 1, 2, 3)
+        // the two construction diagonals are welded to all four corners, so for
+        // any rectangle they already cross at the exact centre - the midpoint
+        // snap of either diagonal IS the centre point, no extra constraint.
+        // commit() may still anchor that crossing to the origin / a real point
+        // the first pick landed on.
+        this.centerRectAnchor = { d0, d1: d0 + 1 }
       }
     }
   }

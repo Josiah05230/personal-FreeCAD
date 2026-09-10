@@ -69,6 +69,74 @@ await sleep(120);
 let ents = G.sketch.entities();
 let d0 = Math.hypot(ents[lo].a[0], ents[lo].a[1]);
 assert(d0 < 0.01, 'the line start is now at the origin (' + d0.toFixed(3) + ')');
+// the coincident-to-origin constraint must actually reach FreeCAD and survive
+{
+  const nc = G.sketch.newConstraints();
+  assert(
+    nc.some(
+      (c) =>
+        c.type === 'Coincident' &&
+        c.refs.some((r) => r.geo === -1) &&
+        c.refs.some((r) => r.new === lo || r.geo === lo)
+    ),
+    'the origin Coincident is recorded with a geo:-1 ref for the sidecar'
+  );
+  await G.finishSketch();
+  await idle();
+  await sleep(220);
+  const oId = (G.getState().selection.find((s) => s.startsWith('sketch:')) || '').slice(7);
+  const oRe = await rpc('sketch.reopen', { sketchId: oId });
+  assert(
+    (oRe.constraints || []).some(
+      (c) => c.type === 'Coincident' && [c.refs?.[0]?.geo, c.refs?.[1]?.geo].includes(-1)
+    ),
+    'the real sketch kept a Coincident-to-origin constraint after Finish + reopen'
+  );
+  const oent = oRe.entities.find((e) => e.type === 'line');
+  assert(
+    oent && Math.hypot(oent.a[0], oent.a[1]) < 0.01,
+    'the reopened line start sits on the origin (' +
+      (oent ? Math.hypot(oent.a[0], oent.a[1]).toFixed(3) : 'n/a') +
+      ')'
+  );
+}
+
+// ---------------------------------------------------------------- center rectangle
+note('--- a Center Rectangle: 4 sides + 2 crossing construction diagonals, centred ---');
+await freshSketch();
+// first pick = the centre (on the origin), second pick = a corner
+G.sketch.commitTool('rect-center', [[0, 0], [20, 12]]);
+await sleep(120);
+{
+  const es = G.sketch.entities();
+  const sides = es.filter((e) => e.type === 'line' && !e.construction);
+  const diags = es.filter((e) => e.type === 'line' && e.construction);
+  assert(sides.length === 4, `center rect has 4 real sides (${sides.length})`);
+  assert(diags.length === 2, `center rect has 2 construction diagonals crossing at the centre (${diags.length})`);
+  // the diagonals' shared midpoint is the rectangle centre - it must be the origin
+  const mid = (l) => [(l.a[0] + l.b[0]) / 2, (l.a[1] + l.b[1]) / 2];
+  const m0 = mid(diags[0]);
+  const m1 = mid(diags[1]);
+  assert(
+    Math.hypot(m0[0] - m1[0], m0[1] - m1[1]) < 0.01,
+    'both construction diagonals share one midpoint (a real centre point to snap to)'
+  );
+  assert(
+    Math.hypot(m0[0], m0[1]) < 0.05,
+    `the centre sits on the origin (${m0[0].toFixed(2)}, ${m0[1].toFixed(2)})`
+  );
+  // it survives Finish + reopen with its diagonals + centre anchor
+  await G.finishSketch();
+  await idle();
+  await sleep(220);
+  const crId = (G.getState().selection.find((s) => s.startsWith('sketch:')) || '').slice(7);
+  const crRe = await rpc('sketch.reopen', { sketchId: crId });
+  const rSides = crRe.entities.filter((e) => e.type === 'line' && !e.construction);
+  const rDiags = crRe.entities.filter((e) => e.type === 'line' && e.construction);
+  assert(rSides.length === 4 && rDiags.length === 2, `reopened center rect: 4 sides + 2 diagonals (${rSides.length}/${rDiags.length})`);
+  const rm = [(rDiags[0].a[0] + rDiags[0].b[0]) / 2, (rDiags[0].a[1] + rDiags[0].b[1]) / 2];
+  assert(Math.hypot(rm[0], rm[1]) < 0.1, `reopened centre still on the origin (${rm[0].toFixed(2)}, ${rm[1].toFixed(2)})`);
+}
 
 // ---------------------------------------------------------------- construction
 note('--- constraints on a construction line ---');

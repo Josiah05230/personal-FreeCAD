@@ -67,6 +67,13 @@ export interface ViewportApi {
     ent: SketchEntity,
     snapTo?: Array<{ idx: number; pt: 1 | 2 | 3 } | null>
   ) => number
+  /** draw a multi-click tool (rect-center / circle / arc / ...) through the real
+   *  commit() path; returns the index of the first entity it produced */
+  testCommitSketchTool: (
+    tool: import('./SketchController').SketchTool,
+    points: [number, number][],
+    snapTo?: Array<{ idx: number; pt: 1 | 2 | 3 } | null>
+  ) => number
   testSelectSketch: (indices: number[]) => void
   testSelectSketchPoints: (pts: Array<{ e: number; pt: 1 | 2 | 3 }>) => void
   testSelectSketchDim: (owner: number) => boolean

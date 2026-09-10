@@ -746,10 +746,27 @@ def pattern_circular(count=4, angle=360.0, axisRef=None, axisPlane="XY",
     return tree_get()
 
 
+def _dressup_edges(tip, subs, kind):
+    """Filter/repair a dress-up sub list against the feature's real base `tip`.
+    Any sub that already resolves on tip.Shape is kept; the rest are dropped
+    (a stale name left over from a live-preview shape whose numbering shifted).
+    Raises if nothing usable is left."""
+    ts = getattr(tip, "Shape", None)
+    if ts is None or ts.isNull():
+        return list(subs or [])
+    good = _valid_subs_on(ts, subs)
+    if not good:
+        raise RpcError(APP_ERROR,
+                       "none of the picked %s edges are on this body's current "
+                       "shape - re-pick them" % kind)
+    return good
+
+
 @method("feature.fillet")
 def feature_fillet(edges, radius=2.0):
     body = _require_body()
     tip = _solid_tip(body)
+    edges = _dressup_edges(tip, edges, "fillet")
     f = build.dress_up(body, "PartDesign::Fillet", tip, edges, "Fillet")
     f.Radius = float(radius)
     body.Document.recompute()
@@ -764,6 +781,7 @@ def feature_chamfer(edges, size=2.0, mode="Equal", size2=0.0, angle=45.0):
     'Distance and angle' (Size + Angle)."""
     body = _require_body()
     tip = _solid_tip(body)
+    edges = _dressup_edges(tip, edges, "chamfer")
     f = build.dress_up(body, "PartDesign::Chamfer", tip, edges, "Chamfer")
     f.Size = float(size)
     m = str(mode or "Equal").lower()
@@ -1758,6 +1776,77 @@ def feature_preview_update(featureId=None, props=None):
     return {"mesh": _owner_mesh(owner, shape)}
 
 
+def _valid_subs_on(shape, subs):
+    """Keep only the Edge*/Face* names that actually resolve on `shape`."""
+    out = []
+    for s in subs or []:
+        try:
+            shape.getElement(s)
+            out.append(s)
+        except Exception:
+            pass
+    return out
+
+
+def _sub_point(shape, sub):
+    """A representative point for an Edge* / Face* sub of `shape`, or None."""
+    try:
+        el = shape.getElement(sub)
+    except Exception:
+        return None
+    try:
+        if sub.startswith("Edge"):
+            p = el.valueAt(0.5 * (el.FirstParameter + el.LastParameter))
+            return (p.x, p.y, p.z)
+        if sub.startswith("Face"):
+            u0, u1, v0, v1 = el.ParameterRange
+            p = el.valueAt(0.5 * (u0 + u1), 0.5 * (v0 + v1))
+            return (p.x, p.y, p.z)
+    except Exception:
+        return None
+    return None
+
+
+def _remap_subs_to_shape(target_shape, subs, from_shape):
+    """Given `subs` (Edge*/Face* names) that may address geometry on `from_shape`
+    - e.g. a live-preview solid whose element numbering has already shifted -
+    return the equivalent sub names on `target_shape` (the dress-up feature's
+    real Base). A sub that already resolves on `target_shape` is kept as-is; one
+    that does not is matched to the nearest same-type element by a representative
+    point. Subs that still cannot be matched are dropped."""
+    if target_shape is None or from_shape is None:
+        return list(subs or [])
+    out = []
+    for sub in subs or []:
+        try:
+            target_shape.getElement(sub)
+            out.append(sub)
+            continue
+        except Exception:
+            pass
+        want = _sub_point(from_shape, sub)
+        if want is None:
+            continue
+        kind = "Edge" if sub.startswith("Edge") else "Face" if sub.startswith("Face") else None
+        if kind is None:
+            continue
+        coll = target_shape.Edges if kind == "Edge" else target_shape.Faces
+        best_i, best_d = None, 1e9
+        for i, _el in enumerate(coll):
+            name = "%s%d" % (kind, i + 1)
+            p = _sub_point(target_shape, name)
+            if p is None:
+                continue
+            d = ((p[0] - want[0]) ** 2 + (p[1] - want[1]) ** 2 + (p[2] - want[2]) ** 2) ** 0.5
+            if d < best_d:
+                best_d, best_i = d, i
+        if best_i is not None and best_d < 1e-3:
+            out.append("%s%d" % (kind, best_i + 1))
+    # de-dupe, keep order
+    seen = set()
+    return [s for s in out if not (s in seen or seen.add(s))]
+
+
 @method("feature.previewSetBase")
 def feature_preview_set_base(id=None, subs=None):
     """Live-preview path for a dress-up (fillet / chamfer / shell / draft / hole)
@@ -1773,7 +1862,17 @@ def feature_preview_set_base(id=None, subs=None):
     base = getattr(o, "Base", None)
     if not base or not isinstance(base, tuple):
         raise RpcError(APP_ERROR, "%r has no editable Base" % id)
-    o.Base = (base[0], [s for s in (subs or []) if s])
+    want = [s for s in (subs or []) if s]
+    # the picks were resolved against whatever the viewport currently shows -
+    # which, mid-preview, is this feature's OWN output (already filleted), so its
+    # Edge* / Face* numbering has shifted off the real Base. Remap each pick back
+    # onto base[0]'s shape so a 2nd / 3rd Ctrl-clicked edge is not an
+    # "Invalid edge link".
+    base_shape = getattr(base[0], "Shape", None)
+    cur_shape = getattr(o, "Shape", None)
+    if base_shape is not None and cur_shape is not None and not cur_shape.isNull():
+        want = _remap_subs_to_shape(base_shape, want, cur_shape) or want
+    o.Base = (base[0], want)
     d.recompute()
     body = None
     try:
@@ -1800,7 +1899,9 @@ def feature_preview_set_base(id=None, subs=None):
         raise RpcError(APP_ERROR,
                        "that edge / face selection produced an invalid shape - "
                        "try a smaller size or a different pick")
-    return {"mesh": _owner_mesh(owner, shape)}
+    # hand back the sub list actually in effect (post-remap) so the shell can
+    # keep its selection in sync with what the feature really references
+    return {"mesh": _owner_mesh(owner, shape), "subs": want}
 
 
 def _owner_mesh(owner, shape):
@@ -2716,13 +2817,23 @@ def _apply_sketch_constraints(sk, constraints, emap):
                 sk.addConstraint(Sketcher.Constraint(
                     "Coincident", gid(refs[0]), 3, gid(refs[1]), 3))
             elif ct in ("Symmetric", "Midpoint") and len(refs) >= 3:
-                # third point lands at the symmetry centre of the first two -
-                # i.e. the midpoint of a line when refs 0/1 are its endpoints
-                sk.addConstraint(Sketcher.Constraint(
-                    "Symmetric",
-                    gid(refs[0]), int(refs[0].get("pt", 1)),
-                    gid(refs[1]), int(refs[1].get("pt", 2)),
-                    gid(refs[2]), int(refs[2].get("pt", 1))))
+                # two points symmetric about a third reference. If the 3rd ref
+                # is a POINT (has "pt") it is the symmetry centre - the midpoint
+                # of a line when refs 0/1 are its endpoints. If it is a LINE
+                # (no "pt") the two points mirror across that line - used by the
+                # Center Rectangle to keep the crossing of its diagonals fixed.
+                if refs[2].get("pt") is not None:
+                    sk.addConstraint(Sketcher.Constraint(
+                        "Symmetric",
+                        gid(refs[0]), int(refs[0].get("pt", 1)),
+                        gid(refs[1]), int(refs[1].get("pt", 2)),
+                        gid(refs[2]), int(refs[2].get("pt", 1))))
+                else:
+                    sk.addConstraint(Sketcher.Constraint(
+                        "Symmetric",
+                        gid(refs[0]), int(refs[0].get("pt", 1)),
+                        gid(refs[1]), int(refs[1].get("pt", 2)),
+                        gid(refs[2])))
         except Exception:
             pass
         now = int(sk.ConstraintCount)

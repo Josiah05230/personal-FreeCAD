@@ -292,6 +292,57 @@ await rebuildBase('reset + rect -> extrude 12 (fresh body for the fillet-by-face
   assert(eAfter >= eBefore + 6, `looks like all edges of the face were rounded (+${eAfter - eBefore})`);
 }
 
+// ------------------------------------------------ multiple edges, one Fillet feature
+note('--- Ctrl-click several edges -> a single Fillet feature commits ---');
+await rebuildBase('reset + rect -> extrude 12 (fresh body for the multi-edge fillet check)');
+{
+  await sleep(20);
+  // all four vertical edges of the box
+  const sc0 = await rpc('scene.get');
+  const vlist = [];
+  for (const e of sc0.meshes[0].edges || []) {
+    const p = e.polyline || e.pts || [];
+    if (p.length >= 2) {
+      const dz = Math.abs(p[0][2] - p[p.length - 1][2]);
+      const dxy = Math.hypot(p[0][0] - p[p.length - 1][0], p[0][1] - p[p.length - 1][1]);
+      if (dz > 1 && dxy < 1e-3) vlist.push('Edge' + (e.edge + 1));
+    }
+  }
+  const edges = (vlist.length >= 2 ? vlist : vEdges).slice(0, 4);
+  note('multi-fillet edges: ' + JSON.stringify(edges));
+  const eBefore = (sc0.meshes[0].edges || []).length;
+  const fBefore = feats(G.getState()).filter((f) => /fillet/i.test(f.id)).length;
+  G.clearSelection();
+  await sleep(20);
+  G.openOp('fillet');
+  await sleep(60);
+  // first pick plain (replaces), the rest Ctrl-click (additive)
+  edges.forEach((sub, i) => G.pick({ kind: 'edge', bodyId: bid, sub, point: [0, 0, 0] }, i > 0));
+  await sleep(120);
+  const ready = await waitFor(() => G.getState().opReady === true, 5000);
+  assert(ready && okBtnDisabled() === false, 'multi-edge fillet: OK enables with 2+ edges picked');
+  let mErr = null;
+  try {
+    await G.applyOp('fillet', { radius: 2 });
+  } catch (e) {
+    mErr = (e && e.message) || String(e);
+  }
+  await idle();
+  G.closeOp();
+  await sleep(30);
+  const st = G.getState();
+  assert(!mErr, `multi-edge fillet applied without an error (${mErr || 'ok'})`);
+  assert(!anyErr(st), 'multi-edge fillet: no feature error after apply');
+  const fAfter = feats(st).filter((f) => /fillet/i.test(f.id)).length;
+  assert(fAfter === fBefore + 1, `exactly one Fillet feature was added (${fBefore} -> ${fAfter})`);
+  const sc1 = await rpc('scene.get');
+  const eAfter2 = (sc1.meshes[0].edges || []).length;
+  assert(
+    eAfter2 >= eBefore + (edges.length >= 2 ? 4 : 2),
+    `several edges got rounded in one feature (${eBefore} -> ${eAfter2})`
+  );
+}
+
 // ---------------------------------------------------------------- negative distance == flip
 note('--- a negative Distance / Angle folds into the flip flag ---');
 await rebuildBase('reset + rect -> extrude 12 (fresh body for the negative-value check)');
