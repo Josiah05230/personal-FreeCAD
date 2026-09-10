@@ -86,15 +86,19 @@ assert(!st.notice || !/error|invalid|not a/i.test(st.notice), `no error notice (
 
 // --- orthographic / perspective projection toggle ---
 note('--- projection toggle (ortho <-> perspective) ---');
-assert(G.getProjection() === 'orthographic', 'the viewport defaults to orthographic (CAD default)');
 const ids = G.commandIds();
 assert(ids.includes('view.projection'), 'the Projection command is registered');
-G.runCommand('view.projection');
-await sleep(80);
-assert(G.getProjection() === 'perspective', 'the command switched the view to perspective');
+// normalise to a known state first (an earlier run may have persisted the other
+// mode in localStorage - persistence across sessions is intentional)
 G.setProjection('orthographic');
 await sleep(80);
-assert(G.getProjection() === 'orthographic', 'setProjection puts it back to orthographic');
+assert(G.getProjection() === 'orthographic', 'setProjection(orthographic) takes effect (CAD default)');
+G.runCommand('view.projection');
+await sleep(80);
+assert(G.getProjection() === 'perspective', 'the Projection command toggles ortho -> perspective');
+G.runCommand('view.projection');
+await sleep(80);
+assert(G.getProjection() === 'orthographic', 'the Projection command toggles perspective -> ortho');
 st = G.getState();
 assert(st.status === 'ready', 'app still ready after toggling projection');
 assert(st.meshes.length >= 1 && st.meshes[0].tris > 0, 'the solid is still in the viewport after the toggle');
