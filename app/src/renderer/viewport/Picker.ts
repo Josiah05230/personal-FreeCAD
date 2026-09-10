@@ -16,12 +16,16 @@ export class Picker {
   private selOverlays: THREE.Object3D[] = []
 
   constructor(
-    private readonly camera: THREE.PerspectiveCamera,
+    private readonly getCamera: () => THREE.PerspectiveCamera | THREE.OrthographicCamera,
     private readonly dom: HTMLElement,
     private readonly overlayRoot: THREE.Object3D
   ) {
     this.ray.params.Line = { threshold: 1.2 }
     this.ray.params.Points = { threshold: 1 }
+  }
+
+  private get camera(): THREE.PerspectiveCamera | THREE.OrthographicCamera {
+    return this.getCamera()
   }
 
   private setPointer(ev: PointerEvent | MouseEvent): void {
@@ -120,9 +124,15 @@ export class Picker {
       // a small dot ON the corner (blue on hover, orange when selected), kept to
       // roughly a constant ~5 px on screen at any zoom, and clamped small
       const c = new THREE.Vector3(...sel.point)
-      const fov = (this.camera.fov * Math.PI) / 180
-      const perPx = (2 * Math.tan(fov / 2) * c.distanceTo(this.camera.position)) / this.dom.clientHeight
-      const rad = Math.min(Math.max(perPx * 5, 1e-4), c.distanceTo(this.camera.position) * 0.02)
+      const cam = this.camera
+      const dcam = c.distanceTo(cam.position)
+      // world units per screen pixel at this depth - perspective uses the fov,
+      // ortho uses the (fixed) frustum height
+      const perPx =
+        cam instanceof THREE.OrthographicCamera
+          ? (cam.top - cam.bottom) / cam.zoom / this.dom.clientHeight
+          : (2 * Math.tan((cam.fov * Math.PI) / 180 / 2) * dcam) / this.dom.clientHeight
+      const rad = Math.min(Math.max(perPx * 5, 1e-4), Math.max(dcam * 0.02, perPx * 5))
       const s = new THREE.Mesh(
         new THREE.SphereGeometry(rad, 16, 12),
         new THREE.MeshBasicMaterial({ color, depthTest: false })

@@ -84,6 +84,21 @@ st = G.getState();
 assert(st.bodies[0].features.length === feats + 1, 'press-pull added one feature');
 assert(!st.notice || !/error|invalid|not a/i.test(st.notice), `no error notice (${st.notice || 'none'})`);
 
+// --- orthographic / perspective projection toggle ---
+note('--- projection toggle (ortho <-> perspective) ---');
+assert(G.getProjection() === 'orthographic', 'the viewport defaults to orthographic (CAD default)');
+const ids = G.commandIds();
+assert(ids.includes('view.projection'), 'the Projection command is registered');
+G.runCommand('view.projection');
+await sleep(80);
+assert(G.getProjection() === 'perspective', 'the command switched the view to perspective');
+G.setProjection('orthographic');
+await sleep(80);
+assert(G.getProjection() === 'orthographic', 'setProjection puts it back to orthographic');
+st = G.getState();
+assert(st.status === 'ready', 'app still ready after toggling projection');
+assert(st.meshes.length >= 1 && st.meshes[0].tris > 0, 'the solid is still in the viewport after the toggle');
+
 // --- the app is still fully responsive ---
 assert((await rpc('ping')).pong === true, 'engine still responds');
 assert(!document.querySelector('button') || true, 'renderer still mounted');

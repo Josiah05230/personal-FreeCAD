@@ -116,6 +116,8 @@ export function Viewport({
   onSketchSolve,
   onSketchNotice,
   renderSettings,
+  projection = 'orthographic',
+  onProjectionChange,
   apiRef
 }: {
   meshes: RenderMesh[]
@@ -161,6 +163,9 @@ export function Viewport({
   onSketchSolve?: import('./SketchController').SketchSolveFn
   onSketchNotice?: (msg: string) => void
   renderSettings?: RenderSettings
+  /** 'orthographic' (CAD default) or 'perspective' */
+  projection?: import('./CadControls').Projection
+  onProjectionChange?: (p: import('./CadControls').Projection) => void
   apiRef?: { current: ViewportApi | null }
 }): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -179,6 +184,9 @@ export function Viewport({
   sketchToolRef.current = sketchTool
   const onSketchProjectRef = useRef(onSketchProject)
   onSketchProjectRef.current = onSketchProject
+  const projectionRef = useRef(projection)
+  const onProjectionChangeRef = useRef(onProjectionChange)
+  onProjectionChangeRef.current = onProjectionChange
   const planePickRef = useRef<{ mode: boolean; cb?: (r: SketchRef) => void }>({ mode: false })
   planePickRef.current = { mode: planePickMode, cb: onPickPlane }
   void pickPlanes // retained as a prop for compatibility; planes are real datums now
@@ -275,8 +283,13 @@ export function Viewport({
     scene.add(preview)
 
     const controls = new CadControls(camera, renderer.domElement)
-    const cube = new ViewCube(cubeRef.current!, camera, controls)
-    const picker = new Picker(camera, renderer.domElement, overlay)
+    controls.setProjection(projectionRef.current)
+    const cube = new ViewCube(cubeRef.current!, controls)
+    cube.onProjectionChange = (p) => {
+      projectionRef.current = p
+      onProjectionChangeRef.current?.(p)
+    }
+    const picker = new Picker(() => controls.camera, renderer.domElement, overlay)
 
     stateRef.current = {
       renderer,
@@ -346,6 +359,18 @@ export function Viewport({
           if (s) s.controls.frame(s.lastCenter, s.lastRadius)
         },
         setView: (dir) => stateRef.current?.cube.goToView(new THREE.Vector3(...dir)),
+        getProjection: () => stateRef.current?.controls.getProjection() ?? 'orthographic',
+        setProjection: (p) => {
+          stateRef.current?.controls.setProjection(p)
+          projectionRef.current = p
+          onProjectionChangeRef.current?.(p)
+        },
+        toggleProjection: () => {
+          const p = stateRef.current?.controls.toggleProjection() ?? 'orthographic'
+          projectionRef.current = p
+          onProjectionChangeRef.current?.(p)
+          return p
+        },
         getSketchEntities: () => stateRef.current?.sketch?.getEntities() ?? [],
         getNewSketchEntities: () => stateRef.current?.sketch?.getNewEntities() ?? [],
         loadSketchEntities: (ents, cons) =>
@@ -426,8 +451,17 @@ export function Viewport({
       if (transparent) off.setClearColor(0x000000, 0)
       else off.setClearColor(new THREE.Color(opts.background as string), 1)
 
-      const cam = st.camera.clone() as THREE.PerspectiveCamera
-      cam.aspect = opts.width / opts.height
+      const active = st.controls.camera
+      const cam = active.clone() as THREE.PerspectiveCamera | THREE.OrthographicCamera
+      if (cam instanceof THREE.PerspectiveCamera) {
+        cam.aspect = opts.width / opts.height
+      } else {
+        // preserve the visible extent, just re-fit the requested aspect ratio
+        const h = cam.top - cam.bottom
+        const w = h * (opts.width / opts.height)
+        cam.left = -w / 2
+        cam.right = w / 2
+      }
       cam.updateProjectionMatrix()
 
       // if the scene background is a gradient texture and the caller wants a
@@ -472,7 +506,7 @@ export function Viewport({
         -((e.clientY - r.top) / r.height) * 2 + 1
       )
       const rc = new THREE.Raycaster()
-      rc.setFromCamera(ndc, st.camera)
+      rc.setFromCamera(ndc, st.controls.camera)
       const ro = rc.ray.origin
       const rd = rc.ray.direction
       const w0 = new THREE.Vector3().subVectors(pv.O0, ro)
@@ -499,7 +533,7 @@ export function Viewport({
           -((e.clientY - r.top) / r.height) * 2 + 1
         )
         const rc = new THREE.Raycaster()
-        rc.setFromCamera(ndc, st.camera)
+        rc.setFromCamera(ndc, st.controls.camera)
         const grabHit = rc
           .intersectObjects(st.preview.children, false)
           .some((h) => h.object.userData?.previewHandle)
@@ -524,7 +558,7 @@ export function Viewport({
           -((e.clientY - r.top) / r.height) * 2 + 1
         )
         const rc = new THREE.Raycaster()
-        rc.setFromCamera(ndc, st.camera)
+        rc.setFromCamera(ndc, st.controls.camera)
         const hit = st.content
           ? rc.intersectObjects(st.content.children, true).find((h) => {
               let o: THREE.Object3D | null = h.object
@@ -613,7 +647,7 @@ export function Viewport({
           -((e.clientY - r.top) / r.height) * 2 + 1
         )
         const rc = new THREE.Raycaster()
-        rc.setFromCamera(ndc, st.camera)
+        rc.setFromCamera(ndc, st.controls.camera)
         const hit = new THREE.Vector3()
         if (!rc.ray.intersectPlane(plane, hit)) return
         cal.pts.push(hit)
@@ -699,7 +733,7 @@ export function Viewport({
           -((e.clientY - r.top) / r.height) * 2 + 1
         )
         const rc = new THREE.Raycaster()
-        rc.setFromCamera(ndc, st.camera)
+        rc.setFromCamera(ndc, st.controls.camera)
         const hit = new THREE.Vector3()
         if (rc.ray.intersectPlane(plane, hit)) {
           cal.line.geometry.setFromPoints([cal.pts[0], hit])
@@ -717,7 +751,7 @@ export function Viewport({
           -((e.clientY - r.top) / r.height) * 2 + 1
         )
         const rc = new THREE.Raycaster()
-        rc.setFromCamera(ndc, st.camera)
+        rc.setFromCamera(ndc, st.controls.camera)
         const over = rc
           .intersectObjects(st.preview.children, false)
           .some((h) => h.object.userData?.previewHandle)
@@ -758,7 +792,7 @@ export function Viewport({
       prev = now
       controls.update()
       cube.update(dt)
-      renderer.render(scene, camera)
+      renderer.render(scene, controls.camera)
     }
     loop()
 
@@ -766,8 +800,7 @@ export function Viewport({
       const w = host.clientWidth
       const h = host.clientHeight
       renderer.setSize(w, h)
-      camera.aspect = w / h
-      camera.updateProjectionMatrix()
+      controls.setAspect(w / h)
     })
     ro.observe(host)
 
@@ -1029,6 +1062,12 @@ export function Viewport({
       }
     }
   }, [calibrateCanvas])
+
+  // projection (orthographic / perspective) is a controlled prop
+  useEffect(() => {
+    projectionRef.current = projection
+    stateRef.current?.controls.setProjection(projection)
+  }, [projection])
 
   // the sketch-plane picker now toggles the real origin / construction planes
   // (App drives their visibility); nothing to render here. Keep the ghosts group

@@ -32,6 +32,8 @@ export interface CommandContext {
   exportModel: () => Promise<void>
   importStep: () => Promise<void>
   fitView: () => void
+  toggleProjection: () => void
+  projection: 'orthographic' | 'perspective'
   toggleData: () => void
   toggleGit: () => void
   toggleSettings: () => void
@@ -146,6 +148,18 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'file.export', title: 'Export…', group: 'File', tab: 'TOOLS', icon: 'point', run: () => ctx.exportModel() },
     { id: 'file.import', title: 'Import…', group: 'File', tab: 'TOOLS', icon: 'point', run: () => ctx.importStep() },
     { id: 'view.fit', title: 'Fit View', group: 'View', tab: 'TOOLS', icon: 'point', hotkey: 'f6', run: () => ctx.fitView() },
+    {
+      id: 'view.projection',
+      title:
+        ctx.projection === 'perspective'
+          ? 'Perspective View (switch to Orthographic)'
+          : 'Orthographic View (switch to Perspective)',
+      group: 'View',
+      tab: 'TOOLS',
+      icon: 'point',
+      hotkey: 'f5',
+      run: () => ctx.toggleProjection()
+    },
     { id: 'panel.data', title: 'Toggle Data Panel', group: 'View', tab: 'TOOLS', icon: 'point', run: () => ctx.toggleData() },
     { id: 'panel.git', title: 'Toggle History (Git)', group: 'View', tab: 'TOOLS', icon: 'point', run: () => ctx.toggleGit() },
     { id: 'panel.settings', title: 'Settings', group: 'View', tab: 'TOOLS', icon: 'point', run: () => ctx.toggleSettings() }

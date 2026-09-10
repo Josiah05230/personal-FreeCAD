@@ -28,6 +28,7 @@ export const DEFAULT_PINNED = new Set<string>([
   'file.export',
   'file.import',
   'view.fit',
+  'view.projection',
   'panel.data',
   'panel.git',
   'panel.settings',

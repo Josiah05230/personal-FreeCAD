@@ -21,6 +21,9 @@ export interface RecordedSketchConstraint {
 export interface ViewportApi {
   fit: () => void
   setView: (dir: [number, number, number]) => void
+  getProjection: () => import('./CadControls').Projection
+  setProjection: (p: import('./CadControls').Projection) => void
+  toggleProjection: () => import('./CadControls').Projection
   getSketchEntities: () => SketchEntity[]
   getNewSketchEntities: () => SketchEntity[]
   loadSketchEntities: (ents: SketchEntity[], cons?: RecordedSketchConstraint[]) => void

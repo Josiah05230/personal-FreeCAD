@@ -30,8 +30,16 @@ export interface CadControlsOptions {
   inertiaDamping?: number // per-frame multiplier for leftover velocity (0..1)
 }
 
+export type Projection = 'perspective' | 'orthographic'
+
 export class CadControls {
   pivot = new THREE.Vector3()
+
+  /** the perspective camera - the pose source of truth even in ortho mode */
+  readonly persp: THREE.PerspectiveCamera
+  /** the orthographic camera, kept synced to persp's pose every frame */
+  readonly ortho: THREE.OrthographicCamera
+  private projection: Projection = 'orthographic'
 
   private mode: Mode = 'none'
   private lastX = 0
@@ -43,22 +51,75 @@ export class CadControls {
   private disposed = false
 
   constructor(
-    private readonly camera: THREE.PerspectiveCamera,
+    persp: THREE.PerspectiveCamera,
     private readonly dom: HTMLElement,
     options: CadControlsOptions = {}
   ) {
+    this.persp = persp
+    const aspect = persp.aspect || 1
+    // a matching ortho: half-height chosen in syncOrtho() from the pivot distance
+    this.ortho = new THREE.OrthographicCamera(-aspect, aspect, 1, -1, persp.near, persp.far)
+    this.ortho.up.copy(UP)
     this.opts = {
       orbitSpeed: options.orbitSpeed ?? 0.006,
       panSpeed: options.panSpeed ?? 1,
       zoomStep: options.zoomStep ?? 0.0015,
       inertiaDamping: options.inertiaDamping ?? 0.74
     }
-    this.camera.up.copy(UP)
+    this.persp.up.copy(UP)
+    this.syncOrtho()
     this.dom.addEventListener('pointerdown', this.onPointerDown)
     this.dom.addEventListener('pointermove', this.onPointerMove)
     window.addEventListener('pointerup', this.onPointerUp)
     this.dom.addEventListener('wheel', this.onWheel, { passive: false })
     this.dom.addEventListener('contextmenu', this.onContextMenu)
+  }
+
+  /** the camera to render / pick / slave the view-cube with */
+  get camera(): THREE.PerspectiveCamera | THREE.OrthographicCamera {
+    return this.projection === 'orthographic' ? this.ortho : this.persp
+  }
+
+  getProjection(): Projection {
+    return this.projection
+  }
+
+  setProjection(p: Projection): void {
+    if (p === this.projection) return
+    this.projection = p
+    this.syncOrtho()
+  }
+
+  toggleProjection(): Projection {
+    this.setProjection(this.projection === 'orthographic' ? 'perspective' : 'orthographic')
+    return this.projection
+  }
+
+  /** Copy the perspective camera's pose onto the ortho camera and size its
+   *  frustum so, at the pivot's depth, it shows the same extent the
+   *  perspective camera does. Called whenever the pose or viewport changes. */
+  syncOrtho(): void {
+    const o = this.ortho
+    o.position.copy(this.persp.position)
+    o.quaternion.copy(this.persp.quaternion)
+    o.up.copy(this.persp.up)
+    const dist = this.persp.position.distanceTo(this.pivot) || 1
+    const halfH = Math.tan(THREE.MathUtils.degToRad(this.persp.fov) / 2) * dist
+    const halfW = halfH * (this.persp.aspect || 1)
+    o.left = -halfW
+    o.right = halfW
+    o.top = halfH
+    o.bottom = -halfH
+    o.near = -this.persp.far
+    o.far = this.persp.far
+    o.updateProjectionMatrix()
+  }
+
+  /** react to a canvas resize */
+  setAspect(aspect: number): void {
+    this.persp.aspect = aspect
+    this.persp.updateProjectionMatrix()
+    this.syncOrtho()
   }
 
   /** Frame the camera on a bounding sphere. */
@@ -75,13 +136,13 @@ export class CadControls {
     this.pivot.copy(center)
     this.rollAngle = 0
     const dir = new THREE.Vector3(1, -1, 0.7).normalize()
-    const dist = radius / Math.sin(THREE.MathUtils.degToRad(this.camera.fov * 0.5))
-    this.camera.position.copy(center).addScaledVector(dir, dist * 1.15)
-    this.camera.up.copy(UP)
-    this.camera.lookAt(center)
-    this.camera.near = Math.max(radius / 500, 0.01)
-    this.camera.far = radius * 200
-    this.camera.updateProjectionMatrix()
+    const dist = radius / Math.sin(THREE.MathUtils.degToRad(this.persp.fov * 0.5))
+    this.persp.position.copy(center).addScaledVector(dir, dist * 1.15)
+    this.persp.up.copy(UP)
+    this.persp.lookAt(center)
+    this.persp.near = Math.max(radius / 500, 0.01)
+    this.persp.far = radius * 200
+    this.persp.updateProjectionMatrix()
   }
 
   private onContextMenu = (e: Event) => e.preventDefault()
@@ -111,7 +172,7 @@ export class CadControls {
       this.orbitVel.set(yaw, pitch)
     } else {
       const delta = this.panDelta(dx, dy)
-      this.camera.position.add(delta)
+      this.persp.position.add(delta)
       this.pivot.add(delta)
       this.panVel.copy(delta)
     }
@@ -136,14 +197,14 @@ export class CadControls {
     )
     // point under the cursor, at the pivot's depth
     const ray = new THREE.Raycaster()
-    ray.setFromCamera(ndc, this.camera)
-    const planeN = this.camera.getWorldDirection(new THREE.Vector3())
+    ray.setFromCamera(ndc, this.persp)
+    const planeN = this.persp.getWorldDirection(new THREE.Vector3())
     const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(planeN, this.pivot)
     const hit = new THREE.Vector3()
     if (!ray.ray.intersectPlane(plane, hit)) return
 
     const factor = Math.exp(e.deltaY * this.opts.zoomStep)
-    this.camera.position.sub(hit).multiplyScalar(factor).add(hit)
+    this.persp.position.sub(hit).multiplyScalar(factor).add(hit)
     this.pivot.sub(hit).multiplyScalar(factor).add(hit)
   }
 
@@ -156,7 +217,7 @@ export class CadControls {
   private static readonly POLE = 0.03 // rad kept clear of each pole (~1.7 deg)
 
   applyOrbit(yaw: number, pitch: number): void {
-    const offset = this.camera.position.clone().sub(this.pivot)
+    const offset = this.persp.position.clone().sub(this.pivot)
     const radius = offset.length()
     if (radius < 1e-6) return
 
@@ -171,18 +232,18 @@ export class CadControls {
     const sp = Math.sin(polar)
     offset.set(radius * sp * Math.cos(azim), radius * sp * Math.sin(azim), radius * Math.cos(polar))
 
-    this.camera.position.copy(this.pivot).add(offset)
+    this.persp.position.copy(this.pivot).add(offset)
     this.applyUp()
   }
 
   /** Set camera.up to world +Z rolled by rollAngle about the view axis, then aim. */
   private applyUp(): void {
-    const view = new THREE.Vector3().subVectors(this.pivot, this.camera.position).normalize()
+    const view = new THREE.Vector3().subVectors(this.pivot, this.persp.position).normalize()
     const up = UP.clone()
     if (Math.abs(up.dot(view)) > 0.999) up.set(0, 1, 0) // looking straight up/down
     if (this.rollAngle) up.applyAxisAngle(view, this.rollAngle)
-    this.camera.up.copy(up).normalize()
-    this.camera.lookAt(this.pivot)
+    this.persp.up.copy(up).normalize()
+    this.persp.lookAt(this.pivot)
   }
 
   /** View-cube 90-degree roll arrows: same view direction, rotated on screen. */
@@ -198,13 +259,13 @@ export class CadControls {
   }
 
   private panDelta(dx: number, dy: number): THREE.Vector3 {
-    const dist = this.camera.position.distanceTo(this.pivot)
-    const vFov = THREE.MathUtils.degToRad(this.camera.fov)
+    const dist = this.persp.position.distanceTo(this.pivot)
+    const vFov = THREE.MathUtils.degToRad(this.persp.fov)
     const worldPerPx = (2 * Math.tan(vFov / 2) * dist) / this.dom.clientHeight
     const right = new THREE.Vector3()
-      .setFromMatrixColumn(this.camera.matrix, 0)
+      .setFromMatrixColumn(this.persp.matrix, 0)
       .normalize()
-    const up = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 1).normalize()
+    const up = new THREE.Vector3().setFromMatrixColumn(this.persp.matrix, 1).normalize()
     return right
       .multiplyScalar(-dx * worldPerPx * this.opts.panSpeed)
       .addScaledVector(up, dy * worldPerPx * this.opts.panSpeed)
@@ -212,19 +273,25 @@ export class CadControls {
 
   /** Call once per animation frame. Applies leftover momentum. */
   update(): void {
-    if (this.disposed || this.mode !== 'none') return
-    const d = this.opts.inertiaDamping
-    if (this.orbitVel.lengthSq() > 4e-6) {
-      this.applyOrbit(this.orbitVel.x, this.orbitVel.y)
-      this.orbitVel.multiplyScalar(d)
-    } else {
-      this.orbitVel.set(0, 0)
+    if (this.disposed) return
+    if (this.mode === 'none') {
+      const d = this.opts.inertiaDamping
+      if (this.orbitVel.lengthSq() > 4e-6) {
+        this.applyOrbit(this.orbitVel.x, this.orbitVel.y)
+        this.orbitVel.multiplyScalar(d)
+      } else {
+        this.orbitVel.set(0, 0)
+      }
+      if (this.panVel.lengthSq() > 1e-9) {
+        this.persp.position.add(this.panVel)
+        this.pivot.add(this.panVel)
+        this.panVel.multiplyScalar(d)
+      }
     }
-    if (this.panVel.lengthSq() > 1e-9) {
-      this.camera.position.add(this.panVel)
-      this.pivot.add(this.panVel)
-      this.panVel.multiplyScalar(d)
-    }
+    // keep the ortho camera glued to the perspective pose + framing every frame
+    // (cheap; a few vector copies + one matrix update) so a projection switch is
+    // instant and orbit / pan / zoom feel identical in both modes
+    this.syncOrtho()
   }
 
   dispose(): void {

@@ -200,6 +200,23 @@ export function App(): JSX.Element {
     'plane'
   ])
   const [selectMode, setSelectMode] = useState<SelectMode>('paint')
+  const [projection, setProjectionState] = useState<'orthographic' | 'perspective'>(() => {
+    try {
+      return localStorage.getItem('gwtcad.projection') === 'perspective'
+        ? 'perspective'
+        : 'orthographic'
+    } catch {
+      return 'orthographic'
+    }
+  })
+  const setProjection = useCallback((p: 'orthographic' | 'perspective') => {
+    setProjectionState(p)
+    try {
+      localStorage.setItem('gwtcad.projection', p)
+    } catch {
+      /* private mode */
+    }
+  }, [])
   const [docPath, setDocPath] = useState<string | null>(null)
   const [visOverride, setVisOverride] = useState<Record<string, boolean>>({})
   const [selection, setSelection] = useState<Selection[]>([])
@@ -2763,6 +2780,11 @@ export function App(): JSX.Element {
       perf: PERF,
       refresh: () => refreshScene(),
       fit: () => vpApi.current?.fit(),
+      getProjection: () => vpApi.current?.getProjection() ?? projection,
+      setProjection: (p: 'orthographic' | 'perspective') => {
+        vpApi.current?.setProjection(p)
+        setProjection(p)
+      },
 
       // --- ops (ribbon -> dialog -> apply) ---
       openOp: (k: OpKind) => openOp(k),
@@ -2973,6 +2995,13 @@ export function App(): JSX.Element {
         exportModel,
         importStep,
         fitView,
+        projection,
+        toggleProjection: () => {
+          const next =
+            vpApi.current?.toggleProjection() ??
+            (projection === 'orthographic' ? 'perspective' : 'orthographic')
+          setProjection(next)
+        },
         toggleData: () => setDataOpen((v) => !v),
         toggleGit: () => setGitOpen((v) => !v),
         toggleSettings: () => setSettingsOpen((v) => !v),
@@ -3016,6 +3045,8 @@ export function App(): JSX.Element {
       addComponent,
       addJoint,
       fitView,
+      projection,
+      setProjection,
       startDrawing,
       startMeasure,
       toggleSection,
@@ -3477,6 +3508,8 @@ export function App(): JSX.Element {
                     }}
                     onSketchNotice={flashSketchNotice}
                     renderSettings={renderSettings}
+                    projection={projection}
+                    onProjectionChange={setProjection}
                     apiRef={vpApi}
                   />
                   {sketchNotice && (

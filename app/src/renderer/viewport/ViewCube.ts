@@ -63,9 +63,18 @@ export class ViewCube {
   /** maps cube-label space -> world space; "Set as Front/Top/Right" rewrites it */
   private frameQuat = new THREE.Quaternion()
 
+  /** the pose source of truth: always the perspective camera, which the ortho
+   *  camera tracks every frame (see CadControls.syncOrtho) */
+  private get mainCam(): THREE.PerspectiveCamera {
+    return this.controls.persp
+  }
+
+  /** notified when the view-cube menu toggles the projection, so the shell can
+   *  keep its own state + the persisted preference in sync */
+  onProjectionChange?: (p: import('./CadControls').Projection) => void
+
   constructor(
     private readonly mount: HTMLElement,
-    private readonly mainCam: THREE.PerspectiveCamera,
     private readonly controls: CadControls
   ) {
     const size = Math.max(mount.clientWidth || 150, 96)
@@ -285,10 +294,18 @@ export class ViewCube {
     const hostRect = host.getBoundingClientRect()
     div.style.left = `${x - hostRect.left}px`
     div.style.top = `${y - hostRect.top}px`
+    const proj = this.controls.getProjection()
     const actions: [string, () => void][] = [
       ['Set as Front', () => this.reorient(faceDir, new THREE.Vector3(0, -1, 0))],
       ['Set as Top', () => this.reorient(faceDir, new THREE.Vector3(0, 0, 1))],
       ['Set as Right', () => this.reorient(faceDir, new THREE.Vector3(1, 0, 0))],
+      [
+        proj === 'orthographic' ? 'Perspective' : 'Orthographic',
+        () => {
+          const p = this.controls.toggleProjection()
+          this.onProjectionChange?.(p)
+        }
+      ],
       ['Reset orientation', () => {
         this.frameQuat.identity()
         this.home()
