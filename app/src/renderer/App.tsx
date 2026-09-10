@@ -299,6 +299,12 @@ export function App(): JSX.Element {
   const sectionsRef = useRef<SectionState[]>([])
   sectionsRef.current = sections
   const [canvases, setCanvases] = useState<CanvasDTO[]>([])
+  // while a dress-up dialog (fillet / chamfer / shell / draft) is open, the
+  // polylines of the edges/faces the feature references on its BASE shape - the
+  // dressed result has consumed them from the visible solid, so this lets the
+  // viewport draw them as a highlighted, pickable ghost you can Ctrl-click to
+  // deselect. Empty when no such dialog is open.
+  const [dressUpGhost, setDressUpGhost] = useState<import('./rpc').BaseRef[]>([])
   const [renderSettings, setRenderSettings] = useState<RenderSettings>({})
   const [showAppearance, setShowAppearance] = useState(false)
   const [showFirstRun, setShowFirstRun] = useState(
@@ -436,6 +442,7 @@ export function App(): JSX.Element {
   const openOp = useCallback((k: OpKind | null) => {
     trace('ACTION openOp', { k, from: opRef.current, queueBusy: cmdRef.current.busy })
     setOp(k)
+    if (k == null) setDressUpGhost([]) // dialog closed - drop the ghost overlay
   }, [])
 
   const onSelect = useCallback(
@@ -899,7 +906,22 @@ export function App(): JSX.Element {
     } catch {
       /* already gone / cascaded away - fine */
     }
+    setDressUpGhost([])
   }, [])
+
+  // apply a preview RPC result: swap the affected body's mesh, and (for a
+  // dress-up) refresh the ghost overlay of its base-shape edge/face refs
+  const applyPreviewResult = useCallback(
+    (res: { mesh: RenderMesh; baseRefs?: import('./rpc').BaseRef[] }) => {
+      const { mesh } = res
+      setMeshes((ms) => {
+        const hit = ms.some((m) => m.id === mesh.id)
+        return hit ? ms.map((m) => (m.id === mesh.id ? mesh : m)) : [...ms, mesh]
+      })
+      if (res.baseRefs) setDressUpGhost(res.baseRefs)
+    },
+    []
+  )
 
   // op kind -> FreeCAD property names for the in-place fast path. A kind absent
   // here (or a mode that changes topology, e.g. extrude "To object") always
@@ -1844,16 +1866,13 @@ export function App(): JSX.Element {
             if (lp.editing) {
               trace('preview EDIT', { id: lp.editing })
               try {
-                const { mesh } = await apiQuiet.editPreview(
+                const res = await apiQuiet.editPreview(
                   lp.editing,
                   args.v,
                   buildEditRefs(args.kind, args.v)
                 )
                 if (seq !== lp.seq) continue
-                setMeshes((ms) => {
-                  const hit = ms.some((m) => m.id === mesh.id)
-                  return hit ? ms.map((m) => (m.id === mesh.id ? mesh : m)) : [...ms, mesh]
-                })
+                applyPreviewResult(res)
                 setSketchNotice(null)
               } catch (e) {
                 trace('preview EDIT error', { msg: (e as Error).message })
@@ -1902,21 +1921,15 @@ export function App(): JSX.Element {
               try {
                 if (picks.length && baseSig !== lp.baseSig) {
                   trace('preview dress-up setBase', { id: lp.featureId, subs, points })
-                  const { mesh } = await apiQuiet.previewSetBase(lp.featureId, subs, points)
+                  const res = await apiQuiet.previewSetBase(lp.featureId, subs, points)
                   if (seq !== lp.seq) continue
                   lp.baseSig = baseSig
-                  setMeshes((ms) => {
-                    const hit = ms.some((m) => m.id === mesh.id)
-                    return hit ? ms.map((m) => (m.id === mesh.id ? mesh : m)) : [...ms, mesh]
-                  })
+                  applyPreviewResult(res)
                 }
                 if (fast) {
-                  const { mesh } = await apiQuiet.previewUpdate(lp.featureId, fast)
+                  const res = await apiQuiet.previewUpdate(lp.featureId, fast)
                   if (seq !== lp.seq) continue
-                  setMeshes((ms) => {
-                    const hit = ms.some((m) => m.id === mesh.id)
-                    return hit ? ms.map((m) => (m.id === mesh.id ? mesh : m)) : [...ms, mesh]
-                  })
+                  applyPreviewResult(res)
                 }
                 lp.opSig = sig
                 setSketchNotice(null)
@@ -1934,12 +1947,9 @@ export function App(): JSX.Element {
             // changed - push them straight in (one recompute, one body meshed).
             if (lp.featureId && lp.kind === args.kind && lp.opSig === sig && fast) {
               trace('preview FAST', { id: lp.featureId, fast })
-              const { mesh } = await apiQuiet.previewUpdate(lp.featureId, fast)
+              const res = await apiQuiet.previewUpdate(lp.featureId, fast)
               if (seq !== lp.seq) continue
-              setMeshes((ms) => {
-                const hit = ms.some((m) => m.id === mesh.id)
-                return hit ? ms.map((m) => (m.id === mesh.id ? mesh : m)) : [...ms, mesh]
-              })
+              applyPreviewResult(res)
               setSketchNotice(null)
               trace('preview FAST done', { ms: Math.round(performance.now() - t0) })
               continue
@@ -2012,11 +2022,8 @@ export function App(): JSX.Element {
             let light = false
             if (lp.featureId) {
               try {
-                const { mesh } = await apiQuiet.previewUpdate(lp.featureId, {})
-                setMeshes((ms) => {
-                  const hit = ms.some((m) => m.id === mesh.id)
-                  return hit ? ms.map((m) => (m.id === mesh.id ? mesh : m)) : [...ms, mesh]
-                })
+                const res = await apiQuiet.previewUpdate(lp.featureId, {})
+                applyPreviewResult(res)
                 // hide a sketch this feature just consumed so it does not show
                 // through the preview solid
                 setSketches((ss) => ss.filter((s) => !selection.some((x) => 'sketchId' in x && x.sketchId === s.id)))
@@ -2404,6 +2411,17 @@ export function App(): JSX.Element {
         /* the dialog still opens; preview will surface any issue */
       }
       openOp(kind)
+      // dress-up edit: seed the ghost overlay of its referenced base edges now
+      // (they've been consumed from the visible solid), so you can Ctrl-click to
+      // deselect before touching anything
+      if (kind === 'fillet' || kind === 'chamfer' || kind === 'shell' || kind === 'draft') {
+        try {
+          const res = await apiQuiet.editPreview(id, info.values ?? {}, r)
+          if (res.baseRefs) setDressUpGhost(res.baseRefs)
+        } catch {
+          /* the first real preview will populate it */
+        }
+      }
     },
     [bodyId, bodies, editFeatureDim, refreshScene, openOp]
   )
@@ -2932,6 +2950,34 @@ export function App(): JSX.Element {
         const lp = livePreviewRef.current
         return { featureId: lp.featureId, kind: lp.kind, running: lp.running, baseSig: lp.baseSig }
       },
+      // dress-up ghost overlay (fillet/chamfer/shell/draft dialogs): the base
+      // edges/faces you can Ctrl-click to deselect
+      dressUpGhost: () => dressUpGhost.map((r) => r.sub),
+      dressUpGhostToggle: (sub: string) => {
+        const ref = dressUpGhost.find((r) => r.sub === sub) ?? dressUpGhost[0]
+        if (!ref) return false
+        const p = ref.polys[0] ?? []
+        const n = p.length / 3
+        const mid = n >= 2 ? [p[Math.floor(n / 2) * 3], p[Math.floor(n / 2) * 3 + 1], p[Math.floor(n / 2) * 3 + 2]] : null
+        setSelection((cur) => {
+          const cand = cur.filter((s) => s.kind === 'edge' || s.kind === 'face')
+          let drop = cand.find((s) => (s as { sub: string }).sub === ref.sub)
+          if (!drop && mid) {
+            let bd = Infinity
+            for (const s of cand) {
+              const q = (s as { point?: number[] }).point
+              if (!q) continue
+              const d = Math.hypot(q[0] - mid[0], q[1] - mid[1], q[2] - mid[2])
+              if (d < bd) {
+                bd = d
+                drop = s
+              }
+            }
+          }
+          return drop ? cur.filter((s) => s !== drop) : cur
+        })
+        return true
+      },
 
       // --- selection ---
       select: (sels: Selection[]) => setSelection(sels ?? []),
@@ -3066,6 +3112,7 @@ export function App(): JSX.Element {
     onSelect,
     openOp,
     runLivePreview,
+    dressUpGhost,
     addComponentFile,
     sketchSession,
     status.phase,
@@ -3660,6 +3707,36 @@ export function App(): JSX.Element {
                     renderSettings={renderSettings}
                     projection={projection}
                     onProjectionChange={setProjection}
+                    dressUpGhost={dressUpGhost}
+                    onDressUpGhostToggle={(sub, midpoint) => {
+                      // Ctrl-click a ghost edge -> drop that ref from the set;
+                      // the preview / commit rebuilds without it. Match the
+                      // dropped selection entry by its sub name OR, since names
+                      // can be stale after a preview renumber, by the click
+                      // point nearest the ghost edge's midpoint.
+                      setSelection((cur) => {
+                        const cand = cur.filter((s) => s.kind === 'edge' || s.kind === 'face')
+                        if (!cand.length) return cur
+                        let drop = cand.find((s) => (s as { sub: string }).sub === sub)
+                        if (!drop && midpoint) {
+                          let bd = Infinity
+                          for (const s of cand) {
+                            const p = (s as { point?: number[] }).point
+                            if (!p) continue
+                            const d = Math.hypot(
+                              p[0] - midpoint[0],
+                              p[1] - midpoint[1],
+                              p[2] - midpoint[2]
+                            )
+                            if (d < bd) {
+                              bd = d
+                              drop = s
+                            }
+                          }
+                        }
+                        return drop ? cur.filter((s) => s !== drop) : cur
+                      })
+                    }}
                     apiRef={vpApi}
                   />
                   {sketchNotice && (

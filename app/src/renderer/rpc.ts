@@ -166,6 +166,14 @@ export interface PickPlane {
   size?: number
 }
 
+/** A dress-up feature's referenced edge / face, drawn on the BASE shape as a
+ *  pickable ghost while its dialog is open (the dressed result has consumed
+ *  those edges from the visible solid). `polys` are flat [x,y,z, ...] arrays. */
+export interface BaseRef {
+  sub: string
+  polys: number[][]
+}
+
 export interface CanvasDTO {
   id: string
   plane: string
@@ -479,11 +487,18 @@ export const apiQuiet = {
    * registry._NO_TXN), so one undo still removes the whole preview feature.
    */
   previewUpdate: (featureId: string, props: Record<string, number | boolean>) =>
-    rpcQuiet<{ mesh: RenderMesh }>('feature.previewUpdate', { featureId, props }),
+    rpcQuiet<{ mesh: RenderMesh; baseRefs?: BaseRef[] }>('feature.previewUpdate', {
+      featureId,
+      props
+    }),
   /** live preview when a dress-up's edge / face set changed: re-point its Base
    * in place (no drain + rebuild), returns the body's fresh mesh */
   previewSetBase: (id: string, subs: string[], points?: ([number, number, number] | null)[]) =>
-    rpcQuiet<{ mesh: RenderMesh; subs?: string[] }>('feature.previewSetBase', { id, subs, points }),
+    rpcQuiet<{ mesh: RenderMesh; subs?: string[]; baseRefs?: BaseRef[] }>('feature.previewSetBase', {
+      id,
+      subs,
+      points
+    }),
   /** delete one feature by id, no spinner - used to discard a live-preview feature */
   deleteFeature: (id: string) => rpcQuiet<{ deleted: string }>('feature.delete', { id }),
   /** read a committed feature's params + refs so its dialog can reopen */
@@ -493,7 +508,11 @@ export const apiQuiet = {
     id: string,
     values: Record<string, number | string | boolean>,
     refs: FeatureEdit['refs']
-  ) => rpcQuiet<{ mesh: RenderMesh }>('feature.editPreview', { id, values, refs }),
+  ) => rpcQuiet<{ mesh: RenderMesh; baseRefs?: BaseRef[] }>('feature.editPreview', {
+    id,
+    values,
+    refs
+  }),
   sceneGet: () =>
     rpcQuiet<{
       meshes: RenderMesh[]

@@ -1774,7 +1774,13 @@ def feature_preview_update(featureId=None, props=None):
         raise RpcError(APP_ERROR,
                        "that value produced an invalid shape - try another")
 
-    return {"mesh": _owner_mesh(owner, shape)}
+    out = {"mesh": _owner_mesh(owner, shape)}
+    # for a dress-up feature, also the ghost polylines of its referenced
+    # edges/faces on the Base, so the shell can show + let you deselect them
+    b = getattr(obj, "Base", None)
+    if b and isinstance(b, tuple) and len(b) == 2:
+        out["baseRefs"] = _base_ref_polylines(getattr(b[0], "Shape", None), list(b[1] or []))
+    return out
 
 
 def _valid_subs_on(shape, subs):
@@ -1786,6 +1792,56 @@ def _valid_subs_on(shape, subs):
             out.append(s)
         except Exception:
             pass
+    return out
+
+
+def _edge_poly(edge):
+    """Flat [x,y,z, x,y,z, ...] polyline for one Part.Edge."""
+    try:
+        pts = []
+        for p in edge.discretize(Number=24):
+            pts.extend((p.x, p.y, p.z))
+        if len(pts) >= 6:
+            return pts
+    except Exception:
+        pass
+    try:
+        a = edge.valueAt(edge.FirstParameter)
+        b = edge.valueAt(edge.LastParameter)
+        return [a.x, a.y, a.z, b.x, b.y, b.z]
+    except Exception:
+        return None
+
+
+def _base_ref_polylines(base_shape, subs):
+    """For a dress-up feature: the polylines of every Edge* / Face* it references
+    on its *Base* shape, so the shell can draw them as a pickable ghost overlay
+    on top of the (already-dressed) result. A live preview / an already-committed
+    fillet has consumed those edges from the visible solid, so without this you
+    cannot see or Ctrl-click them to deselect.
+
+    Returns [{sub, polys: [[x,y,z,...], ...]}] - a Face contributes all its edge
+    loops, an Edge one polyline."""
+    if base_shape is None or getattr(base_shape, "isNull", lambda: True)():
+        return []
+    out = []
+    for s in subs or []:
+        try:
+            el = base_shape.getElement(s)
+        except Exception:
+            continue
+        polys = []
+        if s.startswith("Edge"):
+            p = _edge_poly(el)
+            if p:
+                polys.append(p)
+        elif s.startswith("Face"):
+            for e in getattr(el, "Edges", []):
+                p = _edge_poly(e)
+                if p:
+                    polys.append(p)
+        if polys:
+            out.append({"sub": s, "polys": polys})
     return out
 
 
@@ -1933,8 +1989,14 @@ def feature_preview_set_base(id=None, subs=None, points=None):
                        "that edge / face selection produced an invalid shape - "
                        "try a smaller size or a different pick")
     # hand back the sub list actually in effect (post-remap) so the shell can
-    # keep its selection in sync with what the feature really references
-    return {"mesh": _owner_mesh(owner, shape), "subs": want}
+    # keep its selection in sync with what the feature really references, plus
+    # the polylines of those refs ON THE BASE so it can draw them as a pickable
+    # ghost (the dressed result has consumed them from the visible solid)
+    return {
+        "mesh": _owner_mesh(owner, shape),
+        "subs": want,
+        "baseRefs": _base_ref_polylines(base_shape, want),
+    }
 
 
 def _owner_mesh(owner, shape):
@@ -2344,7 +2406,11 @@ def feature_edit_preview(id=None, values=None, refs=None):
         ok = False
     if not ok:
         raise RpcError(APP_ERROR, "that value produced an invalid shape - try another")
-    return {"mesh": _owner_mesh(owner, shape)}
+    out = {"mesh": _owner_mesh(owner, shape)}
+    b = getattr(o, "Base", None)
+    if b and isinstance(b, tuple) and len(b) == 2:
+        out["baseRefs"] = _base_ref_polylines(getattr(b[0], "Shape", None), list(b[1] or []))
+    return out
 
 
 def _frame(sk):

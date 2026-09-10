@@ -118,6 +118,8 @@ export function Viewport({
   renderSettings,
   projection = 'orthographic',
   onProjectionChange,
+  dressUpGhost = [],
+  onDressUpGhostToggle,
   apiRef
 }: {
   meshes: RenderMesh[]
@@ -166,6 +168,11 @@ export function Viewport({
   /** 'orthographic' (CAD default) or 'perspective' */
   projection?: import('./CadControls').Projection
   onProjectionChange?: (p: import('./CadControls').Projection) => void
+  /** while a dress-up dialog is open: the referenced edges/faces drawn on the
+   *  BASE shape as a highlighted, pickable ghost (the dressed result consumed
+   *  them). Ctrl-click one to deselect it. */
+  dressUpGhost?: import('../rpc').BaseRef[]
+  onDressUpGhostToggle?: (sub: string, midpoint: [number, number, number] | null) => void
   apiRef?: { current: ViewportApi | null }
 }): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -187,6 +194,8 @@ export function Viewport({
   const projectionRef = useRef(projection)
   const onProjectionChangeRef = useRef(onProjectionChange)
   onProjectionChangeRef.current = onProjectionChange
+  const onDressGhostToggleRef = useRef(onDressUpGhostToggle)
+  onDressGhostToggleRef.current = onDressUpGhostToggle
   const planePickRef = useRef<{ mode: boolean; cb?: (r: SketchRef) => void }>({ mode: false })
   planePickRef.current = { mode: planePickMode, cb: onPickPlane }
   void pickPlanes // retained as a prop for compatibility; planes are real datums now
@@ -233,6 +242,8 @@ export function Viewport({
     content: THREE.Group | null
     overlay: THREE.Group
     ghosts: THREE.Group
+    /** pickable ghost of a dress-up feature's base edges/faces */
+    dressGhost: THREE.Group
     preview: THREE.Group
     sketch: SketchController | null
     framedOnce: boolean
@@ -277,9 +288,11 @@ export function Viewport({
 
     const overlay = new THREE.Group()
     const ghosts = new THREE.Group()
+    const dressGhost = new THREE.Group()
     const preview = new THREE.Group()
     scene.add(overlay)
     scene.add(ghosts)
+    scene.add(dressGhost)
     scene.add(preview)
 
     const controls = new CadControls(camera, renderer.domElement)
@@ -301,6 +314,7 @@ export function Viewport({
       content: null,
       overlay,
       ghosts,
+      dressGhost,
       preview,
       sketch: null,
       framedOnce: false,
@@ -693,6 +707,38 @@ export function Viewport({
         return
       }
 
+      // dress-up ghost: a click on one of the highlighted base edges/faces
+      // (dialog open) removes it from the reference set. Checked before normal
+      // picking so it wins even where the dressed geometry now sits.
+      if (st.dressGhost.children.length && onDressGhostToggleRef.current) {
+        const r = host.getBoundingClientRect()
+        const ndc = new THREE.Vector2(
+          ((e.clientX - r.left) / r.width) * 2 - 1,
+          -((e.clientY - r.top) / r.height) * 2 + 1
+        )
+        const rc = new THREE.Raycaster()
+        // ~8px grab tolerance in world units at the pivot's depth
+        const dist = controls.camera.position.distanceTo(controls.pivot) || 100
+        const wpp =
+          controls.camera instanceof THREE.OrthographicCamera
+            ? (controls.camera.top - controls.camera.bottom) /
+              (controls.camera.zoom || 1) /
+              host.clientHeight
+            : (2 * Math.tan(((controls.persp.fov || 35) * Math.PI) / 360) * dist) /
+              host.clientHeight
+        rc.params.Line = { threshold: Math.max(wpp * 8, 0.05) }
+        rc.setFromCamera(ndc, controls.camera)
+        const hits = rc.intersectObjects(st.dressGhost.children, false)
+        if (hits.length) {
+          const ud = hits[0].object.userData as {
+            sub: string
+            mid: [number, number, number]
+          }
+          onDressGhostToggleRef.current(ud.sub, ud.mid ?? null)
+          return
+        }
+      }
+
       if (!st.content) return
       const sel = st.picker.pick(e, st.content)
       onSelectRef.current?.(sel, e.shiftKey || e.ctrlKey || e.metaKey)
@@ -893,6 +939,38 @@ export function Viewport({
     const st = stateRef.current
     if (st?.content) st.picker.setSelection(selection, st.content)
   }, [selection, meshes])
+
+  // dress-up ghost: the referenced base edges/faces, drawn as thick amber lines
+  // that survive the dressed geometry. Rebuilt whenever the set changes.
+  useEffect(() => {
+    const st = stateRef.current
+    if (!st) return
+    const g = st.dressGhost
+    for (const c of [...g.children]) {
+      g.remove(c)
+      const line = c as THREE.Line
+      line.geometry?.dispose?.()
+      ;(line.material as THREE.Material)?.dispose?.()
+    }
+    for (const ref of dressUpGhost ?? []) {
+      for (const poly of ref.polys ?? []) {
+        if (poly.length < 6) continue
+        const pts: THREE.Vector3[] = []
+        for (let i = 0; i + 2 < poly.length; i += 3)
+          pts.push(new THREE.Vector3(poly[i], poly[i + 1], poly[i + 2]))
+        const geo = new THREE.BufferGeometry().setFromPoints(pts)
+        const line = new THREE.Line(
+          geo,
+          new THREE.LineBasicMaterial({ color: 0xffb020, depthTest: false, linewidth: 2 })
+        )
+        line.renderOrder = 13
+        // midpoint for the toggle callback (name-independent match)
+        const mid = pts[Math.floor(pts.length / 2)]
+        line.userData = { dressGhost: true, sub: ref.sub, mid: [mid.x, mid.y, mid.z] }
+        g.add(line)
+      }
+    }
+  }, [dressUpGhost])
 
   // section clipping plane + hatched cut indicator
   useEffect(() => {

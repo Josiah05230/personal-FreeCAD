@@ -94,8 +94,25 @@ note('--- fillet: pick, preview, Ctrl-add 2 edges off the filleted mesh, commit 
     G.pick({ kind: 'edge', bodyId: b.id, sub: want[i].sub, point: want[i].point }, true);
     await preview('fillet', { radius: 2 });
   }
-  const selN = G.getState().selection.filter((s) => s.startsWith('edge:')).length;
+  let selN = G.getState().selection.filter((s) => s.startsWith('edge:')).length;
   assert(selN === 3, `all 3 edges survive the previews (${selN})`);
+
+  // GHOST OVERLAY: the 3 referenced edges (consumed from the visible solid by
+  // the preview fillet) are drawn as a pickable ghost so they can be deselected
+  const ghost = G.dressUpGhost();
+  assert(ghost.length === 3, `the 3 referenced edges show as a ghost overlay (${ghost.length})`);
+  // Ctrl-click one ghost edge -> it drops from the set, preview rebuilds
+  assert(G.dressUpGhostToggle(ghost[1]), 'a ghost edge accepts a deselect click');
+  await preview('fillet', { radius: 2 });
+  selN = G.getState().selection.filter((s) => s.startsWith('edge:')).length;
+  assert(selN === 2, `deselecting a ghost edge drops it (${selN} left)`);
+  assert(G.dressUpGhost().length === 2, 'the ghost overlay now shows 2 edges');
+  // put it back so the commit assertions below expect 3
+  G.pick({ kind: 'edge', bodyId: b.id, sub: want[1].sub, point: want[1].point }, true);
+  await preview('fillet', { radius: 2 });
+  selN = G.getState().selection.filter((s) => s.startsWith('edge:')).length;
+  assert(selN === 3, `re-adding the edge brings it back (${selN})`);
+
   await waitFor(() => G.getState().opReady === true, 4000);
   assert(okDisabled() === false, 'OK enabled with 3 edges');
   let err = null;
@@ -109,6 +126,7 @@ note('--- fillet: pick, preview, Ctrl-add 2 edges off the filleted mesh, commit 
   const st = G.getState();
   assert(!err && !anyErr(st), `committed clean (${err || 'ok'})`);
   assert(feats(st).filter((f) => /fillet/i.test(f.id)).length === 1, 'exactly one Fillet feature');
+  assert(G.dressUpGhost().length === 0, 'the ghost overlay clears when the dialog closes');
   const eAfter = ((await rpc('scene.get')).meshes[0].edges || []).length;
   assert(eAfter >= eBefore + 6, `3 edges rounded in one feature (${eBefore} -> ${eAfter})`);
   const fg = await rpc('feature.get', { id: feats(st).find((f) => /fillet/i.test(f.id)).id });
@@ -342,7 +360,10 @@ note('--- edit an existing fillet: reopen, preview a bigger radius + an extra ed
   // reopen it - editFeature rolls to it and seeds the selection from its refs
   await G.editFeature(filId);
   await waitFor(() => G.getState().op === 'fillet', 4000);
-  await sleep(120);
+  await sleep(150);
+  // the already-filleted edge is consumed from the visible solid - the ghost
+  // overlay must still show it so you can see / deselect it on an edit
+  assert(G.dressUpGhost().length === 1, `Edit Feature shows the referenced edge as a ghost (${G.dressUpGhost().length})`);
   // the filleted geometry is what's shown now; add a second edge by world point
   const mesh2 = (await rpc('scene.get')).meshes[0];
   const mids2 = edgeMidpoints(mesh2);
