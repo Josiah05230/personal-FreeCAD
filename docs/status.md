@@ -99,6 +99,28 @@ the seed + step + trace tail to replay.
 
 ## Recent notable changes
 
+- **Orthographic / perspective toggle** (2026-09-09). The viewport was
+  hardwired to perspective. `CadControls` now owns both cameras; the
+  perspective one is the pose source of truth and the ortho one tracks its
+  pose + framing every frame, so orbit / pan / zoom feel identical and a
+  switch is instant. Default is **orthographic** (Fusion / SolidWorks style).
+  Toggle from the VIEW ribbon button, the F5 hotkey (`view.projection`), or
+  the view-cube right-click menu; persists in `localStorage`.
+- **Section views are saved objects** (2026-09-09). Was a transient clip you
+  could only X away. Now a model-tree node like a datum: the panel has
+  OK / Update, the browser shows a **Section Views** group with an eye toggle,
+  Edit / Show-Hide / Delete menu, and double-click-to-edit. Multiple cuts
+  coexist; persisted in the `.gwtcad` companion (`section.*` RPCs), round-trips
+  through save + reopen.
+- **Sketcher fixes, batch 2** (2026-09-09). Multi-edge Fillet / Chamfer via
+  Ctrl-click no longer errors "Invalid edge link" - the pick is remapped back
+  onto the feature's real Base when the live-preview shape has shifted the
+  element numbering. Center Rectangle: its welded construction diagonals cross
+  at a real, snappable centre point and are anchored to the origin (or the
+  first pick) so a centred rectangle stays centred. An edge perpendicular to
+  the sketch plane projects to a visible cross marker (was an invisible
+  zero-length line). Constrain-to-origin verified end-to-end (Coincident to
+  geoId -1 round-trips through FreeCAD).
 - **Appearances / rendering system** (APPEARANCE ribbon tab): per-body + per-face
   colour (RGB / HEX / CMYK / HSV + opacity), 15 surface finishes, tangent /
   hidden edge display, shading modes (shaded / +edges / flat / wireframe /
