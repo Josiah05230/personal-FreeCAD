@@ -42,6 +42,31 @@ if [ "$RUN_E2E" = 1 ]; then
 fi
 
 # ---------------------------------------------------------------- 3. package
+if [ "$MODE" = deb ]; then
+  # apt only re-installs a .deb if its version string is actually newer, and
+  # ours (from app/package.json) had stayed a hand-set "0.1.0" across every
+  # rebuild - so `apt install some.deb` silently no-ops on an updated build
+  # ("gwt-cad is already the newest version"), even though the file changed.
+  # electron-builder requires strict 3-segment semver in package.json (a 4th
+  # build-number segment is rejected outright), so bump the PATCH number on
+  # every --deb build instead - still valid semver, and apt's version compare
+  # sees it as newer so a plain `apt install` always picks up the latest.
+  PKG_JSON="$APP/package.json"
+  NEW_VER=$(node -e "
+    const v=require('$PKG_JSON').version.split('.').map(Number);
+    v[2]=(v[2]||0)+1;
+    console.log(v.join('.'));
+  ")
+  OLD_VER=$(node -e "console.log(require('$PKG_JSON').version)")
+  say "bumping .deb version $OLD_VER -> $NEW_VER (so apt install always updates)"
+  node -e "
+    const fs=require('fs'); const p='$PKG_JSON';
+    const j=JSON.parse(fs.readFileSync(p,'utf8'));
+    j.version='$NEW_VER';
+    fs.writeFileSync(p, JSON.stringify(j,null,2)+'\n');
+  "
+fi
+
 say "packaging ($MODE) - bundles the trimmed headless FreeCAD engine"
 bash scripts/package.sh "$MODE"
 
@@ -76,7 +101,7 @@ case "$MODE" in
   deb)
     DEB=$(ls -t "$APP"/release/*.deb | head -1)
     say "installing $DEB (sudo)"
-    sudo apt install -y "$DEB"
+    sudo apt install --reinstall -y "$DEB"
     say "installed - launch it from the app menu (search 'GWT-CAD') or run: gwt-cad"
     [ "$LAUNCH" = 1 ] && { setsid gwt-cad >/dev/null 2>&1 & disown || true; }
     ;;
