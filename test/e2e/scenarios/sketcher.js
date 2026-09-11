@@ -244,6 +244,7 @@ await freshSketch();
   // draw a line ending exactly there, telling the controller its end snapped to the arc start
   const aLn = G.sketch.addEntity({ type: 'line', a: [-15, as[1]], b: as }, [null, { idx: aArc, pt: 1 }]);
   await sleep(120);
+  note('all new constraints: ' + JSON.stringify(G.sketch.newConstraints()));
   const nc = G.sketch.newConstraints().filter(
     (k) => (k.refs || []).some((r) => r.new === aLn || r.geo === aLn)
   );
@@ -259,6 +260,46 @@ await freshSketch();
   const atRe = await rpc('sketch.reopen', { sketchId: atId });
   assert((atRe.constraints || []).some((k) => k.type === 'Tangent'), 'the auto Tangent survived Finish + reopen (it solved)');
   assert(atRe.entities.length >= 2, 'both the arc and the line are still there after Finish');
+}
+
+// ---------------------------------------------------------------- centre-point arc
+note('--- centre-point arc: centre snaps to a line endpoint (real commit() path) ---');
+await freshSketch();
+{
+  // a line, then a centre-point arc drawn through the REAL 3-click commit()
+  // path (not addEntity/testAddEntity, which is a separate code path) whose
+  // FIRST click (the centre) lands exactly on the line's endpoint
+  const lIdx = G.sketch.commitTool('line', [
+    [0, 0],
+    [20, 0]
+  ]);
+  await sleep(40);
+  const before = G.sketch.newConstraints().length;
+  const aIdx = G.sketch.commitTool(
+    'arc',
+    [
+      [20, 0], // centre - exactly the line's endpoint
+      [30, 0], // start/radius point
+      [20, 10] // end point
+    ],
+    [{ idx: lIdx, pt: 2 }, null, null]
+  );
+  await sleep(60);
+  const ents = G.sketch.entities();
+  assert(ents[aIdx] && ents[aIdx].type === 'arc', 'drew a centre-point arc');
+  const after = G.sketch.newConstraints();
+  assert(after.length > before, 'the arc centre landing on the line endpoint auto-constrained (got ' + after.length + ' vs before ' + before + ')');
+  const hitsArcCentre = after.some(
+    (c) => c.type === 'Coincident' && (c.refs || []).some((r) => (r.new === aIdx || r.geo === aIdx) && r.pt === 3)
+  );
+  assert(hitsArcCentre, 'the recorded constraint actually pins the arc CENTRE (pt 3), not something else');
+  await G.finishSketch();
+  await idle();
+  await sleep(200);
+  const acId = (G.getState().selection.find((s) => s.startsWith('sketch:')) || '').slice(7);
+  const acRe = await rpc('sketch.reopen', { sketchId: acId });
+  assert((acRe.constraints || []).some((k) => k.type === 'Coincident'), 'the centre-arc weld survived Finish + reopen');
+  assert(acRe.entities.length >= 2, 'both the line and the arc are still there after Finish');
 }
 
 // ---------------------------------------------------------------- radius/diameter

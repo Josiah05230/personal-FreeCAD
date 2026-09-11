@@ -58,6 +58,18 @@ function clickAt(x, y, extra) {
   fire(el, 'pointerup', x, y, Object.assign({ buttons: 0 }, extra || {}));
 }
 
+/** drag from (x0,y0) to (x1,y1) - down, several incremental moves, up */
+function dragTo(x0, y0, x1, y1, extra) {
+  const el = viewportEl();
+  const held = Object.assign({ buttons: 1 }, extra || {});
+  fire(el, 'pointermove', x0, y0, extra);
+  fire(el, 'pointerdown', x0, y0, extra);
+  for (let i = 1; i <= 6; i++) {
+    fire(el, 'pointermove', x0 + ((x1 - x0) * i) / 6, y0 + ((y1 - y0) * i) / 6, held);
+  }
+  fire(el, 'pointerup', x1, y1, Object.assign({ buttons: 0 }, extra || {}));
+}
+
 /** drag a window-select box from (x0,y0) to (x1,y1) */
 function dragBox(x0, y0, x1, y1, extra) {
   const el = viewportEl();
@@ -541,6 +553,109 @@ note('--- narrow fillet face is still pickable next to its bounding edges ---');
     );
   }
   G.closeOp();
+}
+
+// =================================================================
+note('--- centre-point arc: real drag of an endpoint changes the sweep, not the radius ---');
+{
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  await G.beginSketch({ kind: 'origin', role: 'XY_Plane' });
+  const enteredSketch = await waitFor(() => G.getState().sketchMode, 4000);
+  assert(enteredSketch, 'sketch mode entered');
+  // draw a centre-point arc: centre (0,0), start at (10,0) i.e. 0 rad,
+  // end at (0,10) i.e. 90 deg - real synthetic clicks through the actual
+  // 'a' hotkey + click handler, not the commitTool test hook
+  pressKey('a');
+  await sleep(20);
+  const c0 = await G.sketchUVToScreen(0, 0);
+  const start0 = await G.sketchUVToScreen(10, 0);
+  const end0 = await G.sketchUVToScreen(0, 10);
+  assert(c0 && start0 && end0, 'arc draw points project onto the screen');
+  if (c0 && start0 && end0) {
+    clickAt(c0.x, c0.y);
+    await sleep(20);
+    clickAt(start0.x, start0.y);
+    await sleep(20);
+    clickAt(end0.x, end0.y);
+    await sleep(40);
+  }
+  pressKey('Escape'); // back to select
+  await sleep(20);
+
+  const entsBefore = G.sketch.entities();
+  const arcIdx = entsBefore.length - 1;
+  // entities() returns the LIVE array (same-process, no serialization
+  // boundary) - deep-clone the snapshot or "before" silently reads the
+  // "after" value once the drag mutates the same object in place
+  const arc0 = JSON.parse(JSON.stringify(entsBefore[arcIdx] || null));
+  assert(arc0 && arc0.type === 'arc', 'drew a centre-point arc via real clicks');
+  note('arc before drag: ' + JSON.stringify(arc0));
+
+  if (arc0 && arc0.type === 'arc') {
+    const r0 = arc0.r;
+    // grab the START endpoint (pt 1, at angle a0) and drag it to a new angle
+    const a0pt = [arc0.c[0] + Math.cos(arc0.a0) * arc0.r, arc0.c[1] + Math.sin(arc0.a0) * arc0.r];
+    const from = await G.sketchUVToScreen(a0pt[0], a0pt[1]);
+    // drag to 45 degrees instead of 0 - still the SAME radius from centre
+    const toUV = [arc0.c[0] + Math.cos(Math.PI / 4) * arc0.r, arc0.c[1] + Math.sin(Math.PI / 4) * arc0.r];
+    const to = await G.sketchUVToScreen(toUV[0], toUV[1]);
+    assert(from && to, 'endpoint drag points project onto the screen');
+    if (from && to) {
+      dragTo(from.x, from.y, to.x, to.y);
+      await sleep(60);
+    }
+    const entsAfterEndpointDrag = G.sketch.entities();
+    const arc1 = JSON.parse(JSON.stringify(entsAfterEndpointDrag[arcIdx] || null));
+    note('arc after endpoint drag: ' + JSON.stringify(arc1));
+    assert(arc1 && arc1.type === 'arc', 'still an arc after the drag');
+    if (arc1 && arc1.type === 'arc') {
+      const radiusChanged = Math.abs(arc1.r - r0) > 0.5;
+      const angleChanged = Math.abs(arc1.a0 - arc0.a0) > 0.05;
+      assert(
+        !radiusChanged,
+        'dragging the arc ENDPOINT must not change the radius (before ' + r0.toFixed(2) + ', after ' + arc1.r.toFixed(2) + ')'
+      );
+      assert(
+        angleChanged,
+        'dragging the arc endpoint actually changed the sweep start angle (before ' +
+          arc0.a0.toFixed(2) +
+          ', after ' +
+          arc1.a0.toFixed(2) +
+          ')'
+      );
+    }
+
+    // regression guard: dragging a point ON THE RING but away from either
+    // endpoint must still resize the radius uniformly (the old, correct
+    // behaviour for a plain ring-drag)
+    const midAngle = (arc1 ? arc1.a0 : arc0.a0) + ((arc1 ? arc1.a1 : arc0.a1) - (arc1 ? arc1.a0 : arc0.a0)) / 2;
+    const ringPt = [arc0.c[0] + Math.cos(midAngle) * (arc1 ? arc1.r : r0), arc0.c[1] + Math.sin(midAngle) * (arc1 ? arc1.r : r0)];
+    const ringFrom = await G.sketchUVToScreen(ringPt[0], ringPt[1]);
+    const biggerR = (arc1 ? arc1.r : r0) * 1.6;
+    const ringToUV = [arc0.c[0] + Math.cos(midAngle) * biggerR, arc0.c[1] + Math.sin(midAngle) * biggerR];
+    const ringTo = await G.sketchUVToScreen(ringToUV[0], ringToUV[1]);
+    assert(ringFrom && ringTo, 'ring-drag points project onto the screen');
+    const rBefore = (G.sketch.entities()[arcIdx] || {}).r;
+    if (ringFrom && ringTo) {
+      dragTo(ringFrom.x, ringFrom.y, ringTo.x, ringTo.y);
+      await sleep(60);
+    }
+    const arc2 = G.sketch.entities()[arcIdx];
+    note('arc after ring drag: ' + JSON.stringify(arc2));
+    assert(
+      arc2 && arc2.type === 'arc' && rBefore != null && arc2.r > rBefore + 0.5,
+      'dragging a ring point away from either endpoint still resizes the radius (before ' +
+        rBefore +
+        ', after ' +
+        (arc2 && arc2.r) +
+        ')'
+    );
+  }
+  pressKey('Escape');
+  await G.cancelSketch();
+  await idle();
 }
 
 note('--- done ---');

@@ -23,7 +23,7 @@ export type SketchTool =
   | 'project'
 
 type SnapKind = 'grid' | 'origin' | 'point' | 'edge' | 'axis'
-type DragHandle = 'a' | 'b' | 'ab' | 'ba' | 'c' | 'r' | 'whole'
+type DragHandle = 'a' | 'b' | 'ab' | 'ba' | 'c' | 'r' | 'a0' | 'a1' | 'whole'
 
 export type SketchConstraintType =
   | 'Horizontal'
@@ -394,13 +394,16 @@ export class SketchController {
     const i = this.entities.length - 1
     const nw = i - this.baseCount
     if (ent.type === 'line') {
-      this.anchorToAxes(i)
+      // snap-based constraints before axis-anchoring, same reasoning as
+      // commit(): a point that is both on-axis and coincident with real
+      // geometry should only get the one meaningful constraint
       this.autoCoincident(i, [snapTo[0] ?? null, snapTo[1] ?? null])
       this.autoAngle(i)
       this.autoTangent(i, [snapTo[0] ?? null, snapTo[1] ?? null])
-    } else if (ent.type === 'circle' || ent.type === 'arc') {
       this.anchorToAxes(i)
+    } else if (ent.type === 'circle' || ent.type === 'arc') {
       this.autoCoincident(i, [snapTo[0] ?? null])
+      this.anchorToAxes(i)
     }
     void nw
     this.geomV++
@@ -985,7 +988,13 @@ export class SketchController {
   }
 
   private ptToHandle(pr: PtRef): DragHandle {
-    return pr.pt === 3 ? 'c' : pr.pt === 2 ? 'b' : 'a'
+    if (pr.pt === 3) return 'c'
+    // an arc's pt 1/2 are its rim endpoints (angle), not a line's a/b
+    // (position) - dragging one must re-sweep the arc, not fall through
+    // applyDrag's line-only 'a'/'b' cases as a silent no-op
+    const e = this.entAt(pr.e)
+    if (e && e.type === 'arc') return pr.pt === 2 ? 'a1' : 'a0'
+    return pr.pt === 2 ? 'b' : 'a'
   }
 
   /** ref shape (geo / new + pt) for a recorded constraint */
@@ -1279,6 +1288,14 @@ export class SketchController {
     }
     if (e.type === 'spline') return 'whole'
     if (near(e.c)) return 'c'
+    // an arc's endpoints sit ON the radius ring, so they must be checked
+    // BEFORE the generic ring-drag ('r') or they are never reachable - a
+    // click near either end changes where the sweep starts/stops, not the
+    // radius uniformly
+    if (e.type === 'arc') {
+      if (near(this.ptUV({ e: idx, pt: 1 }))) return 'a0'
+      if (near(this.ptUV({ e: idx, pt: 2 }))) return 'a1'
+    }
     if (Math.abs(Math.hypot(uv[0] - e.c[0], uv[1] - e.c[1]) - e.r) < tol) return 'r'
     return 'whole'
   }
@@ -1357,6 +1374,12 @@ export class SketchController {
         if (e.type === 'circle' || e.type === 'arc')
           (e as { r: number }).r = Math.max(0.1, Math.hypot(uv[0] - e.c[0], uv[1] - e.c[1]))
         break
+      case 'a0':
+        if (e.type === 'arc') e.a0 = Math.atan2(uv[1] - e.c[1], uv[0] - e.c[0])
+        break
+      case 'a1':
+        if (e.type === 'arc') e.a1 = Math.atan2(uv[1] - e.c[1], uv[0] - e.c[0])
+        break
     }
     // keep coincident corners welded and honour H / V while dragging - a
     // rectangle side stays a rectangle side (the sidecar still re-solves later)
@@ -1371,6 +1394,8 @@ export class SketchController {
     if (dh === 'a' && (e.type === 'line' || e.type === 'rect')) this.drag.last = [...e.a]
     else if (dh === 'b' && (e.type === 'line' || e.type === 'rect')) this.drag.last = [...e.b]
     else if (dh === 'c' && (e.type === 'circle' || e.type === 'arc')) this.drag.last = [...e.c]
+    else if (dh === 'a0' && e.type === 'arc') this.drag.last = this.ptUV({ e: this.drag.idx, pt: 1 })
+    else if (dh === 'a1' && e.type === 'arc') this.drag.last = this.ptUV({ e: this.drag.idx, pt: 2 })
     else this.drag.last = uv
     this.geomV++
     this.redraw()
@@ -1445,6 +1470,12 @@ export class SketchController {
       case 'c':
       case 'r':
         out.add(`${i}:3`)
+        break
+      case 'a0':
+        out.add(`${i}:1`)
+        break
+      case 'a1':
+        out.add(`${i}:2`)
         break
       default:
         out.add(`${i}:1`)
@@ -1827,7 +1858,13 @@ export class SketchController {
       const a0 = Math.atan2(p[1][1] - c[1], p[1][0] - c[0])
       const a1 = Math.atan2(p[2][1] - c[1], p[2][0] - c[0])
       this.entities.push({ type: 'arc', c, r, a0, a1, ...k })
-      this.anchorToAxes(this.entities.length - 1)
+      const ai = this.entities.length - 1
+      // centre-point arc: the FIRST click is the centre, same as the plain
+      // circle tool - if it landed on another point, weld it with a real
+      // Coincident (was only ever anchored to an axis, never to geometry;
+      // the circle tool already did this correctly)
+      this.autoCoincident(ai, [snaps[0] ?? null])
+      this.anchorToAxes(ai)
       this.pending = []
       this.pendingSnaps = []
       this.pendingMids = []
@@ -2132,8 +2169,17 @@ export class SketchController {
     // over-constrain a point that merely happens to sit on the axis too
     const alreadyConstrained = (pt: number): boolean =>
       this.constraints.some((c) => c.refs.some((r) => r.new === nw && r.pt === pt))
+    // a Tangent added THIS commit (autoTangent) already ties the whole
+    // line's direction, plus one endpoint's position, to external geometry -
+    // its OTHER endpoint's position is a derived quantity, not a free DOF, so
+    // pinning it to an axis too can over-constrain even though that specific
+    // point was never directly referenced (the DOF removal is transitive
+    // through the line's fixed direction + the already-anchored curve)
+    const gotFreshTangent = this.constraints.some(
+      (c) => c.type === 'Tangent' && c.refs.some((r) => r.new === nw)
+    )
     const anchor = (uv: [number, number], pt: 1 | 2 | 3): void => {
-      if (alreadyConstrained(pt)) return
+      if (alreadyConstrained(pt) || gotFreshTangent) return
       const onX = Math.abs(uv[1]) < tolMm // on the X axis  -> geoId -1
       const onY = Math.abs(uv[0]) < tolMm // on the Y axis  -> geoId -2
       if (onX && onY) {
@@ -2177,7 +2223,13 @@ export class SketchController {
     const e = this.entities[i]
     if (!e) return [0, 0]
     if (e.type === 'line') return p === 2 ? [...e.b] : [...e.a]
-    if (e.type === 'circle' || e.type === 'arc') return [...e.c]
+    if (e.type === 'circle') return [...e.c]
+    if (e.type === 'arc') {
+      // pt 1/2 are the rim endpoints (a0/a1); pt 3 (or anything else) is the
+      // centre - matches ptUV's convention for the same entity/pt pair
+      if (p === 1 || p === 2) return this.ptUV({ e: i, pt: p as 1 | 2 })
+      return [...e.c]
+    }
     if (e.type === 'rect') return p === 2 ? [...e.b] : [...e.a]
     return [0, 0]
   }
@@ -2189,8 +2241,14 @@ export class SketchController {
     if (e.type === 'line') {
       if (p === 2) e.b = [uv[0], uv[1]]
       else e.a = [uv[0], uv[1]]
-    } else if (e.type === 'circle' || e.type === 'arc') {
+    } else if (e.type === 'circle') {
       e.c = [uv[0], uv[1]]
+    } else if (e.type === 'arc') {
+      // pt 1/2: re-angle that endpoint about the (unchanged) centre, so a
+      // weld to a rim point drags the arc's SWEEP, not the whole arc
+      if (p === 1) e.a0 = Math.atan2(uv[1] - e.c[1], uv[0] - e.c[0])
+      else if (p === 2) e.a1 = Math.atan2(uv[1] - e.c[1], uv[0] - e.c[0])
+      else e.c = [uv[0], uv[1]]
     }
   }
 
@@ -3638,10 +3696,22 @@ export class SketchController {
           if (cc) this.preview.add(this.entityObj({ type: 'circle', c: cc.c, r: cc.r }, this.previewMat))
         }
         this.preview.add(this.polyToObj(p, this.previewMat))
-      } else if (this.tool === 'arc' && this.pending.length >= 1) {
+      } else if (this.tool === 'arc' && this.pending.length === 1) {
+        // 2nd click pending: only the centre is placed yet, radius/start not
+        // chosen - a full circle at the live radius is the right preview
         const c = this.pending[0]
         const r = Math.hypot(this.cursorUV[0] - c[0], this.cursorUV[1] - c[1])
         this.preview.add(this.entityObj({ type: 'circle', c, r }, this.previewMat))
+      } else if (this.tool === 'arc' && this.pending.length >= 2) {
+        // 3rd click pending: centre + start are placed, now sweeping to the
+        // end angle - show the actual arc, not a full circle, so the user
+        // can see where it will end before clicking
+        const c = this.pending[0]
+        const startPt = this.pending[1]
+        const r = Math.hypot(startPt[0] - c[0], startPt[1] - c[1])
+        const a0 = Math.atan2(startPt[1] - c[1], startPt[0] - c[0])
+        const a1 = Math.atan2(this.cursorUV[1] - c[1], this.cursorUV[0] - c[0])
+        this.preview.add(this.entityObj({ type: 'arc', c, r, a0, a1 }, this.previewMat))
       } else if (this.tool === 'spline' && p.length >= 2) {
         this.preview.add(this.entityObj({ type: 'spline', pts: p }, this.previewMat))
       }
