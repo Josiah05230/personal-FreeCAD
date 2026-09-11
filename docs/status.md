@@ -99,6 +99,27 @@ the seed + step + trace tail to replay.
 
 ## Recent notable changes
 
+- **Interactive input fixes, batch 4** (2026-09-10). A run of real bugs found
+  by testing the actual pointer/keyboard path (new E2E scenario
+  `real_input.js` dispatches genuine synthetic events at the canvas, not the
+  semantic pick() shortcut). Two were structural: (1) Fit/Home were framing
+  on the sketch's own origin axes (a fixed ~120-unit span) instead of the
+  real model, since datums were included in the fit bounding-box union - now
+  excluded; (2) `SketchController` raycast through the perspective camera
+  even in orthographic mode (the default), so every sketch click/hover/snap
+  was silently off-target away from screen centre - almost certainly the
+  cause behind "tangent and coincident don't work right." Also fixed: a
+  plain click after a window-select now replaces the selection instead of
+  merging into it; Escape resets selection and window-select mode; the
+  view-cube Home visually lagged a frame in ortho mode (any direct camera
+  pose change now syncs the displayed camera immediately, not just per-frame);
+  Picker's edge-vs-face tie-break was ray-order dependent, fixed both a
+  normal edge losing to its own face and a narrow fillet band being
+  unselectable; the Project Geometry tool had no hover feedback; drawing onto
+  projected geometry could snap visually but never recorded a constraint; the
+  ribbon's constraint-button-first flow could only pick whole entities, so it
+  could never constrain a centre-point arc's centre/endpoints or a projected
+  point.
 - **Orthographic / perspective toggle** (2026-09-09). The viewport was
   hardwired to perspective. `CadControls` now owns both cameras; the
   perspective one is the pose source of truth and the ortho one tracks its
