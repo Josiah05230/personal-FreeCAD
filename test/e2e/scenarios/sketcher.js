@@ -302,6 +302,54 @@ await freshSketch();
   assert(acRe.entities.length >= 2, 'both the line and the arc are still there after Finish');
 }
 
+// ------------------------------ centre-point arc's RIM points snap too
+note('--- centre-point arc: the START/END rim clicks (not just the centre) weld onto existing geometry, closing the wire (real user report, 2026-09-11: "doesn\'t want to make an enclosed face") ---');
+await freshSketch();
+{
+  // a line, then a centre-point arc whose START click (the 2nd of the 3)
+  // snaps onto that line's free endpoint - only the arc's CENTRE ever got
+  // auto-constrained before this fix; the start/end rim clicks were silently
+  // dropped even when a real snap was detected, leaving that joint open no
+  // matter how precisely it was clicked
+  const lIdx = G.sketch.commitTool('line', [
+    [0, 0],
+    [10, 0]
+  ]);
+  await sleep(40);
+  const before = G.sketch.newConstraints().length;
+  const aIdx = G.sketch.commitTool(
+    'arc',
+    [
+      [20, 10], // centre - unrelated to the line
+      [10, 0], // start point - lands exactly on the line's free endpoint
+      [20, 20] // end point
+    ],
+    [null, { idx: lIdx, pt: 2 }, null]
+  );
+  await sleep(60);
+  const after = G.sketch.newConstraints();
+  const added = after.length - before;
+  assert(added >= 1, `the arc's start-point snap onto the line endpoint added a constraint (got ${added})`);
+  const weldsLineToArcStart = after.some(
+    (c) =>
+      c.type === 'Coincident' &&
+      (c.refs || []).some((r) => (r.new === lIdx || r.geo === lIdx) && r.pt === 2) &&
+      (c.refs || []).some((r) => (r.new === aIdx || r.geo === aIdx) && r.pt === 1)
+  );
+  assert(weldsLineToArcStart, 'the recorded constraint actually welds the line endpoint to the arc START (pt 1), not something else');
+
+  await G.finishSketch();
+  await idle();
+  await sleep(200);
+  const arId = (G.getState().selection.find((s) => s.startsWith('sketch:')) || '').slice(7);
+  const arRe = await rpc('sketch.reopen', { sketchId: arId });
+  assert(!arRe.error, 'the sketch solved cleanly after Finish');
+  assert(
+    (arRe.constraints || []).some((k) => k.type === 'Coincident'),
+    'the line-to-arc-start weld survived Finish + reopen'
+  );
+}
+
 // ------------------------------------------------- line endpoint onto arc centre
 note('--- centre-point arc: a LINE endpoint snapping onto the arc CENTRE gets exactly one Coincident, not also a spurious Tangent (real user log, 2026-09-11) ---');
 await freshSketch();

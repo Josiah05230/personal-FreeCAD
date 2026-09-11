@@ -404,7 +404,12 @@ export class SketchController {
       this.autoTangent(i, [snapTo[0] ?? null, snapTo[1] ?? null])
       this.anchorToAxes(i)
     } else if (ent.type === 'circle' || ent.type === 'arc') {
+      // snapTo convention here mirrors commit()'s 3-click arc: [0]=centre,
+      // [1]=start/radius point, [2]=end point (circle only ever uses [0])
       this.autoCoincident(i, [snapTo[0] ?? null])
+      if (ent.type === 'arc') {
+        this.autoCoincident(i, [snapTo[1] ?? null, snapTo[2] ?? null], [1, 2])
+      }
       this.anchorToAxes(i)
     }
     void nw
@@ -1877,6 +1882,18 @@ export class SketchController {
       // Coincident (was only ever anchored to an axis, never to geometry;
       // the circle tool already did this correctly)
       this.autoCoincident(ai, [snaps[0] ?? null])
+      // the SECOND (start/radius) and THIRD (end) clicks set the arc's rim
+      // points - these can also snap onto existing geometry (another line's
+      // endpoint, another arc's rim, a projected edge...) and used to be
+      // silently dropped: only the centre ever got auto-constrained, so an
+      // arc drawn to visually close a wire against another entity's endpoint
+      // left that joint completely unconstrained - the wire read as open no
+      // matter how precisely you clicked (user report, 2026-09-11: "it also
+      // doesn't seem to want to make an enclosed face for my sketch").
+      // myPtsOverride [1, 2] maps snaps[1]->pt 1 (arc start) and
+      // snaps[2]->pt 2 (arc end); pass a matching 2-slot snap array since
+      // autoCoincident indexes its own snaps positionally against myPts.
+      this.autoCoincident(ai, [snaps[1] ?? null, snaps[2] ?? null], [1, 2])
       this.anchorToAxes(ai)
       this.pending = []
       this.pendingSnaps = []
@@ -2015,15 +2032,20 @@ export class SketchController {
    *  Coincident constraint so the join survives the solve and drags together. */
   private autoCoincident(
     entIdx: number,
-    snaps: Array<{ idx: number; pt: number } | null>
+    snaps: Array<{ idx: number; pt: number } | null>,
+    myPtsOverride?: number[]
   ): void {
     const e = this.entities[entIdx]
     if (e.construction) return
     if (e.type !== 'line' && e.type !== 'circle' && e.type !== 'arc') return
     const nw = entIdx - this.baseCount
     if (nw < 0) return
-    // line: snaps[0] -> start (pt 1), snaps[1] -> end (pt 2); circle/arc: centre (pt 3)
-    const myPts = e.type === 'line' ? [1, 2] : [3]
+    // line: snaps[0] -> start (pt 1), snaps[1] -> end (pt 2); circle/arc: centre
+    // (pt 3) by default. A centre-point arc ALSO has start/end rim points (pt
+    // 1/2) that can snap onto existing geometry - myPtsOverride lets the arc
+    // tool ask for those explicitly (snaps[1] -> pt 1, snaps[2] -> pt 2)
+    // instead of assuming every circle/arc snap is a centre snap.
+    const myPts = myPtsOverride ?? (e.type === 'line' ? [1, 2] : [3])
     snaps.forEach((s, k) => {
       if (!s || s.idx === entIdx) return
       const target = this.entAt(s.idx) // real OR projected (PROJ_BASE) entity
