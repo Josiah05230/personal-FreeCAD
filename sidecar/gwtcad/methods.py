@@ -3120,9 +3120,32 @@ def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None,
         pass
     # Finishing a sketch resumes the build: never leave it sitting "after" the
     # rollback marker where it would render but read as not-yet-existing.
+    #
+    # This used to unconditionally clear the marker to None (= "the very end
+    # of history"). That is only correct when the new sketch WAS drawn at the
+    # true end. PartDesign inserts a feature drawn while rolled back at the
+    # MARKER's position, not the end of the whole list - so a sketch drawn
+    # while rolled back to before an existing feature (e.g. a Fillet) lands
+    # in the MIDDLE (..., Pad, <new sketch>, Fillet, ...). Clearing to None
+    # then jumped straight past the sketch to after Fillet, and every
+    # subsequent scrubber drag/click was measured from that already-wrong
+    # position - the sketch was never reachable by dragging back to it,
+    # because the marker had already skipped past it once, silently, right
+    # when you hit Finish. (User report, 2026-09-11: "no matter what it
+    # doesn't go after the sketch" - the marker had already gone PAST it.)
+    #
+    # Resume to just after the sketch itself instead - if that IS the true
+    # end, this is equivalent to the old None; if it is not, the marker
+    # correctly stays where the sketch actually is.
     body = sk.getParentGeoFeatureGroup()
     if body is not None and session.marker(body.Name):
-        session.set_marker(body.Name, None)
+        names = [f.Name for f in body.Group if f.TypeId != "App::Origin"]
+        at_end = sketchId == names[-1] if names else True
+        session.set_marker(
+            body.Name,
+            None if at_end else sketchId,
+            tip_at_rollback=body.Tip.Name if body.Tip else None,
+        )
         session.set_rolled_empty(body.Name, False)
     return {
         "sketchId": sketchId,

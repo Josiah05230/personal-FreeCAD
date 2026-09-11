@@ -112,6 +112,98 @@ note('--- sketch drawn but not yet padded stays visible at the timeline tip ---'
   assert(sk && sk.visible === true, 'the un-extruded sketch is STILL visible after rolling the scrubber to the tip (featureId: null)');
 }
 
+// --- a sketch drawn while rolled back BEFORE an existing feature must land
+// the marker on itself, not skip past it (real user report, 2026-09-11:
+// "no matter what it doesn't go after the sketch" - PartDesign inserts a
+// feature drawn while rolled back at the marker's position, in the MIDDLE of
+// history, but sketch.finish's "resume the build" logic used to force the
+// marker to None (the true end) unconditionally - jumping straight past the
+// sketch to whatever came after it, so every later scrubber drag/click was
+// already measured from a position beyond the sketch and could never land
+// back on it) ---
+note('--- sketch drawn mid-timeline (rolled back before an existing feature) keeps the marker ON that sketch, not past it ---');
+{
+  const bid = (await rpc('tree.get')).bodies[0].id;
+  let tree = await rpc('tree.get');
+  let feats = tree.bodies[0].features;
+  const padFeat = feats.find((f) => f.opType === 'Pad' || f.kind === 'solid');
+  assert(padFeat, 'there is a Pad feature to fillet (from earlier in this workflow)');
+
+  const scBeforeFillet = await rpc('scene.get');
+  const mBeforeFillet = scBeforeFillet.meshes[0];
+  await rpc('feature.fillet', { edges: ['Edge1'], radius: 0.5 });
+  await G.refresh();
+  await idle();
+  tree = await rpc('tree.get');
+  feats = tree.bodies[0].features;
+  const filletFeat = feats.find((f) => f.opType === 'Fillet');
+  assert(filletFeat, 'the Fillet feature was created');
+
+  // roll back to just after the Pad (before the Fillet)
+  await rpc('history.rollTo', { bodyId: bid, featureId: padFeat.id });
+  await G.refresh();
+  await idle();
+
+  // draw + finish a brand-new sketch while rolled back here
+  const s3 = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: s3.sketchId,
+    elements: [{ type: 'line', a: [50, 50], b: [60, 50] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+
+  tree = await rpc('tree.get');
+  feats = tree.bodies[0].features;
+  const order = feats.map((f) => f.id);
+  const sketchIdx = order.indexOf(s3.sketchId);
+  const filletIdx = order.indexOf(filletFeat.id);
+  assert(sketchIdx >= 0, 'the new sketch is in the feature list');
+  assert(
+    sketchIdx < filletIdx,
+    `the new sketch landed BEFORE the Fillet in history (sketch@${sketchIdx}, fillet@${filletIdx}) - PartDesign inserts at the rollback point, not the end`
+  );
+
+  // THE ACTUAL BUG: the marker must sit ON the sketch we just drew, not have
+  // jumped past it to the true end (which would be past the Fillet too)
+  assert(
+    tree.bodies[0].marker === s3.sketchId,
+    `the rollback marker must land ON the sketch just drawn, not skip past it to the end (got marker=${tree.bodies[0].marker})`
+  );
+
+  const scAtSketch = await rpc('scene.get');
+  const skAtSketch = scAtSketch.sketches.find((s) => s.id === s3.sketchId);
+  assert(skAtSketch && skAtSketch.visible === true, 'the sketch is visible while the marker sits on it');
+
+  // and the fillet (which comes after it in history) must NOT be built yet -
+  // rolling to a mid-history sketch should hide what has not happened yet
+  const scAtSketchTip = scAtSketch.meshes[0];
+  assert(
+    scAtSketchTip.tris === mBeforeFillet.tris,
+    'the solid at this rollback point matches the PRE-fillet Pad (the fillet has not happened yet from here)'
+  );
+
+  // now step forward past the sketch onto the Fillet - this must actually work
+  await rpc('history.rollTo', { bodyId: bid, featureId: filletFeat.id });
+  await G.refresh();
+  await idle();
+  tree = await rpc('tree.get');
+  assert(tree.bodies[0].marker === null, 'rolling onto the LAST feature (Fillet) reports the marker at the end');
+  const scAtFillet = await rpc('scene.get');
+  const mAtFillet = scAtFillet.meshes[0];
+  // triangle COUNT can coincidentally match across a small fillet (tessellation
+  // budgets can land on the same number by chance) - compare actual vertex
+  // positions instead, which a fillet always changes near the rounded edge
+  const posEqual =
+    mAtFillet.positions.length === mBeforeFillet.positions.length &&
+    mAtFillet.positions.every((v, i) => Math.abs(v - mBeforeFillet.positions[i]) < 1e-6);
+  assert(
+    !posEqual,
+    'stepping forward past the mid-timeline sketch onto the Fillet actually rebuilds it (geometry changed, not identical to the pre-fillet Pad)'
+  );
+}
+
 // --- orthographic / perspective projection toggle ---
 note('--- projection toggle (ortho <-> perspective) ---');
 const ids = G.commandIds();
