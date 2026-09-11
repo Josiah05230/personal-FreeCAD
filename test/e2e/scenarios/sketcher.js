@@ -302,6 +302,54 @@ await freshSketch();
   assert(acRe.entities.length >= 2, 'both the line and the arc are still there after Finish');
 }
 
+// ------------------------------------------------- line endpoint onto arc centre
+note('--- centre-point arc: a LINE endpoint snapping onto the arc CENTRE gets exactly one Coincident, not also a spurious Tangent (real user log, 2026-09-11) ---');
+await freshSketch();
+{
+  // draw the arc FIRST (centre at [20,0]), then a line whose endpoint lands
+  // on that same centre - this is the reverse direction of the test above,
+  // and it is the exact sequence from the user's bug log: autoTangent used to
+  // fire on ANY curve snap regardless of which point (falling back to
+  // "endpoint 1") even when the snapped point was the centre (pt 3), adding a
+  // second, contradictory constraint on top of autoCoincident's correct one
+  const aIdx = G.sketch.commitTool('arc', [
+    [20, 0], // centre
+    [30, 0], // start
+    [20, 10] // end
+  ]);
+  await sleep(40);
+  const before = G.sketch.newConstraints().length;
+  const lIdx = G.sketch.commitTool(
+    'line',
+    [
+      [20, 0], // starts exactly on the arc's centre
+      [40, 20]
+    ],
+    [{ idx: aIdx, pt: 3 }, null]
+  );
+  await sleep(60);
+  const after = G.sketch.newConstraints();
+  const added = after.length - before;
+  assert(added === 1, `snapping a line endpoint onto an arc centre adds exactly ONE constraint, not ${added}`);
+  assert(
+    after.some(
+      (c) => c.type === 'Coincident' && (c.refs || []).some((r) => (r.new === lIdx || r.geo === lIdx) && r.pt === 1)
+    ),
+    'the one constraint is the Coincident pinning the line start to the centre'
+  );
+  assert(
+    !after.some((c) => c.type === 'Tangent' && (c.refs || []).some((r) => r.new === lIdx || r.geo === lIdx)),
+    'no spurious Tangent got attached to the line from a centre snap'
+  );
+  await G.finishSketch();
+  await idle();
+  await sleep(200);
+  const lcId = (G.getState().selection.find((s) => s.startsWith('sketch:')) || '').slice(7);
+  const lcRe = await rpc('sketch.reopen', { sketchId: lcId });
+  assert(!lcRe.error, 'the sketch solved cleanly (no conflicting/redundant constraints) after Finish');
+  assert(lcRe.entities.length >= 2, 'both the arc and the line are still there after Finish');
+}
+
 // ---------------------------------------------------------------- radius/diameter
 note('--- radius vs diameter dimensioning and toggle ---');
 await freshSketch();

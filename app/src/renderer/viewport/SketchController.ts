@@ -2130,6 +2130,12 @@ export class SketchController {
       if (!s || s.idx === entIdx) return
       const t = this.entAt(s.idx) // real OR projected (PROJ_BASE) entity
       if (!t || !isCurve(t)) return
+      // a snap onto the curve's CENTRE (pt 3) is a plain coincidence, already
+      // recorded by autoCoincident - it is not a rim/endpoint touch, so it
+      // must not also get a Tangent here (that would claim the line-end sits
+      // on the rim, contradicting the real Coincident-to-centre and leaving
+      // two constraints fighting over where the shared point actually is)
+      if (s.pt === 3) return
       const myPt = k === 0 ? 1 : 2
       // a full circle has no endpoints - fall back to an edge tangent + a
       // PointOnObject so the line still meets the rim
