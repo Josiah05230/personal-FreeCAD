@@ -3921,12 +3921,31 @@ def history_roll_to(bodyId, featureId=None):
         tip_at_rollback=body.Tip.Name if body.Tip else None,
     )
 
+    # a sketch that some solid feature has consumed (its .Profile) should hide
+    # once we roll past it - normal "the pad replaced the flat profile" - but a
+    # sketch nobody has consumed yet (drawn, Finished, no Pad/Extrude built from
+    # it) has nothing to hide it FOR and must stay visible at the tip; without
+    # this, rolling the marker to "the end" right after finishing a bare sketch
+    # (featureId=None, at_end=True) forced every sketch invisible unconditionally
+    # and the sketch you had just drawn silently vanished
+    consumed_sketches = set()
+    for f in feats:
+        prof = getattr(f, "Profile", None)
+        if isinstance(prof, (tuple, list)) and prof:
+            feat = prof[0]
+            if feat is not None and getattr(feat, "TypeId", "") == "Sketcher::SketchObject":
+                consumed_sketches.add(feat.Name)
+        elif prof is not None and getattr(prof, "TypeId", "") == "Sketcher::SketchObject":
+            consumed_sketches.add(prof.Name)
+
     for f in feats:
         if build.is_ref_copy(f):
             f.Visibility = False
             continue
         if _kind(f.TypeId) in ("sketch", "datum"):
-            vis = f is marker and not at_end
+            is_sketch = _kind(f.TypeId) == "sketch"
+            unconsumed_at_tip = is_sketch and at_end and f.Name not in consumed_sketches
+            vis = (f is marker and not at_end) or unconsumed_at_tip
             f.Visibility = vis
             if _kind(f.TypeId) == "datum":
                 session.set_datum_shown(f.Name, vis)

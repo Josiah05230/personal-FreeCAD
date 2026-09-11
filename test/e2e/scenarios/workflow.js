@@ -84,6 +84,34 @@ st = G.getState();
 assert(st.bodies[0].features.length === feats + 1, 'press-pull added one feature');
 assert(!st.notice || !/error|invalid|not a/i.test(st.notice), `no error notice (${st.notice || 'none'})`);
 
+// --- an un-extruded sketch must stay visible when the scrubber returns to
+// the tip (real user report, 2026-09-11: "I can't move the scrubber to
+// after the sketch" - history.rollTo(null) was unconditionally hiding every
+// sketch, including one nothing has consumed yet, so it looked like the
+// scrubber refused to move past it when really it just vanished) ---
+note('--- sketch drawn but not yet padded stays visible at the timeline tip ---');
+{
+  const sOn = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: sOn.sketchId,
+    elements: [{ type: 'line', a: [30, 30], b: [40, 30] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  let sc = await rpc('scene.get');
+  let sk = sc.sketches.find((s) => s.id === sOn.sketchId);
+  assert(sk && sk.visible === true, 'the new sketch is visible right after Finish');
+
+  const bodyIdForRoll = (await rpc('tree.get')).bodies[0].id;
+  await rpc('history.rollTo', { bodyId: bodyIdForRoll, featureId: null });
+  await G.refresh();
+  await idle();
+  sc = await rpc('scene.get');
+  sk = sc.sketches.find((s) => s.id === sOn.sketchId);
+  assert(sk && sk.visible === true, 'the un-extruded sketch is STILL visible after rolling the scrubber to the tip (featureId: null)');
+}
+
 // --- orthographic / perspective projection toggle ---
 note('--- projection toggle (ortho <-> perspective) ---');
 const ids = G.commandIds();
