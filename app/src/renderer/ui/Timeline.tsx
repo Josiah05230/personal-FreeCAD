@@ -162,22 +162,39 @@ export function Timeline({
     if (!dragging) return
     let last = -1
     let raf = 0
+    let pendingIdx = -1 // the most recent idx a move computed, whether or not its raf has run yet
     const onMove = (e: PointerEvent): void => {
       const el = trackRef.current
       if (!el) return
       const x = e.clientX - el.getBoundingClientRect().left + el.scrollLeft
       const idx = Math.max(0, Math.min(Math.round(x / CHIP_W) - 1, feats.length - 1))
+      pendingIdx = idx
       if (idx === last) return
       if (raf) return
       raf = window.requestAnimationFrame(() => {
         raf = 0
-        if (idx === last) return
-        last = idx
-        rollToIndex(idx)
+        if (pendingIdx === last) return
+        last = pendingIdx
+        rollToIndex(pendingIdx)
       })
     }
     const onUp = (): void => {
-      if (raf) window.cancelAnimationFrame(raf)
+      // a fast drag (down, several moves, up, all inside one JS tick - which
+      // is exactly what a quick real mouse flick or any synthetic/scripted
+      // drag looks like) can finish before the throttled raf above ever
+      // runs. Cancelling it outright silently dropped the whole drag: the
+      // marker's LAST position never reached rollToIndex, so releasing the
+      // mouse over a chip did nothing - "no matter what it doesn't go after
+      // the sketch" (2026-09-11). Flush the final pointer position through
+      // on release instead of just cancelling the pending frame.
+      if (raf) {
+        window.cancelAnimationFrame(raf)
+        raf = 0
+        if (pendingIdx >= 0 && pendingIdx !== last) {
+          last = pendingIdx
+          rollToIndex(pendingIdx)
+        }
+      }
       setDragging(false)
     }
     window.addEventListener('pointermove', onMove)
