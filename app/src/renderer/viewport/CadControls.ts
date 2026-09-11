@@ -143,6 +143,11 @@ export class CadControls {
     this.persp.near = Math.max(radius / 500, 0.01)
     this.persp.far = radius * 200
     this.persp.updateProjectionMatrix()
+    // do not wait for the next animation frame to pick this up - in
+    // orthographic mode (the default) that is the camera actually rendered,
+    // so a caller reading it back (or a frame that never ticks, e.g. an
+    // unfocused/throttled window) must not see a stale pose
+    this.syncOrtho()
   }
 
   private onContextMenu = (e: Event) => e.preventDefault()
@@ -156,7 +161,11 @@ export class CadControls {
     this.lastY = e.clientY
     this.orbitVel.set(0, 0)
     this.panVel.set(0, 0, 0)
-    this.dom.setPointerCapture(e.pointerId)
+    try {
+      this.dom.setPointerCapture(e.pointerId)
+    } catch {
+      /* ignore - e.g. a synthetic PointerEvent with no real active pointer */
+    }
   }
 
   private onPointerMove = (e: PointerEvent) => {
@@ -175,6 +184,7 @@ export class CadControls {
       this.persp.position.add(delta)
       this.pivot.add(delta)
       this.panVel.copy(delta)
+      this.syncOrtho() // see frame()'s comment - do not wait on the next rAF tick
     }
   }
 
@@ -206,6 +216,10 @@ export class CadControls {
     const factor = Math.exp(e.deltaY * this.opts.zoomStep)
     this.persp.position.sub(hit).multiplyScalar(factor).add(hit)
     this.pivot.sub(hit).multiplyScalar(factor).add(hit)
+    // ortho's frustum size is derived from persp's distance to the pivot
+    // (see syncOrtho) - without this, zooming while in ortho mode (the
+    // default) would visibly do nothing until the next animation frame
+    this.syncOrtho()
   }
 
   /**
@@ -234,6 +248,7 @@ export class CadControls {
 
     this.persp.position.copy(this.pivot).add(offset)
     this.applyUp()
+    this.syncOrtho() // see frame()'s comment - do not wait on the next rAF tick
   }
 
   /** Set camera.up to world +Z rolled by rollAngle about the view axis, then aim. */

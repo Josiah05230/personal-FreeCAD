@@ -24,6 +24,10 @@ export interface SceneNode {
   sig: string
   objs: THREE.Object3D[]
   box: THREE.Box3
+  /** counts toward the fit/Home framing box - false for datums (origin axes
+   *  / planes), which are always present at a fixed size regardless of the
+   *  actual model and would otherwise dominate the framing of a small part */
+  frame: boolean
 }
 
 const AXIS_COLOR: Record<string, number> = {
@@ -429,12 +433,17 @@ export function syncScene(
   datums: DatumDTO[] = [],
   canvases: CanvasDTO[] = []
 ): SyncResult {
-  type Desired = { key: string; sig: string; build: () => THREE.Object3D[] }
+  // `frame` marks which nodes count toward the fit/Home framing box. Datums
+  // (origin axes / planes) are always present at a fixed ~60-unit size
+  // regardless of the actual model - unioning them in would let a small real
+  // part get swamped by the origin axes (fit/Home would frame on the axes,
+  // not the part), so only real content (bodies, sketches, canvases) frames.
+  type Desired = { key: string; sig: string; build: () => THREE.Object3D[]; frame: boolean }
   const desired: Desired[] = [
-    ...datums.map((d) => ({ key: `datum:${d.id}`, sig: datumSig(d), build: () => [buildDatum(d)] })),
-    ...canvases.map((c) => ({ key: `canvas:${c.id}`, sig: canvasSig(c), build: () => [buildCanvas(c)] })),
-    ...meshes.map((m) => ({ key: `body:${m.id}`, sig: bodySig(m), build: () => buildBody(m) })),
-    ...sketches.map((s) => ({ key: `sketch:${s.id}`, sig: sketchSig(s), build: () => buildSketch(s) }))
+    ...datums.map((d) => ({ key: `datum:${d.id}`, sig: datumSig(d), build: () => [buildDatum(d)], frame: false })),
+    ...canvases.map((c) => ({ key: `canvas:${c.id}`, sig: canvasSig(c), build: () => [buildCanvas(c)], frame: true })),
+    ...meshes.map((m) => ({ key: `body:${m.id}`, sig: bodySig(m), build: () => buildBody(m), frame: true })),
+    ...sketches.map((s) => ({ key: `sketch:${s.id}`, sig: sketchSig(s), build: () => buildSketch(s), frame: true }))
   ]
   const want = new Set(desired.map((d) => d.key))
   const nodes = new Map<string, SceneNode>()
@@ -459,12 +468,13 @@ export function syncScene(
     }
     const objs = d.build()
     for (const o of objs) group.add(o)
-    nodes.set(d.key, { key: d.key, sig: d.sig, objs, box: boxOf(objs) })
+    nodes.set(d.key, { key: d.key, sig: d.sig, objs, box: boxOf(objs), frame: d.frame })
   }
 
-  // framing box = union of every node's box
+  // framing box = union of every FRAMING node's box (real content only -
+  // datums are excluded, see the `frame` field's doc comment above)
   const box = new THREE.Box3()
-  for (const n of nodes.values()) if (!n.box.isEmpty()) box.union(n.box)
+  for (const n of nodes.values()) if (n.frame && !n.box.isEmpty()) box.union(n.box)
 
   let center = box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3())
   let radius = box.isEmpty() ? 60 : Math.max(box.getSize(new THREE.Vector3()).length() / 2, 1)

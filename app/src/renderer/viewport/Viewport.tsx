@@ -143,7 +143,7 @@ export function Viewport({
   } | null
   /** dragging the ghost's handle: delta mm along the normal, and phase */
   onPreviewHandleDrag?: (deltaMm: number, phase: 'move' | 'end') => void
-  onWindowSelect?: (sels: Selection[]) => void
+  onWindowSelect?: (sels: Selection[], additive: boolean) => void
   canvases?: CanvasDTO[]
   hiddenIds?: Set<string>
   calibrateCanvas?: CanvasDTO | null
@@ -199,7 +199,9 @@ export function Viewport({
   const planePickRef = useRef<{ mode: boolean; cb?: (r: SketchRef) => void }>({ mode: false })
   planePickRef.current = { mode: planePickMode, cb: onPickPlane }
   void pickPlanes // retained as a prop for compatibility; planes are real datums now
-  const winSelRef = useRef<{ mode: string; cb?: (s: Selection[]) => void }>({ mode: 'paint' })
+  const winSelRef = useRef<{ mode: string; cb?: (s: Selection[], additive: boolean) => void }>({
+    mode: 'paint'
+  })
   winSelRef.current = { mode: selectMode, cb: onWindowSelect }
   const selFilterRef = useRef<string[] | undefined>(selFilter)
   selFilterRef.current = selFilter
@@ -301,6 +303,10 @@ export function Viewport({
     cube.onProjectionChange = (p) => {
       projectionRef.current = p
       onProjectionChangeRef.current?.(p)
+    }
+    cube.onHome = () => {
+      const s = stateRef.current
+      if (s) s.controls.frame(s.lastCenter, s.lastRadius)
     }
     const picker = new Picker(() => controls.camera, renderer.domElement, overlay)
 
@@ -436,7 +442,40 @@ export function Viewport({
           stateRef.current?.sketch?.testToggleConstruction() ?? false,
         setSketchProjected: (projected) =>
           stateRef.current?.sketch?.setProjected(projected),
-        getSketchProjected: () => stateRef.current?.sketch?.getProjected() ?? []
+        getSketchProjected: () => stateRef.current?.sketch?.getProjected() ?? [],
+        testProjectToScreen: (world) => {
+          const s = stateRef.current
+          if (!s) return null
+          const p = new THREE.Vector3(...world).project(s.controls.camera)
+          if (p.z > 1) return null // behind the camera
+          const r = host.getBoundingClientRect()
+          return { x: r.left + ((p.x + 1) / 2) * r.width, y: r.top + ((1 - p.y) / 2) * r.height }
+        },
+        testSketchUVToWorld: (u, v) => stateRef.current?.sketch?.uvToWorld(u, v) ?? null,
+        testNudgeCamera: (delta) => {
+          const s = stateRef.current
+          if (!s) return
+          const d = new THREE.Vector3(...delta)
+          s.controls.persp.position.add(d)
+          s.controls.pivot.add(d)
+          // the displayed ortho camera only picks up a persp change via
+          // syncOrtho(), normally called from the rAF-driven update() loop -
+          // force it now so this test hook does not depend on a frame tick
+          s.controls.syncOrtho()
+        },
+        testCameraDebug: () => {
+          const s = stateRef.current
+          if (!s) return null
+          const c = s.controls.camera
+          const p = s.controls.persp
+          return {
+            pos: [c.position.x, c.position.y, c.position.z],
+            perspPos: [p.position.x, p.position.y, p.position.z],
+            pivot: [s.controls.pivot.x, s.controls.pivot.y, s.controls.pivot.z],
+            lastCenter: [s.lastCenter.x, s.lastCenter.y, s.lastCenter.z],
+            lastRadius: s.lastRadius
+          }
+        }
       }
     }
 
@@ -628,7 +667,7 @@ export function Viewport({
             host.clientWidth,
             host.clientHeight
           )
-          winSelRef.current.cb?.(sels)
+          winSelRef.current.cb?.(sels, e.shiftKey || e.ctrlKey || e.metaKey)
         }
         return
       }
@@ -783,6 +822,17 @@ export function Viewport({
         const hit = new THREE.Vector3()
         if (rc.ray.intersectPlane(plane, hit)) {
           cal.line.geometry.setFromPoints([cal.pts[0], hit])
+        }
+        return
+      }
+      // sketch "Project geometry" tool: light up whatever model edge/face is
+      // under the cursor so it is obvious what a click will project, the same
+      // way ordinary (non-sketch) hover highlights geometry.
+      if (st && st.sketch && sketchToolRef.current === 'project' && e.buttons === 0) {
+        if (st.content) {
+          const hit = st.picker.pick(e, st.content)
+          st.picker.setHover(hit && (hit.kind === 'edge' || hit.kind === 'face') ? hit : null, st.content)
+          renderer.domElement.style.cursor = hit && (hit.kind === 'edge' || hit.kind === 'face') ? 'pointer' : ''
         }
         return
       }
@@ -1049,7 +1099,7 @@ export function Viewport({
     if (sketchFrame && !st.sketch) {
       st.picker.clear()
       st.sketch = new SketchController(
-        st.camera,
+        () => st.controls.camera,
         st.renderer.domElement,
         sketchFrame,
         st.overlay,

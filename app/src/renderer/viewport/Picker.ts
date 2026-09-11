@@ -45,27 +45,50 @@ export class Picker {
     return Math.hypot(dx, dy) <= px
   }
 
+  /** true if `obj` (or an ancestor up to `content`) is hidden - three's
+   *  raycaster ignores .visible, so this must be checked manually */
+  private isHidden(obj: THREE.Object3D, content: THREE.Object3D): boolean {
+    let o: THREE.Object3D | null = obj
+    while (o && o !== content) {
+      if (o.visible === false) return true
+      o = o.parent
+    }
+    return false
+  }
+
+  /** the pick-tagged owner of a raycast hit (datums/edges nest a group) */
+  private ownerOf(obj: THREE.Object3D, content: THREE.Object3D): THREE.Object3D {
+    let owner: THREE.Object3D | null = obj
+    while (owner && owner.userData?.pick == null && owner !== content) owner = owner.parent
+    return owner ?? obj
+  }
+
   /** Resolve what is under the cursor within `content`. */
   pick(ev: PointerEvent | MouseEvent, content: THREE.Object3D): Selection | null {
     this.setPointer(ev)
     this.ray.setFromCamera(this.pointer, this.camera)
-    const hits = this.ray.intersectObjects(content.children, true)
+    const hits = this.ray.intersectObjects(content.children, true).filter(
+      (h) => !this.isHidden(h.object, content)
+    )
+
+    // An edge and the face(s) it borders sit at essentially the SAME 3D point
+    // along the ray, so ray-distance order does not reliably prefer one over
+    // the other. A click that is genuinely ON an edge (within a small screen
+    // radius) must win regardless of where that edge hit lands in `hits` -
+    // otherwise a coincident face hit earlier in the list can shadow it.
+    // Conversely an edge whose fat world-unit threshold merely grazes the ray
+    // (e.g. a fillet's two bounding edges spanning its own narrow face) must
+    // NOT win just because it happens to come first - checked separately from,
+    // and before, the plain nearest-hit walk below.
     for (const h of hits) {
-      // three's raycaster ignores .visible, so skip anything hidden up the chain
-      let vis: THREE.Object3D | null = h.object
-      let hidden = false
-      while (vis && vis !== content) {
-        if (vis.visible === false) {
-          hidden = true
-          break
-        }
-        vis = vis.parent
+      const ud = this.ownerOf(h.object, content).userData
+      if (ud.pick === 'edge' && this.nearOnScreen(h.point, 6)) {
+        return { kind: 'edge', bodyId: ud.bodyId, index: 0, sub: ud.sub, point: [h.point.x, h.point.y, h.point.z] }
       }
-      if (hidden) continue
-      // walk up to the object that carries the pick tag (datums nest a group)
-      let owner: THREE.Object3D | null = h.object
-      while (owner && owner.userData?.pick == null && owner !== content) owner = owner.parent
-      const ud = owner?.userData ?? h.object.userData
+    }
+
+    for (const h of hits) {
+      const ud = this.ownerOf(h.object, content).userData
       if (ud.pick === 'datum') {
         return { kind: 'plane', planeId: ud.datumId, role: ud.role || undefined, label: ud.label }
       }
@@ -85,15 +108,7 @@ export class Picker {
             point: [h.point.x, h.point.y, h.point.z]
           }
       }
-      if (ud.pick === 'edge') {
-        return {
-          kind: 'edge',
-          bodyId: ud.bodyId,
-          index: 0,
-          sub: ud.sub,
-          point: [h.point.x, h.point.y, h.point.z]
-        }
-      }
+      if (ud.pick === 'edge') continue // handled in the pass above
       if (ud.pick === 'face' && h.faceIndex != null) {
         const sub = faceSubFromTriangle(ud.faceGroups, h.faceIndex)
         if (sub) {

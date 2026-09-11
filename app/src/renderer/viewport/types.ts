@@ -87,4 +87,27 @@ export interface ViewportApi {
     projected: Array<{ geoId: number } & SketchEntity>
   ) => void
   getSketchProjected: () => Array<{ geoId: number; ent: SketchEntity }>
+
+  // --- test hook: real synthetic pointer/keyboard events (not the semantic
+  // `pick`/`select` bridge shortcuts) need a client X/Y to dispatch at, so an
+  // E2E can exercise the ACTUAL Picker raycast / hover / keydown handlers
+  // instead of calling onSelect directly - the class of bug that only shows
+  // up in the real interactive path (see docs/status.md "Sketcher fixes")
+  /** project a world point through the live camera to viewport client
+   *  coordinates (clientX/Y, ready for a synthetic PointerEvent), or null if
+   *  it is behind the camera / the viewport is not mounted */
+  testProjectToScreen: (world: [number, number, number]) => { x: number; y: number } | null
+  /** sketch-plane uv -> world xyz, while a sketch is open (test hook) */
+  testSketchUVToWorld: (u: number, v: number) => [number, number, number] | null
+  /** offset the camera + pivot by a world-space delta (test hook only - a
+   *  reliable way to perturb the camera for a "does Fit/Home recover?" test
+   *  without depending on synthetic drag-event edge cases) */
+  testNudgeCamera: (delta: [number, number, number]) => void
+  /** raw camera/controls debug snapshot (test hook, diagnostics only) */
+  testCameraDebug: () => {
+    pos: [number, number, number]
+    pivot: [number, number, number]
+    lastCenter: [number, number, number]
+    lastRadius: number
+  } | null
 }

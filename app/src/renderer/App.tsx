@@ -2933,6 +2933,19 @@ export function App(): JSX.Element {
       refresh: () => refreshScene(),
       fit: () => vpApi.current?.fit(),
       getProjection: () => vpApi.current?.getProjection() ?? projection,
+      // real camera projection for synthetic pointer events, so an E2E can
+      // dispatch an ACTUAL PointerEvent/KeyboardEvent at the viewport canvas
+      // and exercise the real Picker raycast / hover / keydown handlers,
+      // instead of only the semantic pick()/select() shortcuts below
+      projectToScreen: (world: [number, number, number]) =>
+        vpApi.current?.testProjectToScreen(world) ?? null,
+      sketchUVToScreen: (u: number, v: number) => {
+        const w = vpApi.current?.testSketchUVToWorld(u, v)
+        return w ? vpApi.current?.testProjectToScreen(w) ?? null : null
+      },
+      cameraDebug: () => vpApi.current?.testCameraDebug() ?? null,
+      setView: (dir: [number, number, number]) => vpApi.current?.setView(dir),
+      nudgeCamera: (delta: [number, number, number]) => vpApi.current?.testNudgeCamera(delta),
       setProjection: (p: 'orthographic' | 'perspective') => {
         vpApi.current?.setProjection(p)
         setProjection(p)
@@ -3304,6 +3317,8 @@ export function App(): JSX.Element {
       if (e.key === 'Escape') {
         setPaletteOpen(false)
         openOp(null)
+        setSelectMode('paint')
+        setSelection([])
         return
       }
       // data-driven command hotkeys (user-overridable)
@@ -3673,8 +3688,9 @@ export function App(): JSX.Element {
                     selFilter={measureMode ? [...selFilter, 'vertex', 'face', 'edge'] : selFilter}
                     previewPlane={op === 'datumPlane' || datumGhostHold ? previewPlane : sectionGhost}
                     onPreviewHandleDrag={onPreviewHandleDrag}
-                    onWindowSelect={(sels) =>
+                    onWindowSelect={(sels, additive) =>
                       setSelection((cur) => {
+                        if (!additive) return sels
                         const keys = new Set(cur.map(selKey))
                         return [...cur, ...sels.filter((s) => !keys.has(selKey(s)))]
                       })

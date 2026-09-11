@@ -214,7 +214,13 @@ export class SketchController {
   private selectedDim: number | null = null
 
   constructor(
-    private readonly camera: THREE.PerspectiveCamera,
+    // a getter, not a captured camera - the app can be in orthographic mode
+    // (the default), which is a DIFFERENT THREE.Camera object glued to the
+    // perspective camera's pose every frame (see CadControls.syncOrtho); a
+    // click raycast through the wrong one diverges more the further the
+    // click is from screen centre, since ortho rays are parallel and
+    // perspective rays are not - same fix as Picker's getCamera
+    private readonly getCamera: () => THREE.PerspectiveCamera | THREE.OrthographicCamera,
     private readonly dom: HTMLElement,
     frame: SketchFrame,
     root: THREE.Object3D,
@@ -257,6 +263,11 @@ export class SketchController {
     this.dom.addEventListener('dblclick', this.onDblClick)
     window.addEventListener('pointerup', this.onUp)
     window.addEventListener('keydown', this.onKey)
+  }
+
+  /** the live active camera (ortho or persp) - always current, see getCamera doc above */
+  private get camera(): THREE.PerspectiveCamera | THREE.OrthographicCamera {
+    return this.getCamera()
   }
 
   /** Double-click a dimension (or the geometry it drives) to retype its value. */
@@ -679,6 +690,12 @@ export class SketchController {
     return this.O.clone().addScaledVector(this.X, u).addScaledVector(this.Y, v)
   }
 
+  /** public wrapper (test hook): sketch-plane uv -> world xyz */
+  uvToWorld(u: number, v: number): [number, number, number] {
+    const p = this.toWorld(u, v)
+    return [p.x, p.y, p.z]
+  }
+
   private worldToUV(p: THREE.Vector3): [number, number] {
     const d = p.clone().sub(this.O)
     return [d.dot(this.X), d.dot(this.Y)]
@@ -707,14 +724,23 @@ export class SketchController {
     for (const p of this.refPoints) cands.push({ p, ref: null })
     for (const poly of this.refPolys) for (const p of poly) cands.push({ p, ref: null })
     for (const p of this.pending) cands.push({ p, ref: null })
-    // projected geometry endpoints / centres are snap targets too
-    this.projected.forEach(({ ent }) => {
+    // projected geometry endpoints / centres are snap targets too - carry a
+    // real ref (PROJ_BASE-encoded, like everywhere else that addresses
+    // projected geometry) so a click that lands on one can actually record a
+    // Coincident/PointOnObject against it, not just visually snap the cursor
+    // there with nothing to show for it once the click commits
+    this.projected.forEach(({ ent }, k) => {
+      const idx = PROJ_BASE + k
       if (ent.type === 'line') {
-        cands.push({ p: ent.a, ref: null })
-        cands.push({ p: ent.b, ref: null })
-        cands.push({ p: [(ent.a[0] + ent.b[0]) / 2, (ent.a[1] + ent.b[1]) / 2], ref: null })
+        cands.push({ p: ent.a, ref: { idx, pt: 1 } })
+        cands.push({ p: ent.b, ref: { idx, pt: 2 } })
+        cands.push({
+          p: [(ent.a[0] + ent.b[0]) / 2, (ent.a[1] + ent.b[1]) / 2],
+          ref: null,
+          mid: { idx }
+        })
       } else if (ent.type === 'circle' || ent.type === 'arc') {
-        cands.push({ p: ent.c, ref: null })
+        cands.push({ p: ent.c, ref: { idx, pt: 3 } })
       }
     })
     this.entities.forEach((e, idx) => {
@@ -779,8 +805,18 @@ export class SketchController {
       this.snapKind = 'edge'
       return onEdge
     }
+    // grid snap is a convenience, not a hard rule - like every other snap kind
+    // above it only fires within the on-screen tolerance, otherwise the dot
+    // visibly drifts away from the actual cursor at anything but a very
+    // zoomed-out view (GRID is 1mm, which can be many screen px when zoomed in)
+    const gx = Math.round(uv[0] / GRID) * GRID
+    const gy = Math.round(uv[1] / GRID) * GRID
+    if (Math.hypot(gx - uv[0], gy - uv[1]) < tolMm) {
+      this.snapKind = 'grid'
+      return [gx, gy]
+    }
     this.snapKind = 'grid'
-    return [Math.round(uv[0] / GRID) * GRID, Math.round(uv[1] / GRID) * GRID]
+    return uv
   }
 
   private closestOnSeg(
@@ -879,9 +915,11 @@ export class SketchController {
     return idx >= PROJ_BASE ? this.projected[idx - PROJ_BASE]?.ent : this.entities[idx]
   }
 
-  /** the selectable points of one entity (line ends, circle/arc centre, arc ends) */
+  /** the selectable points of one entity (line ends, circle/arc centre, arc
+   *  ends) - `idx` may address projected (read-only) geometry via PROJ_BASE,
+   *  same as everywhere else that takes an entity index */
   private entityPts(idx: number): PtRef[] {
-    const e = this.entities[idx]
+    const e = this.entAt(idx)
     if (!e) return []
     if (e.type === 'line') return [{ e: idx, pt: 1 }, { e: idx, pt: 2 }]
     if (e.type === 'circle') return [{ e: idx, pt: 3 }]
@@ -892,7 +930,7 @@ export class SketchController {
   /** world-uv of a geometry point */
   private ptUV(pr: PtRef): [number, number] {
     if (pr.e === -1) return [0, 0] // sketch origin
-    const e = this.entities[pr.e]
+    const e = this.entAt(pr.e)
     if (!e) return [0, 0]
     if (pr.pt === 3) return e.type === 'circle' || e.type === 'arc' ? [...e.c] : this.endpointOf(e, 1)
     if (e.type === 'arc') {
@@ -930,6 +968,19 @@ export class SketchController {
         }
       }
     }
+    // projected (external) geometry's endpoints / centre are pickable points
+    // too - e.g. PointOnObject / Coincident against a projected edge's end
+    for (let k = 0; k < this.projected.length; k++) {
+      const idx = PROJ_BASE + k
+      for (const pr of this.entityPts(idx)) {
+        const p = this.ptUV(pr)
+        const d = Math.hypot(p[0] - uv[0], p[1] - uv[1])
+        if (d < bestD) {
+          bestD = d
+          best = pr
+        }
+      }
+    }
     return best
   }
 
@@ -940,6 +991,7 @@ export class SketchController {
   /** ref shape (geo / new + pt) for a recorded constraint */
   private ptRecRef(pr: PtRef): RecordedConstraint['refs'][number] {
     if (pr.e === -1) return { geo: -1, pt: 1 } // sketch origin point
+    if (pr.e >= PROJ_BASE) return { geo: this.projected[pr.e - PROJ_BASE].geoId, pt: pr.pt }
     return pr.e < this.baseCount
       ? { geo: pr.e, pt: pr.pt }
       : { new: pr.e - this.baseCount, sub: 0, pt: pr.pt }
@@ -1092,9 +1144,28 @@ export class SketchController {
         this.dimV = -1
       }
 
-      // a geometry POINT (line end, circle / arc centre) beats the curve under it
-      const hitPt = this.pendingCon ? null : this.pickPoint(uv)
+      // a geometry POINT (line end, circle / arc centre) beats the curve under
+      // it - including in "click the constraint, then click the geometry"
+      // mode, so a center-point arc's centre / endpoints can be constrained
+      // the same way whole entities can (otherwise pendingCon mode can only
+      // ever grab the whole arc, and e.g. Coincident on two whole arcs is
+      // meaningless and silently does nothing)
+      const hitPt = this.pickPoint(uv)
       if (hitPt) {
+        if (this.pendingCon) {
+          if (!this.selectedPts.some((p) => this.samePt(p, hitPt))) {
+            this.selectedPts.push(hitPt)
+          }
+          if (this.selectedPts.length + this.selected.length >= this.conArity(this.pendingCon)) {
+            const t = this.pendingCon
+            this.pendingCon = null
+            this.dom.style.cursor = ''
+            this.applyConstraint(t)
+          }
+          this.redraw()
+          this.onChange()
+          return
+        }
         if (ev.shiftKey || ev.ctrlKey || ev.metaKey) {
           this.selectedPts = this.selectedPts.some((p) => this.samePt(p, hitPt))
             ? this.selectedPts.filter((p) => !this.samePt(p, hitPt))
@@ -1122,7 +1193,7 @@ export class SketchController {
       // "click the constraint, then click the geometry" mode
       if (this.pendingCon) {
         if (idx >= 0 && !this.selected.includes(idx)) this.selected.push(idx)
-        if (this.selected.length >= this.conArity(this.pendingCon)) {
+        if (this.selectedPts.length + this.selected.length >= this.conArity(this.pendingCon)) {
           const t = this.pendingCon
           this.pendingCon = null
           this.dom.style.cursor = ''
@@ -1671,11 +1742,16 @@ export class SketchController {
     if (this.tool === 'line') {
       this.entities.push({ type: 'line', a: p[0], b: p[1], ...k })
       const li = this.entities.length - 1
-      this.anchorToAxes(li)
+      // real/projected-geometry snaps FIRST, then axis-anchoring - so a point
+      // that is BOTH on an axis and coincident with something real (e.g. a
+      // projected edge that happens to land on the sketch's own axis) only
+      // gets the one meaningful constraint instead of anchorToAxes piling a
+      // redundant/over-constraining PointOnObject onto the axis as well
       this.autoCoincident(li, [snaps[0] ?? null, snaps[1] ?? null])
       this.autoMidpoint(li, [mids[0] ?? null, mids[1] ?? null])
       this.autoAngle(li) // near-horizontal / near-vertical -> real H/V constraint
       this.autoTangent(li, [snaps[0] ?? null, snaps[1] ?? null])
+      this.anchorToAxes(li)
       this.pending = [p[1]] // chain
       this.pendingSnaps = [snaps[1] ?? null]
       this.pendingMids = [mids[1] ?? null]
@@ -1896,15 +1972,20 @@ export class SketchController {
     const myPts = e.type === 'line' ? [1, 2] : [3]
     snaps.forEach((s, k) => {
       if (!s || s.idx === entIdx) return
-      const target = this.entities[s.idx]
-      if (!target || target.construction) return
+      const target = this.entAt(s.idx) // real OR projected (PROJ_BASE) entity
+      if (!target || (target as { construction?: boolean }).construction) return
       const myPt = myPts[k]
       if (myPt == null) return
       // a line endpoint that snapped to a curve's RIM (pt 1/2, not its centre)
       // is handled by autoTangent as an endpoint-tangent, which already implies
       // coincidence - a Coincident here would over-constrain it
       if (e.type === 'line' && isCurve(target) && (s.pt === 1 || s.pt === 2)) return
-      const tref = s.idx < this.baseCount ? { geo: s.idx, pt: s.pt } : { new: s.idx - this.baseCount, sub: 0, pt: s.pt }
+      const tref =
+        s.idx >= PROJ_BASE
+          ? { geo: this.projected[s.idx - PROJ_BASE].geoId, pt: s.pt }
+          : s.idx < this.baseCount
+            ? { geo: s.idx, pt: s.pt }
+            : { new: s.idx - this.baseCount, sub: 0, pt: s.pt }
       const dup = this.constraints.some(
         (c) =>
           c.type === 'Coincident' &&
@@ -1929,13 +2010,15 @@ export class SketchController {
     if (nw < 0) return
     mids.forEach((m, k) => {
       if (!m || m.idx === entIdx) return
-      const line = this.entities[m.idx]
-      if (!line || line.type !== 'line' || line.construction) return
+      const line = this.entAt(m.idx) // real OR projected (PROJ_BASE) entity
+      if (!line || line.type !== 'line' || (line as { construction?: boolean }).construction) return
       const myPt = k === 0 ? 1 : 2
       const lref = (pt: number): RecordedConstraint['refs'][number] =>
-        m.idx < this.baseCount
-          ? { geo: m.idx, pt }
-          : { new: m.idx - this.baseCount, sub: 0, pt }
+        m.idx >= PROJ_BASE
+          ? { geo: this.projected[m.idx - PROJ_BASE].geoId, pt }
+          : m.idx < this.baseCount
+            ? { geo: m.idx, pt }
+            : { new: m.idx - this.baseCount, sub: 0, pt }
       const dup = this.constraints.some(
         (c) => c.type === 'Symmetric' && c.refs[2]?.new === nw && c.refs[2]?.pt === myPt
       )
@@ -1991,7 +2074,7 @@ export class SketchController {
     // snaps[0] -> our start (pt 1), snaps[1] -> our end (pt 2)
     snaps.forEach((s, k) => {
       if (!s || s.idx === entIdx) return
-      const t = this.entities[s.idx]
+      const t = this.entAt(s.idx) // real OR projected (PROJ_BASE) entity
       if (!t || !isCurve(t)) return
       const myPt = k === 0 ? 1 : 2
       // a full circle has no endpoints - fall back to an edge tangent + a
@@ -1999,9 +2082,11 @@ export class SketchController {
       const curveIsArc = t.type === 'arc'
       const curvePt = s.pt === 1 || s.pt === 2 ? s.pt : 1
       const tref =
-        s.idx < this.baseCount
-          ? { geo: s.idx }
-          : { new: s.idx - this.baseCount, sub: 0 }
+        s.idx >= PROJ_BASE
+          ? { geo: this.projected[s.idx - PROJ_BASE].geoId }
+          : s.idx < this.baseCount
+            ? { geo: s.idx }
+            : { new: s.idx - this.baseCount, sub: 0 }
       const dup = this.constraints.some(
         (c) =>
           c.type === 'Tangent' &&
@@ -2041,7 +2126,14 @@ export class SketchController {
           c.refs[0]?.new === nw &&
           (c.refs[0]?.pt ?? 0) === pt
       )
+    // a point that already picked up a REAL constraint this commit (from
+    // autoCoincident / autoTangent snapping it onto other geometry, real or
+    // projected) does not also need pinning to an axis - adding both would
+    // over-constrain a point that merely happens to sit on the axis too
+    const alreadyConstrained = (pt: number): boolean =>
+      this.constraints.some((c) => c.refs.some((r) => r.new === nw && r.pt === pt))
     const anchor = (uv: [number, number], pt: 1 | 2 | 3): void => {
+      if (alreadyConstrained(pt)) return
       const onX = Math.abs(uv[1]) < tolMm // on the X axis  -> geoId -1
       const onY = Math.abs(uv[0]) < tolMm // on the Y axis  -> geoId -2
       if (onX && onY) {
@@ -2514,7 +2606,7 @@ export class SketchController {
     // circle / arc rim), or Coincident (endpoint welds to the curve's centre)
     if (pts.length === 1 && this.selected.length === 1) {
       const oi = this.selected[0]
-      const oe = this.entities[oi]
+      const oe = this.entAt(oi)
       if (type === 'PointOnObject' && oe && isCurve(oe)) {
         const p = pts[0]
         const pa = this.ptUV(p)
@@ -2526,13 +2618,17 @@ export class SketchController {
           c[0] + ((pa[0] - c[0]) / d) * r,
           c[1] + ((pa[1] - c[1]) / d) * r
         ]
-        const e = this.entities[p.e]
+        const e = this.entities[p.e] // no-ops for a projected (read-only) point
         if (e && e.type === 'line') {
           if (p.pt === 2) e.b = on
           else e.a = on
         }
         const curveRef =
-          oi < this.baseCount ? { geo: oi } : { new: oi - this.baseCount, sub: 0 }
+          oi >= PROJ_BASE
+            ? { geo: this.projected[oi - PROJ_BASE].geoId }
+            : oi < this.baseCount
+              ? { geo: oi }
+              : { new: oi - this.baseCount, sub: 0 }
         this.snapshot()
         this.constraints.push({
           type: 'PointOnObject',
@@ -2567,8 +2663,9 @@ export class SketchController {
     if (pts.length !== 2) return false
     const [p, q] = pts
     const pa = this.ptUV(p)
+    const isProjPt = (pr: PtRef): boolean => pr.e >= PROJ_BASE
     const setPt = (pr: PtRef, uv: [number, number]): void => {
-      const e = this.entities[pr.e]
+      const e = this.entities[pr.e] // no-ops for a projected (read-only) point
       if (!e) return
       if (pr.pt === 3 && (e.type === 'circle' || e.type === 'arc')) e.c = [uv[0], uv[1]]
       else if (e.type === 'line') {
@@ -2578,12 +2675,21 @@ export class SketchController {
     }
     this.snapshot()
     if (type === 'Coincident') {
-      setPt(q, pa)
+      // pre-position whichever point ISN'T read-only projected geometry onto
+      // the other, so the jump happens immediately instead of waiting on the
+      // next solve; if q is the projected one, move p instead
+      if (isProjPt(q)) setPt(p, this.ptUV(q))
+      else setPt(q, pa)
       this.constraints.push({ type: 'Coincident', refs: [this.ptRecRef(p), this.ptRecRef(q)] })
     } else if (type === 'Horizontal' || type === 'Vertical') {
       const qb = this.ptUV(q)
-      // nudge the 2nd point onto the same row / column
-      setPt(q, type === 'Horizontal' ? [qb[0], pa[1]] : [pa[0], qb[1]])
+      // nudge the 2nd point onto the same row / column, unless it is
+      // read-only projected geometry - then nudge the first point instead
+      if (isProjPt(q)) {
+        setPt(p, type === 'Horizontal' ? [pa[0], qb[1]] : [qb[0], pa[1]])
+      } else {
+        setPt(q, type === 'Horizontal' ? [qb[0], pa[1]] : [pa[0], qb[1]])
+      }
       this.constraints.push({ type, refs: [this.ptRecRef(p), this.ptRecRef(q)] })
     } else {
       return false

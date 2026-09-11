@@ -73,6 +73,12 @@ export class ViewCube {
    *  keep its own state + the persisted preference in sync */
   onProjectionChange?: (p: import('./CadControls').Projection) => void
 
+  /** the "Home" view should also re-center + zoom-to-fit the model, not just
+   *  reorient around whatever the current pivot/distance happen to be - the
+   *  Viewport wires this to the same frame(center, radius) the Fit View
+   *  command uses */
+  onHome?: () => void
+
   constructor(
     private readonly mount: HTMLElement,
     private readonly controls: CadControls
@@ -335,6 +341,7 @@ export class ViewCube {
   }
 
   home(): void {
+    this.onHome?.()
     this.goToView(new THREE.Vector3(1, -1, 0.8))
   }
 
