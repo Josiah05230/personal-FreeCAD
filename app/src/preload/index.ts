@@ -55,6 +55,8 @@ const cad = {
     ipcRenderer.invoke('dialog:export', defaultPath) as Promise<string | null>,
   saveRender: (dataUrl: string, defaultPath?: string, format?: 'png' | 'jpeg') =>
     ipcRenderer.invoke('render:save', dataUrl, defaultPath, format) as Promise<string | null>,
+  saveDebugLog: (text: string, defaultPath?: string) =>
+    ipcRenderer.invoke('debug:saveLog', text, defaultPath) as Promise<string | null>,
 
   gitStatus: (filePath: string) => ipcRenderer.invoke('git:status', filePath) as Promise<GitStatus>,
   gitLog: (filePath: string, limit?: number) =>

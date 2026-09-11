@@ -103,6 +103,18 @@ st = G.getState();
 assert(st.status === 'ready', 'app still ready after toggling projection');
 assert(st.meshes.length >= 1 && st.meshes[0].tris > 0, 'the solid is still in the viewport after the toggle');
 
+// --- debug log export (user-facing: "save a log I can send back") ---
+note('--- Save Debug Log command ---');
+assert(G.commandIds().includes('debug.saveLog'), 'the Save Debug Log command is registered');
+const dump = window.__trace && window.__trace.dump();
+assert(typeof dump === 'string' && dump.length > 0, 'window.__trace.dump() returns a non-empty trace (tracing is on by default)');
+assert(/ACTION /.test(dump), 'the trace actually recorded high-level ACTION events from this run');
+// --e2e mode short-circuits the real save dialog (no TTY to click through) -
+// just confirm running the command does not throw / destabilise anything
+G.runCommand('debug.saveLog');
+await sleep(60);
+assert((await rpc('ping')).pong === true, 'engine still responds after Save Debug Log');
+
 // --- the app is still fully responsive ---
 assert((await rpc('ping')).pong === true, 'engine still responds');
 assert(!document.querySelector('button') || true, 'renderer still mounted');

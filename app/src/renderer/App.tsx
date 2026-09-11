@@ -2562,6 +2562,23 @@ export function App(): JSX.Element {
     }
   }, [docPath])
 
+  const saveDebugLog = useCallback(async () => {
+    const dump =
+      (window as unknown as { __trace?: { dump: () => string } }).__trace?.dump() ?? ''
+    if (!dump) {
+      window.alert('No trace recorded yet - tracing is on by default; try reproducing the issue first.')
+      return
+    }
+    const stem = docPath
+      ? docPath
+          .replace(/\\/g, '/')
+          .split('/')
+          .pop()
+          ?.replace(/\.FCStd$/i, '') ?? 'gwtcad'
+      : 'gwtcad'
+    await window.cad.saveDebugLog(dump, `${stem}-trace-${Date.now()}.log`)
+  }, [docPath])
+
   const importStep = useCallback(async () => {
     const p = await window.cad.openDialog([
       {
@@ -3197,6 +3214,7 @@ export function App(): JSX.Element {
         saveAs,
         exportModel,
         importStep,
+        saveDebugLog,
         fitView,
         projection,
         toggleProjection: () => {
@@ -3239,6 +3257,7 @@ export function App(): JSX.Element {
       saveAs,
       exportModel,
       importStep,
+      saveDebugLog,
       importKicad,
       reimportKicad,
       surfaceRuled,
@@ -3625,7 +3644,9 @@ export function App(): JSX.Element {
                 onConstraint={(t) => {
                   // apply straight away if the selection already supports it,
                   // otherwise drop into "click the geometry" mode
-                  if (!vpApi.current?.applySketchConstraint(t)) {
+                  const applied = vpApi.current?.applySketchConstraint(t) ?? false
+                  trace('ACTION sketchConstraint', { type: t, appliedImmediately: applied })
+                  if (!applied) {
                     vpApi.current?.startSketchConstraint(t)
                   }
                   onSketchChange()

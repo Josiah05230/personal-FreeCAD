@@ -45,6 +45,7 @@ interface CadBridge {
     defaultPath?: string,
     format?: 'png' | 'jpeg'
   ): Promise<string | null>
+  saveDebugLog(text: string, defaultPath?: string): Promise<string | null>
   gitStatus(filePath: string): Promise<GitStatus>
   gitLog(filePath: string, limit?: number): Promise<GitCommit[]>
   gitBranches(filePath: string): Promise<GitBranch[]>

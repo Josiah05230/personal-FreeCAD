@@ -31,6 +31,7 @@ export interface CommandContext {
   saveAs: () => Promise<void>
   exportModel: () => Promise<void>
   importStep: () => Promise<void>
+  saveDebugLog: () => Promise<void>
   fitView: () => void
   toggleProjection: () => void
   projection: 'orthographic' | 'perspective'
@@ -162,6 +163,14 @@ export function buildCommands(ctx: CommandContext): Command[] {
     },
     { id: 'panel.data', title: 'Toggle Data Panel', group: 'View', tab: 'TOOLS', icon: 'point', run: () => ctx.toggleData() },
     { id: 'panel.git', title: 'Toggle History (Git)', group: 'View', tab: 'TOOLS', icon: 'point', run: () => ctx.toggleGit() },
-    { id: 'panel.settings', title: 'Settings', group: 'View', tab: 'TOOLS', icon: 'point', run: () => ctx.toggleSettings() }
+    { id: 'panel.settings', title: 'Settings', group: 'View', tab: 'TOOLS', icon: 'point', run: () => ctx.toggleSettings() },
+    {
+      id: 'debug.saveLog',
+      title: 'Save Debug Log…',
+      group: 'Debug',
+      tab: 'TOOLS',
+      icon: 'point',
+      run: () => ctx.saveDebugLog()
+    }
   ]
 }

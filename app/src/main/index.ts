@@ -166,6 +166,20 @@ app.whenReady().then(async () => {
     }
   )
 
+  // save the renderer's interaction trace (window.__trace.dump()) to a text
+  // file, so the user can attach it to a bug report - same pattern as
+  // render:save
+  ipcMain.handle('debug:saveLog', async (_e, text: string, defaultPath?: string) => {
+    if (E2E) return null
+    const r = await dialog.showSaveDialog(win!, {
+      defaultPath: defaultPath ?? `gwtcad-trace-${Date.now()}.log`,
+      filters: [{ name: 'Log file', extensions: ['log', 'txt'] }]
+    })
+    if (r.canceled || !r.filePath) return null
+    await writeFile(r.filePath, text, 'utf-8')
+    return r.filePath
+  })
+
   ipcMain.handle('git:status', (_e, filePath: string) => gitw.status(filePath))
   ipcMain.handle('git:log', (_e, filePath: string, limit?: number) => gitw.log(filePath, limit))
   ipcMain.handle('git:branches', (_e, filePath: string) => gitw.branches(filePath))

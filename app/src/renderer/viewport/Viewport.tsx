@@ -24,6 +24,7 @@ import { perfProfile } from '../perfProfile'
 import type { RenderSettings } from '../rpc'
 import { effectiveRender, resolveBackground } from '../appearance'
 import type { RenderImageOptions } from './types'
+import { trace } from '../trace'
 
 function gradientBackground(top = '#20242b', mid = '#2b3038', bot = '#3a4048'): THREE.Texture {
   const c = document.createElement('canvas')
@@ -547,6 +548,7 @@ export function Viewport({
     let downY = 0
     let downBtn = -1
     let banding = false
+    let lastHoverKey: string | null = null
 
     // closest point on the ghost's normal line to the cursor ray, as mm along N0
     const normalParam = (e: PointerEvent): number => {
@@ -577,6 +579,13 @@ export function Viewport({
       downY = e.clientY
       downBtn = e.button
       const st = stateRef.current
+      trace('pointer down', {
+        x: e.clientX,
+        y: e.clientY,
+        btn: e.button,
+        sketch: !!st?.sketch,
+        selectMode: winSelRef.current.mode
+      })
       // Offset-Plane handle drag takes priority (grab the arrow OR the plane)
       const pv = previewDragRef.current
       if (e.button === 0 && pv.handle && st) {
@@ -644,6 +653,14 @@ export function Viewport({
     }
     const onUp = (e: PointerEvent): void => {
       const st = stateRef.current
+      trace('pointer up', {
+        x: e.clientX,
+        y: e.clientY,
+        btn: e.button,
+        dragPx: Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY),
+        banding,
+        sketchTool: st?.sketch ? sketchToolRef.current : null
+      })
       const pv = previewDragRef.current
       if (pv.active) {
         pv.active = false
@@ -667,6 +684,7 @@ export function Viewport({
             host.clientWidth,
             host.clientHeight
           )
+          trace('window select', { count: sels.length, additive: e.shiftKey || e.ctrlKey || e.metaKey })
           winSelRef.current.cb?.(sels, e.shiftKey || e.ctrlKey || e.metaKey)
         }
         return
@@ -678,6 +696,11 @@ export function Viewport({
       // sketch is open is a projection pick, not a sketch action
       if (st && st.sketch && sketchToolRef.current === 'project' && st.content) {
         const hit = st.picker.pick(e, st.content)
+        trace('project-geometry click', {
+          hit: hit
+            ? `${hit.kind}:${(hit as { bodyId?: string }).bodyId ?? ''}:${(hit as { sub?: string }).sub ?? ''}`
+            : null
+        })
         if (hit && (hit.kind === 'edge' || hit.kind === 'face') && hit.bodyId) {
           onSketchProjectRef.current?.(hit.bodyId, hit.sub)
         }
@@ -773,6 +796,7 @@ export function Viewport({
             sub: string
             mid: [number, number, number]
           }
+          trace('dress-ghost toggle', { sub: ud.sub })
           onDressGhostToggleRef.current(ud.sub, ud.mid ?? null)
           return
         }
@@ -873,7 +897,13 @@ export function Viewport({
       }
       const hit = st.picker.pick(e, st.content)
       const allow = selFilterRef.current
-      st.picker.setHover(hit && (!allow || allow.includes(hit.kind)) ? hit : null, st.content)
+      const shown = hit && (!allow || allow.includes(hit.kind)) ? hit : null
+      const hoverKey = shown ? `${shown.kind}:${(shown as { bodyId?: string }).bodyId ?? ''}:${(shown as { sub?: string }).sub ?? ''}` : null
+      if (hoverKey !== lastHoverKey) {
+        lastHoverKey = hoverKey
+        trace('hover', { over: hoverKey })
+      }
+      st.picker.setHover(shown, st.content)
     }
     renderer.domElement.addEventListener('pointerdown', onDown)
     renderer.domElement.addEventListener('pointerup', onUp)

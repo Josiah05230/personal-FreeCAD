@@ -8,6 +8,7 @@
  * entities the sidecar feeds straight to Sketcher.
  */
 import * as THREE from 'three'
+import { trace } from '../trace'
 
 export type SketchTool =
   | 'select'
@@ -299,6 +300,7 @@ export class SketchController {
   }
 
   setTool(t: SketchTool): void {
+    trace('sketch tool', { from: this.tool, to: t })
     this.tool = t
     this.pending = []
     this.pendingSnaps = []
@@ -1090,6 +1092,7 @@ export class SketchController {
   // --- input ---
   private onDown = (ev: PointerEvent): void => {
     if (ev.button !== 0) return
+    trace('sketch pointer down', { x: ev.clientX, y: ev.clientY, tool: this.tool, pendingCon: this.pendingCon })
     // the "Project geometry" tool picks MODEL geometry - let the click bubble to
     // the Viewport's handler which has the model picker
     if (this.tool === 'project') return
@@ -1190,6 +1193,12 @@ export class SketchController {
             this.drag = { idx: hitPt.e, handle: this.ptToHandle(hitPt), last: uv }
             this.dragMoved = false
             this.preDragSnap = { ents: this.cloneEnts(), cons: this.cloneCons() }
+            trace('sketch drag start (point)', {
+              idx: hitPt.e,
+              pt: hitPt.pt,
+              entType: this.entities[hitPt.e]?.type,
+              handle: this.drag.handle
+            })
           }
         }
         this.redraw()
@@ -1237,6 +1246,7 @@ export class SketchController {
           this.drag = { idx, handle: this.grabHandle(idx, uv), last: uv }
           this.dragMoved = false
           this.preDragSnap = { ents: this.cloneEnts(), cons: this.cloneCons() }
+          trace('sketch drag start (entity)', { idx, entType: this.entities[idx]?.type, handle: this.drag.handle })
         }
       }
       this.redraw()
@@ -1768,6 +1778,9 @@ export class SketchController {
     const p = this.pending
     const snaps = this.pendingSnaps
     const mids = this.pendingMids
+    const entsBefore = this.entities.length
+    const consBefore = this.constraints.length
+    trace('sketch commit', { tool: this.tool, points: p, snaps })
     this.geomV++
     const k = this.construction ? { construction: true } : {}
     if (this.tool === 'line') {
@@ -1900,6 +1913,10 @@ export class SketchController {
       this.pendingSnaps = []
       this.pendingMids = []
     }
+    trace('sketch commit done', {
+      newEntities: this.entities.length - entsBefore,
+      newConstraints: this.constraints.length - consBefore
+    })
     this.scheduleSolve()
     this.onChange()
   }
