@@ -45,12 +45,24 @@ export function Timeline({
   const body = bodies[0]
   const feats = body?.features ?? []
   // the scrubber follows the rollback marker (the feature it sits AFTER), not
-  // body.Tip - Tip stays at the last feature even while history is rolled back
+  // body.Tip - Tip stays at the LAST SOLID feature even when the marker (and
+  // therefore the true end of history) sits past it, behind one or more
+  // trailing non-solid features (a sketch drawn after the last Pad/Fillet,
+  // never yet extruded). body.marker is null both when there is genuinely no
+  // marker info yet AND when the backend reports "at the very end" - so
+  // falling back to tipIdx in that second case stopped the scrubber's visual
+  // position at the last SOLID feature instead of the real last feature,
+  // making a trailing sketch look permanently unreachable by drag (user
+  // report, 2026-09-11: "it seems to happen when the last item in the tree
+  // is the sketch"). feats.length - 1 is always the correct "at the end"
+  // position; tipIdx is now only a last-resort fallback for the genuinely-
+  // unknown case (no features report isTip at all, which should not happen
+  // in practice since the backend always returns one).
   const markerId = body?.marker ?? null
   const markerIdx = markerId ? feats.findIndex((f) => f.id === markerId) : -1
   const tipIdx = feats.findIndex((f) => f.isTip)
   const markerAt =
-    markerIdx >= 0 ? markerIdx : tipIdx >= 0 ? tipIdx : feats.length - 1
+    markerIdx >= 0 ? markerIdx : feats.length > 0 ? feats.length - 1 : tipIdx
 
   const [playing, setPlaying] = useState(false)
   const [dragging, setDragging] = useState(false)

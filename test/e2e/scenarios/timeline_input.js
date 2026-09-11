@@ -169,4 +169,70 @@ assert(
   `the marker visually returns to right after the sketch chip (now@${markerRectBack.left}, sketch chip ends@${sketchChipRect.right})`
 );
 
+// --------------------------------------------------------------------------
+// A sketch drawn AFTER everything else (the true end, not mid-timeline) -
+// this is the user's ACTUAL file's exact structure (Sketch, Pad, Fillet,
+// Sketch001) and their exact follow-up report: "it seems to happen when the
+// last item in the tree is the sketch". markerAt's fallback used to resolve
+// to the last SOLID feature's index (tipIdx, e.g. Fillet) whenever the
+// marker was null/"at the end", instead of the real last index - so the
+// scrubber visually rendered stuck one chip short of the trailing sketch,
+// looking exactly like dragging to the end could never reach it, even
+// though the backend had genuinely rolled all the way there.
+note('--- sketch drawn AFTER the last solid (trailing, not mid-timeline) - the scrubber must visually reach it at the end ---');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+{
+  const sA = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: sA.sketchId,
+    elements: [{ type: 'rect', a: [-15, -15], b: [15, 15] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.selectSketch(sA.sketchId);
+  await sleep(50);
+  await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 10, midplane: false, reversed: false });
+  await idle();
+  await rpc('feature.fillet', { edges: ['Edge1'], radius: 1.0 });
+  await G.refresh();
+  await idle();
+
+  // now, WITHOUT rolling back, draw a second sketch - it lands at the true
+  // end, after the Fillet
+  const sB = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: sB.sketchId,
+    elements: [{ type: 'line', a: [40, 40], b: [50, 40] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+
+  let tt = await rpc('tree.get');
+  let ff = tt.bodies[0].features;
+  const ord = ff.map((f) => f.id);
+  note('trailing-sketch feature order: ' + JSON.stringify(ord));
+  assert(ord[ord.length - 1] === sB.sketchId, 'the new sketch is genuinely the LAST feature (trailing, not mid-timeline)');
+  assert(tt.bodies[0].marker === null, 'backend marker is null (truly at the end) right after drawing the trailing sketch');
+
+  const chipsT = timelineChips();
+  assert(chipsT.length === ord.length, `one chip per feature (${chipsT.length} vs ${ord.length})`);
+  const lastChip = chipsT[chipsT.length - 1];
+  const lastChipRect = lastChip.getBoundingClientRect();
+  const mk = timelineMarker();
+  const mkRect = mk.getBoundingClientRect();
+  note('marker.left=' + mkRect.left + ' lastChip(sketch).right=' + lastChipRect.right);
+  assert(
+    Math.abs(mkRect.left - lastChipRect.right) < 4,
+    `THE BUG: the scrubber marker must render right after the trailing sketch chip (the true end), not stuck at the previous solid feature (marker@${mkRect.left}, trailing sketch chip ends@${lastChipRect.right})`
+  );
+
+  // and the trailing sketch itself must not render as "rolled" / greyed out,
+  // since we are genuinely at the end and nothing is ahead of it
+  assert(!lastChip.className.includes('rolled'), 'the trailing sketch chip is not greyed out as "rolled" - it is the current end of history');
+}
+
 note('timeline_input scenario complete');
