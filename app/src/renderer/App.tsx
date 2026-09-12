@@ -3082,6 +3082,7 @@ export function App(): JSX.Element {
         selectPoints: (pts: Array<{ e: number; pt: 1 | 2 | 3 }>) =>
           vpApi.current?.testSelectSketchPoints(pts),
         selectDim: (owner: number) => vpApi.current?.testSelectSketchDim(owner) ?? false,
+        selectedCount: () => vpApi.current?.sketchSelectedCount() ?? 0,
         available: () => vpApi.current?.availableSketchConstraints() ?? [],
         applyConstraint: (t: import('./viewport/SketchController').SketchConstraintType) =>
           vpApi.current?.applySketchConstraint(t) ?? false,

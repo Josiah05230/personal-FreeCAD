@@ -476,6 +476,98 @@ note('--- Project Geometry tool: hover highlight + snap + constrain ---');
   }
 }
 
+// window-select must be able to pick up PROJECTED (external) geometry, not
+// just real sketch geometry - a plain click on projected geometry already
+// worked (pickEntity checks this.projected), but commitBand (the rubber-band
+// drag) only ever iterated this.entities, so a box drawn tightly around a
+// projected line could never select it, no matter how the box was drawn.
+// User report, 2026-09-12: "I can't seem to even window-select projected
+// geometry?"
+note('--- window-select (rubber-band drag) picks up projected geometry ---');
+{
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  const s = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: s.sketchId,
+    elements: [{ type: 'rect', a: [0, 0], b: [40, 30] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.selectSketch(s.sketchId);
+  await sleep(40);
+  await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 20 });
+  await idle();
+  const bid2 = G.getState().bodies[0]?.id;
+  assert(!!bid2, 'window-select-projected: base box built');
+
+  const s2 = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await G.refresh();
+  await idle();
+  await G.editSketch(s2.sketchId);
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(80);
+  pressKey('p'); // project-geometry hotkey
+  await sleep(30);
+  const sc2 = await rpc('scene.get');
+  const mesh2 = sc2.meshes.find((m) => m.id === bid2) || sc2.meshes[0];
+  // a bottom edge on the sketch plane (Z=0, constant), so the projected line
+  // lands with a clean, easy-to-box screen extent
+  const bottomEdge = mesh2.edges.find((e) => {
+    const p = e.points;
+    const dz1 = Math.abs(p[2]);
+    const dz2 = Math.abs(p[p.length - 1]);
+    const dy = Math.abs(p[1] - p[p.length - 2]);
+    return dz1 < 1e-3 && dz2 < 1e-3 && dy < 1e-3;
+  });
+  assert(bottomEdge, 'found a bottom edge on the sketch plane to project');
+  if (bottomEdge) {
+    const emid2 = edgeMid(bottomEdge);
+    const pe2 = await screenOf(emid2);
+    clickAt(pe2.x, pe2.y);
+    await sleep(80);
+    const projected2 = G.sketch.projected();
+    assert(projected2.length > 0, 'clicking the bottom edge projected it into the sketch');
+    if (projected2.length > 0) {
+      pressKey('Escape'); // back to select tool
+      await sleep(20);
+      const p0 = projected2[0];
+      // a box comfortably around the whole projected line's endpoints
+      const padA = await G.sketchUVToScreen(
+        Math.min(p0.a[0], p0.b[0]) - 5,
+        Math.min(p0.a[1], p0.b[1]) - 5
+      );
+      const padB = await G.sketchUVToScreen(
+        Math.max(p0.a[0], p0.b[0]) + 5,
+        Math.max(p0.a[1], p0.b[1]) + 5
+      );
+      assert(padA && padB, 'window-select box corners project onto the screen');
+      if (padA && padB) {
+        dragBox(padA.x, padA.y, padB.x, padB.y);
+        await sleep(60);
+      }
+      const selCount = G.sketch.selectedCount ? G.sketch.selectedCount() : null;
+      note('sketchSelectedCount after window-select over projected geometry: ' + selCount);
+      assert(
+        (selCount ?? 0) > 0,
+        'window-select actually picked up the projected geometry (selected count ' + selCount + ')'
+      );
+      // and Delete on that selection must be a no-op for projected geometry
+      // (it is read-only, removed via unproject only) rather than erroring
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true })
+      );
+      await sleep(60);
+      assert(G.getState().sketchMode, 'Delete on a window-selected projected entity did not crash the sketch editor');
+    }
+  }
+  pressKey('Escape');
+  await G.cancelSketch().catch(() => {});
+  await idle();
+}
+
 // =================================================================
 note('--- narrow fillet face is still pickable next to its bounding edges ---');
 {
@@ -556,6 +648,95 @@ note('--- narrow fillet face is still pickable next to its bounding edges ---');
 }
 
 // =================================================================
+// A line's endpoint must be able to SNAP onto an arc's rim endpoint through
+// the actual mouse-move/click path, not just via the test-hook's synthetic
+// snap parameter (every earlier fix this session used testAddEntity/commitTool
+// with an EXPLICIT snap ref handed in - that proves the constraint-recording
+// logic works, but never proves the snap that is supposed to trigger it ever
+// actually happens for a real click). User report, repeated many times:
+// "can't have a line snap onto the end point of an arc, or constrain it to
+// do so." Root cause: the live snap() candidate list only ever offered an
+// arc's CENTRE as a snap target - never its two rim/start/end points - so a
+// real click could get arbitrarily close to an arc's endpoint and never snap
+// there, no matter how carefully aimed.
+note('--- a line endpoint SNAPS onto an arc rim endpoint via a real click (not the test-hook snap param) ---');
+{
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  await G.beginSketch({ kind: 'origin', role: 'XY_Plane' });
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(60);
+  // a centre-point arc: centre (0,0), start at (20,0), end at (0,20) - all
+  // through real clicks (the 'a' hotkey + the actual pointer handlers)
+  pressKey('a');
+  await sleep(20);
+  const ac = await G.sketchUVToScreen(0, 0);
+  const a1 = await G.sketchUVToScreen(20, 0);
+  const a2 = await G.sketchUVToScreen(0, 20);
+  assert(ac && a1 && a2, 'arc draw points project onto the screen');
+  clickAt(ac.x, ac.y);
+  await sleep(20);
+  clickAt(a1.x, a1.y);
+  await sleep(20);
+  clickAt(a2.x, a2.y);
+  await sleep(40);
+  pressKey('Escape');
+  await sleep(20);
+  const entsAfterArc = G.sketch.entities();
+  const arcIdx = entsAfterArc.length - 1;
+  const arc = entsAfterArc[arcIdx];
+  assert(arc && arc.type === 'arc', 'drew a centre-point arc via real clicks');
+
+  // now draw a LINE, via the real 'l' hotkey + real clicks, whose END lands
+  // ON the arc's START rim point (20,0) - close enough on screen for the
+  // snap tolerance, but the click's raw sketch-plane coordinate should NOT
+  // be pixel-perfect, same as a real user's hand
+  pressKey('l');
+  await sleep(20);
+  const lineStart = await G.sketchUVToScreen(-20, 0);
+  const arcStartPt = [arc.c[0] + Math.cos(arc.a0) * arc.r, arc.c[1] + Math.sin(arc.a0) * arc.r];
+  const lineEndNear = await G.sketchUVToScreen(arcStartPt[0] + 0.3, arcStartPt[1] - 0.2);
+  assert(lineStart && lineEndNear, 'line draw points project onto the screen');
+  clickAt(lineStart.x, lineStart.y);
+  await sleep(20);
+  clickAt(lineEndNear.x, lineEndNear.y);
+  await sleep(40);
+  pressKey('Escape');
+  await sleep(20);
+
+  const entsAfterLine = G.sketch.entities();
+  const lineIdx = entsAfterLine.length - 1;
+  const line = entsAfterLine[lineIdx];
+  assert(line && line.type === 'line', 'drew a line via real clicks');
+  const gap = line ? Math.hypot(line.b[0] - arcStartPt[0], line.b[1] - arcStartPt[1]) : Infinity;
+  assert(
+    gap < 1e-4,
+    `the line's end SNAPPED exactly onto the arc's rim endpoint via the real click (gap ${gap})`
+  );
+  const newCons = G.sketch.newConstraints();
+  const onArcEndpoint = newCons.filter(
+    (c) =>
+      (c.type === 'Tangent' || c.type === 'Coincident') &&
+      (c.refs || []).some((r) => (r.new === lineIdx || r.geo === lineIdx) && (r.pt === 1 || r.pt === 2))
+  );
+  assert(
+    onArcEndpoint.length > 0,
+    'a real constraint (Tangent or Coincident) was recorded for the snap - not just a visual coincidence: ' +
+      JSON.stringify(newCons)
+  );
+  // round-trip through the real solver
+  await G.finishSketch();
+  await idle();
+  await sleep(220);
+  const rlId = (G.getState().selection.find((s) => s.startsWith('sketch:')) || '').slice(7);
+  const rlRe = await rpc('sketch.reopen', { sketchId: rlId });
+  assert(
+    (rlRe.constraints || []).some((c) => c.type === 'Tangent' || c.type === 'Coincident'),
+    'the snap-recorded constraint survived Finish + reopen (it actually solved)'
+  );
+}
+
 note('--- centre-point arc: real drag of an endpoint changes the sweep, not the radius ---');
 {
   await rpc('session.reset');

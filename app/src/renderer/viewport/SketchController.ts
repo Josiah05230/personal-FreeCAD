@@ -827,6 +827,20 @@ export class SketchController {
         })
       } else if (ent.type === 'circle' || ent.type === 'arc') {
         cands.push({ p: ent.c, ref: { idx, pt: 3 } })
+        // an arc also has two real rim endpoints (start/end) - a line drawn
+        // to meet one of those must be able to snap there, not just onto the
+        // centre. This was missing entirely: the cursor had nothing to lock
+        // onto at an arc's endpoint while drawing, so a line could never
+        // actually land there no matter how carefully you clicked, and no
+        // constraint (auto or manual) ever had a snap to record against -
+        // this is why the endpoint-tangent/coincident fixes earlier this
+        // session never helped: they fire on a snap that was never happening
+        // (user report, repeated: "can't have a line snap onto the end point
+        // of an arc, or constrain it to do so").
+        if (ent.type === 'arc') {
+          cands.push({ p: arcRimPoint(ent, 1), ref: { idx, pt: 1 } })
+          cands.push({ p: arcRimPoint(ent, 2), ref: { idx, pt: 2 } })
+        }
       }
     })
     this.entities.forEach((e, idx) => {
@@ -840,6 +854,10 @@ export class SketchController {
         })
       } else if (e.type === 'circle' || e.type === 'arc') {
         cands.push({ p: e.c, ref: { idx, pt: 3 } })
+        if (e.type === 'arc') {
+          cands.push({ p: arcRimPoint(e, 1), ref: { idx, pt: 1 } })
+          cands.push({ p: arcRimPoint(e, 2), ref: { idx, pt: 2 } })
+        }
       }
     })
 
@@ -1631,26 +1649,34 @@ export class SketchController {
     const crossing = bx < ax
     const inside = (p: [number, number]): boolean =>
       p[0] >= minX && p[0] <= maxX && p[1] >= minY && p[1] <= maxY
-    const hits: number[] = []
-    this.entities.forEach((e, i) => {
-      let pts: [number, number][]
-      if (e.type === 'line') {
-        pts = [e.a, e.b, [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2]]
-      } else if (e.type === 'circle' || e.type === 'arc') {
-        pts = [
+    const entPts = (e: SketchEntity): [number, number][] => {
+      if (e.type === 'line') return [e.a, e.b, [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2]]
+      if (e.type === 'circle' || e.type === 'arc')
+        return [
           e.c,
           [e.c[0] + e.r, e.c[1]],
           [e.c[0] - e.r, e.c[1]],
           [e.c[0], e.c[1] + e.r],
           [e.c[0], e.c[1] - e.r]
         ]
-      } else if (e.type === 'spline') {
-        pts = e.pts
-      } else {
-        pts = [e.a, e.b]
-      }
-      const n = pts.filter(inside).length
-      if (crossing ? n > 0 : n === pts.length) hits.push(i)
+      if (e.type === 'spline') return e.pts
+      return [e.a, e.b]
+    }
+    const hits: number[] = []
+    this.entities.forEach((e, i) => {
+      if (this.deletedBaseSet.has(i)) return
+      const n = entPts(e).filter(inside).length
+      if (crossing ? n > 0 : n === entPts(e).length) hits.push(i)
+    })
+    // projected (external) geometry is a window-select target too, same as a
+    // plain click already handles via pickEntity - this loop was missing
+    // entirely, so a window-select could never pick up projected geometry no
+    // matter how tightly the box was drawn around it (user report,
+    // 2026-09-12: "I can't seem to even window-select projected geometry?").
+    this.projected.forEach(({ ent }, k) => {
+      const n = entPts(ent).filter(inside).length
+      const total = entPts(ent).length
+      if (crossing ? n > 0 : n === total) hits.push(PROJ_BASE + k)
     })
     this.selected = hits
   }
