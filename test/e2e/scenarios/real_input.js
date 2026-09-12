@@ -476,6 +476,119 @@ note('--- Project Geometry tool: hover highlight + snap + constrain ---');
   }
 }
 
+// A profile whose "last side" is a PROJECTED (external) edge must actually
+// CLOSE when finished - FreeCAD's Sketcher deliberately excludes external
+// geometry from the sketch's own Shape.Wires/Faces (it is a reference only),
+// so a wire built with perfectly correct Coincident constraints against a
+// projected edge could solve cleanly and STILL never close, with the pad
+// failing "Wire is not closed" and no visible reason why. User report,
+// 2026-09-12: "projected geometry didn't act like regular geometry... I had
+// to draw a line in-place of the project geometry because otherwise it
+// didn't create a closed loop/face." Fixed sidecar-side (sketch.finish
+// materializes a real, welded copy of any external geometry a Coincident
+// constraint actually relies on to close a wire) - this proves it through
+// the real app: project a real model edge, draw 3 more real sides via the
+// actual sketch tools, Finish, and pad it.
+note('--- a profile using a PROJECTED edge as one side actually closes and pads ---');
+{
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  const baseS = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: baseS.sketchId,
+    elements: [{ type: 'rect', a: [0, 0], b: [40, 30] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.selectSketch(baseS.sketchId);
+  await sleep(40);
+  await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 10 });
+  await idle();
+  const pgBid = G.getState().bodies[0]?.id;
+  assert(!!pgBid, 'projected-geometry-closure: base block built');
+
+  await G.beginSketch({ kind: 'origin', role: 'XZ_Plane' });
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(60);
+  pressKey('p'); // project-geometry tool
+  await sleep(30);
+  const pgSc = await rpc('scene.get');
+  const pgMesh = pgSc.meshes.find((m) => m.id === pgBid);
+  // a top edge along X (Z=10, Y=0) so it projects as a real, straight line
+  const pgEdge = (pgMesh.edges || []).find((e) => {
+    const p = e.points;
+    if (p.length < 6) return false;
+    const dz = Math.abs(p[2] - 10) < 1e-3 && Math.abs(p[p.length - 1] - 10) < 1e-3;
+    const dy = Math.abs(p[1]) < 1e-3 && Math.abs(p[p.length - 2]) < 1e-3;
+    return dz && dy && Math.abs(p[0] - p[p.length - 3]) > 20;
+  });
+  assert(pgEdge, 'found a top edge along X to project');
+  if (pgEdge) {
+    const eMid = [
+      (pgEdge.points[0] + pgEdge.points[pgEdge.points.length - 3]) / 2,
+      (pgEdge.points[1] + pgEdge.points[pgEdge.points.length - 2]) / 2,
+      (pgEdge.points[2] + pgEdge.points[pgEdge.points.length - 1]) / 2
+    ];
+    const eScreen = await screenOf(eMid);
+    clickAt(eScreen.x, eScreen.y);
+    await sleep(80);
+    const pgProjected = G.sketch.projected();
+    assert(pgProjected.length > 0, 'the top edge is now projected into the sketch');
+    if (pgProjected.length > 0) {
+      const p0 = pgProjected[0];
+      pressKey('Escape'); // back to select, done projecting
+      await sleep(20);
+      pressKey('l'); // line tool
+      await sleep(20);
+      // draw 3 more sides, each starting/ending ON the projected edge's own
+      // endpoints (real synthetic clicks, so the real snap() records the
+      // Coincident against the projected geoId, same as autoCoincident would)
+      const outSide = 15; // how far "out" the other 3 sides bow, in sketch mm
+      const c1 = await G.sketchUVToScreen(p0.a[0], p0.a[1]);
+      const c2 = await G.sketchUVToScreen(p0.a[0] + outSide, p0.a[1]);
+      const c3 = await G.sketchUVToScreen(p0.b[0] + outSide, p0.b[1]);
+      const c4 = await G.sketchUVToScreen(p0.b[0], p0.b[1]);
+      assert(c1 && c2 && c3 && c4, 'all 4 profile corners project onto the screen');
+      clickAt(c1.x, c1.y);
+      await sleep(20);
+      clickAt(c2.x, c2.y);
+      await sleep(20);
+      clickAt(c3.x, c3.y);
+      await sleep(20);
+      clickAt(c4.x, c4.y);
+      await sleep(40);
+      pressKey('Escape');
+      await sleep(20);
+
+      const newCons = G.sketch.newConstraints();
+      const weldedToProjection = newCons.some(
+        (c) => c.type === 'Coincident' && (c.refs || []).some((r) => typeof r.geo === 'number' && r.geo < 0)
+      );
+      assert(weldedToProjection, 'at least one drawn line welded to the projected edge via a real snap');
+
+      await G.finishSketch();
+      await idle();
+      await sleep(250);
+      assert(!G.getState().sketchMode, 'sketch finished');
+      const pgSkId = (G.getState().selection.find((s) => s.startsWith('sketch:')) || '').slice(7);
+      assert(!!pgSkId, 'the finished sketch id is known');
+      G.selectSketch(pgSkId);
+      await sleep(40);
+      const noticeBeforePad = G.getState().notice;
+      await G.applyOp('extrude', { operation: 'New body', mode: 'Blind', length: 4 });
+      await idle();
+      const noticeAfterPad = G.getState().notice;
+      const padErr = noticeAfterPad && noticeAfterPad !== noticeBeforePad ? noticeAfterPad : null;
+      assert(
+        !padErr && !G.getState().bodies.some((b) => b.features.some((f) => f.error)),
+        `padding the projected-edge profile committed cleanly, wire actually closed (${padErr || 'ok'})`
+      );
+    }
+  }
+}
+
 // window-select must be able to pick up PROJECTED (external) geometry, not
 // just real sketch geometry - a plain click on projected geometry already
 // worked (pickEntity checks this.projected), but commitBand (the rubber-band
@@ -566,6 +679,82 @@ note('--- window-select (rubber-band drag) picks up projected geometry ---');
   pressKey('Escape');
   await G.cancelSketch().catch(() => {});
   await idle();
+}
+
+// Shift-click on an edge selects the whole TANGENT-CONTINUOUS chain through
+// it (a rounded corner/loop), stopping at a sharp corner or a branch - user
+// request 2026-09-12: "add the feature where I can shift+click to select all
+// conjoining path parts... it should only walk around rounded corners. Not
+// sharp 90deg ones. Unless the next edge(s) are ctrl+clicked." Build a
+// stadium/slot profile (two straight edges + two tangent semicircle arcs -
+// every joint is tangent, a real closed loop with no sharp corners at all),
+// extrude it, and shift-click ONE straight edge: all 4 edges around that
+// loop must end up selected, via the real edge.loopFrom RPC + a real
+// shift-click, not the additive-pick test shortcut.
+note('--- shift-click an edge selects the whole tangent (rounded) loop, ctrl-click still adds just one ---');
+{
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  const s = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: s.sketchId,
+    elements: [
+      { type: 'line', a: [0, 5], b: [30, 5] },
+      { type: 'arc', c: [30, 0], r: 5, a0: Math.PI / 2, a1: -Math.PI / 2 },
+      { type: 'line', a: [30, -5], b: [0, -5] },
+      { type: 'arc', c: [0, 0], r: 5, a0: -Math.PI / 2, a1: Math.PI / 2 }
+    ],
+    constraints: [
+      { type: 'Tangent', refs: [{ geo: 0, pt: 2 }, { geo: 1, pt: 1 }] },
+      { type: 'Tangent', refs: [{ geo: 1, pt: 2 }, { geo: 2, pt: 1 }] },
+      { type: 'Tangent', refs: [{ geo: 2, pt: 2 }, { geo: 3, pt: 1 }] },
+      { type: 'Tangent', refs: [{ geo: 3, pt: 2 }, { geo: 0, pt: 1 }] }
+    ]
+  });
+  await G.refresh();
+  await idle();
+  G.selectSketch(s.sketchId);
+  await sleep(40);
+  await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 8 });
+  await idle();
+  const stBid = G.getState().bodies[0]?.id;
+  assert(!!stBid, 'stadium extrusion built');
+  const stMesh = (await rpc('scene.get')).meshes.find((m) => m.id === stBid);
+  // find one of the two long straight side edges (the "bottom rail" at
+  // roughly constant Y, spanning most of the X range) to shift-click
+  let seedSub = null,
+    seedMid = null;
+  for (const e of stMesh.edges || []) {
+    const p = e.points;
+    if (p.length < 6) continue;
+    const dx = Math.abs(p[0] - p[p.length - 3]);
+    const dy = Math.abs(p[1] - p[p.length - 2]);
+    if (dx > 20 && dy < 1e-3) {
+      seedSub = 'Edge' + (e.edge + 1);
+      seedMid = [(p[0] + p[p.length - 3]) / 2, (p[1] + p[p.length - 2]) / 2, (p[2] + p[p.length - 1]) / 2];
+      break;
+    }
+  }
+  assert(!!seedSub, 'found a long straight rail edge to shift-click (' + seedSub + ')');
+  if (seedSub) {
+    const seedScreen = await screenOf(seedMid);
+    G.clearSelection();
+    // real shift-click, through the actual DOM pointer handlers
+    clickAt(seedScreen.x, seedScreen.y, { shiftKey: true });
+    await sleep(80);
+    const loopSel = G.getState().selection.filter((k) => k.startsWith('edge:'));
+    note('selection after shift-click loop-select: ' + JSON.stringify(loopSel));
+    assert(loopSel.length === 4, `shift-click selected the whole 4-edge tangent loop (got ${loopSel.length})`);
+
+    // ctrl-click on a FRESH single edge must still add just that one edge,
+    // not another whole loop
+    G.clearSelection();
+    clickAt(seedScreen.x, seedScreen.y, { ctrlKey: true });
+    await sleep(80);
+    const ctrlSel = G.getState().selection.filter((k) => k.startsWith('edge:'));
+    assert(ctrlSel.length === 1, `ctrl-click still adds just the one edge (got ${ctrlSel.length})`);
+  }
 }
 
 // =================================================================
@@ -659,6 +848,249 @@ note('--- narrow fillet face is still pickable next to its bounding edges ---');
 // arc's CENTRE as a snap target - never its two rim/start/end points - so a
 // real click could get arbitrarily close to an arc's endpoint and never snap
 // there, no matter how carefully aimed.
+// Real "click the constraint button, then click two points" flow, aiming
+// NEAR (not exactly on) each point - the way an actual user clicks. Every
+// existing test of this flow clicked the point's EXACT sketch-plane
+// coordinate converted to screen, which is not a realistic aim and cannot
+// catch a click that lands just outside pickPoint's tolerance. User report,
+// 2026-09-12 (with a real debug trace): repeatedly opened Coincident/Tangent,
+// clicked twice, and NOTHING happened - no constraint, no error, no visible
+// feedback at all - "I can't seem to apply constraints almost anywhere
+// right now" / "I am still totally able to drag around 'fully constrained'
+// sketch objects".
+note('--- button-first Coincident actually applies from two REALISTIC (near, not exact) clicks ---');
+{
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  await G.beginSketch({ kind: 'origin', role: 'XY_Plane' });
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(60);
+  // two lines whose ends are CLOSE (a few mm apart) but not touching - the
+  // user's real workflow: draw geometry that looks like it should join,
+  // then explicitly apply Coincident to weld it. Deliberately NOT horizontal
+  // or vertical (a perfectly axis-aligned line auto-gets a Horizontal/Vertical
+  // constraint at draw time, which then fights a later Coincident: the
+  // immediate pre-solve snap correctly only nudges the shared axis, leaving
+  // the other axis for the real FreeCAD solve to reconcile - a genuine
+  // multi-constraint case, not a bug, but the wrong thing to test here).
+  const la = G.sketch.addEntity({ type: 'line', a: [0, 0], b: [30, 7] });
+  const lb = G.sketch.addEntity({ type: 'line', a: [30.6, 7.4], b: [50, 20] });
+  await sleep(60);
+  const entsBefore = G.sketch.entities();
+  const gapBefore = Math.hypot(
+    entsBefore[la].b[0] - entsBefore[lb].a[0],
+    entsBefore[la].b[1] - entsBefore[lb].a[1]
+  );
+  assert(gapBefore > 0.3 && gapBefore < 2, `the two endpoints start a few tenths of a mm apart (${gapBefore.toFixed(2)})`);
+
+  const conBtns = Array.from(document.querySelectorAll('.sketch-ribbon .ribbon-cmd'));
+  const coincidentBtn = conBtns.find((b) => (b.getAttribute('title') || '').startsWith('Coincident'));
+  assert(coincidentBtn, 'a Coincident constraint button exists in the sketch ribbon');
+  coincidentBtn.click();
+  await sleep(30);
+  // aim at each point with a REALISTIC few-pixel miss, not its exact centre
+  const p1 = await G.sketchUVToScreen(entsBefore[la].b[0], entsBefore[la].b[1]);
+  const p2 = await G.sketchUVToScreen(entsBefore[lb].a[0], entsBefore[lb].a[1]);
+  assert(p1 && p2, 'both endpoints project onto the screen');
+  clickAt(p1.x + 4, p1.y - 3);
+  await sleep(30);
+  clickAt(p2.x - 3, p2.y + 4);
+  // wait for the real FreeCAD solve (runSolve, async) to actually land, not
+  // a fixed sleep - the immediate local snap only satisfies the constraint
+  // being added; reconciling it against any OTHER constraint on either line
+  // needs the real solver's round trip
+  await waitFor(() => {
+    const e = G.sketch.entities();
+    return Math.hypot(e[la].b[0] - e[lb].a[0], e[la].b[1] - e[lb].a[1]) < 1e-3;
+  }, 2000);
+
+  const consAfter = G.sketch.newConstraints();
+  note('constraints after realistic-aim button-first Coincident: ' + JSON.stringify(consAfter));
+  assert(
+    consAfter.some((c) => c.type === 'Coincident'),
+    'a Coincident constraint was actually recorded from two realistically-aimed clicks'
+  );
+  const entsAfter = G.sketch.entities();
+  const gapAfter = Math.hypot(
+    entsAfter[la].b[0] - entsAfter[lb].a[0],
+    entsAfter[la].b[1] - entsAfter[lb].a[1]
+  );
+  assert(gapAfter < 1e-4, `the two endpoints are now welded together (gap ${gapAfter})`);
+  // and it must survive Finish + reopen, not just look applied in memory
+  await G.finishSketch();
+  await idle();
+  await sleep(220);
+  const bcId = (G.getState().selection.find((s) => s.startsWith('sketch:')) || '').slice(7);
+  const bcRe = await rpc('sketch.reopen', { sketchId: bcId });
+  assert(
+    (bcRe.constraints || []).some((c) => c.type === 'Coincident'),
+    'the button-first Coincident survived Finish + reopen (it actually solved)'
+  );
+}
+
+// beginConstraint() clears `selected` (whole-entity picks) but NEVER clears
+// `selectedPts` (specific-point picks) - so a constraint attempt that's
+// abandoned after only ONE point pick (the user's real workflow: click the
+// point, realise the aim was off / change their mind, click the ribbon
+// button again to retry) leaves that stale point sitting in selectedPts.
+// The NEXT attempt's first real click then completes arity 2 against that
+// STALE point instead of the user's actual second click, applying a
+// nonsensical constraint (or silently doing nothing if the stale point's
+// entity no longer exists) - and the user's real intended second click
+// starts a fresh, incomplete pick for yet another attempt. Repeated forever,
+// this looks exactly like "nothing happens no matter how many times I try".
+note('--- an ABANDONED single-point constraint pick must not corrupt the next attempt ---');
+{
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  await G.beginSketch({ kind: 'origin', role: 'XY_Plane' });
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(60);
+  // NOT drawn from the origin (a point at (0,0) auto-anchors to the real
+  // sketch origin at draw time - a genuine, separate constraint that would
+  // otherwise show up in newConstraints() and confuse this test's own check)
+  const abIdx1 = G.sketch.addEntity({ type: 'line', a: [5, 2], b: [30, 7] });
+  const abIdx2 = G.sketch.addEntity({ type: 'line', a: [30.6, 7.4], b: [50, 20] });
+  await sleep(60);
+
+  const conBtnsAb = Array.from(document.querySelectorAll('.sketch-ribbon .ribbon-cmd'));
+  const coincidentBtnAb = conBtnsAb.find((b) => (b.getAttribute('title') || '').startsWith('Coincident'));
+  assert(coincidentBtnAb, 'Coincident button exists');
+
+  // ATTEMPT 1: click the button, pick a point UNRELATED to the intended weld
+  // (line B's far end), then abandon it (click the ribbon button again, as a
+  // real user retrying would) - if the stale point is NOT cleared, attempt
+  // 2's first real click completes arity 2 against THIS unrelated point
+  // instead of starting a fresh pick, welding the wrong things together
+  coincidentBtnAb.click();
+  await sleep(30);
+  note('pendingConState after 1st button click: ' + JSON.stringify(G.pendingConState()));
+  const entsAb = G.sketch.entities();
+  const abandonedPt = await G.sketchUVToScreen(entsAb[abIdx2].b[0], entsAb[abIdx2].b[1]);
+  assert(abandonedPt, 'the to-be-abandoned point projects onto the screen');
+  clickAt(abandonedPt.x, abandonedPt.y);
+  await sleep(30);
+  note('pendingConState after 1st (abandoned) point pick: ' + JSON.stringify(G.pendingConState()));
+  // abandon: click the ribbon button again instead of finishing the pick
+  coincidentBtnAb.click();
+  await sleep(30);
+  note('pendingConState after abandon (2nd button click): ' + JSON.stringify(G.pendingConState()));
+
+  // ATTEMPT 2: a clean pair of real clicks on the actual two endpoints meant
+  // to be welded - NEITHER of which is the abandoned point above
+  const abP2 = await G.sketchUVToScreen(entsAb[abIdx1].b[0], entsAb[abIdx1].b[1]);
+  const abP3 = await G.sketchUVToScreen(entsAb[abIdx2].a[0], entsAb[abIdx2].a[1]);
+  assert(abP2 && abP3, 'both intended endpoints project onto the screen for attempt 2');
+  clickAt(abP2.x, abP2.y);
+  await sleep(30);
+  note('pendingConState after attempt-2 1st click: ' + JSON.stringify(G.pendingConState()));
+  clickAt(abP3.x, abP3.y);
+  await sleep(60);
+  note('pendingConState after attempt-2 2nd click: ' + JSON.stringify(G.pendingConState()));
+
+  const consAb = G.sketch.newConstraints();
+  note('constraints after abandon-then-retry Coincident: ' + JSON.stringify(consAb));
+  // the FIRST click of attempt 2 must NOT have silently completed a
+  // constraint against the abandoned point (arity would already be 2 -
+  // stale pt + this click - firing immediately, one click early) - assert
+  // pendingCon was still active and no constraint existed yet after that
+  // single click, i.e. the stale point did not count
+  assert(
+    consAb.length === 0 || !consAb.some((c) => c.type === 'Coincident' && (c.refs || []).some((r) => r.new === abIdx2 && r.pt === 2)),
+    'the retry did not weld the ABANDONED point (line B far end) to anything'
+  );
+  assert(
+    consAb.some((c) => c.type === 'Coincident'),
+    'the retry produced exactly the intended Coincident constraint'
+  );
+  await waitFor(() => {
+    const e = G.sketch.entities();
+    return Math.hypot(e[abIdx1].b[0] - e[abIdx2].a[0], e[abIdx1].b[1] - e[abIdx2].a[1]) < 1e-3;
+  }, 2000);
+  const entsAbAfter = G.sketch.entities();
+  const gapAb = Math.hypot(
+    entsAbAfter[abIdx1].b[0] - entsAbAfter[abIdx2].a[0],
+    entsAbAfter[abIdx1].b[1] - entsAbAfter[abIdx2].a[1]
+  );
+  assert(
+    gapAb < 1e-3,
+    `the retry actually welds the two INTENDED endpoints, not the abandoned one (gap ${gapAb})`
+  );
+  await G.cancelSketch();
+  await idle();
+}
+
+// Same button-first Coincident, but on a REOPENED sketch (Finish, then edit
+// sketch again) and against an ARC's rim endpoint (not a plain line end) -
+// matching the user's actual real session precisely (their trace showed
+// every failed constraint attempt happening after a sketch.reopen, with an
+// arc already dragged by its rim point beforehand).
+note('--- button-first Coincident on a REOPENED sketch, arc rim point + line end, realistic clicks ---');
+{
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  await G.beginSketch({ kind: 'origin', role: 'XY_Plane' });
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(60);
+  const arcIdx = G.sketch.addEntity({ type: 'arc', c: [0, 0], r: 10, a0: 0, a1: Math.PI / 2 });
+  const lnIdx = G.sketch.addEntity({ type: 'line', a: [0.6, 10.5], b: [20, 25] });
+  await sleep(60);
+  await G.finishSketch();
+  await idle();
+  await sleep(220);
+  const rsId = (G.getState().selection.find((s) => s.startsWith('sketch:')) || '').slice(7);
+  assert(!!rsId, 'the finished sketch id is known');
+  await G.editSketch(rsId);
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(120);
+
+  const reEnts = G.sketch.entities();
+  assert(reEnts.length === 2, 'reopened editor shows both the arc and the line');
+  // arc's rim endpoint at angle a1 (pt 2): (10*cos(90deg), 10*sin(90deg)) = (0,10)
+  const arcRimPt = [
+    reEnts[arcIdx].c[0] + Math.cos(reEnts[arcIdx].a1) * reEnts[arcIdx].r,
+    reEnts[arcIdx].c[1] + Math.sin(reEnts[arcIdx].a1) * reEnts[arcIdx].r
+  ];
+  const lineStart = reEnts[lnIdx].a;
+  const gapBefore2 = Math.hypot(arcRimPt[0] - lineStart[0], arcRimPt[1] - lineStart[1]);
+  assert(gapBefore2 > 0.3 && gapBefore2 < 2, `arc rim and line start are close but not touching (${gapBefore2.toFixed(2)})`);
+
+  const conBtns2 = Array.from(document.querySelectorAll('.sketch-ribbon .ribbon-cmd'));
+  const coincidentBtn2 = conBtns2.find((b) => (b.getAttribute('title') || '').startsWith('Coincident'));
+  assert(coincidentBtn2, 'Coincident button exists on the reopened sketch');
+  coincidentBtn2.click();
+  await sleep(30);
+  const rp1 = await G.sketchUVToScreen(arcRimPt[0], arcRimPt[1]);
+  const rp2 = await G.sketchUVToScreen(lineStart[0], lineStart[1]);
+  assert(rp1 && rp2, 'both points project onto the screen');
+  clickAt(rp1.x - 3, rp1.y + 4);
+  await sleep(30);
+  clickAt(rp2.x + 4, rp2.y - 3);
+  await sleep(60);
+
+  const consAfterRe = G.sketch.newConstraints();
+  note('constraints after reopened-sketch arc-rim Coincident: ' + JSON.stringify(consAfterRe));
+  assert(
+    consAfterRe.some((c) => c.type === 'Coincident'),
+    'a Coincident constraint was recorded on the reopened sketch, arc rim to line end'
+  );
+  const entsAfterRe = G.sketch.entities();
+  const arcRimAfter = [
+    entsAfterRe[arcIdx].c[0] + Math.cos(entsAfterRe[arcIdx].a1) * entsAfterRe[arcIdx].r,
+    entsAfterRe[arcIdx].c[1] + Math.sin(entsAfterRe[arcIdx].a1) * entsAfterRe[arcIdx].r
+  ];
+  const gapAfterRe = Math.hypot(
+    arcRimAfter[0] - entsAfterRe[lnIdx].a[0],
+    arcRimAfter[1] - entsAfterRe[lnIdx].a[1]
+  );
+  assert(gapAfterRe < 1e-3, `the arc rim and line start are now welded (gap ${gapAfterRe})`);
+  await G.cancelSketch();
+  await idle();
+}
+
 note('--- a line endpoint SNAPS onto an arc rim endpoint via a real click (not the test-hook snap param) ---');
 {
   await rpc('session.reset');

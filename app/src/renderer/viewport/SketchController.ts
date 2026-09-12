@@ -350,11 +350,23 @@ export class SketchController {
   }
 
   /** Enter "pick geometry for this constraint" mode (ribbon button, no live
-   *  selection). Clears once enough entities are picked. */
+   *  selection). Clears once enough entities are picked.
+   *
+   *  Must also clear selectedPts, not just selected: a constraint attempt
+   *  abandoned after only ONE point pick (click a point, realise the aim
+   *  was off, click the ribbon button again to retry) used to leave that
+   *  point sitting in selectedPts. The retry's own first real click then
+   *  completed the arity check against that STALE point instead of starting
+   *  a fresh pick, silently welding two unrelated points together with no
+   *  error or feedback at all - repeated indefinitely this looks exactly
+   *  like "constraints don't apply no matter how many times I try" (real
+   *  user report + trace, 2026-09-12; confirmed and reproduced in a real
+   *  E2E test before this fix, and confirmed fixed after). */
   beginConstraint(t: SketchConstraintType): void {
     this.pendingCon = t
     this.tool = 'select'
     this.selected = []
+    this.selectedPts = []
     this.dom.style.cursor = 'crosshair'
     this.redraw()
   }
@@ -3523,6 +3535,19 @@ export class SketchController {
   testSymbolWorldScale(): number | null {
     const c = this.symGroup.children[0]
     return c ? c.scale.x : null
+  }
+
+  /** Current "click the constraint, then click the geometry" pick state
+   *  (test hook, diagnostics only) - selectedPts/selected are private, and a
+   *  point pick abandoned mid-way (e.g. the ribbon button clicked again
+   *  before the 2nd geometry pick) can leave a stale entry that silently
+   *  corrupts the NEXT attempt - this exists to make that state visible. */
+  testPendingConState(): { pendingCon: string | null; selectedPts: number; selected: number } {
+    return {
+      pendingCon: this.pendingCon,
+      selectedPts: this.selectedPts.length,
+      selected: this.selected.length
+    }
   }
 
   private pickSym(ev: { clientX: number; clientY: number }): string | null {

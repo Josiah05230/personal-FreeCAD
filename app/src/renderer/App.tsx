@@ -445,7 +445,7 @@ export function App(): JSX.Element {
     if (k == null) setDressUpGhost([]) // dialog closed - drop the ghost overlay
   }, [])
 
-  const onSelect = useCallback(
+  const onSelectCore = useCallback(
     (sel: Selection | null, additive: boolean) => {
       trace('ACTION pick', {
         sel: sel ? selKey(sel) : null,
@@ -555,6 +555,43 @@ export function App(): JSX.Element {
       })
     },
     [selFilter]
+  )
+
+  // shift-click "select the loop": for an edge pick, resolve the whole
+  // tangent-continuous chain through it (server-side, against the real
+  // topology - stops at a sharp corner or a branch, same as a rounded
+  // profile continuing smoothly but a 90-degree corner not) and add every
+  // edge in it, same as an additive pick of each one. ctrl/cmd-click still
+  // adds just the one edge, unchanged. A non-edge pick (or the loop RPC
+  // failing) falls straight through to the plain additive/replace path.
+  const onSelect = useCallback(
+    (sel: Selection | null, mode: 'replace' | 'additive' | 'loop') => {
+      if (mode === 'loop' && sel && sel.kind === 'edge') {
+        void (async () => {
+          try {
+            const { edges } = await api.edgeLoopFrom(sel.bodyId, sel.sub)
+            if (edges.length <= 1) {
+              onSelectCore(sel, false)
+              return
+            }
+            let first = true
+            for (const sub of edges) {
+              const idx = Number(sub.slice(4)) - 1
+              onSelectCore(
+                { kind: 'edge', bodyId: sel.bodyId, index: idx, sub, point: sel.point },
+                first ? false : true
+              )
+              first = false
+            }
+          } catch {
+            onSelectCore(sel, false)
+          }
+        })()
+        return
+      }
+      onSelectCore(sel, mode === 'additive')
+    },
+    [onSelectCore]
   )
 
   // ---- feature ops ----
@@ -2995,6 +3032,7 @@ export function App(): JSX.Element {
       },
       cameraDebug: () => vpApi.current?.testCameraDebug() ?? null,
       symbolWorldScale: () => vpApi.current?.testSymbolWorldScale() ?? null,
+      pendingConState: () => vpApi.current?.testPendingConState() ?? null,
       setView: (dir: [number, number, number]) => vpApi.current?.setView(dir),
       nudgeCamera: (delta: [number, number, number]) => vpApi.current?.testNudgeCamera(delta),
       setProjection: (p: 'orthographic' | 'perspective') => {
@@ -3047,7 +3085,8 @@ export function App(): JSX.Element {
       select: (sels: Selection[]) => setSelection(sels ?? []),
       // routes through the real onSelect handler (filters, op-scoped kinds,
       // coplanar lock, additive-while-dialog) - use this to test click behaviour
-      pick: (sel: Selection | null, additive = false) => onSelect(sel, additive),
+      pick: (sel: Selection | null, additive: boolean | 'loop' = false) =>
+        onSelect(sel, additive === 'loop' ? 'loop' : additive ? 'additive' : 'replace'),
       selectFace: (bodyId: string, sub: string) =>
         setSelection([{ kind: 'face', bodyId, sub, point: [0, 0, 0] } as Selection]),
       selectSketch: (sketchId: string) => setSelection([{ kind: 'sketch', sketchId } as Selection]),
@@ -3847,7 +3886,7 @@ export function App(): JSX.Element {
                       onDelete: deleteFeature,
                       onEdit: (id) => onEditRow(id),
                       onEditDim: (id) => void editFeatureDim(id),
-                      onSelect: (sel, add) => onSelect(sel, add),
+                      onSelect: (sel, add) => onSelect(sel, add ? 'additive' : 'replace'),
                       onCalibrateCanvas: (id) => startCalibrate(id),
                       onDeleteCanvas: (id) => void api.canvasDelete(id).then(() => refreshMeshesOnly()),
                       onToggleSection: (id, v) => void toggleSectionVisible(id, v),

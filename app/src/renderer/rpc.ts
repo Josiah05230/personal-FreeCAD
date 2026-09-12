@@ -971,6 +971,12 @@ export const api = {
   measure: (refs: { bodyId: string; sub: string }[]) =>
     rpc<MeasureResult>('measure.compute', { refs }),
 
+  /** shift-click "select the loop": every edge tangent-continuously connected
+   *  to `sub`, in both directions, stopping at a sharp corner or a branch.
+   *  `closed` is true if the walk returned to the starting edge. */
+  edgeLoopFrom: (bodyId: string, sub: string) =>
+    rpc<{ edges: string[]; closed: boolean }>('edge.loopFrom', { bodyId, sub }),
+
   exprEval: (text: string, kind: 'length' | 'angle' = 'length') =>
     rpc<{ value: number; expr: string; kind: string }>('expr.eval', { text, kind }),
   paramsList: () => rpc<{ params: Param[] }>('params.list'),

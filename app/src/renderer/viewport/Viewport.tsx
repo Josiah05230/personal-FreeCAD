@@ -128,7 +128,11 @@ export function Viewport({
   datums?: DatumDTO[]
   selection?: Selection[]
   section?: { plane: 'XY' | 'XZ' | 'YZ'; offset: number; flip: boolean } | null
-  onSelect?: (sel: Selection | null, additive: boolean) => void
+  /** additive: plain ctrl/cmd-click, add this one pick to the selection.
+   *  loop: plain shift-click on an edge - select the whole tangent-continuous
+   *  chain through it (stops at a sharp corner or branch); ctrl-click still
+   *  adds one edge at a time past that point. */
+  onSelect?: (sel: Selection | null, mode: 'replace' | 'additive' | 'loop') => void
   planePickMode?: boolean
   pickPlanes?: PickPlane[]
   onPickPlane?: (ref: SketchRef) => void
@@ -454,6 +458,7 @@ export function Viewport({
         },
         testSketchUVToWorld: (u, v) => stateRef.current?.sketch?.uvToWorld(u, v) ?? null,
         testSymbolWorldScale: () => stateRef.current?.sketch?.testSymbolWorldScale() ?? null,
+        testPendingConState: () => stateRef.current?.sketch?.testPendingConState() ?? null,
         testNudgeCamera: (delta) => {
           const s = stateRef.current
           if (!s) return
@@ -805,7 +810,8 @@ export function Viewport({
 
       if (!st.content) return
       const sel = st.picker.pick(e, st.content)
-      onSelectRef.current?.(sel, e.shiftKey || e.ctrlKey || e.metaKey)
+      const mode = e.shiftKey ? 'loop' : e.ctrlKey || e.metaKey ? 'additive' : 'replace'
+      onSelectRef.current?.(sel, mode)
     }
     const onMove = (e: PointerEvent): void => {
       const st = stateRef.current

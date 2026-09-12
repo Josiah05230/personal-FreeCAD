@@ -3098,6 +3098,117 @@ def _convert_elements(sk, converted):
     return n
 
 
+def _fresh_geometry_from(ext_geo):
+    """A NEW Part.Geometry matching `ext_geo`'s shape/parameters, for the
+    common projected-geometry curve types. A plain `.copy()` of external
+    geometry is subtly unusable for this: it solves and positions
+    correctly, but Sketch.Shape's wire builder silently excludes it from
+    Shape.Wires anyway (confirmed directly - a freshly-constructed
+    Part.LineSegment at the identical coordinates is included normally,
+    an identical-looking .copy() of the same external edge is not), so a
+    real, independently-constructed object is required, not a clone of the
+    external one. Returns None for a curve type this does not know how to
+    rebuild (falls back to leaving that one un-materialized rather than
+    guessing)."""
+    import Part
+    tid = type(ext_geo).__name__
+    if tid == "LineSegment":
+        return Part.LineSegment(ext_geo.StartPoint, ext_geo.EndPoint)
+    if tid == "Circle":
+        return Part.Circle(ext_geo.Center, ext_geo.Axis, ext_geo.Radius)
+    if tid == "ArcOfCircle":
+        c = ext_geo.Circle
+        return Part.ArcOfCircle(
+            Part.Circle(c.Center, c.Axis, c.Radius),
+            ext_geo.FirstParameter, ext_geo.LastParameter)
+    if tid == "Ellipse":
+        return Part.Ellipse(
+            ext_geo.Center, ext_geo.MajorRadius, ext_geo.MinorRadius)
+    if tid == "ArcOfEllipse":
+        e = ext_geo.Ellipse
+        return Part.ArcOfEllipse(
+            Part.Ellipse(e.Center, e.MajorRadius, e.MinorRadius),
+            ext_geo.FirstParameter, ext_geo.LastParameter)
+    return None
+
+
+def _materialize_touched_external_geometry(sk):
+    """Projected/external geometry constrains real entities' endpoints
+    correctly (a real Coincident constraint against it solves fine), but
+    FreeCAD's Sketcher deliberately excludes external geometry from the
+    sketch's own Shape.Wires/Faces - it is a reference only, never part of
+    the actual profile. So a profile whose "last side" is meant to be a
+    projected edge can be perfectly, unambiguously constrained and still
+    never close, with no error pointing at why (user report, 2026-09-12:
+    "projected geometry didn't act like regular geometry... had to draw a
+    line in-place of the project geometry because otherwise it didn't create
+    a closed loop/face").
+
+    Fixed by finding every external geometry index actually referenced by a
+    Coincident constraint (i.e. something the user is relying on to close a
+    wire, not just a passive alignment reference) and adding a REAL copy of
+    each one, welded to the same point via a new Coincident - purely
+    additive, the original external geometry and its constraints are left
+    untouched. The real copy participates in Shape.Wires like any other
+    geometry, so the wire the user already built correctly now actually
+    closes. Returns the number of external geometry pieces materialized."""
+    import Sketcher
+
+    touched = set()
+    for c in sk.Constraints:
+        if c.Type != "Coincident":
+            continue
+        for gid in (c.First, c.Second, c.Third):
+            # -1/-2 are the sketch's own axes, never real projected geometry;
+            # anything <= -3 is a real external reference (see ExternalGeo /
+            # _resolve_ref's "-3 - k" convention used throughout this file)
+            if gid is not None and gid <= -3:
+                touched.add(gid)
+    if not touched:
+        return 0
+
+    made = 0
+    for ext_gid in touched:
+        ext_idx = -ext_gid - 3  # ExternalGeo[0]/[1] are the axes, [2] is -3, ...
+        if ext_idx < 0 or ext_idx >= len(sk.ExternalGeo):
+            continue
+        # for each of the external geometry's own point positions, find every
+        # OTHER (real) geometry+point already Coincident to it - the new
+        # real copy must weld directly to THOSE, not to the external ref
+        # itself (a Coincident to the external ref is invisible to
+        # Shape.Wires the same way the external ref itself is, so welding
+        # only to it would just add a second disconnected island)
+        partners_by_pos = {}
+        for c in sk.Constraints:
+            if c.Type != "Coincident":
+                continue
+            pairs = [(c.First, c.FirstPos), (c.Second, c.SecondPos), (c.Third, c.ThirdPos)]
+            ext_here = [p for p in pairs if p[0] == ext_gid and p[1] > 0]
+            if not ext_here:
+                continue
+            others = [p for p in pairs if p[0] != ext_gid and p[0] is not None and p[1] > 0]
+            for _, ext_pos in ext_here:
+                partners_by_pos.setdefault(ext_pos, []).extend(others)
+        if not partners_by_pos:
+            continue
+        fresh = _fresh_geometry_from(sk.ExternalGeo[ext_idx])
+        if fresh is None:
+            continue
+        try:
+            new_gid = sk.addGeometry(fresh, False)
+        except Exception:
+            continue
+        for ext_pos, partners in partners_by_pos.items():
+            for other_gid, other_pos in partners:
+                try:
+                    sk.addConstraint(Sketcher.Constraint(
+                        "Coincident", new_gid, ext_pos, other_gid, other_pos))
+                    made += 1
+                except Exception:
+                    pass
+    return made
+
+
 @method("sketch.finish")
 def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None,
                   removedConstraints=None, removedElements=None, convertedElements=None):
@@ -3115,6 +3226,12 @@ def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None,
         _apply_sketch_constraints(sk, constraints, emap)
     if autoConstrain:
         _auto_constrain(sk)
+    # a Coincident against external/projected geometry solves fine but is
+    # invisible to Shape.Wires (external geometry is a reference only, never
+    # part of the sketch's own profile) - materialize a real, welded copy of
+    # anything actually relied on to close a wire so the profile the user
+    # built genuinely closes, not just "looks" closed on screen.
+    _materialize_touched_external_geometry(sk)
     d.recompute()
 
     # _auto_constrain (and dimensioning opposite sides of a rect) can leave
@@ -4097,6 +4214,150 @@ def document_info():
 # --------------------------------------------------------------------------- #
 # drawings (TechDraw, headless)
 # --------------------------------------------------------------------------- #
+
+@method("edge.loopFrom")
+def edge_loop_from(bodyId, sub, angleTolDeg=8.0):
+    """Walk the body's real edge topology starting at `sub` (an 'EdgeN' on the
+    body's Tip shape), following only TANGENT-CONTINUOUS joints (a rounded
+    corner - the edge direction barely changes crossing the vertex) and
+    stopping at any SHARP joint (a real corner - the direction changes by
+    more than `angleTolDeg`), even where exactly one candidate edge is
+    otherwise available. Returns a closed loop if the walk returns to the
+    seed, otherwise the tangent run reachable in each direction before a
+    sharp corner, a branch with no single tangent-continuous candidate, or a
+    dead end.
+
+    This is shift-click "select the loop" (Sweep path, multi-edge fillet
+    picks, etc): the user wants to grab a whole ROUNDED path (e.g. a
+    filleted edge and the straight edges tangent to it) with one click,
+    while a sharp 90-degree corner deliberately stops the walk - continuing
+    past a real corner is a ctrl-click, one edge at a time, same as always.
+    """
+    d = session.doc(create=False)
+    if d is None:
+        raise RpcError(APP_ERROR, "no document")
+    body = d.getObject(bodyId)
+    if body is None:
+        raise RpcError(APP_ERROR, "no object %r" % bodyId)
+    shp = body.Tip.Shape if getattr(body, "Tip", None) is not None else body.Shape
+    if shp is None or shp.isNull():
+        raise RpcError(APP_ERROR, "body has no shape")
+    edges = shp.Edges
+    try:
+        idx0 = int(sub[4:]) - 1
+    except Exception:
+        raise RpcError(APP_ERROR, "not an edge ref: %r" % sub)
+    if idx0 < 0 or idx0 >= len(edges):
+        raise RpcError(APP_ERROR, "no such edge %r" % sub)
+
+    import math
+
+    TOL = 1e-6
+    cos_tol = math.cos(math.radians(float(angleTolDeg)))
+
+    def endpoints(e):
+        return (e.Vertexes[0].Point, e.Vertexes[-1].Point)
+
+    def same(p, q):
+        return p.distanceToPoint(q) < TOL
+
+    def tangent_line_at(e, pt):
+        """Unit tangent LINE (not a signed direction - a curve's raw
+        parametrisation can run either way through a shared point, so only
+        the undirected line is meaningful) of edge `e` at the end nearest
+        `pt`."""
+        curve = e.Curve
+        a, b = endpoints(e)
+        at_start = same(a, pt)
+        u = e.FirstParameter if at_start else e.LastParameter
+        try:
+            v = curve.tangent(u)[0]
+        except Exception:
+            # fall back to a straight-line approximation between endpoints
+            other = b if at_start else a
+            v = other.sub(pt)
+        if v.Length < TOL:
+            return None
+        v.normalize()
+        return v
+
+    def is_tangent_join(cur_edge, nxt_edge, pt):
+        """Two edges meeting at `pt` are a smooth (tangent) join when their
+        tangent LINES at that point are parallel - regardless of which way
+        each curve's own parametrisation happens to run through it (a
+        circle's tangent() at its own start can point either way relative to
+        how a neighbouring edge is actually traversed crossing that point;
+        only the undirected line the edge follows is a real geometric fact)."""
+        t1 = tangent_line_at(cur_edge, pt)
+        t2 = tangent_line_at(nxt_edge, pt)
+        if t1 is None or t2 is None:
+            return False
+        return abs(t1.dot(t2)) >= cos_tol
+
+    # vertex -> [edge indices touching it] (by real coincident point, not
+    # shared Vertex identity - OCCT can give equal-position vertices distinct
+    # objects across independently-built edges)
+    all_pts = []
+    for i, e in enumerate(edges):
+        a, b = endpoints(e)
+        all_pts.append((i, a, b))
+
+    def edges_at(pt, exclude_idx):
+        out = []
+        for i, a, b in all_pts:
+            if i == exclude_idx:
+                continue
+            if same(a, pt) or same(b, pt):
+                out.append(i)
+        return out
+
+    def other_end(i, pt):
+        a, b = endpoints(edges[i])
+        return b if same(a, pt) else a
+
+    chain = [idx0]
+    used = {idx0}
+    closed = False
+    # a full circle/ellipse is a single closed OCCT edge with both endpoints
+    # coincident - the seed itself is already a trivial 1-edge loop, no walk
+    # needed (and edges_at would otherwise see it touching itself)
+    a0, b0 = endpoints(edges[idx0])
+    if same(a0, b0):
+        closed = True
+    else:
+        # walk BOTH directions from the seed edge
+        for direction in (0, 1):
+            cur_idx = idx0
+            cur_pt = b0 if direction == 0 else a0
+            while True:
+                # idx0 (the seed) is excluded from `used` here on purpose -
+                # it must still be found as a candidate so the walk can
+                # detect closing the loop back onto it (the check below)
+                cands = [i for i in edges_at(cur_pt, cur_idx) if i == idx0 or i not in used]
+                tangent_cands = [i for i in cands if is_tangent_join(edges[cur_idx], edges[i], cur_pt)]
+                # continue ONLY through a single tangent-continuous edge - a
+                # sharp corner (no tangent candidate) or an ambiguous vertex
+                # (more than one tangent candidate, e.g. a genuine branch)
+                # stops the walk cleanly; ctrl-click extends it by hand
+                if len(tangent_cands) != 1:
+                    break
+                nxt = tangent_cands[0]
+                if nxt == idx0:
+                    closed = True
+                    break
+                if direction == 0:
+                    chain.append(nxt)
+                else:
+                    chain.insert(0, nxt)
+                used.add(nxt)
+                cur_pt = other_end(nxt, cur_pt)
+                cur_idx = nxt
+
+    return {
+        "edges": ["Edge%d" % (i + 1) for i in chain],
+        "closed": closed
+    }
+
 
 @method("measure.compute")
 def measure_compute(refs):

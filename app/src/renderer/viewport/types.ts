@@ -102,6 +102,9 @@ export interface ViewportApi {
   /** world-space scale.x of the first constraint-symbol sprite, while a
    *  sketch is open (test hook - verifies rescaleScreenSpace tracks zoom) */
   testSymbolWorldScale: () => number | null
+  /** current "click the constraint, then click the geometry" pick state
+   *  (test hook, diagnostics only - see SketchController.testPendingConState) */
+  testPendingConState: () => { pendingCon: string | null; selectedPts: number; selected: number } | null
   /** offset the camera + pivot by a world-space delta (test hook only - a
    *  reliable way to perturb the camera for a "does Fit/Home recover?" test
    *  without depending on synthetic drag-event edge cases) */
