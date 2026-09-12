@@ -56,6 +56,14 @@ export interface ViewportApi {
   setSketchDistanceDimension: (value: number) => boolean
   /** current distance between the two dimension-tool picks (for the prompt default) */
   sketchDistancePickValue: () => number | null
+  /** world xyz to anchor a floating inline dimension editor at, for this
+   *  request (null if nothing sane to anchor to, should not happen live) */
+  sketchDimRequestWorldPos: (
+    entityIndex: number | null,
+    kind: 'linear' | 'radius' | 'distance'
+  ) => [number, number, number] | null
+  /** project a world xyz to client screen coordinates (null if behind the camera) */
+  projectToScreen: (world: [number, number, number]) => { x: number; y: number } | null
   sketchSelectedCount: () => number
   /** construction-geometry mode for newly drawn entities */
   setSketchConstruction: (on: boolean) => void

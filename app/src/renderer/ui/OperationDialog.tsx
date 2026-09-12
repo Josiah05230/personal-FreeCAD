@@ -60,11 +60,31 @@ interface FieldSpec {
   flipWith?: string
 }
 
+/** One labeled, independently-clickable selection box (Profile, Path, Axis,
+ *  ...) instead of inferring a role from pick order/kind out of one flat
+ *  list - "go back and change which face is selected, or change which path
+ *  is selected", without redoing the other pick. `kinds` gates what a click
+ *  can drop into this box while it's armed (a wrong-kind pick is rejected,
+ *  not silently reinterpreted); `max` caps how many items it holds (a Sweep
+ *  path can be several connected edges, so it has no cap). */
+export interface SlotSpec {
+  key: string
+  label: string
+  kinds: Array<Selection['kind']>
+  /** the box is satisfied at this count (dialog Apply gating, "1 of 2" hint) */
+  min: number
+  max?: number
+  hint?: string
+}
+
 interface OpSpec {
   title: string
   needs: 'none' | 'edges' | 'faces' | 'sketch' | 'sketches2' | 'planeFace' | 'plane' | 'axis' | 'any'
   fields: FieldSpec[]
   hint?: string
+  /** separate labeled selection boxes, in place of the flat needs/selection
+   *  inference above - see SlotSpec. Undefined = unchanged flat behavior. */
+  slots?: SlotSpec[]
 }
 
 // Mirror / Pattern "what do I act on": the whole body (default), only the
@@ -175,6 +195,17 @@ const SPECS: Record<OpKind, OpSpec> = {
     title: 'Revolve',
     needs: 'sketch',
     hint: 'Profile: a sketch, or a flat face of the model. Axis: pick from the list, or choose "Selected edge / datum" and click a straight edge or datum axis (required when the profile is a face).',
+    slots: [
+      { key: 'profile', label: 'Profile', kinds: ['sketch', 'face'], min: 1, max: 1 },
+      {
+        key: 'axis',
+        label: 'Axis',
+        kinds: ['edge', 'plane', 'sketch'],
+        min: 0,
+        max: 1,
+        hint: 'only used when Axis (below) is set to "Selected edge / datum"'
+      }
+    ],
     fields: [
       {
         key: 'operation',
@@ -224,6 +255,18 @@ const SPECS: Record<OpKind, OpSpec> = {
     title: 'Sweep',
     needs: 'any',
     hint: 'Click a profile sketch, then click the path: another sketch, or one or more connected body edges (ctrl/shift-click each edge around a bend or corner).',
+    slots: [
+      // sweep's profile is always a sketch (feature.sweep takes a sketch id,
+      // no face-profile option, unlike extrude/revolve) - see rpc.ts's sweep()
+      { key: 'profile', label: 'Profile', kinds: ['sketch'], min: 1, max: 1 },
+      {
+        key: 'path',
+        label: 'Path',
+        kinds: ['sketch', 'edge'],
+        min: 1,
+        hint: 'a sketch, or one or more connected edges around a bend'
+      }
+    ],
     fields: [
       {
         key: 'operation',
@@ -662,6 +705,24 @@ function foldNegativeDirections(spec: OpSpec, vals: OpValues): OpValues {
   return out
 }
 
+/** short label for a selection item inside a slot box's chip */
+function slotItemLabel(s: Selection): string {
+  switch (s.kind) {
+    case 'sketch':
+      return 'Sketch'
+    case 'face':
+      return s.sub
+    case 'edge':
+      return s.sub
+    case 'vertex':
+      return s.sub
+    case 'plane':
+      return s.label ?? s.role ?? 'Plane'
+    case 'body':
+      return 'Body'
+  }
+}
+
 /** ops whose result we can re-render live as the number changes */
 const LIVE_PREVIEW: ReadonlySet<OpKind> = new Set<OpKind>([
   'extrude',
@@ -677,6 +738,7 @@ const LIVE_PREVIEW: ReadonlySet<OpKind> = new Set<OpKind>([
 export function OperationDialog({
   kind,
   selection,
+  onSelectionChange,
   onApply,
   onCancel,
   onPreview,
@@ -689,7 +751,21 @@ export function OperationDialog({
 }: {
   kind: OpKind | null
   selection: Selection[]
-  onApply: (kind: OpKind, values: OpValues, exprs: Record<string, string>) => void
+  /** prune/replace the app's global selection - used only for spec.slots ops,
+   *  to reject a pick that landed on the wrong-kind box, or to clear just one
+   *  box's item(s) without touching the others' */
+  onSelectionChange?: (next: Selection[]) => void
+  /** slotSel (spec.slots ops only): this dialog's OWN role assignment, keyed
+   *  by SlotSpec.key - the authoritative "which pick is the profile / which
+   *  is the path", independent of pick order or position in the flat
+   *  `selection` array (which is all a wrong-box-then-fixed reselect would
+   *  otherwise leave to guess at) */
+  onApply: (
+    kind: OpKind,
+    values: OpValues,
+    exprs: Record<string, string>,
+    slotSel?: Record<string, Selection[]>
+  ) => void
   onCancel: () => void
   onPreview?: (info: { offset: number; angle: number; flip: boolean } | null) => void
   /** report whether OK is currently pressable (so E2E / callers can observe it) */
@@ -708,6 +784,160 @@ export function OperationDialog({
   const [busy, setBusy] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
   const onReadyPrev = useRef<boolean | null>(null)
+
+  // --- separate, independently-clickable selection boxes (spec.slots) ---
+  // which box the NEXT pick goes into - defaults to the first box, and
+  // auto-advances to the next unsatisfied one once the armed box is full
+  const [armedSlot, setArmedSlot] = useState<string | null>(spec?.slots?.[0]?.key ?? null)
+  // this dialog's own record of which SPECIFIC selection items belong to
+  // which box - selKey-based, not re-derived from kind every render, so a
+  // manually-assigned pick sticks even if two boxes accept overlapping kinds
+  const slotKeyOf = useRef<Map<string, string>>(new Map())
+  // slotKeyOf is a plain ref (mutated directly, not via setState) so its
+  // mutations don't themselves trigger a re-render - bump this after every
+  // mutation so slotItems()'s result (read during render) actually reflects
+  // it. Without this, a pick that fills a box with NO cap-triggered
+  // auto-advance (e.g. Sweep's Path, open-ended) got recorded into the map
+  // correctly but the box's own chip / "ready" state silently never updated
+  // to show it - found via a real E2E test, not a hunch (sweep-around-edge's
+  // "OK gate clears with profile + model edge" started failing the moment
+  // path picks stopped auto-advancing the armed slot).
+  const [slotVersion, setSlotVersion] = useState(0)
+  const selKeyLocal = (s: Selection): string =>
+    s.kind === 'sketch' ? `sketch:${s.sketchId}`
+    : s.kind === 'plane' ? `plane:${s.planeId}`
+    : s.kind === 'body' ? `body:${s.bodyId}`
+    : `${s.kind}:${s.bodyId}:${s.sub}`
+  const prevSelRef = useRef<Selection[]>([])
+
+  // reset per-dialog-open (a fresh kind, or reopening the same kind fresh)
+  useEffect(() => {
+    slotKeyOf.current = new Map()
+    prevSelRef.current = []
+    setArmedSlot(spec?.slots?.[0]?.key ?? null)
+  }, [kind]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // classify each NEWLY-arrived pick (since last render) into the armed box:
+  // accept + record it if the box's kinds allow it, otherwise reject it right
+  // back out of the global selection - "strict per-box picking", so a
+  // wrong-kind click can never silently land in the wrong role or bump
+  // something out of a box the user did not touch.
+  useEffect(() => {
+    if (!spec?.slots || !onSelectionChange) {
+      prevSelRef.current = selection
+      return
+    }
+    const prev = prevSelRef.current
+    const prevKeys = new Set(prev.map(selKeyLocal))
+    const added = selection.filter((s) => !prevKeys.has(selKeyLocal(s)))
+    if (added.length === 0) {
+      // an item vanished (cleared elsewhere) - drop its slot record too
+      const curKeys = new Set(selection.map(selKeyLocal))
+      for (const k of Array.from(slotKeyOf.current.keys())) {
+        if (!curKeys.has(k)) slotKeyOf.current.delete(k)
+      }
+      prevSelRef.current = selection
+      return
+    }
+    const activeKey = armedSlot ?? spec.slots[0].key
+    const activeSlot = spec.slots.find((s) => s.key === activeKey) ?? spec.slots[0]
+    // undefined max = unlimited (e.g. Sweep's Path: several connected edges)
+    const capOf = (s: SlotSpec): number => s.max ?? Infinity
+    let next = selection
+    let changed = false
+    let mapMutated = false
+    for (const item of added) {
+      const k = selKeyLocal(item)
+      if (!activeSlot.kinds.includes(item.kind)) {
+        // wrong kind for the armed box - reject the pick entirely rather than
+        // guess a different box for it
+        next = next.filter((s) => selKeyLocal(s) !== k)
+        changed = true
+        continue
+      }
+      slotKeyOf.current.set(k, activeSlot.key)
+      mapMutated = true
+      // a max:1 box replaces its previous item instead of accumulating -
+      // drop any OTHER item already recorded under this same box
+      if (capOf(activeSlot) === 1) {
+        for (const [ok, ov] of Array.from(slotKeyOf.current.entries())) {
+          if (ov === activeSlot.key && ok !== k) {
+            slotKeyOf.current.delete(ok)
+            next = next.filter((s) => selKeyLocal(s) !== ok)
+            changed = true
+          }
+        }
+      }
+    }
+    if (changed) {
+      onSelectionChange(next)
+      prevSelRef.current = next
+      if (mapMutated) setSlotVersion((v) => v + 1)
+      return
+    }
+    prevSelRef.current = selection
+    // auto-advance: once the armed box is at its cap, move to the next
+    // box that still needs at least `min` items (if any) - a plain
+    // convenience so Profile -> Path flows without an extra click, but the
+    // user can still click back to any box at any time
+    const countIn = (key: string): number =>
+      Array.from(slotKeyOf.current.values()).filter((v) => v === key).length
+    const activeCount = countIn(activeSlot.key)
+    if (activeCount >= capOf(activeSlot)) {
+      const nextSlot = spec.slots.find((s) => s.key !== activeSlot.key && countIn(s.key) < capOf(s))
+      if (nextSlot) setArmedSlot(nextSlot.key)
+    }
+    // always bump after a real map mutation - relying on setArmedSlot above
+    // to force the re-render is not enough: a box with no cap (e.g. Sweep's
+    // Path) never auto-advances, so a 2nd/3rd edge pick into it would
+    // otherwise mutate the map with nothing to trigger React into reading it
+    if (mapMutated) setSlotVersion((v) => v + 1)
+  }, [selection, spec, armedSlot, onSelectionChange])
+
+  const slotItems = (key: string): Selection[] => {
+    // read (not just written to trigger a render) so eslint's exhaustive-deps
+    // does not flag it as unused - slotVersion's whole job is to be a render
+    // dependency, the value itself is never meaningful
+    void slotVersion
+    return selection.filter((s) => slotKeyOf.current.get(selKeyLocal(s)) === key)
+  }
+
+  /** click a box's header: arm it for the next pick. For a max:1 box that
+   *  already holds an item, ALSO clear that item right away - a plain click
+   *  on "Path" (max:1 case, e.g. Revolve's axis) should feel like "start
+   *  fresh here", not "add a second item and immediately reject it" */
+  const armSlot = (s: SlotSpec): void => {
+    // setArmedSlot alone does not reliably force a re-render here: clicking
+    // a box that is ALREADY armed passes React the same state value, which
+    // bails out of re-rendering - so a direct slotKeyOf mutation right after
+    // it (the max:1 clear-on-rearm below) needs its OWN explicit bump too,
+    // not a free ride on this call.
+    setArmedSlot(s.key)
+    if ((s.max ?? Infinity) === 1) {
+      const items = slotItems(s.key)
+      if (items.length && onSelectionChange) {
+        const keys = new Set(items.map(selKeyLocal))
+        for (const k of Array.from(slotKeyOf.current.keys())) {
+          if (keys.has(k)) slotKeyOf.current.delete(k)
+        }
+        onSelectionChange(selection.filter((x) => !keys.has(selKeyLocal(x))))
+        setSlotVersion((v) => v + 1)
+      }
+    }
+  }
+
+  /** the box's own "x" - drop just its item(s), nothing else */
+  const clearSlot = (s: SlotSpec): void => {
+    const items = slotItems(s.key)
+    if (!items.length || !onSelectionChange) return
+    const keys = new Set(items.map(selKeyLocal))
+    for (const k of Array.from(slotKeyOf.current.keys())) {
+      if (keys.has(k)) slotKeyOf.current.delete(k)
+    }
+    onSelectionChange(selection.filter((x) => !keys.has(selKeyLocal(x))))
+    setArmedSlot(s.key)
+    setSlotVersion((v) => v + 1)
+  }
 
   // put the caret in the first field so Enter / Esc work without a mouse move
   useEffect(() => {
@@ -820,7 +1050,10 @@ export function OperationDialog({
           out[f.key] = Number(raw)
         }
       }
-      onApply(kind, foldNegativeDirections(spec, out), exprs)
+      const slotSel = spec.slots
+        ? Object.fromEntries(spec.slots.map((s) => [s.key, slotItems(s.key)]))
+        : undefined
+      onApply(kind, foldNegativeDirections(spec, out), exprs, slotSel)
     } catch (e) {
       window.alert((e as Error).message)
     } finally {
@@ -835,7 +1068,6 @@ export function OperationDialog({
   // extrude and revolve both accept a sketch OR a flat model face as the profile
   const profileKind = kind === 'extrude' || kind === 'revolve'
   const extrudeProfileOk = kind === 'extrude' && (sketchesSel.length === 1 || faces.length >= 1)
-  const revolveProfileOk = kind === 'revolve' && (sketchesSel.length === 1 || faces.length === 1)
   const planeSel = selection.filter((s) => s.kind === 'plane' || s.kind === 'face')
   const isDatum = kind === 'datumPlane' || kind === 'datumAxis' || kind === 'datumPoint'
   const datumPlaneMsg = isDatum
@@ -845,7 +1077,11 @@ export function OperationDialog({
     : null
   const axisSel = selection.filter((s) => s.kind === 'plane' || s.kind === 'edge' || s.kind === 'face')
   const needMsg =
-    datumPlaneMsg ??
+    // spec.slots ops show their status in the boxes themselves, not this
+    // single flat line - see the "opdlg-slots" render below
+    spec.slots
+      ? null
+      : datumPlaneMsg ??
     (spec.needs === 'edges'
       ? faces.length
         ? `${faces.length} face${faces.length === 1 ? '' : 's'} (all their edges)` +
@@ -873,54 +1109,38 @@ export function OperationDialog({
                 ? axisSel.length
                   ? 'axis selected'
                   : 'click an axis / edge / plane / face'
-                : spec.needs === 'any' && kind === 'sweep'
-                  ? sketchesSel.length === 2
-                    ? '2 sketches selected (profile + path)'
-                    : sketchesSel.length === 1 && edges.length >= 1
-                      ? 'profile sketch + path edge selected'
-                      : sketchesSel.length === 1
-                        ? 'profile selected - now click the path (another sketch, or a body edge)'
-                        : sketchesSel.length >= 2
-                          ? 'pick only ONE profile sketch, then the path'
-                          : 'select a profile sketch, then click a path (a sketch or edge)'
-                  : spec.needs === 'any'
-                    ? selection.length
-                      ? `${selection.length} reference${selection.length === 1 ? '' : 's'} selected`
-                      : null
-                    : null)
+                : spec.needs === 'any'
+                  ? selection.length
+                    ? `${selection.length} reference${selection.length === 1 ? '' : 's'} selected`
+                    : null
+                  : null)
+
+  // spec.slots ops (Sweep, Revolve): ready = every box with min > 0 has met
+  // its min, counted from THIS dialog's own slot assignment - not re-guessed
+  // from selection order/kind, so "ready" tracks exactly what the boxes show
+  const slotsReady = spec.slots ? spec.slots.every((s) => slotItems(s.key).length >= s.min) : false
 
   const ready =
     // editing a committed feature: its refs are already seeded, Update is always allowed
     !!editingLabel ||
-    (isDatum && selection.length >= 1) ||
-    (spec.needs === 'none' && !isDatum) ||
-    (spec.needs === 'edges' && edges.length + faces.length > 0) ||
-    (spec.needs === 'faces' && faces.length > 0) ||
-    (spec.needs === 'planeFace' && faces.length === 1) ||
-    (spec.needs === 'sketch' &&
+    (spec.slots ? slotsReady : false) ||
+    (!spec.slots && isDatum && selection.length >= 1) ||
+    (!spec.slots && spec.needs === 'none' && !isDatum) ||
+    (!spec.slots && spec.needs === 'edges' && edges.length + faces.length > 0) ||
+    (!spec.slots && spec.needs === 'faces' && faces.length > 0) ||
+    (!spec.slots && spec.needs === 'planeFace' && faces.length === 1) ||
+    (!spec.slots &&
+      spec.needs === 'sketch' &&
       !profileKind &&
       sketchesSel.length === 1) ||
-    (kind === 'revolve' && revolveProfileOk) ||
-    (kind === 'extrude' &&
+    (!spec.slots &&
+      kind === 'extrude' &&
       extrudeProfileOk &&
       (!extrudeToObj || faces.length >= (sketchesSel.length ? 1 : 2))) ||
-    (spec.needs === 'sketches2' && sketchesSel.length >= 2) ||
-    (spec.needs === 'plane' && planeSel.length >= 1) ||
-    (spec.needs === 'axis' && axisSel.length >= 1) ||
-    // Sweep needs a PROFILE (always a sketch, never a face - see App.tsx's
-    // sweep commit case) plus a PATH: either a 2nd sketch, or a body edge -
-    // NOT just any one selection, unlike splitBody (the other needs:'any'
-    // user, which genuinely only needs one pick). needs:'any' used to let a
-    // single lone edge (just the path, no profile at all) light up OK for
-    // Sweep too - the commit handler's own error ("Select a profile sketch,
-    // then click the path") never had a chance to fire because Apply was
-    // reachable before that state was even possible to reach through the UI
-    // (user report, 2026-09-12, reproduced from a real trace: only ever
-    // picked one edge, no sketch, then hit Apply).
-    (spec.needs === 'any' &&
-      kind === 'sweep' &&
-      (sketchesSel.length === 2 || (sketchesSel.length === 1 && edges.length >= 1))) ||
-    (spec.needs === 'any' && kind !== 'sweep' && selection.length >= 1)
+    (!spec.slots && spec.needs === 'sketches2' && sketchesSel.length >= 2) ||
+    (!spec.slots && spec.needs === 'plane' && planeSel.length >= 1) ||
+    (!spec.slots && spec.needs === 'axis' && axisSel.length >= 1) ||
+    (!spec.slots && spec.needs === 'any' && selection.length >= 1)
 
   // report OK-pressability to the parent. Done inline (not in an effect) so it
   // survives the early `return null` above for an unknown kind without breaking
@@ -956,6 +1176,57 @@ export function OperationDialog({
         <div className={ready ? 'opdlg-need ok' : 'opdlg-need'}>{needMsg}</div>
       )}
       {spec.hint && <div className="opdlg-hint">{spec.hint}</div>}
+      {spec.slots && (
+        <div className="opdlg-slots">
+          {spec.slots.map((s) => {
+            const items = slotItems(s.key)
+            const satisfied = items.length >= s.min
+            const armed = armedSlot === s.key
+            return (
+              <div
+                key={s.key}
+                className={
+                  'opdlg-slot' + (armed ? ' armed' : '') + (satisfied ? ' filled' : '')
+                }
+              >
+                <button
+                  type="button"
+                  className="opdlg-slot-head"
+                  onClick={() => armSlot(s)}
+                  title={armed ? 'currently picking into this box' : 'click, then pick in the viewport'}
+                >
+                  <span className="opdlg-slot-label">{s.label}</span>
+                  <span className="opdlg-slot-status">
+                    {items.length === 0
+                      ? armed
+                        ? 'click to pick…'
+                        : 'not set'
+                      : `${items.length} selected`}
+                  </span>
+                </button>
+                {items.length > 0 && (
+                  <div className="opdlg-slot-chips">
+                    {items.map((it) => (
+                      <span key={selKeyLocal(it)} className="opdlg-slot-chip">
+                        {slotItemLabel(it)}
+                      </span>
+                    ))}
+                    <button
+                      type="button"
+                      className="opdlg-slot-clear"
+                      onClick={() => clearSlot(s)}
+                      title="clear this box"
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
+                {s.hint && <div className="opdlg-slot-hint">{s.hint}</div>}
+              </div>
+            )
+          })}
+        </div>
+      )}
       <div className="opdlg-body">
         {spec.fields
           .filter((f) => !f.showIf || f.showIf(values))

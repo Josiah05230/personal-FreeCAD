@@ -818,6 +818,108 @@ for (const [key, wantOp] of hotkeyCases) {
 G.closeOp();
 await sleep(20);
 
+// ---------------------------------------------------------------- Sweep: separate Profile/Path boxes
+note('--- Sweep: separate Profile/Path boxes - reselecting the path leaves the profile alone ---');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+{
+  // a profile sketch, plus TWO distinct candidate path sketches, so a
+  // real "go back and change JUST the path" has something to actually
+  // change to - if the box split silently fell back to flat-list ordering,
+  // reselecting the path would risk clobbering (or getting clobbered by)
+  // the profile pick instead of leaving it alone.
+  const prof = await rpc('sketch.on', { ref: { kind: 'origin', role: 'YZ_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: prof.sketchId,
+    elements: [{ type: 'circle', c: [0, 0], r: 3 }],
+    constraints: []
+  });
+  const pathA = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XZ_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: pathA.sketchId,
+    elements: [{ type: 'line', a: [0, 0], b: [0, 30] }],
+    constraints: []
+  });
+  const pathB = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XZ_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: pathB.sketchId,
+    elements: [{ type: 'line', a: [0, 0], b: [40, 0] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+
+  G.clearSelection();
+  G.openOp('sweep');
+  await sleep(50);
+  G.pick({ kind: 'sketch', sketchId: prof.sketchId }, false);
+  await sleep(30);
+  G.pick({ kind: 'sketch', sketchId: pathA.sketchId }, false);
+  await sleep(50);
+  const readyA = await waitFor(() => G.getState().opReady === true, 4000);
+  assert(readyA && okBtnDisabled() === false, 'sweep-slots: OK gate clears with profile + path A');
+
+  const slotBoxes = () => Array.from(document.querySelectorAll('.opdlg-slot'));
+  const boxByLabel = (label) =>
+    slotBoxes().find((b) => b.querySelector('.opdlg-slot-label')?.textContent === label);
+  const profileBox = boxByLabel('Profile');
+  const pathBox = boxByLabel('Path');
+  assert(profileBox && pathBox, 'sweep dialog shows separate Profile and Path boxes');
+  assert(
+    profileBox.classList.contains('filled') && pathBox.classList.contains('filled'),
+    'both boxes show as filled after picking profile + path A'
+  );
+
+  // real click on the Path box's own clear ('x') - must drop ONLY the path,
+  // not the profile
+  const pathClearBtn = pathBox.querySelector('.opdlg-slot-clear');
+  assert(pathClearBtn, 'the Path box has its own clear button');
+  pathClearBtn.click();
+  await sleep(40);
+  assert(
+    boxByLabel('Profile').classList.contains('filled'),
+    'clearing the PATH box left the Profile box untouched'
+  );
+  assert(
+    !boxByLabel('Path').classList.contains('filled'),
+    'clearing the Path box actually cleared it'
+  );
+  assert(
+    G.getState().opReady !== true,
+    'OK gate goes back to not-ready with the path cleared (still needs a path)'
+  );
+
+  // pick path B - a real click on the Path box header re-arms it (belt and
+  // suspenders: it should already be armed after Clear, but this is the
+  // actual documented way to "go back and change which path is selected")
+  boxByLabel('Path').querySelector('.opdlg-slot-head').click();
+  await sleep(30);
+  G.pick({ kind: 'sketch', sketchId: pathB.sketchId }, false);
+  await sleep(50);
+  const readyB = await waitFor(() => G.getState().opReady === true, 4000);
+  assert(readyB && okBtnDisabled() === false, 'sweep-slots: OK gate clears again with profile + path B');
+  assert(
+    boxByLabel('Profile').classList.contains('filled'),
+    'the ORIGINAL profile pick survived the whole path-reselect round trip'
+  );
+
+  const err = await applyOpChecked('sweep', { operation: 'New body', orientation: 'Path', transition: 'Transformed' });
+  assert(!err && !anyErr(), `sweep-slots committed with the RESELECTED path (${err || 'ok'})`);
+  // path A ran along Z (0,0,0)->(0,0,30... in sketch uv, [0,0]->[0,30] on the
+  // XZ plane, i.e. world Z), path B runs along world X for 40mm - if the
+  // apply had silently kept path A (the reselect not actually taking effect)
+  // this would span ~30 in Z instead of ~40 in X.
+  const scSwept = await rpc('scene.get');
+  const sweptMesh = scSwept.meshes[scSwept.meshes.length - 1];
+  const spanX = sweptMesh.bbox.max[0] - sweptMesh.bbox.min[0];
+  const spanZ = sweptMesh.bbox.max[2] - sweptMesh.bbox.min[2];
+  assert(
+    spanX > 35 && spanZ < 10,
+    `the swept body actually followed path B (X span ${spanX.toFixed(1)}, Z span ${spanZ.toFixed(1)}), not the cleared path A`
+  );
+}
+
 // ---------------------------------------------------------------- wrap up
 const fin = G.getState();
 assert(fin.status === 'ready', 'app still ready at end (' + fin.status + ')');

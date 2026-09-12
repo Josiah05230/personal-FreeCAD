@@ -85,6 +85,44 @@ function pressKey(key) {
   document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
 }
 
+/** a real double-click through the actual dblclick handler (SketchController
+ *  listens for the browser's native 'dblclick', not two quick pointerdowns) */
+function dblClickAt(x, y, extra) {
+  const el = viewportEl();
+  fire(el, 'pointermove', x, y, extra);
+  el.dispatchEvent(
+    new MouseEvent('dblclick', Object.assign({ clientX: x, clientY: y, bubbles: true, cancelable: true }, extra || {}))
+  );
+}
+
+/** the floating in-place dimension editor's real <input>, if one is mounted */
+function dimEditorInput() {
+  const el = document.querySelector('.dim-editor input');
+  return el || null;
+}
+
+/** type a real value into the floating dimension editor and commit with a
+ *  real Enter keydown through the actual <form onSubmit> - not the semantic
+ *  test hooks (setSketchDimension/setSketchDistanceDimension), so this
+ *  exercises the exact path a user's keyboard takes. */
+function typeAndCommitDimEditor(text) {
+  const input = dimEditorInput();
+  assert(input, 'the floating dimension editor input is mounted');
+  if (!input) return;
+  input.focus();
+  // this is a REACT-CONTROLLED input (value={text} bound via onChange) - a
+  // plain el.value = text does not notify React at all, since React's own
+  // value tracker intercepts the native setter. Go through the native
+  // HTMLInputElement prototype's setter instead, same trick React's own
+  // testing utilities use, so the real onChange handler actually fires.
+  const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  nativeSetter.call(input, text);
+  input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+  input.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+  );
+}
+
 async function screenOf(world) {
   const p = await G.projectToScreen(world);
   assert(p, 'world point ' + JSON.stringify(world) + ' projects onto screen');
@@ -1325,6 +1363,160 @@ note('--- constraint symbols stay a constant on-screen size across a real zoom -
     changedEnough,
     `THE BUG: a constraint symbol's world-space scale must change with zoom (fixed PIXEL size, not fixed world size) - before=${before}, after=${after}`
   );
+
+  await G.cancelSketch();
+  await idle();
+}
+
+// =================================================================
+note('--- double-clicking a line opens a FLOATING inline dimension editor, not a modal popup ---');
+{
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  await G.beginSketch({ kind: 'origin', role: 'XY_Plane' });
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(60);
+
+  pressKey('l');
+  await sleep(20);
+  const p0 = await G.sketchUVToScreen(0, 0);
+  const p1 = await G.sketchUVToScreen(25, 0);
+  assert(p0 && p1, 'line draw points project onto the screen');
+  clickAt(p0.x, p0.y);
+  await sleep(20);
+  clickAt(p1.x, p1.y);
+  await sleep(40);
+  pressKey('Escape');
+  await sleep(20);
+
+  const ents = G.sketch.entities();
+  const idx = ents.length - 1;
+  const line = ents[idx];
+  assert(line && line.type === 'line', 'drew a line via real clicks');
+
+  // double-click the middle of the line, through the real dblclick handler
+  const midU = (line.a[0] + line.b[0]) / 2;
+  const midV = (line.a[1] + line.b[1]) / 2;
+  const mid = await G.sketchUVToScreen(midU, midV);
+  assert(mid, 'line midpoint projects onto the screen');
+  assert(!dimEditorInput(), 'no floating dimension editor is mounted before the double-click');
+  dblClickAt(mid.x, mid.y);
+  await sleep(60);
+
+  const input = dimEditorInput();
+  assert(input, 'double-clicking the line opened the floating inline editor (not a modal)');
+  assert(
+    !document.querySelector('.prompt-scrim'),
+    'the OLD blocking popup did not appear - this is the point of the redesign'
+  );
+  if (input) {
+    const editorBox = input.closest('.dim-editor').getBoundingClientRect();
+    const dEditor = Math.hypot(editorBox.left + editorBox.width / 2 - mid.x, editorBox.top - mid.y);
+    assert(
+      dEditor < 120,
+      `the editor is actually anchored near the dimension it edits, not a fixed screen position (${dEditor.toFixed(1)}px away)`
+    );
+    const prefilled = Number(input.value);
+    assert(
+      Math.abs(prefilled - 25) < 0.5,
+      `the editor is pre-filled with the LIVE measured length (got ${input.value}, expected ~25)`
+    );
+  }
+
+  typeAndCommitDimEditor('40');
+  await sleep(80);
+  await waitFor(() => {
+    const e = G.sketch.entities()[idx];
+    return e && Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1]) > 39.9;
+  }, 2000);
+  const after = G.sketch.entities()[idx];
+  const newLen = Math.hypot(after.b[0] - after.a[0], after.b[1] - after.a[1]);
+  assert(
+    Math.abs(newLen - 40) < 1e-3,
+    `typing 40 + Enter into the floating editor actually resized the line (got length ${newLen})`
+  );
+  assert(!dimEditorInput(), 'the floating editor closes itself after committing');
+
+  await G.cancelSketch();
+  await idle();
+}
+
+// =================================================================
+note('--- Ctrl-click two points in SELECT mode dimensions the distance, no tool switch needed ---');
+{
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  await G.beginSketch({ kind: 'origin', role: 'XY_Plane' });
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(60);
+
+  // two disjoint, non-axis-aligned lines, both well off the sketch origin -
+  // an endpoint sitting exactly on the origin, or a perfectly horizontal /
+  // vertical segment, auto-picks up its own Coincident-to-origin / Horizontal
+  // / Vertical constraint at draw time, which would consume the very point
+  // this test means to Ctrl-click (same lesson as the earlier button-first
+  // Coincident tests in this file)
+  pressKey('l');
+  await sleep(20);
+  let a0 = await G.sketchUVToScreen(6, 4);
+  let a1 = await G.sketchUVToScreen(16, 7);
+  clickAt(a0.x, a0.y);
+  await sleep(20);
+  clickAt(a1.x, a1.y);
+  await sleep(30);
+  pressKey('Escape');
+  await sleep(20);
+
+  pressKey('l');
+  await sleep(20);
+  let b0 = await G.sketchUVToScreen(34, 22);
+  let b1 = await G.sketchUVToScreen(49, 26);
+  clickAt(b0.x, b0.y);
+  await sleep(20);
+  clickAt(b1.x, b1.y);
+  await sleep(30);
+  pressKey('Escape');
+  await sleep(20);
+
+  const entsBefore = G.sketch.entities();
+  assert(entsBefore.length === 2, 'drew 2 disjoint lines (got ' + entsBefore.length + ')');
+  const consBefore = G.sketch.newConstraints().length;
+
+  // now, still in plain SELECT mode (no dimension-tool switch) - Ctrl-click
+  // line A's start point, then Ctrl-click line B's start point
+  const pAScreen = await G.sketchUVToScreen(6, 4);
+  const pBScreen = await G.sketchUVToScreen(34, 22);
+  assert(pAScreen && pBScreen, 'both endpoints project onto the screen');
+  const expectedDist = Math.hypot(34 - 6, 22 - 4);
+
+  clickAt(pAScreen.x, pAScreen.y, { ctrlKey: true });
+  await sleep(30);
+  assert(!dimEditorInput(), 'one Ctrl-click alone does not open the editor yet (needs a 2nd pick)');
+  clickAt(pBScreen.x, pBScreen.y, { ctrlKey: true });
+  await sleep(60);
+
+  const input = dimEditorInput();
+  assert(input, 'Ctrl-clicking a 2nd point (still in select mode) opened the floating distance editor');
+  if (input) {
+    const prefilled = Number(input.value);
+    assert(
+      Math.abs(prefilled - expectedDist) < 0.5,
+      `distance editor pre-filled with the live picked distance (got ${input.value}, expected ~${expectedDist.toFixed(2)})`
+    );
+  }
+
+  typeAndCommitDimEditor(String(expectedDist.toFixed(1)));
+  await sleep(80);
+  await idle();
+  const consAfter = G.sketch.newConstraints();
+  assert(
+    consAfter.length > consBefore,
+    'Ctrl-click-driven point-to-point distance actually recorded a new Distance constraint'
+  );
+  const distCon = consAfter.find((c) => c.type === 'Distance' && (c.refs || []).length >= 2);
+  assert(distCon, 'the recorded constraint is a real 2-point Distance, not something else: ' + JSON.stringify(consAfter));
 
   await G.cancelSketch();
   await idle();

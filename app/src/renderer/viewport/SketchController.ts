@@ -1167,6 +1167,46 @@ export class SketchController {
     return true
   }
 
+  /** World-space anchor for a floating inline dimension editor: where the
+   *  value label for this request currently sits (or will sit, for a brand
+   *  new distance pick that has not been drawn yet). Lets the app pin a real
+   *  HTML input directly over the dimension instead of a modal anywhere on
+   *  screen - "floating off of the sketch part it's defining", per the user's
+   *  own description of how other CAD programs do this. Returns null only if
+   *  there is nothing sane to anchor to (should not happen for a live request). */
+  dimRequestWorldPos(entityIndex: number | null, kind: 'linear' | 'radius' | 'distance'): [number, number, number] | null {
+    if (kind === 'distance') {
+      if (this.dimPicks.length < 2) return null
+      const [p0, p1] = this.dimPicks
+      if (!('pt' in p0)) return null
+      const a = this.ptUV(p0.pt)
+      const b = 'pt' in p1 ? this.ptUV(p1.pt) : a
+      const mu = (a[0] + b[0]) / 2
+      const mv = (a[1] + b[1]) / 2
+      const w = this.toWorld(mu, mv)
+      return [w.x, w.y, w.z]
+    }
+    if (entityIndex == null) return null
+    const existing = this.dimLabelUV.get(entityIndex)
+    if (existing) {
+      const w = this.toWorld(existing.uv[0], existing.uv[1])
+      return [w.x, w.y, w.z]
+    }
+    // not drawn yet (brand new dimension, label not placed until the next
+    // redrawDims pass) - fall back to the entity's own midpoint / centre
+    const e = this.entities[entityIndex]
+    if (!e) return null
+    if (e.type === 'circle' || e.type === 'arc') {
+      const w = this.toWorld(e.c[0] + e.r * 0.7, e.c[1] + e.r * 0.7)
+      return [w.x, w.y, w.z]
+    }
+    if (e.type === 'line') {
+      const w = this.toWorld((e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2)
+      return [w.x, w.y, w.z]
+    }
+    return null
+  }
+
   /** Nearest dimension value-label to a uv, within a screen-sized tolerance. */
   /** constraint index of the Distance / Radius dimension driving entity `owner` */
   private dimConstraintIndex(owner: number): number {
@@ -1265,6 +1305,45 @@ export class SketchController {
       if (this.selectedDim != null) {
         this.selectedDim = null
         this.dimV = -1
+      }
+
+      // ctrl/cmd-click (no shift - shift is the existing additive-select
+      // modifier): dimension between two picked entities/points, without
+      // switching to the dedicated Dimension tool first, same as ctrl-click
+      // dimensioning in other CAD programs. Reuses the exact dimPicks/
+      // fireDistanceDim path the Dimension tool itself uses - a plain point
+      // pick, or a point then a line for point-to-line, fires as soon as 2
+      // are collected; picking a lone entity with nothing already queued
+      // starts (or continues) the same queue instead of falling through to
+      // plain entity selection.
+      if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !this.pendingCon) {
+        const hp = this.pickPoint(uv)
+        if (hp) {
+          if (!this.dimPicks.some((p) => 'pt' in p && this.samePt(p.pt, hp))) {
+            this.dimPicks.push({ pt: hp })
+          }
+          if (this.dimPicks.length >= 2) this.fireDistanceDim()
+          this.redraw()
+          return
+        }
+        const dimIdx = this.pickEntity(uv)
+        if (dimIdx >= 0) {
+          const e = this.entities[dimIdx]
+          if (this.dimPicks.length === 1 && e.type === 'line') {
+            this.dimPicks.push({ ent: dimIdx })
+            this.fireDistanceDim()
+            this.redraw()
+            return
+          }
+          if (this.dimPicks.length === 0) {
+            this.dimPicks = []
+            this.onDimensionRequest?.(dimIdx, e.type === 'circle' || e.type === 'arc' ? 'radius' : 'linear')
+            return
+          }
+        }
+        this.dimPicks = []
+        this.redraw()
+        return
       }
 
       // a geometry POINT (line end, circle / arc centre) beats the curve under

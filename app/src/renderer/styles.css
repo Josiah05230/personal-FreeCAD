@@ -1603,6 +1603,83 @@ code {
   color: var(--accent-hi);
 }
 
+/* separate labeled selection boxes (Profile / Path / Axis...) - click a box
+ * to arm it for the next pick, its own 'x' clears just that box */
+.opdlg-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 12px 2px;
+}
+.opdlg-slot {
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  background: #00000020;
+}
+.opdlg-slot.armed {
+  border-color: var(--accent);
+}
+.opdlg-slot.filled:not(.armed) {
+  border-color: var(--line);
+}
+.opdlg-slot-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.opdlg-slot-label {
+  font-size: 11px;
+  font-weight: 600;
+}
+.opdlg-slot-status {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.opdlg-slot.filled .opdlg-slot-status {
+  color: var(--accent-hi);
+}
+.opdlg-slot-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px 6px;
+}
+.opdlg-slot-chip {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #ffffff14;
+  color: var(--text);
+}
+.opdlg-slot-clear {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 3px;
+}
+.opdlg-slot-clear:hover {
+  color: var(--text);
+}
+.opdlg-slot-hint {
+  padding: 0 8px 6px;
+  font-size: 9px;
+  color: var(--text-dim);
+}
+
 .opdlg-body {
   padding: 8px 12px;
   display: flex;
@@ -2303,6 +2380,33 @@ code {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;
+}
+
+/* ---- floating in-place dimension editor (no modal) ---- */
+.dim-editor {
+  position: fixed;
+  z-index: 40;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+}
+.dim-editor input {
+  width: 84px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  background: var(--chrome-2, #23262a);
+  color: var(--text);
+  font-size: 12px;
+  text-align: center;
+  box-shadow: 0 4px 16px #0008;
+}
+.dim-editor-hint {
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--text-dim);
+  text-align: center;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px #000c;
 }
 
 /* ---- data panel: resize handle + thumbnails ---- */

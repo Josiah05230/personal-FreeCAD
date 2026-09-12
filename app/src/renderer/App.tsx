@@ -35,6 +35,7 @@ import { AssemblyPanel } from './ui/AssemblyPanel'
 import { SketchRibbon } from './ui/SketchRibbon'
 import { MeasurePanel, SectionPanel, MassPropsPanel, type SectionState } from './ui/InspectPanels'
 import { PromptHost, promptText, promptForm } from './ui/PromptDialog'
+import { DimensionEditor, type DimensionEditorRequest } from './ui/DimensionEditor'
 import { ParametersPanel } from './ui/ParametersPanel'
 import { SettingsPanel } from './ui/SettingsPanel'
 import { MaterialsPanel } from './ui/MaterialsPanel'
@@ -283,6 +284,9 @@ export function App(): JSX.Element {
   }, [])
   const [planePickMode, setPlanePickMode] = useState(false)
   const [pickPlanes, setPickPlanes] = useState<PickPlane[]>([])
+
+  // floating in-place dimension editor - see onSketchDimensionRequest
+  const [dimEditor, setDimEditor] = useState<DimensionEditorRequest | null>(null)
 
   const [measureMode, setMeasureMode] = useState(false)
   // the timeline's chip selection, mirrored up so Mirror / Pattern (Type =
@@ -864,6 +868,13 @@ export function App(): JSX.Element {
   const [editInit, setEditInit] = useState<OpValues | null>(null)
   const [editLabel, setEditLabel] = useState<string | null>(null)
 
+  // OperationDialog's own role assignment (Profile / Path / Axis...) for the
+  // apply currently in flight - the authoritative source for which pick is
+  // which role on a spec.slots op (Sweep, Revolve), set right before the
+  // commit and read once by that op's own case in applyOpImpl. Not state -
+  // this only matters for the one apply it was set for.
+  const applySlotSelRef = useRef<Record<string, Selection[]> | null>(null)
+
   // signature of the inputs that decide the feature's shape topology (so a
   // number tweak keeps the fast path but a Join->Cut switch forces a rebuild)
   const previewSig = useCallback((kind: OpKind, v: OpValues): string => {
@@ -1196,23 +1207,39 @@ export function App(): JSX.Element {
             break
           }
           case 'revolve': {
+            // the dialog's own Profile / Axis boxes (see OperationDialog's
+            // spec.slots) are authoritative when present - a reselect that
+            // landed a pick at the END of the flat `selection` array (e.g.
+            // "go back and change just the axis") must not be misread as
+            // the PROFILE just because sketchIds[0]/faces[0] happens to grab
+            // whatever is first/last in that flat list instead of whichever
+            // box it actually belongs to.
+            const slotSel = applySlotSelRef.current
+            const profileItems = slotSel?.profile ?? selection.filter((s) => s.kind === 'sketch' || s.kind === 'face')
+            const axisItems = slotSel?.axis ?? selection
+            const profileSketchId = profileItems.find((s) => s.kind === 'sketch')?.sketchId
+            const profileFaceSel = profileItems.find((s) => s.kind === 'face') as
+              | Extract<Selection, { kind: 'face' }>
+              | undefined
             // axis: the dialog dropdown (Sketch vertical/horizontal, X/Y/Z, or a
             // selected edge / datum). A face profile always needs an explicit one.
             let { axisRef, axisCode } = revolveAxisRef(
               String(v.axis ?? ''),
-              selection,
-              sketchIds[0]
+              axisItems,
+              profileSketchId
             )
             // no sketch selected: revolve a flat model face (needs an axis pick)
             const faceProfile =
-              !sketchIds[0] && faces[0] ? { bodyId: faces[0].bodyId, sub: faces[0].sub } : null
-            if (!sketchIds[0] && !faceProfile)
+              !profileSketchId && profileFaceSel
+                ? { bodyId: profileFaceSel.bodyId, sub: profileFaceSel.sub }
+                : null
+            if (!profileSketchId && !faceProfile)
               throw new Error('Select a sketch, or a flat face of the model plus an axis, to revolve.')
             // a face has no vertical/horizontal of its own - fall back to any
             // edge / datum in the selection even if the dropdown was left on a
             // sketch option
             if (faceProfile && !axisRef) {
-              axisRef = revolveAxisRef('Selected edge / datum', selection, sketchIds[0]).axisRef
+              axisRef = revolveAxisRef('Selected edge / datum', axisItems, profileSketchId).axisRef
             }
             if (faceProfile && !axisRef)
               throw new Error(
@@ -1227,7 +1254,7 @@ export function App(): JSX.Element {
             const revOp = revOpMap[String(v.operation ?? 'Join')] ?? 'join'
             const revAngle = v.full ? 360 : Number(v.angle)
             await api.revolve(
-              sketchIds[0] ?? null,
+              profileSketchId ?? null,
               revAngle,
               axisCode,
               revOp === 'cut',
@@ -1249,13 +1276,25 @@ export function App(): JSX.Element {
             break
           }
           case 'sweep': {
-            const sk2 = sketchIds
+            // the dialog's own Profile / Path boxes are authoritative when
+            // present - same reasoning as revolve above. Falls back to the
+            // old flat-list inference only if this op was applied some other
+            // way (e.g. a test hook calling applyOp directly, bypassing the
+            // dialog and its slots entirely).
+            const slotSel = applySlotSelRef.current
+            const profileSketchId =
+              (slotSel?.profile ?? sketchIds.slice(0, 1).map((id) => ({ kind: 'sketch' as const, sketchId: id })))
+                .find((s) => s.kind === 'sketch')?.sketchId
+            const pathItems = slotSel?.path ?? selection
+            const pathSketchId = pathItems.find(
+              (s) => s.kind === 'sketch' && s.sketchId !== profileSketchId
+            ) as Extract<Selection, { kind: 'sketch' }> | undefined
             // a path can be MULTIPLE connected edges (around a bend/corner),
             // not just one - ctrl-click each edge along the chain. They must
             // all be on the same body (a path spanning two different bodies
             // has no meaning), so only take edges past the first from a
             // different body as a mis-click rather than silently mixing them.
-            const pathEdges = selection.filter((s) => s.kind === 'edge') as Array<{
+            const pathEdges = pathItems.filter((s) => s.kind === 'edge') as Array<{
               bodyId: string
               sub: string
             }>
@@ -1275,11 +1314,23 @@ export function App(): JSX.Element {
               | 'Transformed'
               | 'Right corner'
               | 'Round corner'
-            if (sk2.length === 2) {
-              await api.sweep(sk2[0], sk2[1], sweepOp === 'cut', null, sweepOp, orientation, transition)
-            } else if (sk2.length === 1 && pathBodyId && pathSubs.length) {
+            if (!profileSketchId) {
+              throw new Error(
+                'Select a profile sketch, then click the path: another sketch, or one or more connected body edges.'
+              )
+            } else if (pathSketchId) {
               await api.sweep(
-                sk2[0],
+                profileSketchId,
+                pathSketchId.sketchId,
+                sweepOp === 'cut',
+                null,
+                sweepOp,
+                orientation,
+                transition
+              )
+            } else if (pathBodyId && pathSubs.length) {
+              await api.sweep(
+                profileSketchId,
                 null,
                 sweepOp === 'cut',
                 { kind: 'edge', bodyId: pathBodyId, sub: pathSubs },
@@ -1725,8 +1776,14 @@ export function App(): JSX.Element {
   // Finish click (or a click landing while one is mid-flight) waits its turn
   // instead of racing, and a failed op is reported + resynced, never half-left.
   const applyOp = useCallback(
-    (kind: OpKind, v: OpValues, exprs: Record<string, string> = {}) => {
+    (
+      kind: OpKind,
+      v: OpValues,
+      exprs: Record<string, string> = {},
+      slotSel?: Record<string, Selection[]>
+    ) => {
       const lp = livePreviewRef.current
+      applySlotSelRef.current = slotSel ?? null
       trace('ACTION applyOp', {
         kind,
         v,
@@ -3557,26 +3614,53 @@ export function App(): JSX.Element {
     [selection]
   )
 
+  // shared "resolve a typed value, which may be an expression" step used by
+  // both branches below
+  const resolveDimValue = useCallback(async (txt: string): Promise<number | null> => {
+    const value = Number(txt)
+    if (!isNaN(value)) return value
+    try {
+      return (await api.exprEval(txt, 'length')).value
+    } catch (e) {
+      flashSketchNotice((e as Error).message)
+      return null
+    }
+  }, [flashSketchNotice])
+
   const onSketchDimensionRequest = useCallback(
     async (entityIndex: number | null, kind: 'linear' | 'radius' | 'distance') => {
+      const pos = vpApi.current?.sketchDimRequestWorldPos?.(entityIndex, kind) ?? null
+      const screen = pos ? vpApi.current?.projectToScreen?.(pos) ?? null : null
+      // fall back to the old blocking prompt if there is nowhere sane to
+      // float the editor (camera looking away from the sketch plane, etc.) -
+      // should not happen in practice, but never silently drop the pick
+      const useFloating = !!screen
+
       if (kind === 'distance') {
         const cur = vpApi.current?.sketchDistancePickValue?.() ?? null
-        const txt = await promptText(
-          'Distance (number or expression)',
-          cur != null ? String(Math.round(cur * 1000) / 1000) : ''
-        )
-        if (!txt) return
-        let value = Number(txt)
-        if (isNaN(value)) {
-          try {
-            value = (await api.exprEval(txt, 'length')).value
-          } catch (e) {
-            window.alert((e as Error).message)
-            return
-          }
+        const initial = cur != null ? String(Math.round(cur * 1000) / 1000) : ''
+        const commit = async (txt: string): Promise<void> => {
+          const value = await resolveDimValue(txt)
+          if (value == null) return
+          vpApi.current?.setSketchDistanceDimension(value)
+          onSketchChange()
         }
-        vpApi.current?.setSketchDistanceDimension(value)
-        onSketchChange()
+        if (useFloating) {
+          setDimEditor({
+            x: screen!.x,
+            y: screen!.y,
+            value: initial,
+            onCommit: (txt) => {
+              setDimEditor(null)
+              void commit(txt)
+            },
+            onCancel: () => setDimEditor(null)
+          })
+          return
+        }
+        const txt = await promptText('Distance (number or expression)', initial)
+        if (!txt) return
+        await commit(txt)
         return
       }
       // stop an over-dimensioning attempt before the user even types a number
@@ -3588,35 +3672,55 @@ export function App(): JSX.Element {
       }
       // circle/arc: let the user type "d 20" / "20 dia" / "Ø20" for a diameter,
       // or a plain number for a radius. "r 20" forces radius.
-      let dimAs: 'radius' | 'diameter' | undefined
+      const parseDimAs = (raw: string): { txt: string; dimAs?: 'radius' | 'diameter' } => {
+        if (kind !== 'radius') return { txt: raw }
+        const m = raw.trim().match(/^(?:d|dia|diam|diameter|Ø|⌀)\s*(.+)$|^(.+?)\s*(?:d|dia|diameter)$/i)
+        if (m) return { txt: (m[1] ?? m[2]).trim(), dimAs: 'diameter' }
+        if (/^r\s+/i.test(raw.trim())) return { txt: raw.trim().replace(/^r\s+/i, ''), dimAs: 'radius' }
+        return { txt: raw }
+      }
+      const commit = async (raw: string): Promise<void> => {
+        const { txt, dimAs } = parseDimAs(raw)
+        const value = await resolveDimValue(txt)
+        if (value == null) return
+        vpApi.current?.setSketchDimension(entityIndex as number, value, dimAs)
+        onSketchChange()
+      }
+      // pre-fill with the LIVE measured value, same as the distance branch -
+      // otherwise the floating editor opens blank, defeating the whole point
+      // of showing it right on top of the dimension it edits
+      const liveEnt = entityIndex != null ? vpApi.current?.getSketchEntities()?.[entityIndex] : null
+      let liveValue = ''
+      if (liveEnt) {
+        if (liveEnt.type === 'circle' || liveEnt.type === 'arc') {
+          liveValue = String(Math.round(liveEnt.r * 1000) / 1000)
+        } else if (liveEnt.type === 'line') {
+          const dx = liveEnt.b[0] - liveEnt.a[0]
+          const dy = liveEnt.b[1] - liveEnt.a[1]
+          liveValue = String(Math.round(Math.hypot(dx, dy) * 1000) / 1000)
+        }
+      }
       const label = kind === 'radius' ? 'Radius / Diameter' : 'Length'
-      const hint =
-        kind === 'radius' ? ' (number = radius; "d20" or "Ø20" = diameter)' : ''
-      let txt = await promptText(`${label}${hint} (number or expression)`, '')
+      const hint = kind === 'radius' ? 'number = radius, "d20"/"Ø20" = diameter' : undefined
+      if (useFloating) {
+        setDimEditor({
+          x: screen!.x,
+          y: screen!.y,
+          value: liveValue,
+          hint,
+          onCommit: (txt) => {
+            setDimEditor(null)
+            void commit(txt)
+          },
+          onCancel: () => setDimEditor(null)
+        })
+        return
+      }
+      const txt = await promptText(`${label}${hint ? ' (' + hint + ')' : ''} (number or expression)`, liveValue)
       if (!txt) return
-      if (kind === 'radius') {
-        const m = txt.trim().match(/^(?:d|dia|diam|diameter|Ø|⌀)\s*(.+)$|^(.+?)\s*(?:d|dia|diameter)$/i)
-        if (m) {
-          dimAs = 'diameter'
-          txt = (m[1] ?? m[2]).trim()
-        } else if (/^r\s+/i.test(txt.trim())) {
-          dimAs = 'radius'
-          txt = txt.trim().replace(/^r\s+/i, '')
-        }
-      }
-      let value = Number(txt)
-      if (isNaN(value)) {
-        try {
-          value = (await api.exprEval(txt, 'length')).value
-        } catch (e) {
-          window.alert((e as Error).message)
-          return
-        }
-      }
-      vpApi.current?.setSketchDimension(entityIndex as number, value, dimAs)
-      onSketchChange()
+      await commit(txt)
     },
-    [onSketchChange, flashSketchNotice]
+    [onSketchChange, flashSketchNotice, resolveDimValue]
   )
 
   return (
@@ -3909,6 +4013,7 @@ export function App(): JSX.Element {
                     <OperationDialog
                       kind={op}
                       selection={selection}
+                      onSelectionChange={setSelection}
                       onApply={applyOp}
                       onCancel={() => openOp(null)}
                       onPreview={onDatumPlanePreview}
@@ -4059,6 +4164,7 @@ export function App(): JSX.Element {
         onClose={() => setPaletteOpen(false)}
       />
       <PromptHost />
+      <DimensionEditor req={dimEditor} />
     </div>
   )
 }

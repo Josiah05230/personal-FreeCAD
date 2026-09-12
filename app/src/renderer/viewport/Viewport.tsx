@@ -425,6 +425,16 @@ export function Viewport({
           stateRef.current?.sketch?.setDistanceDimension(v) ?? false,
         sketchDistancePickValue: () =>
           stateRef.current?.sketch?.distancePickValue() ?? null,
+        sketchDimRequestWorldPos: (entityIndex, kind) =>
+          stateRef.current?.sketch?.dimRequestWorldPos(entityIndex, kind) ?? null,
+        projectToScreen: (world) => {
+          const s = stateRef.current
+          if (!s) return null
+          const p = new THREE.Vector3(...world).project(s.controls.camera)
+          if (p.z > 1) return null // behind the camera
+          const r = host.getBoundingClientRect()
+          return { x: r.left + ((p.x + 1) / 2) * r.width, y: r.top + ((1 - p.y) / 2) * r.height }
+        },
         sketchSelectedCount: () => stateRef.current?.sketch?.selectedCount ?? 0,
         setSketchConstruction: (on) => stateRef.current?.sketch?.setConstruction(on),
         toggleSketchConstruction: () =>
