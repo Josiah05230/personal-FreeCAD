@@ -99,6 +99,9 @@ export interface ViewportApi {
   testProjectToScreen: (world: [number, number, number]) => { x: number; y: number } | null
   /** sketch-plane uv -> world xyz, while a sketch is open (test hook) */
   testSketchUVToWorld: (u: number, v: number) => [number, number, number] | null
+  /** world-space scale.x of the first constraint-symbol sprite, while a
+   *  sketch is open (test hook - verifies rescaleScreenSpace tracks zoom) */
+  testSymbolWorldScale: () => number | null
   /** offset the camera + pivot by a world-space delta (test hook only - a
    *  reliable way to perturb the camera for a "does Fit/Home recover?" test
    *  without depending on synthetic drag-event edge cases) */

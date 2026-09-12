@@ -2188,7 +2188,28 @@ export function App(): JSX.Element {
   const deleteFeature = useCallback(
     (id: string) => {
       trace('ACTION deleteFeature', { id, queueBusy: cmdRef.current.busy })
-      if (!window.confirm('Delete this feature?')) return Promise.resolve()
+      // deleting the sketch you are CURRENTLY editing used to leave the
+      // editor open on a now-dead object: the local live-preview solver needs
+      // no server round-trip to keep drawing, so nothing failed until Finish
+      // was clicked minutes later ("no object 'Sketch001'"), silently losing
+      // every bit of work drawn in between (user report, 2026-09-11 - traced
+      // from a real debug log showing exactly that sequence: reopen, delete
+      // the same id mid-edit, ~60s of drawing, then a failed Finish). Warn
+      // clearly and back out of the sketch editor as PART of the delete, so
+      // the deletion still happens but you are never left drawing into thin
+      // air.
+      const deletingOwnSketch = sketchSession?.sketchId === id
+      const msg = deletingOwnSketch
+        ? 'You are currently editing this sketch. Deleting it will discard your unsaved changes and close the sketch editor. Delete anyway?'
+        : 'Delete this feature?'
+      if (!window.confirm(msg)) return Promise.resolve()
+      if (deletingOwnSketch) {
+        setSketchSession(null)
+        setSketchInitial([])
+        setSketchInitialCons([])
+        setSketchInitialProjected([])
+        sketchOnRef.current = null
+      }
       // drop it from EVERY view state right away - tree, viewport meshes /
       // sketches / datums, selection - so it disappears the instant you click.
       // The engine rebuild runs behind the spinner and reconciles when it lands.
@@ -2205,7 +2226,7 @@ export function App(): JSX.Element {
         applySceneTree(scene, tree)
       })
     },
-    [markDirty, applySceneTree]
+    [markDirty, applySceneTree, sketchSession]
   )
 
   const suppressFeature = useCallback(
@@ -2961,6 +2982,7 @@ export function App(): JSX.Element {
         return w ? vpApi.current?.testProjectToScreen(w) ?? null : null
       },
       cameraDebug: () => vpApi.current?.testCameraDebug() ?? null,
+      symbolWorldScale: () => vpApi.current?.testSymbolWorldScale() ?? null,
       setView: (dir: [number, number, number]) => vpApi.current?.setView(dir),
       nudgeCamera: (delta: [number, number, number]) => vpApi.current?.testNudgeCamera(delta),
       setProjection: (p: 'orthographic' | 'perspective') => {
@@ -3934,6 +3956,7 @@ export function App(): JSX.Element {
                     })()}
                   <Timeline
                     bodies={bodies}
+                    sketchActive={!!sketchSession}
                     handlers={{
                       onRollTo: rollTo,
                       onEdit: (id) => onEditRow(id),

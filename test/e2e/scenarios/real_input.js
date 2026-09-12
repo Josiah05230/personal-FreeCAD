@@ -658,4 +658,63 @@ note('--- centre-point arc: real drag of an endpoint changes the sweep, not the 
   await idle();
 }
 
+note('--- constraint symbols stay a constant on-screen size across a real zoom ---');
+{
+  await G.cancelSketch().catch(() => {});
+  await idle();
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  await G.beginSketch({ kind: 'origin', role: 'XY_Plane' });
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(80);
+  await idle();
+  assert(G.getState().sketchMode, 'entered a fresh sketch');
+
+  // a horizontal line gets an auto Horizontal constraint -> a symbol sprite
+  const li = G.sketch.addEntity({ type: 'line', a: [0, 0], b: [30, 0.2] });
+  await sleep(80);
+  const cons = G.sketch.newConstraints();
+  assert(
+    cons.some((c) => c.type === 'Horizontal' && (c.refs[0].new === li || c.refs[0].geo === li)),
+    'the line got an auto Horizontal constraint (so a symbol sprite exists to check)'
+  );
+
+  const before = G.symbolWorldScale();
+  note('symbol world-space scale before zoom: ' + before);
+  assert(typeof before === 'number' && before > 0, 'a constraint symbol sprite exists with a real world-space scale');
+
+  note('camera before zoom: ' + JSON.stringify(await G.cameraDebug()));
+  // a real wheel event at the viewport canvas - the actual zoom input path,
+  // not a direct camera-state poke
+  const el = viewportEl();
+  const r = el.getBoundingClientRect();
+  const cx = r.left + r.width / 2;
+  const cy = r.top + r.height / 2;
+  // one real scroll-wheel notch is ~100-120 deltaY - a few of those, not one
+  // huge synthetic jump (which can send the "zoom to cursor" ray-plane
+  // intersection somewhere degenerate at certain camera angles)
+  for (let i = 0; i < 5; i++) {
+    el.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, clientX: cx, clientY: cy, bubbles: true, cancelable: true }));
+  }
+  // rescaleScreenSpace() runs every rAF frame, not synchronously on the wheel
+  // event - poll instead of one fixed sleep, which flaked under load (a
+  // busy machine running several scenarios back to back can go well past
+  // one single guessed delay before the next frame actually lands)
+  await waitFor(() => G.symbolWorldScale() !== before, 2000);
+  note('camera after zoom: ' + JSON.stringify(await G.cameraDebug()));
+
+  const after = G.symbolWorldScale();
+  note('symbol world-space scale after zoom: ' + after);
+  assert(typeof after === 'number' && after > 0, 'the symbol sprite still exists after zooming');
+  const changedEnough = Math.abs(after - before) / before > 0.05;
+  assert(
+    changedEnough,
+    `THE BUG: a constraint symbol's world-space scale must change with zoom (fixed PIXEL size, not fixed world size) - before=${before}, after=${after}`
+  );
+
+  await G.cancelSketch();
+  await idle();
+}
+
 note('--- done ---');

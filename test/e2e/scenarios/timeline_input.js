@@ -235,4 +235,75 @@ await idle();
   assert(!lastChip.className.includes('rolled'), 'the trailing sketch chip is not greyed out as "rolled" - it is the current end of history');
 }
 
+// --------------------------------------------------------------------------
+// Delete/Backspace pressed WHILE editing a sketch must never delete the
+// sketch feature itself, even if its chip was left selected in the Timeline
+// from the click that reopened it (real user report + debug log,
+// 2026-09-11): the Timeline's own window-level Delete/Backspace handler used
+// to fire regardless of sketch-edit state, acting on whatever chip selection
+// happened to still be sitting there - deleting the very sketch being
+// edited, invisibly, mid-session. The editor kept accepting new geometry
+// against a now-dead object with nothing wrong visible until Finish failed
+// minutes later ("no object 'SketchNNN'"), silently losing all of it.
+note('--- Delete/Backspace inside a sketch editor must not delete the sketch feature via a stale Timeline chip selection ---');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+{
+  const s1 = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: s1.sketchId,
+    elements: [{ type: 'line', a: [0, 0], b: [10, 0] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+
+  // double-click the sketch's OWN chip - the real "Edit Sketch" entry point -
+  // which leaves that chip selected in the Timeline's own state, exactly like
+  // the click that reopens a sketch in the real report
+  const tt1 = await rpc('tree.get');
+  const sketchChipIdx1 = tt1.bodies[0].features.findIndex((f) => f.id === s1.sketchId);
+  const chips1 = timelineChips();
+  const sketchChip1 = chips1[sketchChipIdx1];
+  assert(sketchChip1, 'found the sketch\'s own chip element');
+  const r1 = sketchChip1.getBoundingClientRect();
+  const cx1 = r1.left + r1.width / 2;
+  const cy1 = r1.top + r1.height / 2;
+  fireOn(sketchChip1, 'pointerdown', cx1, cy1, { buttons: 1 });
+  fireOn(sketchChip1, 'pointerup', cx1, cy1, { buttons: 0 });
+  // a real single click first - this is clickChip's own path, the thing that
+  // actually sets the Timeline's chip-selection state (selected). Firing
+  // straight to dblclick, as a scripted double-click naturally would, skips
+  // the intermediate click a real mouse always generates too - and without
+  // it there is no stale selection for the bug to even have a chance to act
+  // on, so the regression this test exists for cannot reproduce.
+  sketchChip1.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: cx1, clientY: cy1 }));
+  await sleep(20);
+  sketchChip1.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: cx1, clientY: cy1 }));
+  await sleep(150);
+  await idle();
+  assert(G.getState().sketchMode, 'double-clicking the chip actually entered sketch-edit mode (real UI path)');
+  const chipClassNow = document.querySelector('.tl-chip')?.className ?? '(no chips rendered - Timeline may be hidden while sketching)';
+  note('sketch chip className right before pressing Delete: ' + chipClassNow);
+
+  // now, while genuinely inside the editor, press Delete on the window - this
+  // must be interpreted as "delete the selected sketch geometry" (none
+  // selected here, so it is simply a no-op), NEVER as "delete the sketch
+  // feature via the Timeline's stale chip selection"
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
+  await sleep(100);
+  await idle();
+
+  assert(G.getState().sketchMode, 'still inside the sketch editor after pressing Delete (was not kicked out / the sketch was not deleted out from under it)');
+
+  await G.finishSketch();
+  await idle();
+  await sleep(150);
+
+  const tt2 = await rpc('tree.get');
+  const stillThere = tt2.bodies[0].features.some((f) => f.id === s1.sketchId);
+  assert(stillThere, `THE BUG: the sketch feature must survive a Delete keypress made while editing it (features: ${JSON.stringify(tt2.bodies[0].features.map((f) => f.id))})`);
+}
+
 note('timeline_input scenario complete');

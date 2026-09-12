@@ -37,10 +37,16 @@ const CHIP_W = 54 // keep in sync with .tl-chip min-width + gap
  */
 export function Timeline({
   bodies,
-  handlers
+  handlers,
+  sketchActive = false
 }: {
   bodies: BodyTree[]
   handlers: TimelineHandlers
+  /** true while a sketch is being actively edited - Delete/Backspace in that
+   *  context belongs entirely to the sketch editor (deleting selected
+   *  points/entities), never to a stale chip selection left over here from
+   *  before the sketch was opened. See the keydown effect below. */
+  sketchActive?: boolean
 }): JSX.Element {
   const body = bodies[0]
   const feats = body?.features ?? []
@@ -69,6 +75,15 @@ export function Timeline({
   const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const anchorRef = useRef<number | null>(null)
+
+  // belt-and-suspenders: drop any chip selection the moment a sketch edit
+  // starts (the click that reopened the sketch is a common way one gets
+  // left behind), so nothing here can act on it even if some other path
+  // reaches this component's key handler in the future.
+  useEffect(() => {
+    if (sketchActive) setSelected(new Set())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sketchActive])
   const trackRef = useRef<HTMLDivElement>(null)
   const playTimer = useRef<number | null>(null)
 
@@ -128,9 +143,22 @@ export function Timeline({
     anchorRef.current = null
   }
 
-  // Delete / Backspace removes the selected chips; Escape clears the selection
+  // Delete / Backspace removes the selected chips; Escape clears the selection.
+  // While a sketch is being actively edited, this must stay completely quiet:
+  // a chip left selected from BEFORE the sketch was opened (e.g. the click
+  // that reopened it) sits here invisibly the whole time you are inside the
+  // editor, and Delete/Backspace pressed there is meant for the sketch's OWN
+  // selected points/entities - not a stale feature-tree selection. Without
+  // this guard, that keypress ALSO deleted the sketch feature itself, right
+  // out from under the edit session in progress: the editor kept accepting
+  // new geometry against a now-dead object with nothing wrong visible until
+  // Finish failed minutes later ("no object 'Sketch001'"), silently losing
+  // everything drawn in between (user report, 2026-09-11, traced from a real
+  // debug log - and the user correctly pointed out they never touched the
+  // feature tree, which is what pinned this down: the delete fired from
+  // inside the sketch, not from a deliberate tree click).
   useEffect(() => {
-    if (selected.size === 0) return
+    if (selected.size === 0 || sketchActive) return
     const onKey = (e: KeyboardEvent): void => {
       const t = e.target as HTMLElement | null
       if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return
@@ -147,7 +175,7 @@ export function Timeline({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, featIds])
+  }, [selected, featIds, sketchActive])
 
   useEffect(() => {
     if (!playing) return

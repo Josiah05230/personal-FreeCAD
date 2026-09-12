@@ -453,6 +453,7 @@ export function Viewport({
           return { x: r.left + ((p.x + 1) / 2) * r.width, y: r.top + ((1 - p.y) / 2) * r.height }
         },
         testSketchUVToWorld: (u, v) => stateRef.current?.sketch?.uvToWorld(u, v) ?? null,
+        testSymbolWorldScale: () => stateRef.current?.sketch?.testSymbolWorldScale() ?? null,
         testNudgeCamera: (delta) => {
           const s = stateRef.current
           if (!s) return
@@ -918,6 +919,12 @@ export function Viewport({
       prev = now
       controls.update()
       cube.update(dt)
+      // constraint symbols are screen-space sized (a fixed pixel size, not a
+      // fixed world size) but only get REBUILT on a geometry change - a bare
+      // zoom never touches geometry, so without this they stayed frozen at
+      // whatever size they were last built at instead of tracking the
+      // current zoom (user report, 2026-09-11)
+      stateRef.current?.sketch?.rescaleScreenSpace()
       renderer.render(scene, controls.camera)
     }
     loop()

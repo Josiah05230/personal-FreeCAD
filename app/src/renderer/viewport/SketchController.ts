@@ -3228,7 +3228,16 @@ export class SketchController {
     const h = this.mmForPx(px)
     s.scale.set(h, h, 1)
     s.renderOrder = 44
-    s.userData = { symKey: key }
+    // targetPx remembered so rescaleScreenSpace() can recompute the correct
+    // world-space size from the CURRENT camera every frame - the sprite is
+    // built once per geomV change (rebuildSyms bails out when nothing
+    // changed), but zooming touches only the camera, never geomV, so without
+    // a live rescale every frame these stayed stuck at whatever size they
+    // were when last built - shrinking/growing on screen as you zoomed
+    // instead of staying a constant, readable pixel size (user report,
+    // 2026-09-11: "the constraint symbols don't seem to dynamically change
+    // size properly").
+    s.userData = { symKey: key, targetPx: px }
     return s
   }
 
@@ -3344,6 +3353,31 @@ export class SketchController {
       const hot = this.hoverSymKey != null && sp.userData.symKey === this.hoverSymKey
       sp.material.color.setHex(hot ? SketchController.SYM_HOT : SketchController.SYM_BASE)
     }
+  }
+
+  /** Re-scale constraint-symbol sprites to their intended on-screen pixel
+   *  size for the CURRENT camera. rebuildSyms() only runs on a geometry
+   *  change (geomV) and skips otherwise, so a zoom alone (which touches only
+   *  the camera, not geomV) left every symbol frozen at whatever world-space
+   *  size it was built at - shrinking or growing on screen as you zoomed
+   *  instead of staying constant. Call this every frame while a sketch is
+   *  active; it is cheap (a scale.set per sprite, no texture/geometry work). */
+  rescaleScreenSpace(): void {
+    if (!this.symGroup.children.length) return
+    for (const c of this.symGroup.children) {
+      const px = (c.userData as { targetPx?: number }).targetPx
+      if (px == null) continue
+      const h = this.mmForPx(px)
+      c.scale.set(h, h, 1)
+    }
+  }
+
+  /** World-space scale.x of the first constraint symbol sprite (test hook,
+   *  for verifying rescaleScreenSpace tracks zoom - a fixed pixel size means
+   *  this value must change proportionally to pxPerMm as the camera zooms). */
+  testSymbolWorldScale(): number | null {
+    const c = this.symGroup.children[0]
+    return c ? c.scale.x : null
   }
 
   private pickSym(ev: { clientX: number; clientY: number }): string | null {
