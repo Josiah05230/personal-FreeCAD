@@ -495,6 +495,49 @@ G.sketch.deleteSelection();
 await sleep(80);
 assert(G.sketch.entities().length === before - 1, 'deleting a session line removes it');
 
+// Ctrl+Z INSIDE the sketch editor, as a real window keydown (not the semantic
+// bridge) - the exact path the user's own keypress takes. User report
+// (2026-09-12): "ctrl+z while editing a sketch should undo whatever action I
+// just did. Always. In any context." - reproduces via a genuine
+// KeyboardEvent dispatched at window, same target both the App-level global
+// handler and SketchController's own handler listen on.
+note('--- Ctrl+Z inside the sketch editor undoes the last local edit (real keydown) ---');
+await freshSketch();
+{
+  const uz = G.sketch.addEntity({ type: 'line', a: [0, 0], b: [50, 0] });
+  await sleep(40);
+  const countAfterDraw = G.sketch.entities().length;
+  assert(countAfterDraw >= 1, 'a line exists after drawing it');
+  window.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true })
+  );
+  await sleep(120);
+  const countAfterUndo = G.sketch.entities().length;
+  assert(
+    countAfterUndo === countAfterDraw - 1,
+    `Ctrl+Z undid the drawn line (${countAfterDraw} -> ${countAfterUndo}, want ${countAfterDraw - 1})`
+  );
+  // still inside the sketch - undo must not have kicked out to the feature tree
+  assert(G.getState().sketchMode, 'Ctrl+Z kept the sketch editor open (did not fall through to the app-level undo)');
+
+  // and after a DELETE, the same real Ctrl+Z should bring the deleted entity back
+  const uz2 = G.sketch.addEntity({ type: 'line', a: [0, 10], b: [50, 10] });
+  await sleep(40);
+  const countBeforeDelete = G.sketch.entities().length;
+  G.sketch.select([uz2]);
+  G.sketch.deleteSelection();
+  await sleep(80);
+  assert(G.sketch.entities().length === countBeforeDelete - 1, 'the second line was deleted');
+  window.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true })
+  );
+  await sleep(120);
+  assert(
+    G.sketch.entities().length === countBeforeDelete,
+    `Ctrl+Z restored the deleted line (want ${countBeforeDelete}, got ${G.sketch.entities().length})`
+  );
+}
+
 // deleting a REOPENED (base) line -> queued for removedElements, gone after Finish
 note('--- deleting reopened geometry, round-tripped on Finish ---');
 await freshSketch();
@@ -520,6 +563,40 @@ G.sketch.select([1]); // delete the 2nd reopened line
 G.sketch.deleteSelection();
 await sleep(60);
 assert(G.sketch.removedEntities().includes(1), 'the reopened line is queued for removal (removedElements)');
+
+// Ctrl+Z must undo the delete of REOPENED (base) geometry just as completely
+// as it does freshly-drawn geometry - a real user report (2026-09-12) found
+// that deleting base geometry, then Ctrl+Z, left it still hidden and still
+// queued for removal on Finish even though `entities`/`constraints` looked
+// reverted: the reopen-era bookkeeping (removedElements / deletedBaseSet)
+// was never part of the undo snapshot.
+window.dispatchEvent(
+  new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true })
+);
+await sleep(120);
+assert(
+  !G.sketch.removedEntities().includes(1),
+  'Ctrl+Z un-queues the reopened line for removal (' + JSON.stringify(G.sketch.removedEntities()) + ')'
+);
+assert(G.sketch.entities().length === 4, 'Ctrl+Z brings the reopened line back into the visible entity list (4)');
+// and it must actually survive Finish now, not just look present in memory
+await G.finishSketch();
+await idle();
+await sleep(250);
+const skAfterUndo = await rpc('sketch.reopen', { sketchId: skId });
+assert(
+  skAfterUndo.entities.length === 4,
+  'the real sketch kept all 4 lines after Ctrl+Z undid the delete, then Finish (' + skAfterUndo.entities.length + ')'
+);
+
+// redo the same delete-and-finish path for real (without the undo) to keep
+// the original "deleting reopened geometry" assertion below meaningful
+await G.editSketch(skId);
+await waitFor(() => G.getState().sketchMode, 4000);
+await sleep(120);
+G.sketch.select([1]);
+G.sketch.deleteSelection();
+await sleep(60);
 await G.finishSketch();
 await idle();
 await sleep(250);

@@ -597,11 +597,32 @@ export class SketchController {
   }
 
   /** Full pre-action snapshot, so one Ctrl+Z reverts one user action (a
-   *  rectangle is 4 lines + its constraints, but still one undo step). */
-  private undoStack: Array<{ ents: SketchEntity[]; cons: RecordedConstraint[] }> = []
+   *  rectangle is 4 lines + its constraints, but still one undo step). Also
+   *  carries the reopen-era bookkeeping (removedBaseEntities/Constraints,
+   *  deletedBaseSet, convertedBase) - undo used to restore `entities` /
+   *  `constraints` only, so deleting or construction-toggling REOPENED
+   *  geometry (not freshly drawn this session) looked undone in the data but
+   *  stayed hidden/still-queued-for-removal on Finish - Ctrl+Z silently did
+   *  nothing visible for that case (user report, 2026-09-12: "ctrl+z ... in
+   *  ANY feature. Always."). */
+  private undoStack: Array<{
+    ents: SketchEntity[]
+    cons: RecordedConstraint[]
+    removedBaseEntities: number[]
+    removedBaseConstraints: RecordedConstraint[]
+    deletedBaseSet: Set<number>
+    convertedBase: Map<number, boolean>
+  }> = []
 
   private dragMoved = false
-  private preDragSnap: { ents: SketchEntity[]; cons: RecordedConstraint[] } | null = null
+  private preDragSnap: {
+    ents: SketchEntity[]
+    cons: RecordedConstraint[]
+    removedBaseEntities: number[]
+    removedBaseConstraints: RecordedConstraint[]
+    deletedBaseSet: Set<number>
+    convertedBase: Map<number, boolean>
+  } | null = null
   private noticeAt = 0
 
   /** Throttled one-liner to the hint bar, so a blocked drag does not spam. */
@@ -697,8 +718,27 @@ export class SketchController {
     return this.constraints.map((c) => ({ ...c, refs: c.refs.map((r) => ({ ...r })) }))
   }
 
+  /** current reopen-era bookkeeping, cloned - the part of a snapshot that
+   *  isn't `entities`/`constraints` but must still round-trip through undo */
+  private cloneBaseTracking(): {
+    removedBaseEntities: number[]
+    removedBaseConstraints: RecordedConstraint[]
+    deletedBaseSet: Set<number>
+    convertedBase: Map<number, boolean>
+  } {
+    return {
+      removedBaseEntities: [...this.removedBaseEntities],
+      removedBaseConstraints: this.removedBaseConstraints.map((c) => ({
+        ...c,
+        refs: c.refs.map((r) => ({ ...r }))
+      })),
+      deletedBaseSet: new Set(this.deletedBaseSet),
+      convertedBase: new Map(this.convertedBase)
+    }
+  }
+
   private snapshot(): void {
-    this.undoStack.push({ ents: this.cloneEnts(), cons: this.cloneCons() })
+    this.undoStack.push({ ents: this.cloneEnts(), cons: this.cloneCons(), ...this.cloneBaseTracking() })
     if (this.undoStack.length > 120) this.undoStack.shift()
   }
 
@@ -717,6 +757,10 @@ export class SketchController {
     if (!s) return
     this.entities = s.ents
     this.constraints = s.cons
+    this.removedBaseEntities = s.removedBaseEntities
+    this.removedBaseConstraints = s.removedBaseConstraints
+    this.deletedBaseSet = s.deletedBaseSet
+    this.convertedBase = s.convertedBase
     if (this.baseCount > this.entities.length) this.baseCount = this.entities.length
     if (this.baseConstraintCount > this.constraints.length)
       this.baseConstraintCount = this.constraints.length
@@ -1229,7 +1273,7 @@ export class SketchController {
           if (!locked) {
             this.drag = { idx: hitPt.e, handle: this.ptToHandle(hitPt), last: uv }
             this.dragMoved = false
-            this.preDragSnap = { ents: this.cloneEnts(), cons: this.cloneCons() }
+            this.preDragSnap = { ents: this.cloneEnts(), cons: this.cloneCons(), ...this.cloneBaseTracking() }
             trace('sketch drag start (point)', {
               idx: hitPt.e,
               pt: hitPt.pt,
@@ -1282,7 +1326,7 @@ export class SketchController {
         } else {
           this.drag = { idx, handle: this.grabHandle(idx, uv), last: uv }
           this.dragMoved = false
-          this.preDragSnap = { ents: this.cloneEnts(), cons: this.cloneCons() }
+          this.preDragSnap = { ents: this.cloneEnts(), cons: this.cloneCons(), ...this.cloneBaseTracking() }
           trace('sketch drag start (entity)', { idx, entType: this.entities[idx]?.type, handle: this.drag.handle })
         }
       }
