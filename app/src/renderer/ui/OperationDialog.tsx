@@ -223,7 +223,7 @@ const SPECS: Record<OpKind, OpSpec> = {
   sweep: {
     title: 'Sweep',
     needs: 'any',
-    hint: 'Click a profile sketch, then click the path: another sketch, or a body edge.',
+    hint: 'Click a profile sketch, then click the path: another sketch, or one or more connected body edges (ctrl/shift-click each edge around a bend or corner).',
     fields: [
       {
         key: 'operation',
@@ -873,11 +873,21 @@ export function OperationDialog({
                 ? axisSel.length
                   ? 'axis selected'
                   : 'click an axis / edge / plane / face'
-                : spec.needs === 'any'
-                  ? selection.length
-                    ? `${selection.length} reference${selection.length === 1 ? '' : 's'} selected`
-                    : 'select a profile sketch, then click a path (a sketch or edge)'
-                  : null)
+                : spec.needs === 'any' && kind === 'sweep'
+                  ? sketchesSel.length === 2
+                    ? '2 sketches selected (profile + path)'
+                    : sketchesSel.length === 1 && edges.length >= 1
+                      ? 'profile sketch + path edge selected'
+                      : sketchesSel.length === 1
+                        ? 'profile selected - now click the path (another sketch, or a body edge)'
+                        : sketchesSel.length >= 2
+                          ? 'pick only ONE profile sketch, then the path'
+                          : 'select a profile sketch, then click a path (a sketch or edge)'
+                  : spec.needs === 'any'
+                    ? selection.length
+                      ? `${selection.length} reference${selection.length === 1 ? '' : 's'} selected`
+                      : null
+                    : null)
 
   const ready =
     // editing a committed feature: its refs are already seeded, Update is always allowed
@@ -897,7 +907,20 @@ export function OperationDialog({
     (spec.needs === 'sketches2' && sketchesSel.length >= 2) ||
     (spec.needs === 'plane' && planeSel.length >= 1) ||
     (spec.needs === 'axis' && axisSel.length >= 1) ||
-    (spec.needs === 'any' && selection.length >= 1)
+    // Sweep needs a PROFILE (always a sketch, never a face - see App.tsx's
+    // sweep commit case) plus a PATH: either a 2nd sketch, or a body edge -
+    // NOT just any one selection, unlike splitBody (the other needs:'any'
+    // user, which genuinely only needs one pick). needs:'any' used to let a
+    // single lone edge (just the path, no profile at all) light up OK for
+    // Sweep too - the commit handler's own error ("Select a profile sketch,
+    // then click the path") never had a chance to fire because Apply was
+    // reachable before that state was even possible to reach through the UI
+    // (user report, 2026-09-12, reproduced from a real trace: only ever
+    // picked one edge, no sketch, then hit Apply).
+    (spec.needs === 'any' &&
+      kind === 'sweep' &&
+      (sketchesSel.length === 2 || (sketchesSel.length === 1 && edges.length >= 1))) ||
+    (spec.needs === 'any' && kind !== 'sweep' && selection.length >= 1)
 
   // report OK-pressability to the parent. Done inline (not in an effect) so it
   // survives the early `return null` above for an unknown kind without breaking

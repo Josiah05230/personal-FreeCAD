@@ -1323,6 +1323,9 @@ def _resolve_ref(d, body, ref):
         | {"kind":"plane","id":"<construction plane/axis name>"}
         | {"kind":"face","bodyId":"...","sub":"Face3"}
         | {"kind":"edge","bodyId":"...","sub":"Edge7"}
+        | {"kind":"edge","bodyId":"...","sub":["Edge7","Edge9",...]}  (a multi-edge
+          chain, e.g. a Sweep path around a bend - every other "sub" caller keeps
+          passing a single string and is unaffected)
     """
     k = ref.get("kind")
     if k == "origin":
@@ -1369,7 +1372,8 @@ def _resolve_ref(d, body, ref):
                             break
             except Exception:
                 pass
-        return (base, [ref["sub"]])
+        sub = ref["sub"]
+        return (base, sub if isinstance(sub, list) else [sub])
     if k == "sketch":
         o = d.getObject(ref.get("id") or ref.get("sketchId"))
         if o is None:

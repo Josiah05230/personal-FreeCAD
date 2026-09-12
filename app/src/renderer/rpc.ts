@@ -796,7 +796,12 @@ export const api = {
     profileId: string,
     pathId: string | null,
     cut = false,
-    pathRef: GeomRef | null = null,
+    // a path can be a single edge (GeomRef, sub: string) OR several
+    // connected edges around a bend/corner (sub: string[]) - PartDesign's
+    // AdditivePipe/SubtractivePipe Spine genuinely accepts a multi-edge
+    // chain (verified headlessly), the front end just never offered a way
+    // to pick more than one edge for it
+    pathRef: GeomRef | { kind: 'edge'; bodyId: string; sub: string[] } | null = null,
     operation: 'join' | 'cut' | 'intersect' | 'newbody' = 'join',
     orientation: 'Path' | 'Parallel' = 'Path',
     transition: 'Transformed' | 'Right corner' | 'Round corner' = 'Transformed'

@@ -1213,9 +1213,19 @@ export function App(): JSX.Element {
           }
           case 'sweep': {
             const sk2 = sketchIds
-            const pathEdge = selection.find((s) => s.kind === 'edge') as
-              | { bodyId: string; sub: string }
-              | undefined
+            // a path can be MULTIPLE connected edges (around a bend/corner),
+            // not just one - ctrl-click each edge along the chain. They must
+            // all be on the same body (a path spanning two different bodies
+            // has no meaning), so only take edges past the first from a
+            // different body as a mis-click rather than silently mixing them.
+            const pathEdges = selection.filter((s) => s.kind === 'edge') as Array<{
+              bodyId: string
+              sub: string
+            }>
+            const pathBodyId = pathEdges[0]?.bodyId
+            const pathSubs = pathEdges
+              .filter((e) => e.bodyId === pathBodyId)
+              .map((e) => e.sub)
             const sweepOpMap: Record<string, 'join' | 'cut' | 'intersect' | 'newbody'> = {
               'New body': 'newbody',
               Join: 'join',
@@ -1230,18 +1240,20 @@ export function App(): JSX.Element {
               | 'Round corner'
             if (sk2.length === 2) {
               await api.sweep(sk2[0], sk2[1], sweepOp === 'cut', null, sweepOp, orientation, transition)
-            } else if (sk2.length === 1 && pathEdge) {
+            } else if (sk2.length === 1 && pathBodyId && pathSubs.length) {
               await api.sweep(
                 sk2[0],
                 null,
                 sweepOp === 'cut',
-                { kind: 'edge', bodyId: pathEdge.bodyId, sub: pathEdge.sub },
+                { kind: 'edge', bodyId: pathBodyId, sub: pathSubs },
                 sweepOp,
                 orientation,
                 transition
               )
             } else {
-              throw new Error('Select a profile sketch, then click the path (another sketch, or a body edge).')
+              throw new Error(
+                'Select a profile sketch, then click the path: another sketch, or one or more connected body edges.'
+              )
             }
             break
           }

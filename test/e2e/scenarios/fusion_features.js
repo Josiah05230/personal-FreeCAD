@@ -10,6 +10,18 @@ const okBtnDisabled = () => {
   return b ? b.disabled : null;
 };
 
+// G.applyOp() goes through the app's CmdQueue, which by design NEVER rejects
+// (a failed queued command is caught, routed to a "notice" banner, and the
+// queue keeps going - see cmdQueue.ts's own docstring) - so `try { await
+// G.applyOp(...) } catch` can NEVER catch anything, and every `err` variable
+// built that way is permanently null. This was invisible for a long time
+// because most failures also flag a feature error (anyErr()) or produce
+// wrong-but-plausible geometry a later assertion catches - but a failure
+// whose feature gets cleanly rolled back and removed (no error flag left
+// anywhere) slipped through completely silently. Fixed by reading
+// G.getState().notice - the real, actual signal the app surfaces for a
+// queued-command failure (routed there by cmdQueue's onError handler) -
+// instead of a try/catch that structurally cannot fire.
 async function openApply(kind, values, { setup, soft } = {}) {
   G.clearSelection();
   await sleep(25);
@@ -19,23 +31,35 @@ async function openApply(kind, values, { setup, soft } = {}) {
   await sleep(50);
   const ready = await waitFor(() => G.getState().opReady === true, 4000);
   assert(ready && okBtnDisabled() === false, `${kind}: OK gate clears`);
-  let err = null;
-  try {
-    await G.applyOp(kind, values);
-  } catch (e) {
-    err = (e && e.message) || String(e);
-  }
+  const noticeBefore = G.getState().notice;
+  await G.applyOp(kind, values);
   await idle();
   G.closeOp();
   await sleep(20);
+  const noticeAfter = G.getState().notice;
+  const err = noticeAfter && noticeAfter !== noticeBefore ? noticeAfter : null;
   if (soft) {
-    note(`${kind}: apply err=${err || 'none'} notice=${G.getState().notice || 'none'} (soft)`);
+    note(`${kind}: apply notice=${err || 'none'} (soft)`);
     assert(G.getState().status === 'ready', `${kind}: app still ready`);
   } else {
     assert(!err, `${kind}: applied cleanly (${err || 'ok'})`);
     assert(!anyErr(), `${kind}: no feature error`);
   }
   return err;
+}
+
+// same fix as openApply above, for call sites that don't go through it
+// (already had G.openOp / G.pick done manually): call G.applyOp, then read
+// G.getState().notice for the real failure signal instead of a try/catch
+// that structurally cannot fire (CmdQueue never rejects - see openApply's
+// comment). Returns the notice string, or null if nothing new appeared.
+async function applyOpChecked(kind, values) {
+  const noticeBefore = G.getState().notice;
+  await G.applyOp(kind, values);
+  await idle();
+  G.closeOp();
+  const noticeAfter = G.getState().notice;
+  return noticeAfter && noticeAfter !== noticeBefore ? noticeAfter : null;
 }
 
 // ---------------------------------------------------------------- primitives
@@ -140,14 +164,7 @@ await idle();
   await sleep(50);
   const ready = await waitFor(() => G.getState().opReady === true, 4000);
   assert(ready && okBtnDisabled() === false, 'revolve: OK gate clears with Operation set');
-  let err = null;
-  try {
-    await G.applyOp('revolve', { operation: 'New body', full: true, axis: 'Y' });
-  } catch (e) {
-    err = (e && e.message) || String(e);
-  }
-  await idle();
-  G.closeOp();
+  const err = await applyOpChecked('revolve', { operation: 'New body', full: true, axis: 'Y' });
   note('revolve New body + Full: err=' + (err || 'none'));
   assert(!err && !anyErr(), 'revolve with Operation=New body, Full committed');
 }
@@ -214,18 +231,20 @@ await idle();
   await sleep(50);
   const readyRev = await waitFor(() => G.getState().opReady === true, 4000);
   assert(readyRev && okBtnDisabled() === false, 'revolve-around-edge: OK gate clears with profile + model edge');
-  let errRev = null;
-  try {
-    await G.applyOp('revolve', { operation: 'New body', full: true, axis: 'Selected edge / datum' });
-  } catch (e) {
-    errRev = (e && e.message) || String(e);
-  }
-  await idle();
-  G.closeOp();
+  const meshCountBeforeRev = (await rpc('scene.get')).meshes.length;
+  const errRev = await applyOpChecked('revolve', {
+    operation: 'New body',
+    full: true,
+    axis: 'Selected edge / datum'
+  });
   assert(!errRev && !anyErr(), `revolve-around-edge committed (${errRev || 'ok'})`);
   const scRev = await rpc('scene.get');
-  const revolved = scRev.meshes.find((mm) => mm.id !== bid2) || scRev.meshes[scRev.meshes.length - 1];
-  assert(!!revolved, 'the edge-revolved body exists');
+  const newRevMeshes = scRev.meshes.filter((mm) => mm.id !== bid2);
+  assert(
+    scRev.meshes.length > meshCountBeforeRev && newRevMeshes.length > 0,
+    `revolve-around-edge created a genuinely NEW body (meshes ${meshCountBeforeRev} -> ${scRev.meshes.length})`
+  );
+  const revolved = newRevMeshes[newRevMeshes.length - 1];
   const bbr = revolved.bbox;
   // verified headlessly (identical setup, built through the real RPCs): a
   // full 360 revolve of the [15,20]x[0,8] rectangle around the picked X edge
@@ -262,14 +281,7 @@ await idle();
   G.selectSketch(s.sketchId);
   await sleep(50);
   await waitFor(() => G.getState().opReady === true, 4000);
-  let err = null;
-  try {
-    await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 20, taper: 8 });
-  } catch (e) {
-    err = (e && e.message) || String(e);
-  }
-  await idle();
-  G.closeOp();
+  const err = await applyOpChecked('extrude', { operation: 'Join', mode: 'Blind', length: 20, taper: 8 });
   assert(!err && !anyErr(), `extrude with an 8deg taper committed (${err || 'ok'})`);
 }
 {
@@ -426,16 +438,59 @@ await idle();
   await sleep(50);
   const ready = await waitFor(() => G.getState().opReady === true, 4000);
   assert(ready && okBtnDisabled() === false, 'splitBody: OK gate clears with a sketch tool');
-  let err = null;
-  try {
-    await G.applyOp('splitBody', {});
-  } catch (e) {
-    err = (e && e.message) || String(e);
-  }
-  await idle();
-  G.closeOp();
+  const err = await applyOpChecked('splitBody', {});
   assert(!err, `split by sketch committed (${err || 'ok'})`);
   assert(G.getState().meshes.length >= 2, 'split by sketch produced pieces');
+}
+
+// Sweep's OK gate must NOT clear with only a path and no profile (or only a
+// profile and no path) - a real user trace (2026-09-12) showed picking
+// exactly one edge, nothing else, then hitting Apply, and getting the
+// generic "adds nothing where it can be newbody" error with no earlier
+// warning: the dialog's readiness gate (needs:'any') lit up on ANY single
+// selection, so Apply was reachable long before the commit handler's own
+// "select a profile sketch, then click the path" guard could ever fire.
+note('--- Sweep: OK gate must require BOTH a profile sketch and a path (not just any one selection) ---');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+{
+  const s = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: s.sketchId,
+    elements: [{ type: 'rect', a: [0, 0], b: [20, 20] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.selectSketch(s.sketchId);
+  await sleep(40);
+  await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 10 });
+  await idle();
+  const gateBid = G.getState().bodies[0]?.id;
+  assert(!!gateBid, 'sweep-gate: base block built');
+
+  G.clearSelection();
+  G.openOp('sweep');
+  await sleep(50);
+  // only a PATH edge, no profile at all - this is exactly the real trace
+  G.pick({ kind: 'edge', bodyId: gateBid, sub: 'Edge1' }, false);
+  await sleep(50);
+  assert(
+    G.getState().opReady !== true && okBtnDisabled() !== false,
+    'sweep: OK gate stays disabled with ONLY a path edge selected, no profile'
+  );
+
+  // only a PROFILE sketch, no path at all
+  G.clearSelection();
+  await sleep(30);
+  G.pick({ kind: 'sketch', sketchId: s.sketchId }, false);
+  await sleep(50);
+  assert(
+    G.getState().opReady !== true && okBtnDisabled() !== false,
+    'sweep: OK gate stays disabled with ONLY a profile selected, no path'
+  );
+  G.closeOp();
 }
 
 // ---------------------------------------------------------------- Sweep + Loft
@@ -467,14 +522,7 @@ await idle();
   await sleep(50);
   const ready = await waitFor(() => G.getState().opReady === true, 4000);
   assert(ready && okBtnDisabled() === false, 'sweep: OK gate clears with profile + path');
-  let err = null;
-  try {
-    await G.applyOp('sweep', { operation: 'Join', orientation: 'Path', transition: 'Transformed' });
-  } catch (e) {
-    err = (e && e.message) || String(e);
-  }
-  await idle();
-  G.closeOp();
+  const err = await applyOpChecked('sweep', { operation: 'Join', orientation: 'Path', transition: 'Transformed' });
   assert(!err && !anyErr(), `sweep committed (${err || 'ok'})`);
 }
 
@@ -545,18 +593,20 @@ await idle();
   await sleep(50);
   const readyEdge = await waitFor(() => G.getState().opReady === true, 4000);
   assert(readyEdge && okBtnDisabled() === false, 'sweep-around-edge: OK gate clears with profile + model edge');
-  let errEdge = null;
-  try {
-    await G.applyOp('sweep', { operation: 'New body', orientation: 'Path', transition: 'Transformed' });
-  } catch (e) {
-    errEdge = (e && e.message) || String(e);
-  }
-  await idle();
-  G.closeOp();
+  const meshCountBeforeEdge = (await rpc('scene.get')).meshes.length;
+  const errEdge = await applyOpChecked('sweep', {
+    operation: 'New body',
+    orientation: 'Path',
+    transition: 'Transformed'
+  });
   assert(!errEdge && !anyErr(), `sweep-around-edge committed (${errEdge || 'ok'})`);
   const scAfter = await rpc('scene.get');
-  const swept = scAfter.meshes.find((m) => m.id !== bid) || scAfter.meshes[scAfter.meshes.length - 1];
-  assert(!!swept, 'the edge-swept body exists');
+  const newEdgeMeshes = scAfter.meshes.filter((m) => m.id !== bid);
+  assert(
+    scAfter.meshes.length > meshCountBeforeEdge && newEdgeMeshes.length > 0,
+    `sweep-around-edge created a genuinely NEW body (meshes ${meshCountBeforeEdge} -> ${scAfter.meshes.length})`
+  );
+  const swept = newEdgeMeshes[newEdgeMeshes.length - 1];
   const bb = swept.bbox;
   // a ring swept around a 20mm-radius circle with a 2mm-radius profile spans
   // exactly 2*(20+2)=44mm in X and Y, and only a few mm in Z - if the path
@@ -608,14 +658,7 @@ await idle();
   await sleep(50);
   const ready = await waitFor(() => G.getState().opReady === true, 4000);
   assert(ready && okBtnDisabled() === false, 'loft: OK gate clears with 2 sections');
-  let err = null;
-  try {
-    await G.applyOp('loft', { operation: 'Join', ruled: true, closed: false });
-  } catch (e) {
-    err = (e && e.message) || String(e);
-  }
-  await idle();
-  G.closeOp();
+  const err = await applyOpChecked('loft', { operation: 'Join', ruled: true, closed: false });
   assert(!err && !anyErr(), `loft with Ruled committed (${err || 'ok'})`);
   const scLoft = await rpc('scene.get');
   const zmax = scLoft.meshes[0]?.bbox?.max?.[2] ?? 0;
@@ -649,8 +692,31 @@ await idle();
 }
 {
   const bid2 = meshes()[0].id;
-  const s2 = await rpc('sketch.on', { ref: { kind: 'face', bodyId: bid2, sub: 'Face6' } }).catch(() => null);
-  const sk2 = s2 ?? (await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } }));
+  // find the TOP face (highest average Z) by its real mesh geometry, not a
+  // guessed "Face6" - after a Two Sides extrude the face numbering is not
+  // guaranteed, and the guess's own silent .catch(() => null) fallback to
+  // plain XY_Plane (which does not intersect this solid at all) was masking
+  // a real "cut profile does not intersect the solid" failure indefinitely,
+  // since the try/catch around G.applyOp used to swallow it unconditionally.
+  // G.getState().meshes only carries {id, tris} - the real per-vertex/face
+  // data needed here comes from rpc('scene.get') instead.
+  const meshForFace = (await rpc('scene.get')).meshes.find((m) => m.id === bid2);
+  let topFaceSub = null,
+    topZ = -1e9;
+  for (const g of meshForFace.faceGroups || []) {
+    let sz = 0,
+      n = 0;
+    for (let i = g.start; i < g.start + g.count; i++) {
+      sz += meshForFace.positions[meshForFace.indices[i] * 3 + 2];
+      n++;
+    }
+    if (n && sz / n > topZ) {
+      topZ = sz / n;
+      topFaceSub = 'Face' + (g.face + 1);
+    }
+  }
+  assert(!!topFaceSub, 'found the top face to attach the cut sketch to (' + topFaceSub + ', z=' + topZ.toFixed(1) + ')');
+  const sk2 = await rpc('sketch.on', { ref: { kind: 'face', bodyId: bid2, sub: topFaceSub } });
   await rpc('sketch.finish', {
     sketchId: sk2.sketchId,
     elements: [{ type: 'circle', c: [20, 15], r: 5 }],
@@ -661,13 +727,11 @@ await idle();
   G.clearSelection();
   G.selectSketch(sk2.sketchId);
   await sleep(40);
-  let err = null;
-  try {
-    await G.applyOp('extrude', { operation: 'Cut', mode: 'Blind', length: 1, throughAll: true });
-  } catch (e) {
-    err = (e && e.message) || String(e);
-  }
+  const noticeBeforeCut = G.getState().notice;
+  await G.applyOp('extrude', { operation: 'Cut', mode: 'Blind', length: 1, throughAll: true });
   await idle();
+  const noticeAfterCut = G.getState().notice;
+  const err = noticeAfterCut && noticeAfterCut !== noticeBeforeCut ? noticeAfterCut : null;
   assert(!err && !anyErr(), `extrude Cut with All (throughAll) committed (${err || 'ok'})`);
 }
 {
@@ -704,13 +768,11 @@ await idle();
   G.clearSelection();
   G.selectSketch(s2.sketchId);
   await sleep(40);
-  let err2 = null;
-  try {
-    await G.applyOp('extrude', { operation: 'Cut', mode: 'Two Sides', length: 10, length2: 10 });
-  } catch (e) {
-    err2 = (e && e.message) || String(e);
-  }
+  const noticeBefore2 = G.getState().notice;
+  await G.applyOp('extrude', { operation: 'Cut', mode: 'Two Sides', length: 10, length2: 10 });
   await idle();
+  const noticeAfter2 = G.getState().notice;
+  const err2 = noticeAfter2 && noticeAfter2 !== noticeBefore2 ? noticeAfter2 : null;
   assert(!err2 && !anyErr(), `extrude Cut with Two Sides committed (${err2 || 'ok'})`);
   assert(meshes()[0].tris !== volBefore, 'Two Sides cut actually removed material both directions');
 }
