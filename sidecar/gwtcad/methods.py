@@ -589,19 +589,30 @@ def feature_sweep(profileId, pathId=None, pathRef=None, cut=False, operation=Non
         except Exception:
             before = None
 
+    # resolve the path reference BEFORE creating the feature - body.newObject()
+    # advances body.Tip to the new (half-built) Sweep, so a pathRef whose
+    # bodyId is the Body itself (the GUI sends that for an edge pick) would
+    # otherwise resolve through the NEW Tip and point the Sweep's own Spine at
+    # itself, tripping "The graph must be a DAG." wrapped as a generic "fatal
+    # error... making the pipe" with no useful message - same class of bug
+    # feature_revolve's axis resolution already guards against, above.
+    spine_ref = _resolve_ref(d, body, pathRef) if pathRef else None
+    path_obj = None
+    if spine_ref is None:
+        path_obj = d.getObject(pathId) if pathId else None
+        if path_obj is None:
+            raise RpcError(APP_ERROR, "sweep needs a path sketch or edge")
+
     tid = "PartDesign::SubtractivePipe" if op == "cut" else "PartDesign::AdditivePipe"
     pipe = body.newObject(tid, "Sweep")
     pipe.Label = next_label(body, tid)
     pipe.Profile = prof
-    if pathRef:
-        obj, sub = _resolve_ref(d, body, pathRef)
+    if spine_ref is not None:
+        obj, sub = spine_ref
         pipe.Spine = (obj, sub if isinstance(sub, list) else [sub])
     else:
-        path = d.getObject(pathId) if pathId else None
-        if path is None:
-            raise RpcError(APP_ERROR, "sweep needs a path sketch or edge")
-        pipe.Spine = (path, [])
-        path.Visibility = False
+        pipe.Spine = (path_obj, [])
+        path_obj.Visibility = False
     try:
         pipe.Mode = "Frenet" if str(orientation).lower().startswith("path") else "Fixed"
     except Exception:

@@ -152,6 +152,96 @@ await idle();
   assert(!err && !anyErr(), 'revolve with Operation=New body, Full committed');
 }
 
+// Revolve AROUND A REAL MODEL EDGE ("Selected edge / datum"), not the
+// sketch's own H/V axis or a world axis - this is the same resolve-before-
+// newObject ordering feature.sweep got wrong (see the sweep-around-edge test
+// above): a profile revolved about a picked edge must land centred on THAT
+// edge's line, not on whatever the sketch's default axis happens to be.
+// The profile and the axis edge must lie in (or parallel to) the same plane -
+// FreeCAD rejects an axis perpendicular to the profile's plane outright, so
+// the profile goes on XZ and the picked edge is a horizontal, X-direction
+// edge of the base block (both live in/parallel to the XZ plane).
+note('--- Revolve AROUND A MODEL EDGE (Selected edge / datum) ---');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+{
+  const baseS = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: baseS.sketchId,
+    elements: [{ type: 'rect', a: [0, 0], b: [10, 10] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.selectSketch(baseS.sketchId);
+  await sleep(40);
+  await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 5 });
+  await idle();
+  const bid2 = G.getState().bodies[0]?.id;
+  assert(!!bid2 && !anyErr(), 'revolve-around-edge: base block built');
+  const mesh0 = (await rpc('scene.get')).meshes.find((mm) => mm.id === bid2);
+  // find a horizontal edge along X, at Y=0 and Z=0 (the bottom-front edge)
+  let axisEdgeSub = null;
+  for (const e of mesh0.edges || []) {
+    const p = e.points;
+    if (p.length < 6) continue;
+    const dx = Math.abs(p[0] - p[p.length - 3]);
+    const dy = Math.abs(p[1] - p[p.length - 2]);
+    const dz = Math.abs(p[2] - p[p.length - 1]);
+    if (dy < 1e-3 && dz < 1e-3 && dx > 1 && Math.abs(p[1]) < 1e-3 && Math.abs(p[2]) < 1e-3) {
+      axisEdgeSub = 'Edge' + (e.edge + 1);
+      break;
+    }
+  }
+  assert(!!axisEdgeSub, 'found the bottom-front X edge to revolve around (' + axisEdgeSub + ')');
+  // a small rectangle profile OFFSET from that edge in Z, on the XZ plane -
+  // revolving it 360 around the X-axis edge sweeps out a ring
+  const profS = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XZ_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: profS.sketchId,
+    elements: [{ type: 'rect', a: [15, 0], b: [20, 8] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.clearSelection();
+  G.openOp('revolve');
+  await sleep(50);
+  G.pick({ kind: 'sketch', sketchId: profS.sketchId }, false);
+  await sleep(30);
+  G.pick({ kind: 'edge', bodyId: bid2, sub: axisEdgeSub, point: [5, 0, 0] }, true);
+  await sleep(50);
+  const readyRev = await waitFor(() => G.getState().opReady === true, 4000);
+  assert(readyRev && okBtnDisabled() === false, 'revolve-around-edge: OK gate clears with profile + model edge');
+  let errRev = null;
+  try {
+    await G.applyOp('revolve', { operation: 'New body', full: true, axis: 'Selected edge / datum' });
+  } catch (e) {
+    errRev = (e && e.message) || String(e);
+  }
+  await idle();
+  G.closeOp();
+  assert(!errRev && !anyErr(), `revolve-around-edge committed (${errRev || 'ok'})`);
+  const scRev = await rpc('scene.get');
+  const revolved = scRev.meshes.find((mm) => mm.id !== bid2) || scRev.meshes[scRev.meshes.length - 1];
+  assert(!!revolved, 'the edge-revolved body exists');
+  const bbr = revolved.bbox;
+  // verified headlessly (identical setup, built through the real RPCs): a
+  // full 360 revolve of the [15,20]x[0,8] rectangle around the picked X edge
+  // gives spanX=5 (the profile's own X-width) and spanY=spanZ=16 (2x the
+  // profile's 8mm reach off the axis) - if the axis resolution instead fell
+  // back to a world/sketch-default axis, this would come out very different
+  // (most likely a failed commit, since that default axis runs THROUGH the
+  // profile here and PartDesign rejects a profile straddling its axis)
+  const rSpanX = bbr.max[0] - bbr.min[0];
+  const rSpanY = bbr.max[1] - bbr.min[1];
+  const rSpanZ = bbr.max[2] - bbr.min[2];
+  assert(Math.abs(rSpanX - 5) < 0.5, `revolved ring spans the right X extent, the profile's own width (${rSpanX.toFixed(1)}, want 5.0)`);
+  assert(Math.abs(rSpanY - 16) < 0.5, `revolved ring spans the right Y extent, 2x the axis offset (${rSpanY.toFixed(1)}, want 16.0)`);
+  assert(Math.abs(rSpanZ - 16) < 0.5, `revolved ring spans the right Z extent, 2x the axis offset (${rSpanZ.toFixed(1)}, want 16.0)`);
+}
+
 // ---------------------------------------------------------------- Extrude taper + Shell direction
 note('--- Extrude taper angle + Shell direction ---');
 await rpc('session.reset');
@@ -387,6 +477,103 @@ await idle();
   G.closeOp();
   assert(!err && !anyErr(), `sweep committed (${err || 'ok'})`);
 }
+
+// Sweep the profile AROUND A REAL MODEL EDGE (not a separate path sketch) -
+// the sweep-path-sketch case above never exercises this. Build a body whose
+// top face is bounded by a circular edge (an extruded circle), then sweep a
+// small profile using that circular edge as the path: the result must be a
+// closed torus-like ring, not a straight/degenerate shape.
+note('--- Sweep AROUND A MODEL EDGE (curved), not a path sketch ---');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+{
+  const base = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: base.sketchId,
+    elements: [{ type: 'circle', c: [0, 0], r: 20 }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.selectSketch(base.sketchId);
+  await sleep(40);
+  await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 5 });
+  await idle();
+  const st0 = G.getState();
+  const bid = st0.bodies[0]?.id;
+  assert(!!bid && !anyErr(), 'sweep-around-edge: base cylinder built');
+  const mesh0 = (await rpc('scene.get')).meshes.find((m) => m.id === bid);
+  // find a genuinely CIRCULAR edge: every point on it is ~20mm from the axis
+  // and its own bbox is roughly square in X/Y (a straight edge's bbox is a
+  // line, near-zero in one axis) - avoids hardcoding an edge index that could
+  // shift if the kernel ever orders edges differently.
+  let circEdgeSub = null;
+  for (const e of mesh0.edges || []) {
+    const p = e.points;
+    if (p.length < 9) continue;
+    let okRadius = true;
+    let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity;
+    for (let i = 0; i < p.length; i += 3) {
+      const r = Math.hypot(p[i], p[i + 1]);
+      if (Math.abs(r - 20) > 0.5) okRadius = false;
+      xmin = Math.min(xmin, p[i]);
+      xmax = Math.max(xmax, p[i]);
+      ymin = Math.min(ymin, p[i + 1]);
+      ymax = Math.max(ymax, p[i + 1]);
+    }
+    if (okRadius && xmax - xmin > 30 && ymax - ymin > 30) {
+      circEdgeSub = 'Edge' + (e.edge + 1);
+      break;
+    }
+  }
+  assert(!!circEdgeSub, 'found the circular rim edge to sweep around (' + circEdgeSub + ')');
+  const prof = await rpc('sketch.on', { ref: { kind: 'origin', role: 'YZ_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: prof.sketchId,
+    elements: [{ type: 'circle', c: [20, 0], r: 2 }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.clearSelection();
+  G.openOp('sweep');
+  await sleep(50);
+  G.pick({ kind: 'sketch', sketchId: prof.sketchId }, false);
+  await sleep(30);
+  G.pick({ kind: 'edge', bodyId: bid, sub: circEdgeSub, point: [20, 0, 0] }, false);
+  await sleep(50);
+  const readyEdge = await waitFor(() => G.getState().opReady === true, 4000);
+  assert(readyEdge && okBtnDisabled() === false, 'sweep-around-edge: OK gate clears with profile + model edge');
+  let errEdge = null;
+  try {
+    await G.applyOp('sweep', { operation: 'New body', orientation: 'Path', transition: 'Transformed' });
+  } catch (e) {
+    errEdge = (e && e.message) || String(e);
+  }
+  await idle();
+  G.closeOp();
+  assert(!errEdge && !anyErr(), `sweep-around-edge committed (${errEdge || 'ok'})`);
+  const scAfter = await rpc('scene.get');
+  const swept = scAfter.meshes.find((m) => m.id !== bid) || scAfter.meshes[scAfter.meshes.length - 1];
+  assert(!!swept, 'the edge-swept body exists');
+  const bb = swept.bbox;
+  // a ring swept around a 20mm-radius circle with a 2mm-radius profile spans
+  // exactly 2*(20+2)=44mm in X and Y, and only a few mm in Z - if the path
+  // were instead treated as degenerate/self-referencing (the real bug this
+  // test caught: feature.sweep resolved the edge ref through body.Tip AFTER
+  // already retargeting Tip to the new half-built Sweep, so the pipe's own
+  // Spine pointed at itself), the sweep fails outright rather than producing
+  // a plausible-but-wrong shape, so a loose collapse check would miss it -
+  // this asserts the actual expected extent instead.
+  const spanX = bb.max[0] - bb.min[0];
+  const spanY = bb.max[1] - bb.min[1];
+  const spanZ = bb.max[2] - bb.min[2];
+  assert(Math.abs(spanX - 44) < 0.5, `swept ring spans the right X extent (${spanX.toFixed(1)}, want 44.0)`);
+  assert(Math.abs(spanY - 44) < 0.5, `swept ring spans the right Y extent (${spanY.toFixed(1)}, want 44.0)`);
+  assert(spanZ > 2 && spanZ < 6, `swept ring stays thin in Z, a true ring not a cylinder (${spanZ.toFixed(1)})`);
+}
+
 await rpc('session.reset');
 await G.refresh();
 await idle();

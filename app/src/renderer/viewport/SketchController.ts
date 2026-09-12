@@ -107,6 +107,38 @@ const isCurve = (e: SketchEntity | undefined): boolean =>
   !!e && (e.type === 'circle' || e.type === 'arc')
 const isLine = (e: SketchEntity | undefined): boolean => !!e && e.type === 'line'
 
+/** an arc's start (pt 1) or end (pt 2) rim point in sketch-plane coordinates */
+const arcRimPoint = (
+  e: { c: [number, number]; r: number; a0: number; a1: number },
+  pt: 1 | 2
+): [number, number] => {
+  const ang = pt === 1 ? e.a0 : e.a1
+  return [e.c[0] + Math.cos(ang) * e.r, e.c[1] + Math.sin(ang) * e.r]
+}
+
+/** a line's or arc's endpoint (1=start, 2=end); arcs report their rim point
+ *  but cannot be moved by adjusting it directly (their shape is c/r/a0/a1) */
+const entPoint = (e: SketchEntity, pt: 1 | 2): [number, number] =>
+  e.type === 'line'
+    ? pt === 1
+      ? (e as { a: [number, number] }).a
+      : (e as { b: [number, number] }).b
+    : arcRimPoint(e as { c: [number, number]; r: number; a0: number; a1: number }, pt)
+
+/** move a line's endpoint, or an arc's start/end angle, so its rim point lands
+ *  exactly on `target` (radius held fixed - only the angle changes) */
+const setEntPoint = (e: SketchEntity, pt: 1 | 2, target: [number, number]): void => {
+  if (e.type === 'line') {
+    if (pt === 1) (e as { a: [number, number] }).a = [...target]
+    else (e as { b: [number, number] }).b = [...target]
+  } else if (e.type === 'arc') {
+    const arc = e as { c: [number, number]; a0: number; a1: number }
+    const ang = Math.atan2(target[1] - arc.c[1], target[0] - arc.c[0])
+    if (pt === 1) arc.a0 = ang
+    else arc.a1 = ang
+  }
+}
+
 export class SketchController {
   private group = new THREE.Group()
   private entGroup = new THREE.Group() // committed sketch entities (cleared each redraw)
@@ -2930,7 +2962,45 @@ export class SketchController {
       // the 2nd centre so the circles are externally tangent.
       const a = ents[0]!
       const b = ents[1]!
-      if ((isLine(a) && isCurve(b)) || (isCurve(a) && isLine(b))) {
+      // if the two entities already share (or nearly share) an endpoint, this
+      // is a "close the wire smoothly" tangent, not an edge-tangent between
+      // two curves that stay apart - weld that shared point with an ENDPOINT
+      // Tangent (FreeCAD/this app both treat that as implying Coincident, see
+      // autoTangent above) instead of a plain edge Tangent with no point refs.
+      // An edge-only Tangent leaves the endpoints free, so the solver can (and
+      // did, in a real user file) land them a fraction of a mm apart even
+      // though the curves are tangent - the wire never closes and Finish/Pad
+      // sees an open profile with no error to point at.
+      const WELD_TOL = 0.5 // mm - "the user clicked near the same point"
+      const isArc = (e: SketchEntity): boolean => e.type === 'arc'
+      let endpointPair: { pa: 1 | 2; pb: 1 | 2 } | null = null
+      if (
+        (isLine(a) && isArc(b)) ||
+        (isArc(a) && isLine(b)) ||
+        (isArc(a) && isArc(b))
+      ) {
+        const aPts: Array<1 | 2> = isArc(a) || isLine(a) ? [1, 2] : []
+        const bPts: Array<1 | 2> = isArc(b) || isLine(b) ? [1, 2] : []
+        let best: { pa: 1 | 2; pb: 1 | 2; d: number } | null = null
+        for (const pa of aPts) {
+          for (const pb of bPts) {
+            const va = entPoint(a, pa)
+            const vb = entPoint(b, pb)
+            const d = Math.hypot(va[0] - vb[0], va[1] - vb[1])
+            if (!best || d < best.d) best = { pa, pb, d }
+          }
+        }
+        if (best && best.d <= WELD_TOL) endpointPair = { pa: best.pa, pb: best.pb }
+      }
+      if (endpointPair) {
+        // weld the shared point exactly, on whichever entity isn't read-only
+        // projected geometry, so the visible geometry snaps shut immediately
+        if (!isProj(1)) {
+          setEntPoint(ents[1]!, endpointPair.pb, entPoint(a, endpointPair.pa))
+        } else if (!isProj(0)) {
+          setEntPoint(ents[0]!, endpointPair.pa, entPoint(b, endpointPair.pb))
+        }
+      } else if ((isLine(a) && isCurve(b)) || (isCurve(a) && isLine(b))) {
         const lk = isLine(a) ? 0 : 1
         const ln = ents[lk] as { a: [number, number]; b: [number, number] }
         const cv = ents[1 - lk] as { c: [number, number]; r: number }
@@ -2960,7 +3030,12 @@ export class SketchController {
         const target = ca.r + cb.r // external tangency
         cb.c = [ca.c[0] + (dx / D) * target, ca.c[1] + (dy / D) * target]
       }
-      this.constraints.push({ type, refs: [ref(idxs[0]), ref(idxs[1])] })
+      this.constraints.push({
+        type,
+        refs: endpointPair
+          ? [ref(idxs[0], endpointPair.pa), ref(idxs[1], endpointPair.pb)]
+          : [ref(idxs[0]), ref(idxs[1])]
+      })
       this.lastUserConstraint = this.constraints.length - 1
       this.selected = []
       this.geomV++

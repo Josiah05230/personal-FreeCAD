@@ -262,6 +262,70 @@ await freshSketch();
   assert(atRe.entities.length >= 2, 'both the arc and the line are still there after Finish');
 }
 
+// manual Tangent (toolbar) between a line and an arc whose endpoints are only
+// CLOSE (not exactly coincident, e.g. imprecise clicking while drawing) must
+// weld that shared point, not just add an edge-level Tangent - a real user
+// .FCStd file (2026-09-12) had exactly this: a line ending near an arc's rim,
+// Tangent applied by hand, and the two points left ~0.014mm apart with no
+// Coincident anywhere - the profile solved "fine" per-constraint but the wire
+// was open, so Finish/Pad either failed or silently produced a non-solid.
+note('--- manual Tangent: a line + a NEARBY (not exactly coincident) arc endpoint welds shut ---');
+await freshSketch();
+{
+  const mLn = G.sketch.addEntity({ type: 'line', a: [0, 0], b: [30, 0] });
+  await sleep(40);
+  // arc whose START rim point is close to the line's end (30,0) but off by a
+  // deliberate, sub-pixel-at-typical-zoom fraction of a mm - same as a real
+  // imprecise click, well inside the fix's weld tolerance
+  const mArc = G.sketch.addEntity({
+    type: 'arc',
+    c: [30, 10],
+    r: 10,
+    a0: -Math.PI / 2 + 0.0015, // start point ~= (30.015, 0.0), not exactly (30,0)
+    a1: 0
+  });
+  await sleep(40);
+  const preEnts = G.sketch.entities();
+  const gap0 = Math.hypot(
+    preEnts[mLn].b[0] - (preEnts[mArc].c[0] + Math.cos(preEnts[mArc].a0) * preEnts[mArc].r),
+    preEnts[mLn].b[1] - (preEnts[mArc].c[1] + Math.sin(preEnts[mArc].a0) * preEnts[mArc].r)
+  );
+  assert(gap0 > 1e-4 && gap0 < 0.5, `the two points start out CLOSE but not identical (gap ${gap0})`);
+  G.sketch.select([mLn, mArc]);
+  assert(G.sketch.available().includes('Tangent'), 'Tangent is offered for a line + a nearby arc endpoint');
+  assert(G.sketch.applyConstraint('Tangent'), 'Tangent(line, arc-endpoint) applies');
+  await sleep(120);
+  const nc = G.sketch.newConstraints();
+  const tan = nc.find((k) => k.type === 'Tangent' && (k.refs || []).some((r) => (r.new === mLn || r.geo === mLn)));
+  assert(!!tan, 'a Tangent constraint was recorded for the line');
+  assert(
+    (tan.refs || []).every((r) => r.pt === 1 || r.pt === 2),
+    `the Tangent carries POINT refs (endpoint tangent, implies coincidence) - got refs ${JSON.stringify(tan.refs)}`
+  );
+  const postEnts = G.sketch.entities();
+  const arcStart = [
+    postEnts[mArc].c[0] + Math.cos(postEnts[mArc].a0) * postEnts[mArc].r,
+    postEnts[mArc].c[1] + Math.sin(postEnts[mArc].a0) * postEnts[mArc].r
+  ];
+  const gap1 = Math.hypot(postEnts[mLn].b[0] - arcStart[0], postEnts[mLn].b[1] - arcStart[1]);
+  assert(gap1 < 1e-6, `the shared point is now exactly welded (gap ${gap1})`);
+  // round-trip through the real solver: Finish + reopen and re-check the gap
+  await G.finishSketch();
+  await idle();
+  await sleep(220);
+  const mId = (G.getState().selection.find((s) => s.startsWith('sketch:')) || '').slice(7);
+  const mRe = await rpc('sketch.reopen', { sketchId: mId });
+  assert((mRe.constraints || []).some((k) => k.type === 'Tangent'), 'the Tangent survived Finish + reopen');
+  const reLn = mRe.entities[mLn];
+  const reArc = mRe.entities[mArc];
+  const reArcStart = [
+    reArc.c[0] + Math.cos(reArc.a0) * reArc.r,
+    reArc.c[1] + Math.sin(reArc.a0) * reArc.r
+  ];
+  const gap2 = Math.hypot(reLn.b[0] - reArcStart[0], reLn.b[1] - reArcStart[1]);
+  assert(gap2 < 1e-4, `after the real FreeCAD solve, the joint is still closed (gap ${gap2})`);
+}
+
 // ---------------------------------------------------------------- centre-point arc
 note('--- centre-point arc: centre snaps to a line endpoint (real commit() path) ---');
 await freshSketch();
