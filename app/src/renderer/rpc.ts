@@ -255,6 +255,8 @@ export interface SketchConstraint {
     | 'Concentric'
     | 'Distance'
     | 'Radius'
+    | 'Diameter'
+    | 'Angle'
     | 'PointOnObject'
     | 'Symmetric'
     | 'Midpoint'

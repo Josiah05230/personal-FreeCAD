@@ -13,7 +13,7 @@ export interface RenderImageOptions {
 }
 
 export interface RecordedSketchConstraint {
-  type: SketchConstraintType | 'Distance' | 'Radius' | 'Diameter' | 'Symmetric'
+  type: SketchConstraintType | 'Distance' | 'Radius' | 'Diameter' | 'Angle' | 'Symmetric'
   refs: Array<{ new?: number; geo?: number; sub?: number; pt?: number }>
   value?: number
 }
@@ -60,8 +60,13 @@ export interface ViewportApi {
    *  request (null if nothing sane to anchor to, should not happen live) */
   sketchDimRequestWorldPos: (
     entityIndex: number | null,
-    kind: 'linear' | 'radius' | 'distance'
+    kind: 'linear' | 'radius' | 'distance' | 'angle'
   ) => [number, number, number] | null
+  /** current angle (degrees) between the two dim-pick lines, for the
+   *  floating editor's pre-fill */
+  sketchAnglePickValue: () => number | null
+  /** commit the pending angle-between-two-lines dimension (degrees) */
+  setSketchAngleDimension: (valueDeg: number) => boolean
   /** project a world xyz to client screen coordinates (null if behind the camera) */
   projectToScreen: (world: [number, number, number]) => { x: number; y: number } | null
   sketchSelectedCount: () => number

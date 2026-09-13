@@ -2561,7 +2561,7 @@ def sketch_on(ref):
 _REOPEN_CONSTRAINTS = {
     "Horizontal", "Vertical", "Parallel", "Perpendicular", "Equal", "Tangent",
     "Coincident", "PointOnObject", "Symmetric", "Distance", "DistanceX",
-    "DistanceY", "Radius", "Diameter",
+    "DistanceY", "Radius", "Diameter", "Angle",
 }
 
 
@@ -2601,6 +2601,9 @@ def _reopen_constraints(sk, geo_to_ent):
         item = {"type": et, "refs": refs}
         if et in ("Distance", "Radius", "Diameter"):
             item["value"] = float(c.Value)
+        elif et == "Angle":
+            import math
+            item["value"] = math.degrees(float(c.Value))
         out.append(item)
     return out
 
@@ -2898,6 +2901,17 @@ def _apply_sketch_constraints(sk, constraints, emap):
                         pass
                     else:
                         sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0]), v))
+            elif ct == "Angle" and len(refs) >= 2:
+                # angle between two whole edges (lines) - value is DEGREES
+                # from the client, Sketcher.Constraint wants radians. The
+                # plain edge-edge form (no point positions) works regardless
+                # of whether the two lines actually share an endpoint, unlike
+                # the vertex-anchored 5-arg form used e.g. by Hexagon.py.
+                import math
+                v = math.radians(float(c.get("value", 0) or 0))
+                if v > 0:
+                    sk.addConstraint(Sketcher.Constraint(
+                        "Angle", gid(refs[0]), gid(refs[1]), v))
             elif ct in ("Horizontal", "Vertical") and refs:
                 if len(refs) >= 2 and refs[0].get("pt") is not None:
                     # between two points: same Y (Horizontal) / same X (Vertical)

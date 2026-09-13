@@ -1470,7 +1470,11 @@ note('--- Dimension tool: click arms + live preview, click again SWITCHES, Ctrl-
   };
   await drawLine(6, 4, 16, 7);
   await drawLine(34, 22, 49, 26);
-  await drawLine(60, -10, 66, -25);
+  // parallel to line A (same (10,3) direction) - this sub-test is
+  // specifically about a line-to-line DISTANCE, so the two lines must
+  // actually be parallel or the new angle auto-detection (a separate,
+  // deliberate test below) would correctly claim this pick instead
+  await drawLine(60, -10, 70, -7);
 
   const entsBefore = G.sketch.entities();
   assert(entsBefore.length === 3, 'drew 3 disjoint lines (got ' + entsBefore.length + ')');
@@ -1553,6 +1557,100 @@ note('--- Dimension tool: click arms + live preview, click again SWITCHES, Ctrl-
   await sleep(300);
   await G.cancelSketch();
   await idle();
+}
+
+// =================================================================
+note('--- Dimension tool: two NON-parallel lines auto-detect as an ANGLE, not a distance ---');
+{
+  // real user report + trace log, 2026-09-12: clicked one line, then another
+  // (non-parallel) line while in the Dimension tool, expecting an angle -
+  // nothing ever placed (a line-line pick only ever computed a
+  // perpendicular-GAP distance, meaningless for non-parallel lines, and the
+  // tool silently reset with no editor ever opening)
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  await G.beginSketch({ kind: 'origin', role: 'XY_Plane' });
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(60);
+
+  // two lines at a real, non-parallel, non-perpendicular angle - not
+  // touching, so this also proves the two lines need not share an endpoint
+  const drawLine = async (ax, ay, bx, by) => {
+    pressKey('l');
+    await sleep(20);
+    const p0 = await G.sketchUVToScreen(ax, ay);
+    const p1 = await G.sketchUVToScreen(bx, by);
+    clickAt(p0.x, p0.y);
+    await sleep(20);
+    clickAt(p1.x, p1.y);
+    await sleep(30);
+    pressKey('Escape');
+    await sleep(20);
+  };
+  await drawLine(0, 0, 20, 4);
+  await drawLine(30, 20, 42, -2);
+
+  const ents = G.sketch.entities();
+  assert(ents.length === 2, 'drew 2 non-parallel lines (got ' + ents.length + ')');
+  const [lineA, lineB] = ents;
+  const midOf = (l) => [(l.a[0] + l.b[0]) / 2, (l.a[1] + l.b[1]) / 2];
+  // the real angle between the two directions, for a sanity check on the
+  // pre-filled value (0-180, undirected - matches SketchController.angleValue)
+  const dot = (u, v) => u[0] * v[0] + u[1] * v[1];
+  const norm = (u) => Math.hypot(u[0], u[1]);
+  const dirA = [lineA.b[0] - lineA.a[0], lineA.b[1] - lineA.a[1]];
+  const dirB = [lineB.b[0] - lineB.a[0], lineB.b[1] - lineB.a[1]];
+  const expectedDeg = (Math.acos(Math.max(-1, Math.min(1, dot(dirA, dirB) / (norm(dirA) * norm(dirB))))) * 180) / Math.PI;
+
+  pressKey('d');
+  await sleep(30);
+  const midA = await G.sketchUVToScreen(...midOf(lineA));
+  clickAt(midA.x, midA.y);
+  await sleep(30);
+  const midB = await G.sketchUVToScreen(...midOf(lineB));
+  clickAt(midB.x, midB.y, { ctrlKey: true });
+  await sleep(60);
+  assert(!dimEditorInput(), 'Ctrl-clicking the 2nd (non-parallel) line still only ARMS the pair, does not auto-place');
+
+  const consBefore = G.sketch.newConstraints().length;
+  const emptySpot = await G.sketchUVToScreen(70, 40);
+  clickAt(emptySpot.x, emptySpot.y);
+  await sleep(60);
+  const input = dimEditorInput();
+  assert(input, 'placing the pick between 2 non-parallel lines opened the floating editor (THE BUG: this used to never open at all)');
+  if (input) {
+    const prefilled = Number(input.value);
+    assert(
+      Math.abs(prefilled - expectedDeg) < 1,
+      `the editor is pre-filled with the LIVE measured angle in degrees (got ${input.value}, expected ~${expectedDeg.toFixed(2)})`
+    );
+    typeAndCommitDimEditor(String(prefilled.toFixed(1)));
+  }
+  await sleep(80);
+  await idle();
+  const consAfter = G.sketch.newConstraints();
+  assert(consAfter.length > consBefore, 'placing the angle actually recorded a new constraint');
+  const angleCon = consAfter.find((c) => c.type === 'Angle');
+  assert(
+    angleCon && (angleCon.refs || []).length >= 2,
+    'the recorded constraint is a real 2-line Angle, not a Distance or something else: ' + JSON.stringify(consAfter)
+  );
+
+  // Finish + reopen - proves the Angle constraint actually solved for real
+  // (not just sitting in the client-side editor list) and round-trips with
+  // its value, same discipline as every other constraint type in this file
+  await G.finishSketch();
+  await idle();
+  await sleep(200);
+  const sketchId = (G.getState().selection.find((s) => s.startsWith('sketch:')) || '').slice(7);
+  assert(sketchId, 'the finished sketch id is known');
+  const reopened = await rpc('sketch.reopen', { sketchId });
+  const reAngle = (reopened.constraints || []).find((c) => c.type === 'Angle');
+  assert(
+    reAngle && Math.abs(reAngle.value - expectedDeg) < 1,
+    'the Angle constraint survived Finish + reopen with its real solved value: ' + JSON.stringify(reAngle)
+  );
 }
 
 // =================================================================

@@ -3645,11 +3645,11 @@ export function App(): JSX.Element {
 
   // shared "resolve a typed value, which may be an expression" step used by
   // both branches below
-  const resolveDimValue = useCallback(async (txt: string): Promise<number | null> => {
+  const resolveDimValue = useCallback(async (txt: string, unitKind: 'length' | 'angle' = 'length'): Promise<number | null> => {
     const value = Number(txt)
     if (!isNaN(value)) return value
     try {
-      return (await api.exprEval(txt, 'length')).value
+      return (await api.exprEval(txt, unitKind)).value
     } catch (e) {
       flashSketchNotice((e as Error).message)
       return null
@@ -3657,13 +3657,45 @@ export function App(): JSX.Element {
   }, [flashSketchNotice])
 
   const onSketchDimensionRequest = useCallback(
-    async (entityIndex: number | null, kind: 'linear' | 'radius' | 'distance') => {
+    async (entityIndex: number | null, kind: 'linear' | 'radius' | 'distance' | 'angle') => {
       const pos = vpApi.current?.sketchDimRequestWorldPos?.(entityIndex, kind) ?? null
       const screen = pos ? vpApi.current?.projectToScreen?.(pos) ?? null : null
       // fall back to the old blocking prompt if there is nowhere sane to
       // float the editor (camera looking away from the sketch plane, etc.) -
       // should not happen in practice, but never silently drop the pick
       const useFloating = !!screen
+
+      if (kind === 'angle') {
+        // two non-parallel lines picked - auto-detected as an angle rather
+        // than a (geometrically meaningless) perpendicular-gap distance,
+        // same click/switch/ctrl-add/place flow as a distance dimension
+        const cur = vpApi.current?.sketchAnglePickValue?.() ?? null
+        const initial = cur != null ? String(Math.round(cur * 100) / 100) : ''
+        const commit = async (txt: string): Promise<void> => {
+          const value = await resolveDimValue(txt, 'angle')
+          if (value == null) return
+          vpApi.current?.setSketchAngleDimension(value)
+          onSketchChange()
+        }
+        if (useFloating) {
+          setDimEditor({
+            x: screen!.x,
+            y: screen!.y,
+            value: initial,
+            hint: 'degrees',
+            onCommit: (txt) => {
+              setDimEditor(null)
+              void commit(txt)
+            },
+            onCancel: () => setDimEditor(null)
+          })
+          return
+        }
+        const txt = await promptText('Angle (degrees, or an expression)', initial)
+        if (!txt) return
+        await commit(txt)
+        return
+      }
 
       if (kind === 'distance') {
         const cur = vpApi.current?.sketchDistancePickValue?.() ?? null

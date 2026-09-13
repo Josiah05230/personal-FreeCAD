@@ -86,6 +86,7 @@ export interface RecordedConstraint {
     | 'Distance'
     | 'Radius'
     | 'Diameter'
+    | 'Angle'
     | 'PointOnObject'
     | 'Symmetric'
   refs: Array<{ new?: number; geo?: number; sub?: number; pt?: number }>
@@ -240,8 +241,11 @@ export class SketchController {
   /** per-owner-entity label nudge: [perp, along] mm for a linear dim, [du, dv]
    *  mm for a radial one. Set by dragging the dimension's value label. */
   private dimOffsets = new Map<number, [number, number]>()
-  /** where each dim label currently sits (uv) + its kind, for hit-testing */
-  private dimLabelUV = new Map<number, { uv: [number, number]; kind: 'linear' | 'radius' }>()
+  /** where each dim label currently sits (uv) + its kind, for hit-testing.
+   *  'angle' dims are click-to-select but not yet drag-repositionable (no
+   *  dimOffsets entry is meaningful for them) - a live-preview-only glyph
+   *  otherwise, always drawn at the same default position. */
+  private dimLabelUV = new Map<number, { uv: [number, number]; kind: 'linear' | 'radius' | 'angle' }>()
   private dimDrag: {
     owner: number
     kind: 'linear' | 'radius'
@@ -266,7 +270,7 @@ export class SketchController {
     refGeom?: SketchRefGeom | null,
     private readonly onDimensionRequest?: (
       entityIndex: number | null,
-      kind: 'linear' | 'radius' | 'distance',
+      kind: 'linear' | 'radius' | 'distance' | 'angle',
       pts?: PtRef[]
     ) => void,
     onSolve?: SketchSolveFn,
@@ -1126,14 +1130,72 @@ export class SketchController {
 
   /** the dimension tool has collected 2 picks - ask the app for a value */
   private fireDistanceDim(): void {
-    this.onDimensionRequest?.(null, 'distance')
+    this.onDimensionRequest?.(null, this.dimPicksAreAngle() ? 'angle' : 'distance')
+  }
+
+  /** true when both dim picks are whole LINES that are not (nearly)
+   *  parallel - "the same flow as distance": clicking two non-parallel
+   *  lines auto-detects as an angle instead of a (geometrically meaningless
+   *  for non-parallel lines) perpendicular-gap distance. A tolerance of a
+   *  couple degrees keeps two genuinely-parallel-but-not-bit-exact lines
+   *  reading as a distance, matching how they'd actually be drawn. */
+  private dimPicksAreAngle(): boolean {
+    if (this.dimPicks.length < 2) return false
+    const [p0, p1] = this.dimPicks
+    if (!('ent' in p0) || !('ent' in p1)) return false
+    const e0 = this.entities[p0.ent]
+    const e1 = this.entities[p1.ent]
+    if (!e0 || !e1 || e0.type !== 'line' || e1.type !== 'line') return false
+    const d0 = Math.hypot(e0.b[0] - e0.a[0], e0.b[1] - e0.a[1]) || 1
+    const d1 = Math.hypot(e1.b[0] - e1.a[0], e1.b[1] - e1.a[1]) || 1
+    const cross = ((e0.b[0] - e0.a[0]) / d0) * ((e1.b[1] - e1.a[1]) / d1) -
+      ((e0.b[1] - e0.a[1]) / d0) * ((e1.b[0] - e1.a[0]) / d1)
+    return Math.abs(cross) > Math.sin((2 * Math.PI) / 180) // > ~2 degrees off parallel
+  }
+
+  /** current angle (degrees, 0-180) between the two dim-pick lines */
+  angleValue(): number | null {
+    if (this.dimPicks.length < 2) return null
+    const [p0, p1] = this.dimPicks
+    if (!('ent' in p0) || !('ent' in p1)) return null
+    const e0 = this.entities[p0.ent]
+    const e1 = this.entities[p1.ent]
+    if (!e0 || !e1 || e0.type !== 'line' || e1.type !== 'line') return null
+    const d0 = Math.hypot(e0.b[0] - e0.a[0], e0.b[1] - e0.a[1]) || 1
+    const d1 = Math.hypot(e1.b[0] - e1.a[0], e1.b[1] - e1.a[1]) || 1
+    const dot = ((e0.b[0] - e0.a[0]) / d0) * ((e1.b[0] - e1.a[0]) / d1) +
+      ((e0.b[1] - e0.a[1]) / d0) * ((e1.b[1] - e1.a[1]) / d1)
+    return (Math.acos(Math.max(-1, Math.min(1, dot))) * 180) / Math.PI
+  }
+
+  /** commit the pending angle-between-two-lines dimension (degrees) */
+  setAngleDimension(valueDeg: number): boolean {
+    if (!(valueDeg > 0) || this.dimPicks.length < 2) return false
+    const [p0, p1] = this.dimPicks
+    if (!('ent' in p0) || !('ent' in p1)) return false
+    const e0 = this.entities[p0.ent]
+    const e1 = this.entities[p1.ent]
+    if (!e0 || !e1 || e0.type !== 'line' || e1.type !== 'line') return false
+    this.snapshot()
+    const refs: RecordedConstraint['refs'] = [this.dimPickRef(p0), this.dimPickRef(p1)]
+    this.constraints.push({ type: 'Angle', refs, value: valueDeg })
+    this.lastUserConstraint = this.constraints.length - 1
+    this.dimPicks = []
+    this.selectedPts = []
+    this.geomV++
+    this.redraw()
+    void this.runSolve()
+    this.scheduleSolve()
+    this.onChange()
+    return true
   }
 
   /** an empty-space click "places" whatever is currently armed in dimPicks -
    *  1 whole-entity pick -> that entity's own linear/radius dimension; 2
-   *  picks (point/point, point/line, or line/line) -> a distance. A single
-   *  lone POINT with nothing else has no dimension of its own, so this is a
-   *  no-op until a 2nd pick arrives (ctrl-click adds one without placing). */
+   *  picks (point/point, point/line, or line/line) -> a distance, or an
+   *  angle when both are non-parallel lines. A single lone POINT with
+   *  nothing else has no dimension of its own, so this is a no-op until a
+   *  2nd pick arrives (ctrl-click adds one without placing). */
   private firePendingDim(uv: [number, number]): void {
     if (this.dimPicks.length >= 2) {
       this.dimPlaceUV = uv
@@ -1169,6 +1231,22 @@ export class SketchController {
     if (e.type === 'line') return [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2]
     if (e.type === 'circle' || e.type === 'arc') return [...e.c]
     return [0, 0]
+  }
+
+  /** the (infinite-line) intersection of two line entities, or null if they
+   *  are truly parallel - used to pivot an angle dimension's arc glyph */
+  private linesIntersectUV(
+    e0: { a: [number, number]; b: [number, number] },
+    e1: { a: [number, number]; b: [number, number] }
+  ): [number, number] | null {
+    const d0x = e0.b[0] - e0.a[0]
+    const d0y = e0.b[1] - e0.a[1]
+    const d1x = e1.b[0] - e1.a[0]
+    const d1y = e1.b[1] - e1.a[1]
+    const denom = d0x * d1y - d0y * d1x
+    if (Math.abs(denom) < 1e-9) return null
+    const t = ((e1.a[0] - e0.a[0]) * d1y - (e1.a[1] - e0.a[1]) * d1x) / denom
+    return [e0.a[0] + d0x * t, e0.a[1] + d0y * t]
   }
 
   /** a RecordedConstraint ref for either a point pick or a whole-entity pick */
@@ -1250,7 +1328,10 @@ export class SketchController {
    *  screen - "floating off of the sketch part it's defining", per the user's
    *  own description of how other CAD programs do this. Returns null only if
    *  there is nothing sane to anchor to (should not happen for a live request). */
-  dimRequestWorldPos(entityIndex: number | null, kind: 'linear' | 'radius' | 'distance'): [number, number, number] | null {
+  dimRequestWorldPos(
+    entityIndex: number | null,
+    kind: 'linear' | 'radius' | 'distance' | 'angle'
+  ): [number, number, number] | null {
     // an empty-space click PLACED this dimension right here - anchor the
     // editor at the actual click point, not a re-derived midpoint, so it
     // genuinely appears where the user chose to drop it
@@ -1258,7 +1339,7 @@ export class SketchController {
       const w = this.toWorld(this.dimPlaceUV[0], this.dimPlaceUV[1])
       return [w.x, w.y, w.z]
     }
-    if (kind === 'distance') {
+    if (kind === 'distance' || kind === 'angle') {
       if (this.dimPicks.length < 2) return null
       const [p0, p1] = this.dimPicks
       const uvOf = (p: { pt: PtRef } | { ent: number }): [number, number] =>
@@ -1292,9 +1373,16 @@ export class SketchController {
   }
 
   /** Nearest dimension value-label to a uv, within a screen-sized tolerance. */
-  /** constraint index of the Distance / Radius dimension driving entity `owner` */
+  /** constraint index of the Distance / Radius / Angle dimension driving
+   *  entity `owner` - for Angle, `owner` is whichever line makeAngleDim was
+   *  called with as its owner (the first ref) */
   private dimConstraintIndex(owner: number): number {
     return this.constraints.findIndex((c) => {
+      if (c.type === 'Angle') {
+        const r0 = c.refs[0]
+        if (!r0) return false
+        return this.entIdxOfRef(r0) === owner
+      }
       if (c.type !== 'Distance' && c.type !== 'Radius' && c.type !== 'Diameter') return false
       const r0 = c.refs[0]
       if (!r0) return false
@@ -1305,9 +1393,9 @@ export class SketchController {
     })
   }
 
-  private pickDimLabel(uv: [number, number]): { owner: number; kind: 'linear' | 'radius' } | null {
+  private pickDimLabel(uv: [number, number]): { owner: number; kind: 'linear' | 'radius' | 'angle' } | null {
     const tol = this.mmForPx(30)
-    let best: { owner: number; kind: 'linear' | 'radius' } | null = null
+    let best: { owner: number; kind: 'linear' | 'radius' | 'angle' } | null = null
     let bestD = tol
     for (const [owner, v] of this.dimLabelUV) {
       const d = Math.hypot(v.uv[0] - uv[0], v.uv[1] - uv[1])
@@ -1379,16 +1467,20 @@ export class SketchController {
       if (!this.pendingCon) {
         const dl = this.pickDimLabel(uv)
         if (dl) {
-          // select the dimension (Delete removes it) and arm a label drag
+          // select the dimension (Delete removes it); an angle dim's label
+          // is not yet drag-repositionable (always drawn at its default
+          // spot), so only arm a drag for the kinds that support it
           this.selectedDim = this.dimConstraintIndex(dl.owner)
           this.selected = []
-          this.dimDrag = {
-            owner: dl.owner,
-            kind: dl.kind,
-            startUV: uv,
-            base: this.dimOffsets.get(dl.owner) ?? [0, 0]
+          if (dl.kind !== 'angle') {
+            this.dimDrag = {
+              owner: dl.owner,
+              kind: dl.kind,
+              startUV: uv,
+              base: this.dimOffsets.get(dl.owner) ?? [0, 0]
+            }
+            this.dom.style.cursor = 'move'
           }
-          this.dom.style.cursor = 'move'
           this.forceDimRedraw()
           this.onChange()
           return
@@ -3983,6 +4075,75 @@ export class SketchController {
     return g
   }
 
+  /** Angle-between-two-lines glyph: a small arc at their (infinite-line)
+   *  intersection, spanning the angle actually being dimensioned, with the
+   *  value label at its midpoint. `pivot` is the intersection point;
+   *  `dir0`/`dir1` the two lines' unit directions (either sign - only the
+   *  angle between them, mod 180, is meaningful); `nearUV` (usually the
+   *  cursor, for the live preview, or the current label position for a
+   *  committed one) picks which of the two supplementary angle wedges to
+   *  actually draw, so the glyph reads as "the angle you're pointing at". */
+  private makeAngleDim(
+    pivot: [number, number],
+    dir0: [number, number],
+    dir1: [number, number],
+    text: string,
+    driven: boolean,
+    nearUV: [number, number],
+    owner = -1,
+    selected = false
+  ): THREE.Group {
+    const g = new THREE.Group()
+    g.userData = { dimOwner: owner, dimKind: 'angle' }
+    const mat = driven ? this.dimDrivenMat : this.dimMat
+    let a0 = Math.atan2(dir0[1], dir0[0])
+    let a1 = Math.atan2(dir1[1], dir1[0])
+    // pick the wedge (out of the two supplementary pairs a line's undirected
+    // angle admits) that actually contains the near point, so the arc draws
+    // on the same side as the cursor / existing label
+    const near = Math.atan2(nearUV[1] - pivot[1], nearUV[0] - pivot[0])
+    const norm = (a: number): number => {
+      let x = a
+      while (x <= -Math.PI) x += 2 * Math.PI
+      while (x > Math.PI) x -= 2 * Math.PI
+      return x
+    }
+    const candidates: Array<[number, number]> = [
+      [a0, a1],
+      [a0, a1 + Math.PI],
+      [a0 + Math.PI, a1],
+      [a0 + Math.PI, a1 + Math.PI]
+    ]
+    let best = candidates[0]
+    let bestScore = -Infinity
+    for (const [s0, s1] of candidates) {
+      const mid = norm(s0 + norm(s1 - s0) / 2)
+      const score = Math.cos(mid - near)
+      if (score > bestScore) {
+        bestScore = score
+        best = [s0, s1]
+      }
+    }
+    a0 = best[0]
+    a1 = best[1]
+    let sweep = norm(a1 - a0)
+    const r = this.mmForPx(28)
+    const n = 20
+    const pts: [number, number][] = []
+    for (let i = 0; i <= n; i++) {
+      const a = a0 + (sweep * i) / n
+      pts.push([pivot[0] + Math.cos(a) * r, pivot[1] + Math.sin(a) * r])
+    }
+    for (let i = 0; i + 1 < pts.length; i++) this.seg(g, pts[i], pts[i + 1], mat)
+    const mid = a0 + sweep / 2
+    const lu = pivot[0] + Math.cos(mid) * (r + this.mmForPx(10))
+    const lv = pivot[1] + Math.sin(mid) * (r + this.mmForPx(10))
+    if (owner >= 0) this.dimLabelUV.set(owner, { uv: [lu, lv], kind: 'radius' })
+    g.add(this.dimLabel(text, this.toWorld(lu, lv), driven, selected))
+    g.renderOrder = 32
+    return g
+  }
+
   private redrawDims(): void {
     const dimPending = this.tool === 'dimension' && this.dimPicks.length > 0
     const live = this.pending.length > 0 || dimPending
@@ -3996,6 +4157,39 @@ export class SketchController {
     for (let ci = 0; ci < this.constraints.length; ci++) {
       const con = this.constraints[ci]
       if (con.value == null) continue
+      if (con.type === 'Angle') {
+        // both refs are whole lines (no pt) - see setAngleDimension
+        if (con.refs.length < 2) continue
+        const i0 = this.entIdxOfRef(con.refs[0])
+        const i1 = this.entIdxOfRef(con.refs[1])
+        const e0 = this.entities[i0]
+        const e1 = this.entities[i1]
+        if (!e0 || !e1 || e0.type !== 'line' || e1.type !== 'line' || e0.construction || e1.construction) continue
+        const pivot = this.linesIntersectUV(e0, e1)
+        if (!pivot) continue
+        const sel = this.selectedDim === ci
+        // "near" the existing label position if we have one, else default to
+        // between the two lines' midpoints - keeps a committed angle glyph
+        // from randomly flipping which wedge it draws on an unrelated redraw
+        const prevUV = this.dimLabelUV.get(i0)?.uv
+        const nearUV: [number, number] = prevUV ?? [
+          (this.entMidUV(i0)[0] + this.entMidUV(i1)[0]) / 2,
+          (this.entMidUV(i0)[1] + this.entMidUV(i1)[1]) / 2
+        ]
+        this.dimGroup.add(
+          this.makeAngleDim(
+            pivot,
+            [e0.b[0] - e0.a[0], e0.b[1] - e0.a[1]],
+            [e1.b[0] - e1.a[0], e1.b[1] - e1.a[1]],
+            `${this.fmt(con.value)}°`,
+            true,
+            nearUV,
+            i0,
+            sel
+          )
+        )
+        continue
+      }
       if (con.type !== 'Distance' && con.type !== 'Radius' && con.type !== 'Diameter') continue
       const r0 = con.refs[0]
       // point-to-point / point-to-line distances have no dimension glyph yet -
@@ -4077,6 +4271,29 @@ export class SketchController {
             const dx = cur[0] - e.c[0]
             const dy = cur[1] - e.c[1]
             this.dimGroup.add(this.makeRadial(e.c, e.r, `R ${this.fmt(e.r)}`, false, -1, [dx, dy]))
+          }
+        }
+      } else if (this.dimPicks.length >= 2 && this.dimPicksAreAngle()) {
+        const [p0, p1] = this.dimPicks as [{ ent: number }, { ent: number }]
+        const e0 = this.entities[p0.ent]
+        const e1 = this.entities[p1.ent]
+        if (e0 && e1 && e0.type === 'line' && e1.type === 'line') {
+          const pivot = this.linesIntersectUV(e0, e1) ?? [
+            (this.entMidUV(p0.ent)[0] + this.entMidUV(p1.ent)[0]) / 2,
+            (this.entMidUV(p0.ent)[1] + this.entMidUV(p1.ent)[1]) / 2
+          ]
+          const ang = this.angleValue()
+          if (ang != null) {
+            this.dimGroup.add(
+              this.makeAngleDim(
+                pivot,
+                [e0.b[0] - e0.a[0], e0.b[1] - e0.a[1]],
+                [e1.b[0] - e1.a[0], e1.b[1] - e1.a[1]],
+                `${this.fmt(ang)}°`,
+                false,
+                cur
+              )
+            )
           }
         }
       } else if (this.dimPicks.length >= 2) {

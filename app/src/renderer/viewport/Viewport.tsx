@@ -164,7 +164,7 @@ export function Viewport({
   onSketchChange?: () => void
   onSketchDimensionRequest?: (
     entityIndex: number | null,
-    kind: 'linear' | 'radius' | 'distance',
+    kind: 'linear' | 'radius' | 'distance' | 'angle',
     pts?: import('./SketchController').PtRef[]
   ) => void
   onSketchSolve?: import('./SketchController').SketchSolveFn
@@ -425,6 +425,9 @@ export function Viewport({
           stateRef.current?.sketch?.setDistanceDimension(v) ?? false,
         sketchDistancePickValue: () =>
           stateRef.current?.sketch?.distancePickValue() ?? null,
+        sketchAnglePickValue: () => stateRef.current?.sketch?.angleValue() ?? null,
+        setSketchAngleDimension: (v) =>
+          stateRef.current?.sketch?.setAngleDimension(v) ?? false,
         sketchDimRequestWorldPos: (entityIndex, kind) =>
           stateRef.current?.sketch?.dimRequestWorldPos(entityIndex, kind) ?? null,
         projectToScreen: (world) => {
