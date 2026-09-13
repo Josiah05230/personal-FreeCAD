@@ -733,11 +733,15 @@ export class SketchController {
       for (const c of this.constraints) {
         const r0 = c.refs[0]
         if (!r0 || this.keyOfRef(r0) !== k) continue
-        if (c.type === 'Coincident' && c.refs[1]?.geo === -1) {
+        // (see lineEndpointsAnchored's note: geo <= -3 is projected external
+        // geometry, just as fixed as the origin - entIdxOfRef aliases both
+        // to the same -1, so this must check the raw ref directly)
+        const r1geo = c.refs[1]?.geo
+        if (c.type === 'Coincident' && (r1geo === -1 || (r1geo != null && r1geo <= -3))) {
           lockX = true
           lockY = true
-        } else if (c.type === 'PointOnObject' && c.refs[1]?.geo === -1) lockY = true
-        else if (c.type === 'PointOnObject' && c.refs[1]?.geo === -2) lockX = true
+        } else if (c.type === 'PointOnObject' && r1geo === -1) lockY = true
+        else if (c.type === 'PointOnObject' && r1geo === -2) lockX = true
       }
       const ei = Number(k.split(':')[0])
       if (!loop && this.entities[ei]?.type === 'line' && this.entityHasDimension(ei)) {
@@ -802,8 +806,17 @@ export class SketchController {
           // EXPLICIT pt ref on this exact key counts.
           if (c.type === 'Tangent' && r0.pt == null) continue
           if (this.keyOfRef(r0) !== k) continue
-          if (c.type === 'Coincident' && c.refs[1]?.geo === -1) return true
-          if (c.type === 'PointOnObject' && (c.refs[1]?.geo === -1 || c.refs[1]?.geo === -2))
+          // a weld to PROJECTED (external) geometry (geo <= -3) is just as
+          // fixed as one to the origin (-1) and must anchor this point too
+          // (real user file, 2026-09-13: "the connected lines" welded to
+          // projected geometry should "only... rotate about those", not
+          // translate with a whole-body drag).
+          const g1 = c.refs[1]?.geo
+          if (c.type === 'Coincident' && (g1 === -1 || (g1 != null && g1 <= -3))) return true
+          if (
+            c.type === 'PointOnObject' &&
+            (g1 === -1 || g1 === -2 || (g1 != null && g1 <= -3))
+          )
             return true
           if (c.type === 'Tangent') return true
         }
@@ -1962,6 +1975,18 @@ export class SketchController {
         break
       case 'c':
       case 'r':
+        // dragging either handle moves the WHOLE arc (both rim points move
+        // too - 'r' changes their distance from centre, 'c' translates them
+        // with it), so anything welded/tangent to a rim point must follow
+        // the new rim position, not get averaged against it by the weld
+        // pass in solveLocal. Previously only the centre (pt 3) was pinned
+        // here, so a line coincident-welded to the arc's rim visually tore
+        // away from it while radius-dragging - most visibly when the arc's
+        // centre was ALSO independently welded to something else (a real
+        // user file: "the arc became disconnected from the lines... why is
+        // there the original version viewable, unchanged", 2026-09-13).
+        out.add(`${i}:1`)
+        out.add(`${i}:2`)
         out.add(`${i}:3`)
         break
       case 'a0':
@@ -2752,9 +2777,41 @@ export class SketchController {
   }
 
   private keyOfRef(r: { new?: number; geo?: number; pt?: number }): string | null {
+    // entIdxOfRef collapses EVERY negative geo (origin -1, axes -2, and
+    // projected/external geometry <= -3) down to the same -1 - fine for
+    // "is this the same REAL entity" comparisons elsewhere, but fatal here:
+    // keyOfRef's string is used as a weldGroups() union-find key, and two
+    // DIFFERENT datum/projected refs (e.g. two different projected edges, or
+    // the origin vs. a projected edge) would incorrectly union into the same
+    // pseudo-point "-1:pt", pulling in whatever OTHER constraint happens to
+    // reference that same collapsed key (found via a real cross-entity false
+    // positive: a Tangent constraint on an unrelated entity's point, with no
+    // connection at all to the line actually being dragged, got treated as
+    // anchoring it purely because both aliased to "-1:2"). Preserve the RAW
+    // geo value in the key for anything negative, so distinct datums never
+    // collide with each other or with a real entity index.
+    if (r.geo != null && r.geo < 0) return `g${r.geo}:${r.pt ?? 1}`
     const i = this.entIdxOfRef(r)
     if (i < 0) return null
     return `${i}:${r.pt ?? 1}`
+  }
+
+  /** the live world position of a point on PROJECTED (external) geometry,
+   *  addressed by its raw negative `geo` id (<= -3; -1/-2 are the origin and
+   *  axes, not projected geometry) - or null if `geo` does not match any
+   *  projected entity. entIdxOfRef has no entry for projected geometry (it
+   *  is not one of `this.entities`), so this looks the raw ref up directly
+   *  in `this.projected` instead. */
+  private projectedPtByGeo(geo: number, pt: number): [number, number] | null {
+    if (geo > -3) return null
+    const p = this.projected.find((pp) => pp.geoId === geo)
+    if (!p) return null
+    if (pt === 3) return p.ent.type === 'circle' || p.ent.type === 'arc' ? [...p.ent.c] : this.endpointOf(p.ent, 1)
+    if (p.ent.type === 'arc') {
+      const a = pt === 1 ? p.ent.a0 : p.ent.a1
+      return [p.ent.c[0] + Math.cos(a) * p.ent.r, p.ent.c[1] + Math.sin(a) * p.ent.r]
+    }
+    return this.endpointOf(p.ent, pt)
   }
 
   private ptOf(key: string): [number, number] {
@@ -2832,15 +2889,24 @@ export class SketchController {
   private solveLocal(pinned: Set<string>, held: Set<string> = new Set()): void {
     const groups = this.weldGroups()
 
-    // points hard-anchored to the origin / an axis, plus caller-held points
+    // points hard-anchored to the origin / an axis / projected (external)
+    // geometry, plus caller-held points. entIdxOfRef/keyOfRef alias every
+    // negative geo (origin -1, axes -2, projected <= -3) to the same -1, so
+    // a plain `refs[1]?.geo === -1` check alone would only ever catch a
+    // literal origin ref - a Coincident/PointOnObject onto PROJECTED
+    // geometry (geo <= -3) needs its own check via projectedPtByGeo (real
+    // user file, 2026-09-13: "there should've been coincidents on the
+    // projected geometry, allowing the connected lines only to rotate about
+    // those" - they were not being held fixed at all).
     const anchored = new Set<string>(held)
     for (const c of this.constraints) {
-      if (c.type === 'Coincident' && c.refs[1]?.geo === -1) {
+      const g1 = c.refs[1]?.geo
+      if (c.type === 'Coincident' && (g1 === -1 || (g1 != null && g1 <= -3))) {
         const k = this.keyOfRef(c.refs[0])
         if (k) anchored.add(k)
       } else if (
         c.type === 'PointOnObject' &&
-        (c.refs[1]?.geo === -1 || c.refs[1]?.geo === -2)
+        (g1 === -1 || g1 === -2 || (g1 != null && g1 <= -3))
       ) {
         const k = this.keyOfRef(c.refs[0])
         if (k) anchored.add(k)
@@ -2854,17 +2920,29 @@ export class SketchController {
         for (const k of g) fixed.add(k)
 
     for (let it = 0; it < 30; it++) {
-      // 1. origin / axis anchors first, so welds can lock onto them
+      // 1. origin / axis / projected-geometry anchors first, so welds can
+      // lock onto them
       for (const c of this.constraints) {
-        if (c.type === 'Coincident' && c.refs[1]?.geo === -1) {
+        const g1 = c.refs[1]?.geo
+        if (c.type === 'Coincident' && g1 === -1) {
           const k = this.keyOfRef(c.refs[0])
           if (k) this.setPtOf(k, [0, 0])
+        } else if (c.type === 'Coincident' && g1 != null && g1 <= -3) {
+          const k = this.keyOfRef(c.refs[0])
+          const pp = this.projectedPtByGeo(g1, c.refs[1]?.pt ?? 1)
+          if (k && pp) this.setPtOf(k, pp)
         } else if (c.type === 'PointOnObject') {
           const k = this.keyOfRef(c.refs[0])
           if (!k) continue
           const p = this.ptOf(k)
-          if (c.refs[1]?.geo === -1) this.setPtOf(k, [p[0], 0])
-          else if (c.refs[1]?.geo === -2) this.setPtOf(k, [0, p[1]])
+          if (g1 === -1) this.setPtOf(k, [p[0], 0])
+          else if (g1 === -2) this.setPtOf(k, [0, p[1]])
+          else if (g1 != null && g1 <= -3) {
+            // point-on-projected-CURVE: no general projection here (would
+            // need the curve's own nearest-point math); leave it to the weld
+            // pass / real sidecar solve. Only the Coincident (exact point)
+            // case above is fixed-position enough to snap directly.
+          }
         }
       }
       // 2. coincident welds - a pinned (directly dragged) key wins, then an

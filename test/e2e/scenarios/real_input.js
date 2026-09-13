@@ -446,6 +446,76 @@ note('--- Project Geometry tool: hover highlight + snap + constrain ---');
       );
       assert(gotProjRef, 'the auto-constraint actually references the PROJECTED geoId, not a stray real point');
 
+      // THE BUG (real user file, "Lid for ceramic thing.FCStd": constraint 0
+      // is `Coincident First:0 1, Second:-3 1` - a real endpoint welded
+      // directly to a PROJECTED geometry ENDPOINT, not its midpoint):
+      // entIdxOfRef/keyOfRef alias EVERY negative geo (origin -1, axes -2,
+      // projected <= -3) down to the same -1, so anchor-detection that only
+      // ever checked `refs[1]?.geo === -1` could not tell "welded to the
+      // origin" apart from "welded to projected geometry", and treated the
+      // latter as not anchored at all. A whole-body drag of a line with such
+      // a weld then dragged the projected-welded endpoint right along with
+      // it instead of pivoting/refusing there (user report, 2026-09-13:
+      // "there should've been coincidents on the projected geometry,
+      // allowing the connected lines only to rotate about those"). Snap onto
+      // proj0's actual endpoint B ([40,20], off-axis so it is not confounded
+      // with the always-on axis-anchor) - snapping onto its MIDPOINT (as
+      // above) produces a Symmetric constraint instead, a different case.
+      pressKey('l');
+      await sleep(20);
+      const projEndFar = await G.sketchUVToScreen(proj0.b[0] + 10, proj0.b[1] - 10);
+      const projEndPt = await G.sketchUVToScreen(proj0.b[0], proj0.b[1]);
+      assert(projEndFar && projEndPt, 'endpoint-snap line draw points project onto the screen');
+      const entsBeforeEp = G.sketch.entities().length;
+      if (projEndFar && projEndPt) {
+        clickAt(projEndFar.x, projEndFar.y); // 1st click: line start
+        await sleep(20);
+        clickAt(projEndPt.x, projEndPt.y); // 2nd click: line end, ON the projected line's endpoint
+        await sleep(20);
+        pressKey('Escape');
+        await sleep(20);
+      }
+      const consAfterEp = G.sketch.newConstraints();
+      const gotCoincidentToProj = consAfterEp.some(
+        (c) =>
+          c.type === 'Coincident' &&
+          (c.refs || []).some((r) => typeof r.geo === 'number' && r.geo === proj0.geoId)
+      );
+      assert(
+        gotCoincidentToProj,
+        'snapping a new line endpoint onto a projected LINE ENDPOINT recorded a Coincident to it: ' +
+          JSON.stringify(consAfterEp)
+      );
+
+      const newLnIdx = entsBeforeEp;
+      const newLnBefore = JSON.parse(JSON.stringify(G.sketch.entities()[newLnIdx]));
+      const bodyU = (newLnBefore.a[0] * 3 + newLnBefore.b[0]) / 4;
+      const bodyV = (newLnBefore.a[1] * 3 + newLnBefore.b[1]) / 4;
+      const dpt0 = await G.sketchUVToScreen(bodyU, bodyV);
+      const dpt1 = await G.sketchUVToScreen(bodyU + 15, bodyV + 15);
+      assert(dpt0 && dpt1, 'projected-welded line body drag points project onto the screen');
+      const elProj = viewportEl();
+      if (dpt0 && dpt1) {
+        fire(elProj, 'pointermove', dpt0.x, dpt0.y);
+        fire(elProj, 'pointerdown', dpt0.x, dpt0.y);
+        for (let i = 1; i <= 6; i++) {
+          fire(elProj, 'pointermove', dpt0.x + ((dpt1.x - dpt0.x) * i) / 6, dpt0.y + ((dpt1.y - dpt0.y) * i) / 6, {
+            buttons: 1
+          });
+        }
+        const newLnMid = G.sketch.entities()[newLnIdx];
+        // whichever endpoint is welded to the projection must stay exactly
+        // where the projected geometry actually is - not drift with the drag
+        const gapA = Math.hypot(newLnMid.a[0] - proj0.b[0], newLnMid.a[1] - proj0.b[1]);
+        const gapB = Math.hypot(newLnMid.b[0] - proj0.b[0], newLnMid.b[1] - proj0.b[1]);
+        assert(
+          Math.min(gapA, gapB) < 0.5,
+          `the endpoint welded to a projected geometry endpoint stayed pinned to it during a whole-line drag (gapA ${gapA.toFixed(3)}, gapB ${gapB.toFixed(3)})`
+        );
+        fire(elProj, 'pointerup', dpt1.x, dpt1.y, { buttons: 0 });
+        await sleep(60);
+      }
+
       // explicit "click the constraint button FIRST, then click the geometry"
       // flow (Fusion's ribbon-driven constraint UX): Coincident, then click a
       // NEW arc's CENTRE point and the projected line's endpoint - this
@@ -2224,12 +2294,22 @@ note('--- an arc with only ONE tangent join still has a draggable radius ---');
 
   const ln2 = G.sketch.addEntity({ type: 'line', a: [-20, 8], b: [-2, 8] });
   const arc2 = G.sketch.addEntity({ type: 'arc', c: [-2, 0], r: 8, a0: Math.PI / 2, a1: Math.PI });
+  // a second line welded (Coincident only, deliberately NO Tangent) to the
+  // arc's OTHER rim endpoint - a plain "hook" join, matching the shape in
+  // the user's screenshot. This end is not tangent-anchored (so it does not
+  // trip arcTangentAnchored's block), and unlike the ln2/arc2 join below, it
+  // has no Tangent constraint for solveLocal's pivot pass (step 3) to use to
+  // compensate - so it isolates the weld-averaging bug from that pass.
+  const ln3 = G.sketch.addEntity({ type: 'line', a: [-10, -8], b: [-25, -3] });
   await sleep(40);
   G.sketch.selectPoints([{ e: ln2, pt: 2 }, { e: arc2, pt: 1 }]);
   assert(G.sketch.applyConstraint('Coincident'), 'weld line end to arc start');
   await sleep(60);
   G.sketch.select([ln2, arc2]);
   assert(G.sketch.applyConstraint('Tangent'), 'tangent the ONLY join this arc has');
+  await sleep(60);
+  G.sketch.selectPoints([{ e: arc2, pt: 2 }, { e: ln3, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld arc end to second line (no tangent)');
   await sleep(300);
 
   pressKey('Escape');
@@ -2260,7 +2340,134 @@ note('--- an arc with only ONE tangent join still has a draggable radius ---');
   // was not refused - see the note in the previous test about not asserting
   // "no notice at all" against a possibly-stale notice from elsewhere)
 
+  // THE BUG (user report + trace, 2026-09-13: "the arc became disconnected
+  // from the lines... why is there the original version viewable, unchanged
+  // after dragging"): draggedKeys() only pinned the arc's CENTRE point for a
+  // radius drag, not its rim endpoints - so solveLocal's weld pass treated
+  // the rim/line-endpoint weld as an ordinary pair and AVERAGED the two
+  // positions instead of snapping the line's endpoint onto the arc's new
+  // rim. The line visibly tore away from the resized arc while the drag was
+  // held. Checked here, still mid-drag, matching the actual reported
+  // scenario (this arc's rim endpoint 1 is welded to ln2's endpoint 2).
+  const lnMid = G.sketch.entities()[ln2];
+  const rimNow = [
+    midArc2.c[0] + midArc2.r * Math.cos(midArc2.a0),
+    midArc2.c[1] + midArc2.r * Math.sin(midArc2.a0),
+  ];
+  const weldGap = Math.hypot(lnMid.b[0] - rimNow[0], lnMid.b[1] - rimNow[1]);
+  assert(
+    weldGap < 0.5,
+    `the tangent-joined line endpoint followed the arc's new rim position after a radius drag, did not tear away (gap ${weldGap.toFixed(3)})`
+  );
+  // the OTHER end - plain Coincident, no Tangent, so nothing but the rim-pin
+  // fix keeps it welded (see the comment above ln3's construction)
+  const ln3Mid = G.sketch.entities()[ln3];
+  const rim2Now = [
+    midArc2.c[0] + midArc2.r * Math.cos(midArc2.a1),
+    midArc2.c[1] + midArc2.r * Math.sin(midArc2.a1),
+  ];
+  const weldGap2 = Math.hypot(ln3Mid.a[0] - rim2Now[0], ln3Mid.a[1] - rim2Now[1]);
+  assert(
+    weldGap2 < 0.5,
+    `the plain-Coincident (non-tangent) hook join also followed the arc's new rim, did not tear away (gap ${weldGap2.toFixed(3)})`
+  );
+
   fire(el7, 'pointerup', v1.x, v1.y, { buttons: 0 });
+  await sleep(150);
+
+  await G.cancelSketch();
+  await idle();
+}
+
+note('--- radius-dragging an arc whose CENTRE is also welded to a shared vertex does not detach it (real repro) ---');
+{
+  // Faithful repro of a real user file ("Lid for ceramic thing.FCStd",
+  // Sketch001, arc geo 3): rim pt1 plain-Coincident to a line end, rim pt2
+  // Tangent to another line end (so arcTangentAnchored's count is only 1,
+  // radius drag stays unblocked - matches the trace, no refusal notice) -
+  // AND SEPARATELY the arc's CENTRE is Coincident-welded to a vertex shared
+  // by two more lines (a little hinge/notch through the centre). The
+  // earlier fix (pinning rim pts 1/2 for a radius drag) was verified against
+  // a simpler 2-line construction that lacked this centre weld - this is
+  // the actual reported case (user: "the arc became disconnected from the
+  // lines... why is there the original version viewable, unchanged").
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  await G.beginSketch({ kind: 'origin', role: 'XY_Plane' });
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(60);
+
+  const lnA = G.sketch.addEntity({ type: 'line', a: [-2, 0], b: [-20, 2] }); // rim1 side
+  const lnB = G.sketch.addEntity({ type: 'line', a: [12, -3], b: [22, -6] }); // rim2 side (tangent)
+  const arcC = G.sketch.addEntity({ type: 'arc', c: [5, -2], r: 7, a0: Math.PI, a1: -0.3 });
+  const hingeA = G.sketch.addEntity({ type: 'line', a: [-8, -20], b: [5, -2] }); // pt2 -> centre
+  const hingeB = G.sketch.addEntity({ type: 'line', a: [5, -2], b: [-9, -25] }); // pt1 -> centre
+  await sleep(40);
+
+  G.sketch.selectPoints([{ e: arcC, pt: 1 }, { e: lnA, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld arc rim1 to lnA (plain, no tangent)');
+  await sleep(60);
+  G.sketch.selectPoints([{ e: arcC, pt: 2 }, { e: lnB, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld arc rim2 to lnB');
+  await sleep(60);
+  G.sketch.select([arcC, lnB]);
+  assert(G.sketch.applyConstraint('Tangent'), 'tangent arc rim2 <-> lnB (the ONLY tangent join)');
+  await sleep(60);
+  G.sketch.selectPoints([{ e: hingeA, pt: 2 }, { e: arcC, pt: 3 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld hingeA end to arc CENTRE');
+  await sleep(60);
+  G.sketch.selectPoints([{ e: hingeB, pt: 1 }, { e: arcC, pt: 3 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld hingeB start to arc CENTRE');
+  await sleep(300);
+
+  pressKey('Escape');
+  await sleep(60);
+
+  const beforeArcC = JSON.parse(JSON.stringify(G.sketch.entities()[arcC]));
+  const midAngleC = (Math.PI + -0.3) / 2 - Math.PI; // a genuine mid-rim angle, off both endpoints
+  const rimUc = 5 + 7 * Math.cos(midAngleC);
+  const rimVc = -2 + 7 * Math.sin(midAngleC);
+  const el8 = viewportEl();
+  const w0 = await G.sketchUVToScreen(rimUc, rimVc);
+  const w1 = await G.sketchUVToScreen(5 + (rimUc - 5) * 1.9, -2 + (rimVc - -2) * 1.9);
+  assert(w0 && w1, 'centre-welded arc radius-drag points project onto the screen');
+  fire(el8, 'pointermove', w0.x, w0.y);
+  fire(el8, 'pointerdown', w0.x, w0.y);
+  for (let i = 1; i <= 6; i++) {
+    fire(el8, 'pointermove', w0.x + ((w1.x - w0.x) * i) / 6, w0.y + ((w1.y - w0.y) * i) / 6, { buttons: 1 });
+  }
+  const midArcC = G.sketch.entities()[arcC];
+  assert(
+    Math.abs(midArcC.r - beforeArcC.r) > 1,
+    `centre-welded arc's radius still changes on a radius-handle drag (${beforeArcC.r} -> ${midArcC.r})`
+  );
+
+  // the centre weld must follow (hingeA/hingeB's shared endpoint should
+  // still sit exactly on the arc's - possibly moved - centre)
+  const hingeAMid = G.sketch.entities()[hingeA];
+  const hingeBMid = G.sketch.entities()[hingeB];
+  const centreGap = Math.hypot(hingeAMid.b[0] - midArcC.c[0], hingeAMid.b[1] - midArcC.c[1]);
+  const centreGap2 = Math.hypot(hingeBMid.a[0] - midArcC.c[0], hingeBMid.a[1] - midArcC.c[1]);
+  assert(
+    centreGap < 0.5 && centreGap2 < 0.5,
+    `the centre-welded hinge lines stayed attached to the arc's centre, did not tear away (gaps ${centreGap.toFixed(3)}, ${centreGap2.toFixed(3)})`
+  );
+
+  // and the rim welds must ALSO still hold (this is the actual reported
+  // symptom - the rim, not just the centre, detaching)
+  const lnAMid = G.sketch.entities()[lnA];
+  const lnBMid = G.sketch.entities()[lnB];
+  const rim1Now = [midArcC.c[0] + midArcC.r * Math.cos(midArcC.a0), midArcC.c[1] + midArcC.r * Math.sin(midArcC.a0)];
+  const rim2Now = [midArcC.c[0] + midArcC.r * Math.cos(midArcC.a1), midArcC.c[1] + midArcC.r * Math.sin(midArcC.a1)];
+  const rimGap1 = Math.hypot(lnAMid.a[0] - rim1Now[0], lnAMid.a[1] - rim1Now[1]);
+  const rimGap2 = Math.hypot(lnBMid.a[0] - rim2Now[0], lnBMid.a[1] - rim2Now[1]);
+  assert(
+    rimGap1 < 0.5 && rimGap2 < 0.5,
+    `the rim-welded lines stayed attached to the arc's new rim too, did not tear away (gaps ${rimGap1.toFixed(3)}, ${rimGap2.toFixed(3)})`
+  );
+
+  fire(el8, 'pointerup', w1.x, w1.y, { buttons: 0 });
   await sleep(150);
 
   await G.cancelSketch();
