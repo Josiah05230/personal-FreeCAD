@@ -185,6 +185,23 @@ const xformOp = (v: OpValues): 'join' | 'cut' | 'intersect' | 'newbody' =>
 
 export function App(): JSX.Element {
   const [status, setStatus] = useState<Status>({ phase: 'boot' })
+  // shown in the status bar so the user can always tell which build they're
+  // on at a glance (user request, 2026-09-12: "I just want to always make
+  // sure/know I am using the newest one") - read once from the packaged
+  // app's real package.json via the main process, not hand-maintained here
+  const [appVersion, setAppVersion] = useState<string>('')
+  useEffect(() => {
+    let live = true
+    void window.cad
+      .appVersion()
+      .then((v) => {
+        if (live) setAppVersion(v)
+      })
+      .catch(() => undefined)
+    return () => {
+      live = false
+    }
+  }, [])
   const [meshes, setMeshes] = useState<RenderMesh[]>([])
   const [sketches, setSketches] = useState<SketchRender[]>([])
   const [datums, setDatums] = useState<DatumDTO[]>([])
@@ -4207,6 +4224,7 @@ export function App(): JSX.Element {
                 ? 'engine offline'
                 : 'connecting…'}
         </span>
+        {appVersion && <span title="GWT-CAD version">GWT-CAD v{appVersion}</span>}
         <span className="sb-spacer" />
         <span>{selection.length ? `${selection.length} selected` : ''}</span>
         <span>{docPath ? basename(docPath) : 'unsaved'}</span>

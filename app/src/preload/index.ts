@@ -39,6 +39,8 @@ const cad = {
     return ipcRenderer.invoke('cad:rpc', method, params) as Promise<T>
   },
   sidecarStatus: () => ipcRenderer.invoke('cad:sidecarStatus') as Promise<{ started: boolean }>,
+  /** the packaged app's own version (package.json), for the status bar */
+  appVersion: () => ipcRenderer.invoke('app:version') as Promise<string>,
   /** fires after the geometry engine crashed and was respawned (doc is now empty) */
   onSidecarRespawned: (fn: () => void) => {
     const h = (): void => fn()

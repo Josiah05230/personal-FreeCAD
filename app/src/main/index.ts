@@ -84,6 +84,13 @@ app.whenReady().then(async () => {
     }
   })
   ipcMain.handle('cad:sidecarStatus', () => ({ started: !!sidecar }))
+  // app's own package.json version, shown in the status bar so the user can
+  // always tell which build they're on at a glance (user request, 2026-09-12:
+  // "I just want to always make sure/know I am using the newest one") -
+  // app.getVersion() reads the packaged app's real version, not a
+  // separately-maintained constant that could drift from what actually
+  // shipped
+  ipcMain.handle('app:version', () => app.getVersion())
 
   ipcMain.handle('fs:listDir', async (_e, dir?: string) => {
     const target = dir && dir.length ? resolve(dir) : homedir()

@@ -692,6 +692,23 @@ export class SketchController {
       }
       return target
     }
+    // an arc/circle's radius or centre handle: if the arc is tangent-joined
+    // to another entity at one of its rim endpoints, its radius is NOT a
+    // free DOF the drag can honour in isolation - solveLocal's tangent pass
+    // re-pivots the centre about EACH tangent-shared endpoint separately to
+    // keep the (now different) radius tangent there, and with joins at BOTH
+    // ends those two pivots generally cannot agree on one centre at once,
+    // fighting each other every relaxation pass and producing exactly the
+    // flipped, self-crossing shape from the "got all crazy" report (this
+    // time reached via the arc's RADIUS handle, not a line's whole body -
+    // 2026-09-12 follow-up: "sketch drag start (entity) idx:3, entType:arc,
+    // handle:r"). Refuse it outright, same contract as the whole-line case.
+    if ((handle === 'r' || handle === 'c') && e.type === 'arc' && this.arcTangentAnchored(idx)) {
+      this.noticeOnce(
+        'This arc is tangent to another curve - drag its endpoint instead, or remove the tangent constraint first.'
+      )
+      return null
+    }
     if (handle !== 'a' && handle !== 'b') return target
     if (e.type !== 'line' && e.type !== 'rect') return target
     const cur: [number, number] = handle === 'a' ? [...e.a] : [...e.b]
@@ -775,6 +792,23 @@ export class SketchController {
         // entity is not translating along with this one
         const otherIdx = Number(k.split(':')[0])
         if (otherIdx !== idx && grp.size > 1 && !(loop && loop.includes(otherIdx))) return true
+      }
+    }
+    return false
+  }
+
+  /** true if arc `idx` has a Tangent join at either of its rim endpoints (1
+   *  or 2) - meaning its radius/centre are pinned by the neighbouring
+   *  entity's fixed position, not a free DOF a drag can change safely. See
+   *  the comment at this check's call site in clampDragTarget. */
+  private arcTangentAnchored(idx: number): boolean {
+    for (const pt of [1, 2] as const) {
+      const key = `${idx}:${pt}`
+      for (const c of this.constraints) {
+        if (c.type !== 'Tangent') continue
+        const k0 = this.keyOfRef(c.refs[0] ?? {})
+        const k1 = this.keyOfRef(c.refs[1] ?? {})
+        if (k0 === key || k1 === key) return true
       }
     }
     return false

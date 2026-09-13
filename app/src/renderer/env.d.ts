@@ -35,6 +35,7 @@ interface CadBridge {
   isE2E: boolean
   rpc<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>
   sidecarStatus(): Promise<{ started: boolean }>
+  appVersion(): Promise<string>
   onSidecarRespawned(fn: () => void): () => void
   listDir(dir?: string): Promise<DirListing>
   saveDialog(defaultPath?: string): Promise<string | null>

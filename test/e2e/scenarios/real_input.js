@@ -1873,9 +1873,14 @@ note('--- dragging the BODY of a tangent-joined line (not just an endpoint) is r
   // genuinely blocked drag apart from one that was allowed to move and got
   // mostly (but not perfectly) undone by relaxation.
   fire(el2, 'pointermove', q0.x + (q1.x - q0.x) / 6, q0.y + (q1.y - q0.y) / 6, { buttons: 1 });
-  await sleep(30);
+  // poll rather than a single fixed sleep - the notice is a React state
+  // update reacting to this event, not synchronous with fire() above.
+  // Match the specific whole-line wording, not a loose /tangent|constrain/,
+  // since a stale notice from elsewhere could satisfy a loose match even
+  // with this exact check disabled.
+  await waitFor(() => G.getState().notice && /tied to another curve/i.test(G.getState().notice), 2000);
   assert(
-    G.getState().notice && /tangent|constrain/i.test(G.getState().notice),
+    G.getState().notice && /tied to another curve/i.test(G.getState().notice),
     'a notice explains why the drag was refused: ' + JSON.stringify(G.getState().notice)
   );
   const rTopFirst = G.sketch.entities()[rTop];
@@ -1948,6 +1953,168 @@ note('--- an unconstrained, unwelded line can still be whole-dragged normally --
     `an unconstrained free line still translates rigidly on a whole-body drag (a.y moved ${(mid3.a[1] - before3.a[1]).toFixed(2)}, b.y moved ${(mid3.b[1] - before3.b[1]).toFixed(2)}, expected ~13)`
   );
   fire(el3, 'pointerup', s1.x, s1.y, { buttons: 0 });
+  await sleep(150);
+
+  await G.cancelSketch();
+  await idle();
+}
+
+// =================================================================
+note('--- dragging the RADIUS handle of a tangent-anchored arc is refused, not corrupted ---');
+{
+  // Follow-up to the whole-line-drag fix above: the SAME "got all crazy"
+  // corruption is reachable a different way - dragging an arc's RADIUS
+  // handle (not a line's body) when that arc is tangent-joined to a fixed
+  // neighbour at one or both rim endpoints. solveLocal's tangent pass pivots
+  // the arc's centre about EACH tangent-shared endpoint separately to match
+  // the (now-changed) radius there; with joins at BOTH ends those two
+  // pivots generally cannot agree on a single centre, fighting each other
+  // every relaxation pass - a second real report, same underlying shape,
+  // different handle (2026-09-12 follow-up log + screenshot: "sketch drag
+  // start (entity) idx:3, entType:arc, handle:r").
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  await G.beginSketch({ kind: 'origin', role: 'XY_Plane' });
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(60);
+
+  const rTop = G.sketch.addEntity({ type: 'line', a: [-10, 8], b: [10, 8] });
+  const rBot = G.sketch.addEntity({ type: 'line', a: [10, -8], b: [-10, -8] });
+  const aR = G.sketch.addEntity({ type: 'arc', c: [10, 0], r: 8, a0: -Math.PI / 2, a1: Math.PI / 2 });
+  const aL = G.sketch.addEntity({ type: 'arc', c: [-10, 0], r: 8, a0: Math.PI / 2, a1: (3 * Math.PI) / 2 });
+  await sleep(40);
+  G.sketch.selectPoints([{ e: rTop, pt: 2 }, { e: aR, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld top-right corner');
+  await sleep(60);
+  G.sketch.selectPoints([{ e: aR, pt: 2 }, { e: rBot, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld bottom-right corner');
+  await sleep(60);
+  G.sketch.selectPoints([{ e: rBot, pt: 2 }, { e: aL, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld bottom-left corner');
+  await sleep(60);
+  G.sketch.selectPoints([{ e: aL, pt: 2 }, { e: rTop, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld top-left corner');
+  await sleep(60);
+  // tangent the RIGHT arc (the one this test drags) at both its joins FIRST,
+  // so the over-constraint veto (which only ever drops the MOST RECENTLY
+  // applied constraint) cannot end up dropping either of them
+  G.sketch.select([rTop, aR]);
+  assert(G.sketch.applyConstraint('Tangent'), 'tangent top line <-> right arc');
+  await sleep(60);
+  G.sketch.select([aR, rBot]);
+  assert(G.sketch.applyConstraint('Tangent'), 'tangent right arc <-> bottom line');
+  await sleep(60);
+  G.sketch.select([rBot, aL]);
+  assert(G.sketch.applyConstraint('Tangent'), 'tangent bottom line <-> left arc');
+  await sleep(60);
+  G.sketch.select([aL, rTop]);
+  assert(G.sketch.applyConstraint('Tangent'), 'tangent left arc <-> top line');
+  await sleep(300);
+
+  const consCheck = G.sketch.newConstraints();
+  const rightArcTangents = consCheck.filter(
+    (c) =>
+      c.type === 'Tangent' &&
+      (c.refs || []).some((r) => r.new === aR || r.geo === aR)
+  );
+  assert(
+    rightArcTangents.length === 2,
+    'both of the right arc\'s tangent joins (the one this test drags) survived the redundancy veto: ' +
+      JSON.stringify(consCheck.map((c) => c.type))
+  );
+
+  pressKey('Escape');
+  await sleep(60);
+
+  const beforeR = JSON.parse(JSON.stringify(G.sketch.entities()[aR]));
+
+  // grab the RIGHT arc's radius handle (a point on its rim, away from
+  // either endpoint) and drag it outward
+  const el4 = viewportEl();
+  // rightmost point of the right arc (c=[10,0], r=8 -> [18,0])
+  const r0 = await G.sketchUVToScreen(18, 0);
+  const r1 = await G.sketchUVToScreen(24, 0);
+  assert(r0 && r1, 'radius-drag start/end points project onto the screen');
+  fire(el4, 'pointermove', r0.x, r0.y);
+  fire(el4, 'pointerdown', r0.x, r0.y);
+  fire(el4, 'pointermove', r0.x + (r1.x - r0.x) / 6, r0.y + (r1.y - r0.y) / 6, { buttons: 1 });
+  // poll rather than a single fixed sleep + check - the notice update is a
+  // React state set reacting to a real event dispatch, not synchronous with
+  // the fire() call above, so a single short sleep can race it (seen in
+  // practice: an earlier fixed 30ms sleep sometimes read the state before
+  // this event's own notice had landed). Match the arc-specific wording, not
+  // just /tangent/ - the PREVIOUS test's own tangent notice ("...line is
+  // tied to another curve...") can still be sitting in state for a few
+  // seconds (the banner auto-clears after 5s), so a loose match could pass
+  // even with this exact check disabled.
+  await waitFor(() => G.getState().notice && /this arc is tangent/i.test(G.getState().notice), 2000);
+  assert(
+    G.getState().notice && /this arc is tangent/i.test(G.getState().notice),
+    'a notice explains why the radius drag was refused: ' + JSON.stringify(G.getState().notice)
+  );
+  const arcRFirst = G.sketch.entities()[aR];
+  assert(
+    Math.abs(arcRFirst.r - beforeR.r) < 0.01,
+    `tangent-anchored arc's radius did not change at all, even on the very first pointermove (${beforeR.r} -> ${arcRFirst.r})`
+  );
+  for (let i = 2; i <= 6; i++) {
+    fire(el4, 'pointermove', r0.x + ((r1.x - r0.x) * i) / 6, r0.y + ((r1.y - r0.y) * i) / 6, { buttons: 1 });
+  }
+  await sleep(60);
+  const arcRMid = G.sketch.entities()[aR];
+  const arcLMid = G.sketch.entities()[aL];
+  assert(
+    Math.abs(arcRMid.r - beforeR.r) < 0.01,
+    `tangent-anchored arc's radius is refused for the whole drag, not just the first move (${beforeR.r} -> ${arcRMid.r})`
+  );
+  assert(
+    arcLMid.r > 1 && arcLMid.r < 40,
+    `the OTHER arc (not even the one being dragged) stayed sane too (r=${arcLMid.r.toFixed(2)})`
+  );
+  fire(el4, 'pointerup', r1.x, r1.y, { buttons: 0 });
+  await sleep(150);
+
+  await G.cancelSketch();
+  await idle();
+}
+
+// a genuinely free arc (no tangent join) should still have a draggable
+// radius - this fix must not block ordinary, unconstrained resizing
+note('--- an unconstrained arc\'s radius can still be dragged normally ---');
+{
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  await G.beginSketch({ kind: 'origin', role: 'XY_Plane' });
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(60);
+
+  const ac = G.sketch.addEntity({ type: 'arc', c: [5, 5], r: 6, a0: 0, a1: Math.PI });
+  await sleep(60);
+  pressKey('Escape');
+  await sleep(60);
+
+  const beforeAc = JSON.parse(JSON.stringify(G.sketch.entities()[ac]));
+  const el5 = viewportEl();
+  // the TOP of the arc's rim (angle pi/2), away from BOTH endpoints
+  // (a0=0 is at [11,5], a1=pi is at [-1,5]) - grabHandle checks the
+  // endpoints before the generic ring-drag, so clicking AT an endpoint
+  // would pick 'a0'/'a1' instead of the 'r' handle this test means to drive
+  const t0 = await G.sketchUVToScreen(5, 11);
+  const t1 = await G.sketchUVToScreen(5, 17);
+  assert(t0 && t1, 'free-arc radius-drag points project onto the screen');
+  fire(el5, 'pointermove', t0.x, t0.y);
+  fire(el5, 'pointerdown', t0.x, t0.y);
+  for (let i = 1; i <= 6; i++) {
+    fire(el5, 'pointermove', t0.x + ((t1.x - t0.x) * i) / 6, t0.y + ((t1.y - t0.y) * i) / 6, { buttons: 1 });
+  }
+  const midAc = G.sketch.entities()[ac];
+  assert(
+    midAc.r > beforeAc.r + 3,
+    `an unconstrained free arc's radius still grows on a radius-handle drag (${beforeAc.r} -> ${midAc.r})`
+  );
+  fire(el5, 'pointerup', t1.x, t1.y, { buttons: 0 });
   await sleep(150);
 
   await G.cancelSketch();
