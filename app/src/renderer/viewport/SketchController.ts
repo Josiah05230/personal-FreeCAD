@@ -666,11 +666,27 @@ export class SketchController {
     const e = this.entities[idx]
     if (!e) return target
 
-    // whole-entity / body moves: only blocked when the entity is fully solved
+    // whole-entity / body moves: blocked when the entity is fully solved, OR
+    // when either endpoint is welded/anchored in a way a rigid translation of
+    // just this entity cannot honour (an axis anchor, or a Tangent join to
+    // another entity that does not itself translate along - solveLocal only
+    // PIVOTS a tangent arc's centre about the shared point, it never slides
+    // it, so dragging the line out from under it snaps the join to a moving
+    // target every iteration and can flip/self-cross the whole chain - user
+    // report + screenshot, 2026-09-12: dragging one side of a stadium sketch
+    // "got all crazy"). A single-endpoint (a/b) drag already gets this right
+    // per-point below; whole-entity drag previously skipped that check
+    // entirely and only asked "is the WHOLE entity fully solved yet?".
     if (handle === 'whole' || handle === 'ab' || handle === 'ba') {
       if (this.constrainedSet.has(idx)) {
         this.noticeOnce(
           'This geometry is fully constrained - remove a dimension or constraint to move it.'
+        )
+        return null
+      }
+      if (e.type === 'line' && this.wholeLineDragBlocked(idx)) {
+        this.noticeOnce(
+          'One end of this line is tied to another curve (tangent or coincident) - move that point directly instead.'
         )
         return null
       }
@@ -725,6 +741,43 @@ export class SketchController {
     }
     if (!lockX && !lockY) return target
     return [lockX ? cur[0] : target[0], lockY ? cur[1] : target[1]]
+  }
+
+  /** true if line `idx`'s whole-body rigid translation cannot be honoured
+   *  because one of its endpoints is axis-anchored or shares a Tangent join
+   *  with another entity (solveLocal only pivots a joined arc about the
+   *  shared point - it never slides the arc to follow, so a rigid line
+   *  translation would tear the join apart every solve iteration instead of
+   *  moving it cleanly). Mirrors the per-point checks clampDragTarget already
+   *  does for a single-endpoint (a/b) drag, applied to BOTH of this line's
+   *  endpoints since a whole-line drag moves them together. */
+  private wholeLineDragBlocked(idx: number): boolean {
+    const groups = this.weldGroups()
+    // a rectangle loop's 4 sides translate together (the special-case
+    // rigid-move path just above this handler in applyDrag), so a weld to
+    // another side of the SAME loop is not a reason to block the drag
+    const loop = this.rectLoopOf(idx)
+    for (const pt of [1, 2] as const) {
+      const key = `${idx}:${pt}`
+      const grp = groups.find((s) => s.has(key)) ?? new Set<string>([key])
+      for (const k of grp) {
+        for (const c of this.constraints) {
+          const r0 = c.refs[0]
+          if (!r0 || this.keyOfRef(r0) !== k) continue
+          if (c.type === 'Coincident' && c.refs[1]?.geo === -1) return true
+          if (c.type === 'PointOnObject' && (c.refs[1]?.geo === -1 || c.refs[1]?.geo === -2))
+            return true
+          if (c.type === 'Tangent') return true
+        }
+        // a weld to a DIFFERENT entity (not just another endpoint of the
+        // same dragged line, and not another side of the same rect loop) is
+        // itself a reason to refuse a rigid whole-body move - that other
+        // entity is not translating along with this one
+        const otherIdx = Number(k.split(':')[0])
+        if (otherIdx !== idx && grp.size > 1 && !(loop && loop.includes(otherIdx))) return true
+      }
+    }
+    return false
   }
 
   private static cloneEnt(e: SketchEntity): SketchEntity {

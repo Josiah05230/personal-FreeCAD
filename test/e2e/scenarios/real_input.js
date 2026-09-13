@@ -1768,9 +1768,187 @@ note('--- dragging one side of a tangent stadium does not visually corrupt the r
   fire(el, 'pointerup', p1.x, p1.y, { buttons: 0 });
   await sleep(250);
   assert(
-    !G.getState().sketchNotice,
-    'no notice/error after the drag settles (' + (G.getState().sketchNotice || '') + ')'
+    !G.getState().notice,
+    'no notice/error after the drag settles (' + (G.getState().notice || '') + ')'
   );
+
+  await G.cancelSketch();
+  await idle();
+}
+
+// =================================================================
+note('--- dragging the BODY of a tangent-joined line (not just an endpoint) is refused, not corrupted ---');
+{
+  // A follow-up to the tangent-endpoint-drag test above: that test drags a
+  // single endpoint (handle "a"/"b"), which clampDragTarget already clamped
+  // correctly per-point. A WHOLE-line body drag (grab the middle, handle
+  // "whole") went through a totally different, much looser check that only
+  // asked "is this entity itself fully solved yet?" - it never looked at
+  // whether either endpoint was welded into a Tangent join with another
+  // entity that would NOT rigidly translate along with it. Real corruption
+  // depends on the loop's exact topology (a symmetric 2-line/2-arc stadium
+  // like this one is simple enough that solveLocal's weld+tangent passes
+  // fully absorb a rigid nudge within a single relaxation and visually snap
+  // it right back - the same construction the user actually hit was a more
+  // complex asymmetric loop where that convergence is not guaranteed, per
+  // the "got all crazy" screenshot). Either way, silently letting the drag
+  // proceed and rely on relaxation to paper over it is the wrong contract:
+  // the fix instead refuses the whole-body drag outright with an explicit
+  // notice, exactly like the single-endpoint (a/b) case already does for a
+  // locked point - so THIS test's real regression signal is the notice
+  // itself (checked below), not the end position, which is not a reliable
+  // discriminator for this particular symmetric construction (user report,
+  // 2026-09-12 follow-up log: dragged "idx:0, entType:line, handle:whole").
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  await G.beginSketch({ kind: 'origin', role: 'XY_Plane' });
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(60);
+
+  const rTop = G.sketch.addEntity({ type: 'line', a: [-10, 8], b: [10, 8] });
+  const rBot = G.sketch.addEntity({ type: 'line', a: [10, -8], b: [-10, -8] });
+  const aR = G.sketch.addEntity({ type: 'arc', c: [10, 0], r: 8, a0: -Math.PI / 2, a1: Math.PI / 2 });
+  const aL = G.sketch.addEntity({ type: 'arc', c: [-10, 0], r: 8, a0: Math.PI / 2, a1: (3 * Math.PI) / 2 });
+  await sleep(40);
+  // weld all 4 corners, then tangent the top-left join FIRST among the
+  // tangents (same ordering discipline as the test above, to make the
+  // over-constraint veto deterministic regardless of which OTHER corner it
+  // ends up flagging redundant)
+  G.sketch.selectPoints([{ e: rTop, pt: 2 }, { e: aR, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld top-right corner');
+  await sleep(60);
+  G.sketch.selectPoints([{ e: aR, pt: 2 }, { e: rBot, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld bottom-right corner');
+  await sleep(60);
+  G.sketch.selectPoints([{ e: rBot, pt: 2 }, { e: aL, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld bottom-left corner');
+  await sleep(60);
+  G.sketch.selectPoints([{ e: aL, pt: 2 }, { e: rTop, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld top-left corner');
+  await sleep(60);
+  G.sketch.select([aL, rTop]);
+  assert(G.sketch.applyConstraint('Tangent'), 'tangent left arc <-> top line');
+  await sleep(60);
+  G.sketch.select([rTop, aR]);
+  assert(G.sketch.applyConstraint('Tangent'), 'tangent top line <-> right arc');
+  await sleep(60);
+  G.sketch.select([aR, rBot]);
+  assert(G.sketch.applyConstraint('Tangent'), 'tangent right arc <-> bottom line');
+  await sleep(60);
+  G.sketch.select([rBot, aL]);
+  assert(G.sketch.applyConstraint('Tangent'), 'tangent bottom line <-> left arc');
+  await sleep(300);
+
+  // back to the select tool - entity dragging only fires when this.tool ===
+  // 'select' (the sketch is otherwise left on whatever draw tool was active)
+  pressKey('Escape');
+  await sleep(60);
+
+  // deep-clone the "before" snapshot - getSketchEntities()/entities() returns
+  // the SketchController's own LIVE array, not a copy, so simply aliasing
+  // beforeDrag[rTop] and reading it again after the drag would show the
+  // drag's OWN result both times (the exact same object, mutated in place)
+  const beforeDrag = JSON.parse(JSON.stringify(G.sketch.entities()));
+  const rTopBefore = beforeDrag[rTop];
+  const arcRBefore = beforeDrag[aR];
+  const arcLBefore = beforeDrag[aL];
+
+  // grab the MIDDLE of the top line (whole-body handle, not an endpoint) and
+  // drag it straight up by 5mm
+  const el2 = viewportEl();
+  const q0 = await G.sketchUVToScreen(0, 8);
+  const q1 = await G.sketchUVToScreen(0, 13);
+  assert(q0 && q1, 'whole-drag start/end points project onto the screen');
+  fire(el2, 'pointermove', q0.x, q0.y);
+  fire(el2, 'pointerdown', q0.x, q0.y);
+  // the block/notice only fires from clampDragTarget, which runs during
+  // applyDrag on a pointermove - not on the pointerdown that starts the drag.
+  // Check right after the FIRST pointermove, not after all 6 + settling: if
+  // the block were absent, applyDrag's "case 'whole'" moves e.a/e.b BEFORE
+  // solveLocal gets a chance to react, but solveLocal's own weld/tangent
+  // passes can then pull a closed 4-piece loop most of the way back toward
+  // its original shape by the time several more moves have run and it has
+  // "settled" - checking only after settling would not reliably tell a
+  // genuinely blocked drag apart from one that was allowed to move and got
+  // mostly (but not perfectly) undone by relaxation.
+  fire(el2, 'pointermove', q0.x + (q1.x - q0.x) / 6, q0.y + (q1.y - q0.y) / 6, { buttons: 1 });
+  await sleep(30);
+  assert(
+    G.getState().notice && /tangent|constrain/i.test(G.getState().notice),
+    'a notice explains why the drag was refused: ' + JSON.stringify(G.getState().notice)
+  );
+  const rTopFirst = G.sketch.entities()[rTop];
+  assert(
+    Math.abs(rTopFirst.a[1] - rTopBefore.a[1]) < 0.01 && Math.abs(rTopFirst.b[1] - rTopBefore.b[1]) < 0.01,
+    `tangent-joined line did not move at all, even on the very first pointermove (a.y ${rTopBefore.a[1]} -> ${rTopFirst.a[1]}, b.y ${rTopBefore.b[1]} -> ${rTopFirst.b[1]})`
+  );
+  for (let i = 2; i <= 6; i++) {
+    fire(el2, 'pointermove', q0.x + ((q1.x - q0.x) * i) / 6, q0.y + ((q1.y - q0.y) * i) / 6, { buttons: 1 });
+  }
+  await sleep(60);
+
+  const mid2 = G.sketch.entities();
+  const rTopMid2 = mid2[rTop];
+  const arcRMid2 = mid2[aR];
+  const arcLMid2 = mid2[aL];
+  // THE BUG: a whole-line drag ignored the tangent joins entirely and slid
+  // the line freely, tearing the corners apart and letting the tangent pivot
+  // pass fight a moving target every iteration - producing the self-crossing
+  // "got all crazy" shape. Fixed: the whole-drag is refused outright (the
+  // line does not move at all) since both its endpoints are tangent-joined.
+  assert(
+    Math.abs(rTopMid2.a[1] - rTopBefore.a[1]) < 0.01 && Math.abs(rTopMid2.b[1] - rTopBefore.b[1]) < 0.01,
+    `tangent-joined line refused to move on a whole-body drag (a.y ${rTopBefore.a[1]} -> ${rTopMid2.a[1]}, b.y ${rTopBefore.b[1]} -> ${rTopMid2.b[1]})`
+  );
+  assert(
+    Math.abs(arcRMid2.r - arcRBefore.r) < 0.01 && Math.abs(arcLMid2.r - arcLBefore.r) < 0.01,
+    `both arcs' radii are untouched, not distorted (right ${arcRBefore.r}->${arcRMid2.r}, left ${arcLBefore.r}->${arcLMid2.r})`
+  );
+
+  fire(el2, 'pointerup', q1.x, q1.y, { buttons: 0 });
+  await sleep(150);
+
+  await G.cancelSketch();
+  await idle();
+}
+
+// a genuinely free line (no tangent join, no weld to anything else) should
+// STILL be draggable as a whole body - this fix must not block ordinary,
+// unconstrained whole-line moves
+note('--- an unconstrained, unwelded line can still be whole-dragged normally ---');
+{
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  await G.beginSketch({ kind: 'origin', role: 'XY_Plane' });
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(60);
+
+  const ln = G.sketch.addEntity({ type: 'line', a: [3, 5], b: [17, 9] });
+  await sleep(60);
+  pressKey('Escape');
+  await sleep(60);
+
+  // deep-clone here too - same live-array aliasing pitfall as the tangent
+  // test above
+  const before3 = JSON.parse(JSON.stringify(G.sketch.entities()[ln]));
+  const el3 = viewportEl();
+  const s0 = await G.sketchUVToScreen(10, 7);
+  const s1 = await G.sketchUVToScreen(10, 20);
+  assert(s0 && s1, 'free-line drag points project onto the screen');
+  fire(el3, 'pointermove', s0.x, s0.y);
+  fire(el3, 'pointerdown', s0.x, s0.y);
+  for (let i = 1; i <= 6; i++) {
+    fire(el3, 'pointermove', s0.x + ((s1.x - s0.x) * i) / 6, s0.y + ((s1.y - s0.y) * i) / 6, { buttons: 1 });
+  }
+  const mid3 = G.sketch.entities()[ln];
+  assert(
+    Math.abs(mid3.a[1] - before3.a[1] - 13) < 1 && Math.abs(mid3.b[1] - before3.b[1] - 13) < 1,
+    `an unconstrained free line still translates rigidly on a whole-body drag (a.y moved ${(mid3.a[1] - before3.a[1]).toFixed(2)}, b.y moved ${(mid3.b[1] - before3.b[1]).toFixed(2)}, expected ~13)`
+  );
+  fire(el3, 'pointerup', s1.x, s1.y, { buttons: 0 });
+  await sleep(150);
 
   await G.cancelSketch();
   await idle();
