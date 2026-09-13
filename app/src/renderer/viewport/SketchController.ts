@@ -195,8 +195,13 @@ export class SketchController {
   /** individually-selected geometry points (line ends, circle/arc centres) */
   private selectedPts: PtRef[] = []
   private hoverPt: PtRef | null = null
-  /** dimension tool: the picks collected so far (a point or a whole entity) */
+  /** dimension tool: the picks collected so far (a point or a whole entity) -
+   *  nothing fires until an empty-space click places it (see firePendingDim) */
   private dimPicks: Array<{ pt: PtRef } | { ent: number }> = []
+  /** sketch-plane uv of the empty-space click that just placed the pending
+   *  dimension - set right before onDimensionRequest fires, read once by
+   *  dimRequestWorldPos, then cleared */
+  private dimPlaceUV: [number, number] | null = null
   private hoverIdx = -1
   private drag: {
     idx: number
@@ -1124,37 +1129,108 @@ export class SketchController {
     this.onDimensionRequest?.(null, 'distance')
   }
 
-  /** current distance between the two dim picks (point-point or point-line) */
+  /** an empty-space click "places" whatever is currently armed in dimPicks -
+   *  1 whole-entity pick -> that entity's own linear/radius dimension; 2
+   *  picks (point/point, point/line, or line/line) -> a distance. A single
+   *  lone POINT with nothing else has no dimension of its own, so this is a
+   *  no-op until a 2nd pick arrives (ctrl-click adds one without placing). */
+  private firePendingDim(uv: [number, number]): void {
+    if (this.dimPicks.length >= 2) {
+      this.dimPlaceUV = uv
+      this.fireDistanceDim()
+      this.dimPlaceUV = null
+      return
+    }
+    const only = this.dimPicks[0]
+    if (only && 'ent' in only) {
+      const e = this.entities[only.ent]
+      if (!e) {
+        this.dimPicks = []
+        this.redraw()
+        return
+      }
+      this.dimPicks = []
+      this.dimPlaceUV = uv
+      this.onDimensionRequest?.(only.ent, e.type === 'circle' || e.type === 'arc' ? 'radius' : 'linear')
+      this.dimPlaceUV = null
+      return
+    }
+    // a lone point pick with nothing to measure against - keep it armed
+    // (do not clear dimPicks) so the very next click can still add a 2nd
+    // pick or place; only Escape / a plain click elsewhere actually drops it
+    this.redraw()
+  }
+
+  /** sketch-plane uv of the midpoint of an entity (line midpoint, circle/arc
+   *  centre) - used to anchor a whole-entity dim pick (no single point) */
+  private entMidUV(idx: number): [number, number] {
+    const e = this.entAt(idx)
+    if (!e) return [0, 0]
+    if (e.type === 'line') return [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2]
+    if (e.type === 'circle' || e.type === 'arc') return [...e.c]
+    return [0, 0]
+  }
+
+  /** a RecordedConstraint ref for either a point pick or a whole-entity pick */
+  private dimPickRef(p: { pt: PtRef } | { ent: number }): RecordedConstraint['refs'][number] {
+    if ('pt' in p) return this.ptRecRef(p.pt)
+    return p.ent < this.baseCount ? { geo: p.ent } : { new: p.ent - this.baseCount, sub: 0 }
+  }
+
+  /** current distance between the two dim picks - point-point, point-line,
+   *  or line-line (perpendicular gap between two parallel lines) */
   distancePickValue(): number | null {
     if (this.dimPicks.length < 2) return null
     const [p0, p1] = this.dimPicks
-    if (!('pt' in p0)) return null
-    const a = this.ptUV(p0.pt)
-    if ('pt' in p1) {
-      const b = this.ptUV(p1.pt)
-      return Math.hypot(b[0] - a[0], b[1] - a[1])
+    // point-anything: measured from that point
+    const ptSide = 'pt' in p0 ? p0 : 'pt' in p1 ? p1 : null
+    const otherSide = ptSide === p0 ? p1 : p0
+    if (ptSide) {
+      const a = this.ptUV(ptSide.pt)
+      if ('pt' in otherSide) {
+        const b = this.ptUV(otherSide.pt)
+        return Math.hypot(b[0] - a[0], b[1] - a[1])
+      }
+      const e = this.entities[otherSide.ent]
+      if (!e || e.type !== 'line') return null
+      // perpendicular distance from point a to the infinite line
+      const dx = e.b[0] - e.a[0]
+      const dy = e.b[1] - e.a[1]
+      const L = Math.hypot(dx, dy) || 1
+      return Math.abs((a[0] - e.a[0]) * dy - (a[1] - e.a[1]) * dx) / L
     }
-    const e = this.entities[p1.ent]
-    if (!e || e.type !== 'line') return null
-    // perpendicular distance from point a to the infinite line
-    const dx = e.b[0] - e.a[0]
-    const dy = e.b[1] - e.a[1]
-    const L = Math.hypot(dx, dy) || 1
-    return Math.abs((a[0] - e.a[0]) * dy - (a[1] - e.a[1]) * dx) / L
+    // both are whole entities - only line-line (perpendicular gap) is
+    // meaningful as a plain Distance; anything else has no single value here
+    if ('ent' in p0 && 'ent' in p1) {
+      const e0 = this.entities[p0.ent]
+      const e1 = this.entities[p1.ent]
+      if (!e0 || !e1 || e0.type !== 'line' || e1.type !== 'line') return null
+      const dx = e1.b[0] - e1.a[0]
+      const dy = e1.b[1] - e1.a[1]
+      const L = Math.hypot(dx, dy) || 1
+      return Math.abs((e0.a[0] - e1.a[0]) * dy - (e0.a[1] - e1.a[1]) * dx) / L
+    }
+    return null
   }
 
-  /** commit the pending point-to-point / point-to-line distance dimension */
+  /** commit the pending point-to-point / point-to-line / line-to-line
+   *  distance dimension */
   setDistanceDimension(value: number): boolean {
     if (!(value > 0) || this.dimPicks.length < 2) return false
     const [p0, p1] = this.dimPicks
-    if (!('pt' in p0)) return false
+    // a Distance constraint needs at least one POINT side in this app's
+    // convention - a line-line pick (both whole entities) anchors the FIRST
+    // side at that line's own first endpoint instead, which is
+    // geometrically equivalent for two parallel lines and keeps a single,
+    // well-defined ref shape
+    let first: { pt: PtRef } | { ent: number } = p0
+    if (!('pt' in p0) && !('pt' in p1)) {
+      const e0 = this.entities[p0.ent]
+      if (!e0 || e0.type !== 'line') return false
+      first = { pt: { e: p0.ent, pt: 1 } }
+    }
     this.snapshot()
-    const refs: RecordedConstraint['refs'] = [this.ptRecRef(p0.pt)]
-    if ('pt' in p1) refs.push(this.ptRecRef(p1.pt))
-    else
-      refs.push(
-        p1.ent < this.baseCount ? { geo: p1.ent } : { new: p1.ent - this.baseCount, sub: 0 }
-      )
+    const refs: RecordedConstraint['refs'] = [this.dimPickRef(first), this.dimPickRef(p1)]
     this.constraints.push({ type: 'Distance', refs, value })
     this.lastUserConstraint = this.constraints.length - 1
     this.dimPicks = []
@@ -1175,12 +1251,20 @@ export class SketchController {
    *  own description of how other CAD programs do this. Returns null only if
    *  there is nothing sane to anchor to (should not happen for a live request). */
   dimRequestWorldPos(entityIndex: number | null, kind: 'linear' | 'radius' | 'distance'): [number, number, number] | null {
+    // an empty-space click PLACED this dimension right here - anchor the
+    // editor at the actual click point, not a re-derived midpoint, so it
+    // genuinely appears where the user chose to drop it
+    if (this.dimPlaceUV) {
+      const w = this.toWorld(this.dimPlaceUV[0], this.dimPlaceUV[1])
+      return [w.x, w.y, w.z]
+    }
     if (kind === 'distance') {
       if (this.dimPicks.length < 2) return null
       const [p0, p1] = this.dimPicks
-      if (!('pt' in p0)) return null
-      const a = this.ptUV(p0.pt)
-      const b = 'pt' in p1 ? this.ptUV(p1.pt) : a
+      const uvOf = (p: { pt: PtRef } | { ent: number }): [number, number] =>
+        'pt' in p ? this.ptUV(p.pt) : this.entMidUV(p.ent)
+      const a = uvOf(p0)
+      const b = uvOf(p1)
       const mu = (a[0] + b[0]) / 2
       const mv = (a[1] + b[1]) / 2
       const w = this.toWorld(mu, mv)
@@ -1251,31 +1335,39 @@ export class SketchController {
       ev.stopPropagation()
       const raw = this.rawPointerUV(ev)
       const hp = this.pickPoint(raw)
-      if (hp) {
-        // building a point-to-point (or point-to-line) distance
-        if (!this.dimPicks.some((p) => 'pt' in p && this.samePt(p.pt, hp))) {
-          this.dimPicks.push({ pt: hp })
+      const entIdx = hp ? -1 : this.pickEntity(raw)
+      const pick: { pt: PtRef } | { ent: number } | null = hp ? { pt: hp } : entIdx >= 0 ? { ent: entIdx } : null
+      // an empty-space click PLACES the dimension being previewed - nothing
+      // fires until this happens, so the value floats near wherever you
+      // actually clicked to drop it, not immediately at the first pick (per
+      // spec: "click a line, it should show a preview... left-click in open
+      // space to place it"). With nothing armed yet, an empty click is a
+      // no-op (nothing to place).
+      if (!pick) {
+        if (this.dimPicks.length > 0) this.firePendingDim(raw)
+        else this.redraw()
+        return
+      }
+      const samePick = (a: { pt: PtRef } | { ent: number }, b: { pt: PtRef } | { ent: number }): boolean =>
+        'pt' in a && 'pt' in b
+          ? this.samePt(a.pt, b.pt)
+          : 'ent' in a && 'ent' in b
+            ? a.ent === b.ent
+            : false
+      if (ev.ctrlKey || ev.metaKey) {
+        // ADD a second line/point to dimension between - up to 2 picks total;
+        // a 3rd ctrl-click replaces the 2nd (matches "switch" for the active
+        // slot rather than silently growing forever)
+        if (!this.dimPicks.some((p) => samePick(p, pick))) {
+          if (this.dimPicks.length >= 2) this.dimPicks[1] = pick
+          else this.dimPicks.push(pick)
         }
-        if (this.dimPicks.length >= 2) this.fireDistanceDim()
-        this.redraw()
-        return
+      } else {
+        // plain click: SWITCH which line/point is being dimensioned - starts
+        // a fresh single-pick session, discarding anything else queued
+        this.dimPicks = [pick]
       }
-      const idx = this.pickEntity(raw)
-      if (idx < 0) {
-        this.dimPicks = []
-        this.redraw()
-        return
-      }
-      const e = this.entities[idx]
-      if (this.dimPicks.length === 1 && e.type === 'line') {
-        // point -> line distance
-        this.dimPicks.push({ ent: idx })
-        this.fireDistanceDim()
-        this.redraw()
-        return
-      }
-      this.dimPicks = []
-      this.onDimensionRequest?.(idx, e.type === 'circle' || e.type === 'arc' ? 'radius' : 'linear')
+      this.redraw()
       return
     }
     if (this.tool === 'select') {
@@ -1305,45 +1397,6 @@ export class SketchController {
       if (this.selectedDim != null) {
         this.selectedDim = null
         this.dimV = -1
-      }
-
-      // ctrl/cmd-click (no shift - shift is the existing additive-select
-      // modifier): dimension between two picked entities/points, without
-      // switching to the dedicated Dimension tool first, same as ctrl-click
-      // dimensioning in other CAD programs. Reuses the exact dimPicks/
-      // fireDistanceDim path the Dimension tool itself uses - a plain point
-      // pick, or a point then a line for point-to-line, fires as soon as 2
-      // are collected; picking a lone entity with nothing already queued
-      // starts (or continues) the same queue instead of falling through to
-      // plain entity selection.
-      if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !this.pendingCon) {
-        const hp = this.pickPoint(uv)
-        if (hp) {
-          if (!this.dimPicks.some((p) => 'pt' in p && this.samePt(p.pt, hp))) {
-            this.dimPicks.push({ pt: hp })
-          }
-          if (this.dimPicks.length >= 2) this.fireDistanceDim()
-          this.redraw()
-          return
-        }
-        const dimIdx = this.pickEntity(uv)
-        if (dimIdx >= 0) {
-          const e = this.entities[dimIdx]
-          if (this.dimPicks.length === 1 && e.type === 'line') {
-            this.dimPicks.push({ ent: dimIdx })
-            this.fireDistanceDim()
-            this.redraw()
-            return
-          }
-          if (this.dimPicks.length === 0) {
-            this.dimPicks = []
-            this.onDimensionRequest?.(dimIdx, e.type === 'circle' || e.type === 'arc' ? 'radius' : 'linear')
-            return
-          }
-        }
-        this.dimPicks = []
-        this.redraw()
-        return
       }
 
       // a geometry POINT (line end, circle / arc centre) beats the curve under
@@ -1825,6 +1878,14 @@ export class SketchController {
         this.redraw()
       }
       this.dom.style.cursor = onLabel ? 'move' : hp || idx >= 0 || symKey ? 'pointer' : ''
+      // the Dimension tool has something armed - track the cursor so the
+      // live "follows the cursor toward wherever you place it" preview (see
+      // redrawDims) actually updates every frame, not just when hover state
+      // changes
+      if (this.tool === 'dimension' && this.dimPicks.length > 0) {
+        this.cursorUV = raw
+        this.redraw()
+      }
       return
     }
     if (this.hoverIdx !== -1) this.hoverIdx = -1
@@ -2586,7 +2647,114 @@ export class SketchController {
         }
         for (const k of keys) if (k !== anchor) this.setPtOf(k, pos)
       }
-      // 3. horizontal / vertical
+      // 3. tangent joins (line-arc or arc-arc, sharing a welded endpoint) -
+      // pivot the NON-dragged side's arc about the shared point, at its
+      // current radius, so its tangent direction there matches the other
+      // side's. Without this an arc kept its old centre/radius while its
+      // endpoint got welded to wherever the drag moved it, breaking
+      // tangency and swinging the arc into a visibly wrong, self-crossing
+      // shape (a stadium/slot profile dragged by one side - user report +
+      // screenshot, 2026-09-12: "it got all crazy"). The real sidecar solve
+      // on release still produces the exact, correct shape - this only
+      // fixes what the drag looks like WHILE held down.
+      for (const c of this.constraints) {
+        if (c.type !== 'Tangent') continue
+        const r0 = c.refs[0]
+        const r1 = c.refs[1]
+        if (!r0 || !r1) continue
+        const i0 = this.entIdxOfRef(r0)
+        const i1 = this.entIdxOfRef(r1)
+        const e0 = this.entities[i0]
+        const e1 = this.entities[i1]
+        if (!e0 || !e1) continue
+        // only the endpoint-tangent form (both refs carry pt 1/2) has a
+        // definite shared point to pivot about - a bare edge-tangent (full
+        // circle case) has no single point and is left alone here
+        if (r0.pt !== 1 && r0.pt !== 2) continue
+        if (r1.pt !== 1 && r1.pt !== 2) continue
+        const k0 = `${i0}:${r0.pt}`
+        const k1 = `${i1}:${r1.pt}`
+        const p0 = this.ptOf(k0)
+        const p1 = this.ptOf(k1)
+        // only meaningful once welded to the same point (should always be
+        // true for a real tangent join - if not, there is nothing to pivot)
+        if (Math.hypot(p0[0] - p1[0], p0[1] - p1[1]) > 1e-6) continue
+        const shared = p0
+        // prefer adjusting an arc whose OTHER endpoint is not itself fixed
+        // (so a fully-pinned arc is left alone); if both are arcs, adjust
+        // whichever side is not "fixed" (closer to the drag anchor logic
+        // used elsewhere in this function)
+        const pivotArc = (idx: number, e: SketchEntity, ownPt: 1 | 2, otherDir: [number, number]): void => {
+          if (e.type !== 'arc') return
+          // current radius vector centre->shared point
+          const rx = shared[0] - e.c[0]
+          const ry = shared[1] - e.c[1]
+          const r = Math.hypot(rx, ry)
+          if (r < 1e-9) return
+          // tangent direction at the rim point is perpendicular to the
+          // radius; align it with otherDir by rotating the centre about the
+          // FIXED shared point (radius length preserved), choosing whichever
+          // of the two perpendicular candidates keeps the centre on the same
+          // side it already was (does not flip the arc's bulge direction
+          // every iteration)
+          const ux = otherDir[0]
+          const uy = otherDir[1]
+          const nx = -uy
+          const ny = ux
+          const same = rx * nx + ry * ny >= 0 ? 1 : -1
+          const newCx = shared[0] - nx * r * same
+          const newCy = shared[1] - ny * r * same
+          e.c = [newCx, newCy]
+          // re-angle both rim endpoints about the new centre so the OTHER
+          // end (not this shared one) keeps its own world position exactly -
+          // only this join's endpoint is meant to move with the drag; the
+          // arc's far end is whatever the next weld/tangent pass pins
+          const otherPt = ownPt === 1 ? 2 : 1
+          const farKey = `${idx}:${otherPt}`
+          const farPos = fixed.has(farKey) ? this.ptOf(farKey) : null
+          if (ownPt === 1) e.a0 = Math.atan2(shared[1] - e.c[1], shared[0] - e.c[0])
+          else e.a1 = Math.atan2(shared[1] - e.c[1], shared[0] - e.c[0])
+          if (farPos) {
+            if (otherPt === 1) e.a0 = Math.atan2(farPos[1] - e.c[1], farPos[0] - e.c[0])
+            else e.a1 = Math.atan2(farPos[1] - e.c[1], farPos[0] - e.c[0])
+          }
+        }
+        const dirOf = (e: SketchEntity): [number, number] | null => {
+          if (e.type === 'line') {
+            const dx = e.b[0] - e.a[0]
+            const dy = e.b[1] - e.a[1]
+            const L = Math.hypot(dx, dy) || 1
+            return [dx / L, dy / L]
+          }
+          if (e.type === 'arc') {
+            const rx = shared[0] - e.c[0]
+            const ry = shared[1] - e.c[1]
+            const L = Math.hypot(rx, ry) || 1
+            return [-ry / L, rx / L]
+          }
+          return null
+        }
+        const e0Fixed = fixed.has(k0)
+        const e1Fixed = fixed.has(k1)
+        // adjust whichever side is NOT fixed; if neither/both are fixed,
+        // prefer adjusting an arc over a line (a dragged line stays put,
+        // its tangent arc follows - matches how the weld pass already lets
+        // a pinned point win)
+        if (e1Fixed && !e0Fixed && e0.type === 'arc') {
+          const dir = dirOf(e1)
+          if (dir) pivotArc(i0, e0, r0.pt as 1 | 2, dir)
+        } else if (e0Fixed && !e1Fixed && e1.type === 'arc') {
+          const dir = dirOf(e0)
+          if (dir) pivotArc(i1, e1, r1.pt as 1 | 2, dir)
+        } else if (e1.type === 'arc' && e0.type !== 'arc') {
+          const dir = dirOf(e0)
+          if (dir) pivotArc(i1, e1, r1.pt as 1 | 2, dir)
+        } else if (e0.type === 'arc') {
+          const dir = dirOf(e1)
+          if (dir) pivotArc(i0, e0, r0.pt as 1 | 2, dir)
+        }
+      }
+      // 4. horizontal / vertical
       for (let i = 0; i < this.entities.length; i++) {
         const e = this.entities[i]
         if (e.type !== 'line') continue
@@ -2606,7 +2774,7 @@ export class SketchController {
           if (!fb) e.b = [x, e.b[1]]
         }
       }
-      // 4. midpoints (Symmetric about a line's two endpoints)
+      // 5. midpoints (Symmetric about a line's two endpoints)
       for (const c of this.constraints) {
         if (c.type !== 'Symmetric' || c.refs.length < 3) continue
         const ka = this.keyOfRef(c.refs[0])
@@ -2617,7 +2785,7 @@ export class SketchController {
         const b = this.ptOf(kb)
         if (!fixed.has(kc)) this.setPtOf(kc, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2])
       }
-      // 5. length dimensions - keep the length, pivot on the fixed end
+      // 6. length dimensions - keep the length, pivot on the fixed end
       for (const c of this.constraints) {
         if (c.type !== 'Distance' || c.value == null) continue
         const i = this.entIdxOfRef(c.refs[0] ?? {})
@@ -3254,8 +3422,10 @@ export class SketchController {
     gapSize: 1.4
   })
   private selMat = new THREE.LineBasicMaterial({ color: 0xffb020, linewidth: 2 })
-  // fully-constrained geometry reads as "done" - drawn grey like FreeCAD's green
-  private constrainedMat = new THREE.LineBasicMaterial({ color: 0x8b93a0 })
+  // fully-constrained geometry reads as "done" - white, same convention as
+  // FreeCAD's own green (was a muted grey before, which read as "disabled"
+  // rather than "fully defined" - user feedback, 2026-09-12)
+  private constrainedMat = new THREE.LineBasicMaterial({ color: 0xffffff })
   // projected / external reference geometry - amber, dashed
   private projMat = new THREE.LineDashedMaterial({ color: 0xe0a24a, dashSize: 2.4, gapSize: 1.6 })
   private hoverMat = new THREE.LineBasicMaterial({ color: 0x9fe0ff })
@@ -3264,6 +3434,10 @@ export class SketchController {
   private refMat = new THREE.LineBasicMaterial({ color: 0x6b7784, transparent: true, opacity: 0.6 })
   private refPtMat = new THREE.PointsMaterial({ color: 0x9aa7b4, size: 5, sizeAttenuation: false })
   private ptHandleMat = new THREE.PointsMaterial({ color: 0x8fa8c8, size: 6, sizeAttenuation: false })
+  // a point belonging to a fully-constrained entity - same white as
+  // constrainedMat, so a fully-defined line's own endpoints read as "done"
+  // too, not just the line itself
+  private ptHandleConstrainedMat = new THREE.PointsMaterial({ color: 0xffffff, size: 6, sizeAttenuation: false })
   private ptHandleSelMat = new THREE.PointsMaterial({ color: 0xffcc44, size: 11, sizeAttenuation: false })
   private previewMat = new THREE.LineDashedMaterial({
     color: 0x8fd0f4,
@@ -3629,6 +3803,25 @@ export class SketchController {
     }
   }
 
+  /** entity indices the app currently considers fully constrained (test hook) */
+  testConstrainedIndices(): number[] {
+    return [...this.constrainedSet].sort((a, b) => a - b)
+  }
+
+  /** the actual rendered line color of entity `idx`, as a CSS hex string
+   *  (e.g. "#ffffff") - looks up the real THREE.Object3D by the userData tag
+   *  set in redraw(), not a re-derivation of the color logic, so this checks
+   *  what is ACTUALLY on screen (test hook) */
+  testEntityColorHex(idx: number): string | null {
+    for (const obj of this.entGroup.children) {
+      if (obj.userData?.entIdx !== idx) continue
+      const mat = (obj as THREE.Line).material as THREE.LineBasicMaterial | THREE.LineBasicMaterial[]
+      const m = Array.isArray(mat) ? mat[0] : mat
+      return m?.color ? `#${m.color.getHexString()}` : null
+    }
+    return null
+  }
+
   private pickSym(ev: { clientX: number; clientY: number }): string | null {
     if (!this.symGroup.children.length) return null
     this.ray.setFromCamera(this.ndcFor(ev.clientX, ev.clientY), this.camera)
@@ -3791,7 +3984,8 @@ export class SketchController {
   }
 
   private redrawDims(): void {
-    const live = this.pending.length > 0
+    const dimPending = this.tool === 'dimension' && this.dimPicks.length > 0
+    const live = this.pending.length > 0 || dimPending
     if (this.geomV === this.dimV && !live && !this.dimHadLive) return
     this.dimV = this.geomV
     this.dimHadLive = live
@@ -3843,6 +4037,64 @@ export class SketchController {
         const c = this.pending[0]
         const rr = Math.hypot(cur[0] - c[0], cur[1] - c[1])
         if (rr > 0.01) this.dimGroup.add(this.makeRadial(c, rr, `R ${this.fmt(rr)}`, false))
+      }
+    }
+
+    // Dimension tool: a live preview of whatever is currently armed,
+    // following the cursor toward wherever it will be placed - "click a
+    // line, it should show a preview... left-click in open space to place
+    // it" (per spec). The label position tracks the cursor via a synthetic
+    // offset rather than the entity's own default placement, so it visibly
+    // "follows" rather than sitting fixed the moment something is armed.
+    if (dimPending) {
+      const cur = this.cursorUV
+      const uv = (p: { pt: PtRef } | { ent: number }): [number, number] =>
+        'pt' in p ? this.ptUV(p.pt) : this.entMidUV(p.ent)
+      if (this.dimPicks.length === 1) {
+        const p = this.dimPicks[0]
+        if ('ent' in p) {
+          const e = this.entities[p.ent]
+          if (e && e.type === 'line') {
+            const dx = e.b[0] - e.a[0]
+            const dy = e.b[1] - e.a[1]
+            const L = Math.hypot(dx, dy) || 1
+            const ux = dx / L
+            const uy = dy / L
+            const mx = (e.a[0] + e.b[0]) / 2
+            const my = (e.a[1] + e.b[1]) / 2
+            const rx = cur[0] - mx
+            const ry = cur[1] - my
+            // perpendicular (nudges the dim line off the geometry) and
+            // along (slides the label along it), both real mm, matching
+            // makeDim's own offset convention exactly
+            const perp = -rx * uy + ry * ux
+            const along = rx * ux + ry * uy
+            const side: 1 | -1 = perp >= 0 ? 1 : -1
+            this.dimGroup.add(
+              this.makeDim(e.a, e.b, side, this.fmt(L), false, -1, [Math.abs(perp), along])
+            )
+          } else if (e && (e.type === 'circle' || e.type === 'arc')) {
+            const dx = cur[0] - e.c[0]
+            const dy = cur[1] - e.c[1]
+            this.dimGroup.add(this.makeRadial(e.c, e.r, `R ${this.fmt(e.r)}`, false, -1, [dx, dy]))
+          }
+        }
+      } else if (this.dimPicks.length >= 2) {
+        const a = uv(this.dimPicks[0])
+        const b = uv(this.dimPicks[1])
+        const val = this.distancePickValue()
+        if (val != null && Math.hypot(b[0] - a[0], b[1] - a[1]) > 1e-6) {
+          const dx = b[0] - a[0]
+          const dy = b[1] - a[1]
+          const L = Math.hypot(dx, dy) || 1
+          const ux = dx / L
+          const uy = dy / L
+          const mx = (a[0] + b[0]) / 2
+          const my = (a[1] + b[1]) / 2
+          const perp = -(cur[0] - mx) * uy + (cur[1] - my) * ux
+          const side: 1 | -1 = perp >= 0 ? 1 : -1
+          this.dimGroup.add(this.makeDim(a, b, side, this.fmt(val), false))
+        }
       }
     }
   }
@@ -3983,7 +4235,9 @@ export class SketchController {
               : this.constrainedSet.has(i)
                 ? this.constrainedMat
                 : this.lineMat
-      this.entGroup.add(this.entityObj(this.entities[i], mat))
+      const obj = this.entityObj(this.entities[i], mat)
+      obj.userData.entIdx = i // test hook: testEntityColorHex looks objects up by this
+      this.entGroup.add(obj)
     }
     // projected (external) geometry - drawn as a distinct amber reference line
     for (let k = 0; k < this.projected.length; k++) {
@@ -4083,15 +4337,25 @@ export class SketchController {
       ]
       const isBright = (pr: PtRef): boolean => bright.some((b) => this.samePt(b, pr))
       const faint: THREE.Vector3[] = []
+      const faintConstrained: THREE.Vector3[] = []
       const hot: THREE.Vector3[] = []
       for (let i = 0; i < this.entities.length; i++) {
         for (const pr of this.entityPts(i)) {
           const uv = this.ptUV(pr)
-          ;(isBright(pr) ? hot : faint).push(this.toWorld(uv[0], uv[1]))
+          if (isBright(pr)) hot.push(this.toWorld(uv[0], uv[1]))
+          else (this.constrainedSet.has(i) ? faintConstrained : faint).push(this.toWorld(uv[0], uv[1]))
         }
       }
       if (faint.length) {
         const o = new THREE.Points(new THREE.BufferGeometry().setFromPoints(faint), this.ptHandleMat)
+        o.renderOrder = 43
+        this.preview.add(o)
+      }
+      if (faintConstrained.length) {
+        const o = new THREE.Points(
+          new THREE.BufferGeometry().setFromPoints(faintConstrained),
+          this.ptHandleConstrainedMat
+        )
         o.renderOrder = 43
         this.preview.add(o)
       }

@@ -113,6 +113,11 @@ export interface ViewportApi {
   /** current "click the constraint, then click the geometry" pick state
    *  (test hook, diagnostics only - see SketchController.testPendingConState) */
   testPendingConState: () => { pendingCon: string | null; selectedPts: number; selected: number } | null
+  /** entity indices the app currently considers fully constrained (test hook) */
+  testConstrainedIndices: () => number[]
+  /** the actual rendered line color of entity `idx`, as a CSS hex string
+   *  (test hook - what is ACTUALLY on screen, not a re-derivation) */
+  testEntityColorHex: (idx: number) => string | null
   /** offset the camera + pivot by a world-space delta (test hook only - a
    *  reliable way to perturb the camera for a "does Fit/Home recover?" test
    *  without depending on synthetic drag-event edge cases) */

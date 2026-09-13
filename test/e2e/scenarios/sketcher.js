@@ -712,6 +712,44 @@ note('--- an edge perpendicular to the sketch plane projects to a point on it --
   );
 }
 
+// ---------------------------------------------------------------- fully-constrained color
+note('--- a fully-constrained line renders WHITE, not the muted grey it used to ---');
+await freshSketch();
+{
+  // deliberately NOT axis-aligned when drawn - a near-horizontal/vertical
+  // line auto-gets its own Horizontal/Vertical constraint at draw time (see
+  // the auto-angle test above), which would make the explicit
+  // applyConstraint('Horizontal') below REDUNDANT - the solver's
+  // over-constraint veto then silently drops it, so DOF this test expects to
+  // pin never actually gets pinned (same lesson as the button-first
+  // Coincident tests in real_input.js)
+  const li2 = G.sketch.addEntity({ type: 'line', a: [8, 3], b: [28, 9] });
+  await sleep(40);
+  const before = G.sketch.entityColorHex(li2);
+  assert(before && before !== '#ffffff', 'an unconstrained line does not start out white (' + before + ')');
+  assert(
+    !G.sketch.constrainedIndices().includes(li2),
+    'an unconstrained line is not yet in the constrained set'
+  );
+  // weld the start to the origin (2 DOF), Horizontal (1 DOF), Distance (1 DOF)
+  // - exactly 4 DOF for a 2-point line, so this fully constrains it
+  G.sketch.selectPoints([{ e: -1, pt: 1 }, { e: li2, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld the line start to the origin');
+  await sleep(150);
+  G.sketch.select([li2]);
+  assert(G.sketch.applyConstraint('Horizontal'), 'apply Horizontal');
+  await sleep(150);
+  assert(G.sketch.setDimension(li2, 20), 'dimension the line length');
+  await sleep(200);
+  const idxs = await waitFor(() => {
+    const v = G.sketch.constrainedIndices();
+    return v.includes(li2) ? v : null;
+  }, 3000);
+  assert(idxs && idxs.includes(li2), 'the fully-constrained line is now in the constrained set (' + JSON.stringify(idxs) + ')');
+  const after = G.sketch.entityColorHex(li2);
+  assert(after === '#ffffff', 'the fully-constrained line now renders white (got ' + after + ')');
+}
+
 // ---------------------------------------------------------------- health
 note('--- editor + engine healthy at end ---');
 const fin = G.getState();

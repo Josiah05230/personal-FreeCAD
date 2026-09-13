@@ -469,6 +469,8 @@ export function Viewport({
         testSketchUVToWorld: (u, v) => stateRef.current?.sketch?.uvToWorld(u, v) ?? null,
         testSymbolWorldScale: () => stateRef.current?.sketch?.testSymbolWorldScale() ?? null,
         testPendingConState: () => stateRef.current?.sketch?.testPendingConState() ?? null,
+        testConstrainedIndices: () => stateRef.current?.sketch?.testConstrainedIndices() ?? [],
+        testEntityColorHex: (idx) => stateRef.current?.sketch?.testEntityColorHex(idx) ?? null,
         testNudgeCamera: (delta) => {
           const s = stateRef.current
           if (!s) return

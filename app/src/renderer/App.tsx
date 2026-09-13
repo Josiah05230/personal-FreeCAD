@@ -732,8 +732,24 @@ export function App(): JSX.Element {
       resetSketchUi()
       setSketchTool('select')
       setSketchCount(r.entities.length)
+      // show the model as of this sketch while editing, same as editFeature's
+      // dialog does for every other feature kind - roll the marker (and the
+      // timeline's own scroll position) back to right after it, restored on
+      // Finish/Cancel below. Previously this never touched the marker at
+      // all, so reopening an old sketch left the timeline sitting wherever
+      // it already was - looking like nothing happened (user report,
+      // 2026-09-12: "when I go and edit a previous sketch or feature, the
+      // timeline should scroll back to right after that feature").
+      if (r.bodyId) {
+        try {
+          await apiQuiet.rollTo(r.bodyId, sketchId)
+          await refreshScene()
+        } catch {
+          /* the editor still opens; not fatal if the marker didn't move */
+        }
+      }
     },
-    [resetSketchUi]
+    [resetSketchUi, refreshScene]
   )
 
   const finishSketch = useCallback(async () => {
@@ -814,7 +830,16 @@ export function App(): JSX.Element {
           await refreshScene()
         })()
       } else {
-        void refreshScene()
+        // editing an existing sketch rolled the marker back to it (editSketch)
+        // - roll home again, same as cancelling a full feature edit does
+        if (sketchSession.isEdit && sketchSession.bodyId) {
+          void apiQuiet
+            .rollTo(sketchSession.bodyId, null)
+            .catch(() => {})
+            .then(() => refreshScene())
+        } else {
+          void refreshScene()
+        }
       }
     }
     setSketchSession(null)
@@ -3090,6 +3115,8 @@ export function App(): JSX.Element {
       cameraDebug: () => vpApi.current?.testCameraDebug() ?? null,
       symbolWorldScale: () => vpApi.current?.testSymbolWorldScale() ?? null,
       pendingConState: () => vpApi.current?.testPendingConState() ?? null,
+      constrainedIndices: () => vpApi.current?.testConstrainedIndices() ?? [],
+      entityColorHex: (idx: number) => vpApi.current?.testEntityColorHex(idx) ?? null,
       setView: (dir: [number, number, number]) => vpApi.current?.setView(dir),
       nudgeCamera: (delta: [number, number, number]) => vpApi.current?.testNudgeCamera(delta),
       setProjection: (p: 'orthographic' | 'perspective') => {
@@ -3221,7 +3248,9 @@ export function App(): JSX.Element {
         constraints: () => vpApi.current?.getSketchConstraints() ?? [],
         newConstraints: () => vpApi.current?.getNewSketchConstraints() ?? [],
         removedEntities: () => vpApi.current?.getRemovedSketchEntities() ?? [],
-        setConstruction: (on: boolean) => vpApi.current?.setSketchConstruction(on)
+        setConstruction: (on: boolean) => vpApi.current?.setSketchConstruction(on),
+        constrainedIndices: () => vpApi.current?.testConstrainedIndices() ?? [],
+        entityColorHex: (idx: number) => vpApi.current?.testEntityColorHex(idx) ?? null
       },
 
       // --- observe ---

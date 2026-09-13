@@ -289,6 +289,29 @@ export function Timeline({
 
   const markerLeft = (markerAt + 1) * CHIP_W
 
+  // scroll the track so the marker (and the chip right after it - the one
+  // just edited) is actually visible whenever it moves to a NEW feature -
+  // editing an old sketch/feature rolls the marker back there (see
+  // App.tsx's editSketch/editFeature), but on a long history that chip can
+  // easily sit off-screen, so the marker "moving" was invisible without this
+  // (user report, 2026-09-12: "the timeline should scroll back to right
+  // after that feature automatically"). Skipped while the user is actively
+  // dragging the marker themselves - that already tracks the pointer and
+  // this would fight it - and during Play, which already scrubs steadily.
+  const lastScrolledTo = useRef<string | null>(null)
+  useEffect(() => {
+    if (dragging || playing) return
+    if (lastScrolledTo.current === markerId) return
+    lastScrolledTo.current = markerId
+    const el = trackRef.current
+    if (!el) return
+    // centre the marker chip in the visible track, not just "somewhere
+    // inside" it - a bare scrollIntoView would satisfy "visible" by leaving
+    // it flush against whichever edge it approached from
+    const target = markerLeft - el.clientWidth / 2 + CHIP_W / 2
+    el.scrollTo({ left: Math.max(0, target), behavior: 'smooth' })
+  }, [markerId, dragging, playing, markerLeft])
+
   return (
     <div className="timeline">
       <div className="tl-controls">

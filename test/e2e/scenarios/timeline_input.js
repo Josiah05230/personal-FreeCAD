@@ -306,4 +306,90 @@ await idle();
   assert(stillThere, `THE BUG: the sketch feature must survive a Delete keypress made while editing it (features: ${JSON.stringify(tt2.bodies[0].features.map((f) => f.id))})`);
 }
 
+// --------------------------------------------------------------------------
+// Editing an OLD sketch/feature must roll the marker back to it AND scroll
+// the timeline strip so that is actually visible - the marker moving is
+// invisible on a long history if the chip it moved to sits off-screen (user
+// report, 2026-09-12: "when I go and edit a previous sketch or feature, the
+// timeline should scroll back to right after that feature automatically").
+// Build enough features that the strip genuinely overflows .tl-track's
+// width, so this can tell a REAL scroll from one that never needed to move.
+note('--- editing an old sketch rolls the marker back AND scrolls the timeline into view ---');
+await rpc('session.reset');
+await G.refresh();
+await idle();
+{
+  const sFirst = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XY_Plane' } });
+  await rpc('sketch.finish', {
+    sketchId: sFirst.sketchId,
+    elements: [{ type: 'rect', a: [-15, -15], b: [15, 15] }],
+    constraints: []
+  });
+  await G.refresh();
+  await idle();
+  G.selectSketch(sFirst.sketchId);
+  await sleep(50);
+  await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 10, midplane: false, reversed: false });
+  await idle();
+  // pile on enough datum planes to force real horizontal overflow in the
+  // strip - a fresh offset datum plane every time (unlike a fillet, never
+  // runs out of a valid edge to pick as earlier ones get consumed/renumbered)
+  const track = document.querySelector('.tl-track');
+  assert(track, 'the timeline track element is rendered');
+  for (let i = 0; i < 60 && track.scrollWidth <= track.clientWidth + 40; i++) {
+    await rpc('datum.plane', { refs: [{ kind: 'origin', role: 'XY_Plane' }], offset: 5 + i });
+    await G.refresh();
+    await idle();
+  }
+  assert(
+    track.scrollWidth > track.clientWidth + 20,
+    `the timeline genuinely overflows horizontally, so a scroll is actually needed (scrollWidth=${track.scrollWidth}, clientWidth=${track.clientWidth})`
+  );
+  // scroll all the way to the right end first - the marker (at the true end,
+  // right after the last fillet) should currently be visible, and the FIRST
+  // sketch chip should now be off-screen to the left
+  track.scrollLeft = track.scrollWidth;
+  await sleep(60);
+
+  const treeBefore = await rpc('tree.get');
+  assert(treeBefore.bodies[0].marker === null, 'marker starts at the true end (null)');
+  const scrollBefore = track.scrollLeft;
+
+  // double-click the VERY FIRST chip (the base sketch) - the real "Edit
+  // Sketch" entry point, same click sequence as the existing chip test above
+  const chipsNow = timelineChips();
+  const firstChip = chipsNow[0];
+  const r0 = firstChip.getBoundingClientRect();
+  const cx0 = r0.left + r0.width / 2;
+  const cy0 = r0.top + r0.height / 2;
+  fireOn(firstChip, 'pointerdown', cx0, cy0, { buttons: 1 });
+  fireOn(firstChip, 'pointerup', cx0, cy0, { buttons: 0 });
+  firstChip.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: cx0, clientY: cy0 }));
+  await sleep(20);
+  firstChip.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: cx0, clientY: cy0 }));
+  await sleep(200);
+  await idle();
+
+  assert(G.getState().sketchMode, 'double-clicking the first chip entered sketch-edit mode');
+  const treeAfter = await rpc('tree.get');
+  assert(
+    treeAfter.bodies[0].marker === sFirst.sketchId,
+    `editing the sketch rolled the marker BACK to right after it (got ${treeAfter.bodies[0].marker})`
+  );
+
+  // the actual point of the report: the strip must have scrolled toward the
+  // beginning to bring that marker/chip back into view, not stayed at the
+  // far-right scroll position it was at before
+  await sleep(500); // the scroll is a smooth one - let it settle
+  const scrollAfter = track.scrollLeft;
+  note(`track.scrollLeft before=${scrollBefore} after=${scrollAfter}`);
+  assert(
+    scrollAfter < scrollBefore - 50,
+    `THE BUG: the timeline must auto-scroll back toward the edited feature, not stay wherever it happened to be (before=${scrollBefore}, after=${scrollAfter})`
+  );
+
+  await G.cancelSketch();
+  await idle();
+}
+
 note('timeline_input scenario complete');

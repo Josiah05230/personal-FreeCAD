@@ -1443,7 +1443,7 @@ note('--- double-clicking a line opens a FLOATING inline dimension editor, not a
 }
 
 // =================================================================
-note('--- Ctrl-click two points in SELECT mode dimensions the distance, no tool switch needed ---');
+note('--- Dimension tool: click arms + live preview, click again SWITCHES, Ctrl-click ADDS, empty-space click PLACES ---');
 {
   await rpc('session.reset');
   await G.refresh();
@@ -1452,71 +1452,227 @@ note('--- Ctrl-click two points in SELECT mode dimensions the distance, no tool 
   await waitFor(() => G.getState().sketchMode, 4000);
   await sleep(60);
 
-  // two disjoint, non-axis-aligned lines, both well off the sketch origin -
-  // an endpoint sitting exactly on the origin, or a perfectly horizontal /
-  // vertical segment, auto-picks up its own Coincident-to-origin / Horizontal
-  // / Vertical constraint at draw time, which would consume the very point
-  // this test means to Ctrl-click (same lesson as the earlier button-first
-  // Coincident tests in this file)
-  pressKey('l');
-  await sleep(20);
-  let a0 = await G.sketchUVToScreen(6, 4);
-  let a1 = await G.sketchUVToScreen(16, 7);
-  clickAt(a0.x, a0.y);
-  await sleep(20);
-  clickAt(a1.x, a1.y);
-  await sleep(30);
-  pressKey('Escape');
-  await sleep(20);
-
-  pressKey('l');
-  await sleep(20);
-  let b0 = await G.sketchUVToScreen(34, 22);
-  let b1 = await G.sketchUVToScreen(49, 26);
-  clickAt(b0.x, b0.y);
-  await sleep(20);
-  clickAt(b1.x, b1.y);
-  await sleep(30);
-  pressKey('Escape');
-  await sleep(20);
+  // three disjoint, non-axis-aligned lines, all off the sketch origin - see
+  // the earlier tests in this file for why (auto Horizontal/Vertical/
+  // Coincident-to-origin at draw time would consume the exact geometry this
+  // test means to click)
+  const drawLine = async (ax, ay, bx, by) => {
+    pressKey('l');
+    await sleep(20);
+    const p0 = await G.sketchUVToScreen(ax, ay);
+    const p1 = await G.sketchUVToScreen(bx, by);
+    clickAt(p0.x, p0.y);
+    await sleep(20);
+    clickAt(p1.x, p1.y);
+    await sleep(30);
+    pressKey('Escape');
+    await sleep(20);
+  };
+  await drawLine(6, 4, 16, 7);
+  await drawLine(34, 22, 49, 26);
+  await drawLine(60, -10, 66, -25);
 
   const entsBefore = G.sketch.entities();
-  assert(entsBefore.length === 2, 'drew 2 disjoint lines (got ' + entsBefore.length + ')');
-  const consBefore = G.sketch.newConstraints().length;
+  assert(entsBefore.length === 3, 'drew 3 disjoint lines (got ' + entsBefore.length + ')');
+  const [lineA, lineB, lineC] = entsBefore;
+  const midOf = (l) => [(l.a[0] + l.b[0]) / 2, (l.a[1] + l.b[1]) / 2];
 
-  // now, still in plain SELECT mode (no dimension-tool switch) - Ctrl-click
-  // line A's start point, then Ctrl-click line B's start point
-  const pAScreen = await G.sketchUVToScreen(6, 4);
-  const pBScreen = await G.sketchUVToScreen(34, 22);
-  assert(pAScreen && pBScreen, 'both endpoints project onto the screen');
-  const expectedDist = Math.hypot(34 - 6, 22 - 4);
-
-  clickAt(pAScreen.x, pAScreen.y, { ctrlKey: true });
+  pressKey('d');
   await sleep(30);
-  assert(!dimEditorInput(), 'one Ctrl-click alone does not open the editor yet (needs a 2nd pick)');
-  clickAt(pBScreen.x, pBScreen.y, { ctrlKey: true });
-  await sleep(60);
 
-  const input = dimEditorInput();
-  assert(input, 'Ctrl-clicking a 2nd point (still in select mode) opened the floating distance editor');
+  // click line A - arms it, live preview should now exist (no floating
+  // editor yet - nothing is placed until an empty-space click)
+  const midA = await G.sketchUVToScreen(...midOf(lineA));
+  clickAt(midA.x, midA.y);
+  await sleep(40);
+  assert(!dimEditorInput(), 'clicking a line arms it but does NOT open the editor yet (nothing placed)');
+
+  // plain click on a DIFFERENT line (B) - SWITCHES, does not add to A
+  const midB = await G.sketchUVToScreen(...midOf(lineB));
+  clickAt(midB.x, midB.y);
+  await sleep(40);
+  // place it now (empty space click) and confirm it dimensions B's length,
+  // not A's - proving the switch actually took effect
+  const emptySpot = await G.sketchUVToScreen(80, 80);
+  clickAt(emptySpot.x, emptySpot.y);
+  await sleep(60);
+  let input = dimEditorInput();
+  assert(input, 'placing after a plain-click switch opened the floating editor');
+  const lenB = Math.hypot(lineB.b[0] - lineB.a[0], lineB.b[1] - lineB.a[1]);
   if (input) {
-    const prefilled = Number(input.value);
     assert(
-      Math.abs(prefilled - expectedDist) < 0.5,
-      `distance editor pre-filled with the live picked distance (got ${input.value}, expected ~${expectedDist.toFixed(2)})`
+      Math.abs(Number(input.value) - lenB) < 0.5,
+      `the placed dimension is line B's length (switched), not line A's (got ${input.value}, expected ~${lenB.toFixed(2)})`
     );
   }
+  // back out without committing this one - a real Escape keydown starts at
+  // whatever actually has focus (the editor's own input, auto-focused when
+  // it opened) and bubbles from there, which is what its own onKeyDown
+  // handler needs to see; document.dispatchEvent from the top does NOT
+  // bubble back down INTO the input, so it would never actually reach it
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await sleep(40);
+  assert(!dimEditorInput(), 'Escape on the floating editor actually closed it');
 
-  typeAndCommitDimEditor(String(expectedDist.toFixed(1)));
+  // now: click line A, Ctrl-click line C - ADDS a 2nd line, making this a
+  // line-to-line distance, then place it with an empty-space click
+  clickAt(midA.x, midA.y);
+  await sleep(30);
+  const midC = await G.sketchUVToScreen(...midOf(lineC));
+  clickAt(midC.x, midC.y, { ctrlKey: true });
+  await sleep(40);
+  assert(!dimEditorInput(), 'Ctrl-click ADDS a 2nd line but still does not place until an empty click');
+
+  const consBefore = G.sketch.newConstraints().length;
+  const emptySpot2 = await G.sketchUVToScreen(90, 0);
+  clickAt(emptySpot2.x, emptySpot2.y);
+  await sleep(60);
+  input = dimEditorInput();
+  assert(input, 'an empty-space click placed the 2-line distance dimension');
+  if (input) {
+    const editorBox = input.closest('.dim-editor').getBoundingClientRect();
+    const dEditor = Math.hypot(editorBox.left + editorBox.width / 2 - emptySpot2.x, editorBox.top - emptySpot2.y);
+    assert(dEditor < 150, `the placed editor anchors near where it was actually clicked to place (${dEditor.toFixed(1)}px away)`);
+    typeAndCommitDimEditor(String(Number(input.value).toFixed(1)));
+  }
   await sleep(80);
   await idle();
   const consAfter = G.sketch.newConstraints();
   assert(
     consAfter.length > consBefore,
-    'Ctrl-click-driven point-to-point distance actually recorded a new Distance constraint'
+    'the line-to-line distance (click A, Ctrl-click C, place) actually recorded a new Distance constraint'
   );
   const distCon = consAfter.find((c) => c.type === 'Distance' && (c.refs || []).length >= 2);
-  assert(distCon, 'the recorded constraint is a real 2-point Distance, not something else: ' + JSON.stringify(consAfter));
+  assert(distCon, 'the recorded constraint is a real 2-entity Distance, not something else: ' + JSON.stringify(consAfter));
+
+  // let the sketch's own debounced scheduleSolve (240ms) actually fire and
+  // settle before tearing the editor down - otherwise it can still be
+  // in-flight when session.reset blows away the document out from under it,
+  // which showed up as unrelated flakiness in the NEXT test (a tangent-
+  // stadium drag occasionally settling wrong for no reason connected to it)
+  await sleep(300);
+  await G.cancelSketch();
+  await idle();
+}
+
+// =================================================================
+note('--- dragging one side of a tangent stadium does not visually corrupt the rest (real drag) ---');
+{
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  await G.beginSketch({ kind: 'origin', role: 'XY_Plane' });
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(60);
+
+  // a real stadium/slot: 2 parallel lines + 2 tangent arcs closing the loop
+  // (same construction as the shift-click loop-select test above)
+  const rTop = G.sketch.addEntity({ type: 'line', a: [-10, 8], b: [10, 8] });
+  const rBot = G.sketch.addEntity({ type: 'line', a: [10, -8], b: [-10, -8] });
+  const aR = G.sketch.addEntity({ type: 'arc', c: [10, 0], r: 8, a0: -Math.PI / 2, a1: Math.PI / 2 });
+  const aL = G.sketch.addEntity({ type: 'arc', c: [-10, 0], r: 8, a0: Math.PI / 2, a1: (3 * Math.PI) / 2 });
+  await sleep(40);
+  // NOTE: a closed 2-line-2-arc stadium loop with all 4 corners welded
+  // (Coincident) and all 4 Tangents applied leaves at least one tangent
+  // condition already implied/redundant once the loop closes - the
+  // solver's over-constraint veto always drops whichever constraint was
+  // MOST RECENTLY applied at the moment its async round-trip lands
+  // (SketchController only ever vetoes this.lastUserConstraint, never an
+  // earlier one - confirmed by direct repro: identical setup, the dropped
+  // one always tracked apply order, never a fixed corner). The drag below
+  // only exercises the TOP-LEFT corner (aL <-> rTop), so weld all 4 corners
+  // first, then apply that one's Tangent FIRST among the four tangents -
+  // by the time a LATER tangent becomes the redundant one and gets vetoed,
+  // this one is no longer "the last user constraint" and cannot be the one
+  // dropped.
+  G.sketch.selectPoints([{ e: rTop, pt: 2 }, { e: aR, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld top-right corner');
+  await sleep(60);
+  G.sketch.selectPoints([{ e: aR, pt: 2 }, { e: rBot, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld bottom-right corner');
+  await sleep(60);
+  G.sketch.selectPoints([{ e: rBot, pt: 2 }, { e: aL, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld bottom-left corner');
+  await sleep(60);
+  G.sketch.selectPoints([{ e: aL, pt: 2 }, { e: rTop, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld top-left corner');
+  await sleep(60);
+
+  // the join this test actually drags - applied FIRST among the tangents
+  G.sketch.select([aL, rTop]);
+  assert(G.sketch.applyConstraint('Tangent'), 'tangent left arc <-> top line');
+  await sleep(60);
+  G.sketch.select([rTop, aR]);
+  assert(G.sketch.applyConstraint('Tangent'), 'tangent top line <-> right arc');
+  await sleep(60);
+  G.sketch.select([aR, rBot]);
+  assert(G.sketch.applyConstraint('Tangent'), 'tangent right arc <-> bottom line');
+  await sleep(60);
+  G.sketch.select([rBot, aL]);
+  assert(G.sketch.applyConstraint('Tangent'), 'tangent bottom line <-> left arc');
+  await sleep(300);
+
+  const consCheck = G.sketch.newConstraints();
+  const hasTopLeftTangent = consCheck.some(
+    (c) =>
+      c.type === 'Tangent' &&
+      (c.refs || []).some((r) => r.new === aL || r.geo === aL) &&
+      (c.refs || []).some((r) => r.new === rTop || r.geo === rTop)
+  );
+  assert(
+    hasTopLeftTangent,
+    'the top-left tangent (aL <-> rTop) - the one join this test actually drags - survived the redundancy veto: ' +
+      JSON.stringify(consCheck.map((c) => c.type))
+  );
+
+  const entsBefore = G.sketch.entities();
+  assert(entsBefore.length === 4, 'stadium has 4 entities before the drag (got ' + entsBefore.length + ')');
+
+  // a REAL drag of the top line's LEFT endpoint straight up by 5mm, via the
+  // actual pointer handlers - down, then several incremental moves, WITHOUT
+  // releasing yet, so this can inspect the geometry mid-drag. This matters:
+  // the real sidecar solver reconciles everything correctly on release
+  // regardless of what solveLocal (the mid-drag local approximation) does,
+  // so a check only AFTER release would pass even with the bug still
+  // present - it has to catch what the drag looks like WHILE held down,
+  // which is the actual "it got all crazy" report (screenshot, 2026-09-12).
+  const el = viewportEl();
+  const p0 = await G.sketchUVToScreen(-10, 8);
+  const p1 = await G.sketchUVToScreen(-10, 13);
+  assert(p0 && p1, 'drag start/end points project onto the screen');
+  fire(el, 'pointermove', p0.x, p0.y);
+  fire(el, 'pointerdown', p0.x, p0.y);
+  for (let i = 1; i <= 6; i++) {
+    fire(el, 'pointermove', p0.x + ((p1.x - p0.x) * i) / 6, p0.y + ((p1.y - p0.y) * i) / 6, { buttons: 1 });
+  }
+
+  const mid = G.sketch.entities();
+  const arcRMid = mid[aR];
+  const arcLMid = mid[aL];
+  const rTopMid = mid[rTop];
+  // THE BUG: solveLocal had no concept of Tangent at all, so a dragged
+  // endpoint's weld moved but the tangent arc's centre/radius stayed
+  // exactly where they were - breaking tangency and producing a visibly
+  // wrong, self-crossing shape WHILE the drag is held (user report +
+  // screenshot: "it got all crazy"). Checked here, still mid-drag, before
+  // the real solver gets a chance to reconcile it on release.
+  assert(
+    arcRMid.r > 1 && arcRMid.r < 40 && arcLMid.r > 1 && arcLMid.r < 40,
+    `mid-drag arc radii stayed sane, not degenerate (right=${arcRMid.r.toFixed(2)}, left=${arcLMid.r.toFixed(2)})`
+  );
+  const rimRMid = [arcRMid.c[0] + arcRMid.r * Math.cos(arcRMid.a0), arcRMid.c[1] + arcRMid.r * Math.sin(arcRMid.a0)];
+  const gapTopRightMid = Math.hypot(rTopMid.b[0] - rimRMid[0], rTopMid.b[1] - rimRMid[1]);
+  assert(
+    gapTopRightMid < 0.5,
+    `top-right corner stayed welded MID-DRAG, did not tear apart (gap ${gapTopRightMid.toFixed(3)})`
+  );
+
+  fire(el, 'pointerup', p1.x, p1.y, { buttons: 0 });
+  await sleep(250);
+  assert(
+    !G.getState().sketchNotice,
+    'no notice/error after the drag settles (' + (G.getState().sketchNotice || '') + ')'
+  );
 
   await G.cancelSketch();
   await idle();
