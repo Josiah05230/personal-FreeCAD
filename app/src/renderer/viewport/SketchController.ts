@@ -666,17 +666,16 @@ export class SketchController {
     const e = this.entities[idx]
     if (!e) return target
 
-    // whole-entity / body moves: blocked when the entity is fully solved, OR
-    // when either endpoint is welded/anchored in a way a rigid translation of
-    // just this entity cannot honour (an axis anchor, or a Tangent join to
-    // another entity that does not itself translate along - solveLocal only
-    // PIVOTS a tangent arc's centre about the shared point, it never slides
-    // it, so dragging the line out from under it snaps the join to a moving
-    // target every iteration and can flip/self-cross the whole chain - user
-    // report + screenshot, 2026-09-12: dragging one side of a stadium sketch
-    // "got all crazy"). A single-endpoint (a/b) drag already gets this right
-    // per-point below; whole-entity drag previously skipped that check
-    // entirely and only asked "is the WHOLE entity fully solved yet?".
+    // whole-entity / body moves: blocked only when the entity is fully
+    // solved - a PARTIALLY anchored line (one end welded/tangent, one end
+    // free) still moves, just not as a rigid whole-body translation; see
+    // applyDrag's 'whole' case, which degrades to moving only the free
+    // endpoint in that case (same per-point mechanism an a/b drag already
+    // uses safely). Only a line anchored at BOTH ends has nothing left to
+    // give - user report, 2026-09-13: "if a line... CAN move AT ALL and I am
+    // dragging it ANYWHERE along/on it, it should move but, ONLY in the
+    // way(s) it's unconstrained" (this replaces an earlier, too-strict fix
+    // that refused the whole drag the moment EITHER end was anchored).
     if (handle === 'whole' || handle === 'ab' || handle === 'ba') {
       if (this.constrainedSet.has(idx)) {
         this.noticeOnce(
@@ -684,25 +683,24 @@ export class SketchController {
         )
         return null
       }
-      if (e.type === 'line' && this.wholeLineDragBlocked(idx)) {
+      if (e.type === 'line' && this.lineEndpointsAnchored(idx).every(Boolean)) {
         this.noticeOnce(
-          'One end of this line is tied to another curve (tangent or coincident) - move that point directly instead.'
+          'Both ends of this line are tied to another curve (tangent or coincident) - nothing left to drag.'
         )
         return null
       }
       return target
     }
     // an arc/circle's radius or centre handle: if the arc is tangent-joined
-    // to another entity at one of its rim endpoints, its radius is NOT a
-    // free DOF the drag can honour in isolation - solveLocal's tangent pass
-    // re-pivots the centre about EACH tangent-shared endpoint separately to
-    // keep the (now different) radius tangent there, and with joins at BOTH
-    // ends those two pivots generally cannot agree on one centre at once,
-    // fighting each other every relaxation pass and producing exactly the
-    // flipped, self-crossing shape from the "got all crazy" report (this
-    // time reached via the arc's RADIUS handle, not a line's whole body -
-    // 2026-09-12 follow-up: "sketch drag start (entity) idx:3, entType:arc,
-    // handle:r"). Refuse it outright, same contract as the whole-line case.
+    // to ANOTHER entity at BOTH of its rim endpoints (arcTangentAnchored
+    // requires 2, see its own comment): its radius is over-determined -
+    // solveLocal's tangent pass re-pivots the centre about EACH
+    // tangent-shared endpoint separately to keep the (now different) radius
+    // tangent there, and those two pivots generally cannot agree on one
+    // centre at once, fighting each other every relaxation pass and
+    // producing the flipped, self-crossing shape from the "got all crazy"
+    // report. A SINGLE tangent join is fine (one pivot, always solvable) and
+    // is deliberately allowed through here unblocked.
     if ((handle === 'r' || handle === 'c') && e.type === 'arc' && this.arcTangentAnchored(idx)) {
       this.noticeOnce(
         'This arc is tangent to another curve - drag its endpoint instead, or remove the tangent constraint first.'
@@ -760,58 +758,94 @@ export class SketchController {
     return [lockX ? cur[0] : target[0], lockY ? cur[1] : target[1]]
   }
 
-  /** true if line `idx`'s whole-body rigid translation cannot be honoured
-   *  because one of its endpoints is axis-anchored or shares a Tangent join
-   *  with another entity (solveLocal only pivots a joined arc about the
-   *  shared point - it never slides the arc to follow, so a rigid line
-   *  translation would tear the join apart every solve iteration instead of
-   *  moving it cleanly). Mirrors the per-point checks clampDragTarget already
-   *  does for a single-endpoint (a/b) drag, applied to BOTH of this line's
-   *  endpoints since a whole-line drag moves them together. */
-  private wholeLineDragBlocked(idx: number): boolean {
+  /** [endpoint1Anchored, endpoint2Anchored] - true for whichever of line
+   *  `idx`'s two endpoints is axis-anchored or shares a Tangent join with
+   *  another entity (solveLocal only PIVOTS a joined arc about the shared
+   *  point - it never slides the arc to follow, so translating that
+   *  endpoint freely would tear the join apart every solve iteration
+   *  instead of moving it cleanly). Used by applyDrag's 'whole' case to
+   *  decide whether a whole-line drag can rigidly translate (neither
+   *  anchored), must degrade to moving only the free end (exactly one
+   *  anchored), or has nothing left to give (both anchored). Mirrors the
+   *  per-point checks clampDragTarget already does for a single-endpoint
+   *  (a/b) drag. */
+  private lineEndpointsAnchored(idx: number): [boolean, boolean] {
     const groups = this.weldGroups()
-    // a rectangle loop's 4 sides translate together (the special-case
-    // rigid-move path just above this handler in applyDrag), so a weld to
-    // another side of the SAME loop is not a reason to block the drag
-    const loop = this.rectLoopOf(idx)
-    for (const pt of [1, 2] as const) {
+    // NOTE: a weld to a DIFFERENT entity is deliberately NOT treated as
+    // anchoring by itself - that other entity (a free line, say) can
+    // perfectly well follow this point wherever the drag takes it (that is
+    // exactly what the weld pass in solveLocal already does: "a pinned point
+    // wins, the rest of its group follows"). Only checking every member of
+    // the weld group for an axis anchor or Tangent join (below) correctly
+    // finds the case that actually cannot follow. An earlier version of this
+    // also flagged ANY cross-entity weld as anchored, which wrongly treated
+    // "welded to another perfectly free line" as stuck - the exact bug the
+    // user reported (2026-09-13, the "flag on a pole" repro: dragging the
+    // flag's free end, welded only to an unconstrained pole, refused to
+    // move at all).
+    const anchoredAt = (pt: 1 | 2): boolean => {
       const key = `${idx}:${pt}`
       const grp = groups.find((s) => s.has(key)) ?? new Set<string>([key])
       for (const k of grp) {
         for (const c of this.constraints) {
           const r0 = c.refs[0]
-          if (!r0 || this.keyOfRef(r0) !== k) continue
+          if (!r0) continue
+          // a PLAIN edge Tangent (no pt ref at all, e.g. a line tangent to a
+          // full circle with no shared endpoint) does not pin any specific
+          // POINT position - keyOfRef defaults a missing pt to 1, which would
+          // otherwise misreport an edge tangent as anchoring point 1 even
+          // when the two entities do not share an endpoint at all (found via
+          // a failing test: an endpoint-Tangent's pre-positioning step did
+          // not land the two points within weld tolerance, so applyConstraint
+          // fell back to pushing a plain edge Tangent - r0.pt undefined -
+          // which this check must not treat as "anchors point 1"). Only an
+          // EXPLICIT pt ref on this exact key counts.
+          if (c.type === 'Tangent' && r0.pt == null) continue
+          if (this.keyOfRef(r0) !== k) continue
           if (c.type === 'Coincident' && c.refs[1]?.geo === -1) return true
           if (c.type === 'PointOnObject' && (c.refs[1]?.geo === -1 || c.refs[1]?.geo === -2))
             return true
           if (c.type === 'Tangent') return true
         }
-        // a weld to a DIFFERENT entity (not just another endpoint of the
-        // same dragged line, and not another side of the same rect loop) is
-        // itself a reason to refuse a rigid whole-body move - that other
-        // entity is not translating along with this one
-        const otherIdx = Number(k.split(':')[0])
-        if (otherIdx !== idx && grp.size > 1 && !(loop && loop.includes(otherIdx))) return true
       }
+      return false
     }
-    return false
+    return [anchoredAt(1), anchoredAt(2)]
   }
 
-  /** true if arc `idx` has a Tangent join at either of its rim endpoints (1
-   *  or 2) - meaning its radius/centre are pinned by the neighbouring
-   *  entity's fixed position, not a free DOF a drag can change safely. See
-   *  the comment at this check's call site in clampDragTarget. */
+  /** true if arc `idx` has a Tangent join at BOTH of its rim endpoints (1
+   *  AND 2) - genuinely over-determined for a radius/centre drag: solveLocal's
+   *  tangent pass pivots the centre about EACH shared endpoint separately to
+   *  match a changed radius, and with joins at both ends those two pivots
+   *  generally cannot agree on one centre (see clampDragTarget's call site).
+   *  A SINGLE tangent join is fine - that one pivot always has a valid
+   *  solution at any radius, so only the anchored end needs to be respected,
+   *  not the whole drag refused (user report, 2026-09-13: "you have the
+   *  dragging WAY too strict... if a line, arc, or anything CAN move AT ALL
+   *  ... it should move but, ONLY in the way(s) it's unconstrained"). */
   private arcTangentAnchored(idx: number): boolean {
+    let count = 0
     for (const pt of [1, 2] as const) {
       const key = `${idx}:${pt}`
       for (const c of this.constraints) {
         if (c.type !== 'Tangent') continue
-        const k0 = this.keyOfRef(c.refs[0] ?? {})
-        const k1 = this.keyOfRef(c.refs[1] ?? {})
-        if (k0 === key || k1 === key) return true
+        const r0 = c.refs[0]
+        const r1 = c.refs[1]
+        // a PLAIN edge Tangent (no pt ref - e.g. a curve tangent to a full
+        // circle with no shared endpoint) does not anchor any specific rim
+        // point; keyOfRef defaults a missing pt to 1, which would otherwise
+        // misreport it as anchoring THIS arc's point 1 even when the two
+        // entities share no endpoint at all. Only an explicit pt ref counts.
+        if (r0?.pt == null && r1?.pt == null) continue
+        const k0 = r0?.pt != null ? this.keyOfRef(r0) : null
+        const k1 = r1?.pt != null ? this.keyOfRef(r1) : null
+        if (k0 === key || k1 === key) {
+          count++
+          break
+        }
       }
     }
-    return false
+    return count >= 2
   }
 
   private static cloneEnt(e: SketchEntity): SketchEntity {
@@ -1766,6 +1800,33 @@ export class SketchController {
         }
         this.dragMoved = true
         this.drag.last = uv
+        this.geomV++
+        this.redraw()
+        return
+      }
+      // a line anchored at exactly ONE end (welded/tangent to a fixed
+      // neighbour) cannot rigidly translate - that end genuinely cannot
+      // move - but it is NOT fully stuck either: degrade to moving just the
+      // free endpoint, exactly like an a/b drag on that same point (the
+      // mechanism already proven safe: solveLocal's weld/tangent pass holds
+      // the anchored end and pivots the neighbour to match). Previously this
+      // either force-translated both ends regardless (corrupting the
+      // anchored join) or refused the whole drag outright the moment either
+      // end was anchored (too strict - user report, 2026-09-13: "if a line
+      // ... CAN move AT ALL ... it should move but, ONLY in the way(s) it's
+      // unconstrained").
+      const [aAnchored, bAnchored] = this.lineEndpointsAnchored(this.drag.idx)
+      if (aAnchored !== bAnchored) {
+        const i = this.drag.idx
+        if (aAnchored) {
+          e.b = [uv[0], uv[1]]
+          this.solveLocal(new Set([`${i}:2`]), this.rectHoldKeys())
+        } else {
+          e.a = [uv[0], uv[1]]
+          this.solveLocal(new Set([`${i}:1`]), this.rectHoldKeys())
+        }
+        this.dragMoved = true
+        this.drag.last = aAnchored ? [...e.b] : [...e.a]
         this.geomV++
         this.redraw()
         return
@@ -3315,13 +3376,34 @@ export class SketchController {
         if (pr.pt === 2) e.b = [uv[0], uv[1]]
         else e.a = [uv[0], uv[1]]
       }
+      // NOTE: deliberately no case for an arc's rim endpoint (pt 1/2) here -
+      // re-angling a0/a1 to point at an arbitrary uv can flip the two
+      // endpoints past each other or collapse the arc's span, silently
+      // producing a degenerate shape (an arc's endpoints are linked through
+      // its own centre/radius, unlike a line's, which are independent). The
+      // caller below prefers moving a LINE's endpoint onto an arc's instead
+      // whenever one is available, which is always safe; only a genuine
+      // arc-arc weld has no safe point to pre-position, and is left as a
+      // no-op here - the live preview just doesn't visually snap until the
+      // real server-side solve runs, same as before this fix (see the
+      // comment at the call site).
     }
     this.snapshot()
     if (type === 'Coincident') {
       // pre-position whichever point ISN'T read-only projected geometry onto
       // the other, so the jump happens immediately instead of waiting on the
-      // next solve; if q is the projected one, move p instead
+      // next solve; if q is the projected one, move p instead. AND prefer
+      // moving a LINE's endpoint over an ARC's whenever the two points
+      // belong to different entity kinds - welding a line's end to an arc's
+      // end previously left the arc's end (silently) unmoved because setPt
+      // has no safe way to reposition an arc's endpoint (see its own
+      // comment) - moving the LINE side instead is always safe and actually
+      // makes the join visible immediately, instead of only cosmetically at
+      // the next full solve (user-adjacent follow-up while fixing the
+      // drag-strictness report, 2026-09-13).
+      const isLinePt = (pr: PtRef): boolean => this.entities[pr.e]?.type === 'line' || this.entities[pr.e]?.type === 'rect'
       if (isProjPt(q)) setPt(p, this.ptUV(q))
+      else if (!isProjPt(p) && isLinePt(p) && !isLinePt(q)) setPt(p, this.ptUV(q))
       else setPt(q, pa)
       this.constraints.push({ type: 'Coincident', refs: [this.ptRecRef(p), this.ptRecRef(q)] })
     } else if (type === 'Horizontal' || type === 'Vertical') {
@@ -4001,6 +4083,20 @@ export class SketchController {
     return null
   }
 
+  /** total count of geometry-point handles ACTUALLY rendered right now
+   *  (sums every THREE.Points object's own vertex count under `preview` -
+   *  the faint / faintConstrained / hot buffers built in redraw() - not a
+   *  re-derivation from this.entities, so it catches a deleted entity's
+   *  points staying drawn even though its own line no longer is; test hook) */
+  testHandlePointCount(): number {
+    let n = 0
+    for (const obj of this.preview.children) {
+      if (!(obj instanceof THREE.Points)) continue
+      n += obj.geometry.getAttribute('position')?.count ?? 0
+    }
+    return n
+  }
+
   private pickSym(ev: { clientX: number; clientY: number }): string | null {
     if (!this.symGroup.children.length) return null
     this.ray.setFromCamera(this.ndcFor(ev.clientX, ev.clientY), this.camera)
@@ -4644,6 +4740,13 @@ export class SketchController {
       const faintConstrained: THREE.Vector3[] = []
       const hot: THREE.Vector3[] = []
       for (let i = 0; i < this.entities.length; i++) {
+        // a deleted BASE entity is never spliced out of this.entities (its
+        // index is the reopen contract - see deleteSelected) so its line is
+        // skipped by the same check above, but this point loop had no such
+        // guard: its endpoint/centre handles kept being drawn forever after
+        // "deleting" it (user report, 2026-09-13: "when I delete a line or
+        // any sketch object, it's points don't seem to go [a]way")
+        if (this.deletedBaseSet.has(i)) continue
         for (const pr of this.entityPts(i)) {
           const uv = this.ptUV(pr)
           if (isBright(pr)) hot.push(this.toWorld(uv[0], uv[1]))

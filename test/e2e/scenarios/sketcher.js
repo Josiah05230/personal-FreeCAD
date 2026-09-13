@@ -559,10 +559,22 @@ await waitFor(() => G.getState().sketchMode, 4000);
 await sleep(120);
 const reEnts = G.sketch.entities();
 assert(reEnts.length === 4, 'the reopened editor shows its 4 lines (' + reEnts.length + ')');
+const pointsBeforeDelete = G.sketch.handlePointCount();
 G.sketch.select([1]); // delete the 2nd reopened line
 G.sketch.deleteSelection();
 await sleep(60);
 assert(G.sketch.removedEntities().includes(1), 'the reopened line is queued for removal (removedElements)');
+// deleting a REOPENED (base) line never actually splices it out of
+// this.entities (its index is the reopen contract - see deleteSelected) so
+// the LINE render already correctly hid it via deletedBaseSet, but the
+// point-handle render loop had no such guard: its two endpoint handles kept
+// being drawn forever after "deleting" it, looking exactly like the line
+// was still there (user report, 2026-09-13: "when I delete a line or any
+// sketch object, it's points don't seem to go [a]way")
+assert(
+  G.sketch.handlePointCount() === pointsBeforeDelete - 2,
+  `deleting a reopened line's endpoint handles actually disappear from the render (before ${pointsBeforeDelete}, after ${G.sketch.handlePointCount()}, want ${pointsBeforeDelete - 2})`
+);
 
 // Ctrl+Z must undo the delete of REOPENED (base) geometry just as completely
 // as it does freshly-drawn geometry - a real user report (2026-09-12) found

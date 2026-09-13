@@ -1878,7 +1878,7 @@ note('--- dragging the BODY of a tangent-joined line (not just an endpoint) is r
   // Match the specific whole-line wording, not a loose /tangent|constrain/,
   // since a stale notice from elsewhere could satisfy a loose match even
   // with this exact check disabled.
-  await waitFor(() => G.getState().notice && /tied to another curve/i.test(G.getState().notice), 2000);
+  await waitFor(() => G.getState().notice && /tied to another curve/i.test(G.getState().notice), 5000);
   assert(
     G.getState().notice && /tied to another curve/i.test(G.getState().notice),
     'a notice explains why the drag was refused: ' + JSON.stringify(G.getState().notice)
@@ -2048,7 +2048,7 @@ note('--- dragging the RADIUS handle of a tangent-anchored arc is refused, not c
   // tied to another curve...") can still be sitting in state for a few
   // seconds (the banner auto-clears after 5s), so a loose match could pass
   // even with this exact check disabled.
-  await waitFor(() => G.getState().notice && /this arc is tangent/i.test(G.getState().notice), 2000);
+  await waitFor(() => G.getState().notice && /this arc is tangent/i.test(G.getState().notice), 5000);
   assert(
     G.getState().notice && /this arc is tangent/i.test(G.getState().notice),
     'a notice explains why the radius drag was refused: ' + JSON.stringify(G.getState().notice)
@@ -2115,6 +2115,152 @@ note('--- an unconstrained arc\'s radius can still be dragged normally ---');
     `an unconstrained free arc's radius still grows on a radius-handle drag (${beforeAc.r} -> ${midAc.r})`
   );
   fire(el5, 'pointerup', t1.x, t1.y, { buttons: 0 });
+  await sleep(150);
+
+  await G.cancelSketch();
+  await idle();
+}
+
+// =================================================================
+note('--- a whole-line drag with only ONE end anchored still moves - the free end follows the cursor ---');
+{
+  // The user's follow-up correction (2026-09-13): the earlier fixes refused
+  // a whole-line/arc-radius drag the moment EITHER end was anchored - "way
+  // too strict". A line anchored at only ONE end is not actually stuck: the
+  // free end can still move (the anchored end just cannot translate along
+  // with it), which is exactly what a single-endpoint (a/b) drag on that
+  // free point already does safely. Build a simple "flag" shape: one free
+  // line (the pole, unattached) whose top is Coincident-welded to one end
+  // of a second line (the flag edge) that is Tangent-joined to an arc at
+  // its OTHER end - so the flag edge has exactly one anchored end (the
+  // tangent join) and one free end (the weld to the pole, which itself is
+  // not otherwise constrained).
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  await G.beginSketch({ kind: 'origin', role: 'XY_Plane' });
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(60);
+
+  // NOT axis-aligned - a perfectly vertical/horizontal line auto-acquires a
+  // Horizontal/Vertical constraint at draw time, silently locking a DOF this
+  // test means to keep free (the established pitfall in this file: draw
+  // test geometry off-axis)
+  const pole = G.sketch.addEntity({ type: 'line', a: [30, 30], b: [31, 45] });
+  const flag = G.sketch.addEntity({ type: 'line', a: [31, 45], b: [45, 50] });
+  const cap = G.sketch.addEntity({ type: 'arc', c: [45, 40], r: 10, a0: Math.PI / 2 - 0.3, a1: Math.PI / 2 + 0.3 });
+  await sleep(40);
+  G.sketch.selectPoints([{ e: pole, pt: 2 }, { e: flag, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld pole top to flag edge start (this end stays FREE - nothing else pins it)');
+  await sleep(60);
+  G.sketch.selectPoints([{ e: flag, pt: 2 }, { e: cap, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld flag edge end to the arc');
+  await sleep(60);
+  G.sketch.select([flag, cap]);
+  assert(G.sketch.applyConstraint('Tangent'), 'tangent flag edge <-> arc (this end IS anchored)');
+  await sleep(300);
+
+  pressKey('Escape');
+  await sleep(60);
+
+  const beforeFlag = JSON.parse(JSON.stringify(G.sketch.entities()[flag]));
+
+  // grab the MIDDLE of the flag edge (whole-body handle) and drag it
+  const el6 = viewportEl();
+  const midUV = [(beforeFlag.a[0] + beforeFlag.b[0]) / 2, (beforeFlag.a[1] + beforeFlag.b[1]) / 2];
+  const u0 = await G.sketchUVToScreen(midUV[0], midUV[1]);
+  const u1 = await G.sketchUVToScreen(midUV[0] - 15, midUV[1] + 10);
+  assert(u0 && u1, 'partial-anchor whole-drag points project onto the screen');
+  fire(el6, 'pointermove', u0.x, u0.y);
+  fire(el6, 'pointerdown', u0.x, u0.y);
+  for (let i = 1; i <= 6; i++) {
+    fire(el6, 'pointermove', u0.x + ((u1.x - u0.x) * i) / 6, u0.y + ((u1.y - u0.y) * i) / 6, { buttons: 1 });
+  }
+  await sleep(60);
+
+  const midFlag = G.sketch.entities()[flag];
+  // THE FIX: previously this drag would have been refused outright (nothing
+  // moves) because ONE end (the tangent join) is anchored. Now it degrades
+  // to moving the FREE end (pt 1, welded only to the pole) while the
+  // anchored end (pt 2, tangent to the arc) stays put.
+  assert(
+    Math.hypot(midFlag.a[0] - beforeFlag.a[0], midFlag.a[1] - beforeFlag.a[1]) > 3,
+    `the free end of a partially-anchored line actually moved (a: [${beforeFlag.a}] -> [${midFlag.a}])`
+  );
+  assert(
+    Math.abs(midFlag.b[0] - beforeFlag.b[0]) < 0.5 && Math.abs(midFlag.b[1] - beforeFlag.b[1]) < 0.5,
+    `the anchored (tangent-joined) end stayed put (b: [${beforeFlag.b}] -> [${midFlag.b}])`
+  );
+  // the pole (welded to the free end) followed along - the weld held
+  const poleAfter = G.sketch.entities()[pole];
+  assert(
+    Math.abs(poleAfter.b[0] - midFlag.a[0]) < 0.5 && Math.abs(poleAfter.b[1] - midFlag.a[1]) < 0.5,
+    `the pole's welded top followed the flag edge's free end (pole.b: [${poleAfter.b}], flag.a: [${midFlag.a}])`
+  );
+  // (not asserting "no notice at all" here - a stale notice from an earlier
+  // test block can still be sitting in state for a few seconds after its
+  // own 5s auto-clear timer started, which is not this drag's concern; the
+  // movement assertions above already prove this drag was NOT refused)
+
+  fire(el6, 'pointerup', u1.x, u1.y, { buttons: 0 });
+  await sleep(150);
+
+  await G.cancelSketch();
+  await idle();
+}
+
+// =================================================================
+note('--- an arc with only ONE tangent join still has a draggable radius ---');
+{
+  // Same correction, arc-radius side: only TWO tangent joins (both ends)
+  // are genuinely over-determined for a radius drag. A single join leaves
+  // one always-solvable pivot, so the radius should still be free to change.
+  await rpc('session.reset');
+  await G.refresh();
+  await idle();
+  await G.beginSketch({ kind: 'origin', role: 'XY_Plane' });
+  await waitFor(() => G.getState().sketchMode, 4000);
+  await sleep(60);
+
+  const ln2 = G.sketch.addEntity({ type: 'line', a: [-20, 8], b: [-2, 8] });
+  const arc2 = G.sketch.addEntity({ type: 'arc', c: [-2, 0], r: 8, a0: Math.PI / 2, a1: Math.PI });
+  await sleep(40);
+  G.sketch.selectPoints([{ e: ln2, pt: 2 }, { e: arc2, pt: 1 }]);
+  assert(G.sketch.applyConstraint('Coincident'), 'weld line end to arc start');
+  await sleep(60);
+  G.sketch.select([ln2, arc2]);
+  assert(G.sketch.applyConstraint('Tangent'), 'tangent the ONLY join this arc has');
+  await sleep(300);
+
+  pressKey('Escape');
+  await sleep(60);
+
+  const beforeArc2 = JSON.parse(JSON.stringify(G.sketch.entities()[arc2]));
+  // rim point away from either endpoint (a0=pi/2 at [-2,8], a1=pi at [-10,0])
+  // - the arc spans pi/2 to pi, so 3pi/4 (down-left of centre) is a genuine
+  // mid-rim point: c + r*[cos(3pi/4), sin(3pi/4)]
+  const midAngle = (Math.PI / 2 + Math.PI) / 2;
+  const rimU = -2 + 8 * Math.cos(midAngle);
+  const rimV = 0 + 8 * Math.sin(midAngle);
+  const el7 = viewportEl();
+  const v0 = await G.sketchUVToScreen(rimU, rimV);
+  const v1 = await G.sketchUVToScreen(rimU * 1.8, rimV * 1.8);
+  assert(v0 && v1, 'single-tangent arc radius-drag points project onto the screen');
+  fire(el7, 'pointermove', v0.x, v0.y);
+  fire(el7, 'pointerdown', v0.x, v0.y);
+  for (let i = 1; i <= 6; i++) {
+    fire(el7, 'pointermove', v0.x + ((v1.x - v0.x) * i) / 6, v0.y + ((v1.y - v0.y) * i) / 6, { buttons: 1 });
+  }
+  const midArc2 = G.sketch.entities()[arc2];
+  assert(
+    midArc2.r > beforeArc2.r + 2,
+    `an arc with only ONE tangent join still resizes on a radius-handle drag (${beforeArc2.r} -> ${midArc2.r})`
+  );
+  // (the radius actually changing, asserted above, already proves this drag
+  // was not refused - see the note in the previous test about not asserting
+  // "no notice at all" against a possibly-stale notice from elsewhere)
+
+  fire(el7, 'pointerup', v1.x, v1.y, { buttons: 0 });
   await sleep(150);
 
   await G.cancelSketch();

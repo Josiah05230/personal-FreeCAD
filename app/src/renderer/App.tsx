@@ -3267,7 +3267,8 @@ export function App(): JSX.Element {
         removedEntities: () => vpApi.current?.getRemovedSketchEntities() ?? [],
         setConstruction: (on: boolean) => vpApi.current?.setSketchConstruction(on),
         constrainedIndices: () => vpApi.current?.testConstrainedIndices() ?? [],
-        entityColorHex: (idx: number) => vpApi.current?.testEntityColorHex(idx) ?? null
+        entityColorHex: (idx: number) => vpApi.current?.testEntityColorHex(idx) ?? null,
+        handlePointCount: () => vpApi.current?.testHandlePointCount() ?? 0
       },
 
       // --- observe ---

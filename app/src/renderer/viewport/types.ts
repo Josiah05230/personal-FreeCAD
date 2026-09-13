@@ -123,6 +123,10 @@ export interface ViewportApi {
   /** the actual rendered line color of entity `idx`, as a CSS hex string
    *  (test hook - what is ACTUALLY on screen, not a re-derivation) */
   testEntityColorHex: (idx: number) => string | null
+  /** total geometry-point handles ACTUALLY rendered right now (test hook -
+   *  what is ACTUALLY on screen, catches a deleted entity's points staying
+   *  drawn even after its own line is gone) */
+  testHandlePointCount: () => number
   /** offset the camera + pivot by a world-space delta (test hook only - a
    *  reliable way to perturb the camera for a "does Fit/Home recover?" test
    *  without depending on synthetic drag-event edge cases) */
