@@ -1,6 +1,6 @@
 {
   "name": "gwt-cad",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "Fusion-360-style CAD front-end over a headless FreeCAD kernel",
   "main": "./out/main/index.js",
   "author": {
