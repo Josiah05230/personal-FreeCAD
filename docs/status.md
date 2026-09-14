@@ -21,7 +21,11 @@ the seed + step + trace tail to replay.
 - Dark theme, app bar, data-driven ribbon (pinnable groups, right-click Pin /
   Set hotkey), doc tabs, status bar, command palette on `s`.
 - Data Panel (dir browser trimmed to `.FCStd` folders, rename / move / git /
-  trash, thumbnails). Read-only Git (History) panel.
+  trash, thumbnails). Git (History) panel: status/log/branches, PLUS real
+  write ops - init, stage + commit, create/switch/merge branches, push /
+  pull / fetch, discard-all, add a remote, clone. Auth for push/pull/fetch
+  is whatever the system `git` is already configured with (e.g. `gh auth
+  git-credential`) - no token/OAuth flow lives in the app itself.
 - Constrained turntable orbit (yaw about +Z, elevation clamped, no roll drift);
   pivot = geometry under the cursor. View cube (hover highlight, click-snap,
   Set as Front/Top/Right, 90deg roll arrows, Home).
