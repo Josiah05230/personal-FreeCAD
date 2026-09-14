@@ -3060,6 +3060,154 @@ def _strip_redundant_constraints(sk, d, max_passes=8):
     return dropped
 
 
+def _move_matching_elements(sk, moved):
+    """Replace a REOPENED entity's raw geometry in place, given its new final
+    shape. `moved` = [{"index": entityIndex, "entity": {type, ...}}, ...],
+    entityIndex in reopen order.
+
+    Why this exists: sketch.finish's `elements` is purely additive (every
+    entry becomes a fresh sk.addGeometry()) and the editor only ever sends
+    NEW entities there - a base entity dragged this session with no
+    dimension recording the change had no channel to reach the sidecar at
+    all (real user report, 2026-09-14: a Sweep downstream of an edited
+    sketch "didn't error or update" - nothing was ever actually sent).
+
+    Why not FreeCAD's own moveGeometry(): tried first, but it simulates an
+    INTERACTIVE drag (runs the solver with temporary weak constraints) - for
+    a genuinely unconstrained entity that lets the motion of one point pull
+    other points along with it in ways that do not converge to the exact
+    final shape requested, confirmed live (moving a free line's two
+    endpoints to two different targets in sequence left one of them at
+    neither target, repeatably, across further correction passes).
+
+    Why not a plain delGeometry+addGeometry (tried first too): deleting a
+    geometry object at index N shifts every LATER geometry's own index down
+    by one, and FreeCAD auto-drops every constraint that referenced the
+    deleted geometry - silently destroying any OTHER, still-valid
+    constraint on that same entity that the user never touched (confirmed
+    live: a Coincident weld between an edited circle's centre and an
+    untouched line survived the delete as a dangling/wrong reference, not
+    an error).
+
+    What this does instead: for each moved entity, capture every constraint
+    referencing its geo id (by content, not object identity - constraint
+    objects are not stable across delGeometry), remove just those, delete
+    the old geometry, add the replacement, then re-add the captured
+    constraints with every reference to the old geo id rewritten to the
+    new one. Every OTHER constraint (on other geometry) is never touched.
+    """
+    if not moved:
+        return 0
+    ent_to_geo = {}
+    ei = 0
+    for gid, g in enumerate(sk.Geometry):
+        if g.TypeId in _REOPEN_GEO_TIDS:
+            ent_to_geo[ei] = gid
+            ei += 1
+
+    import Part
+    from FreeCAD import Vector
+    import Sketcher
+
+    n = 0
+    for item in moved:
+        idx = int(item.get("index", -1))
+        el = item.get("entity") or {}
+        old_gid = ent_to_geo.get(idx)
+        if old_gid is None:
+            continue
+        old = sk.Geometry[old_gid]
+        t = el.get("type")
+        # only replace like-for-like - a type change here would mean the
+        # editor converted the entity, which goes through convertedElements
+        # (construction) or a real delete+add (elements/removedElements),
+        # never this path
+        expect_tid = {"line": "Part::GeomLineSegment", "circle": "Part::GeomCircle",
+                      "arc": "Part::GeomArcOfCircle", "spline": "Part::GeomBSplineCurve"}.get(t)
+        if expect_tid is None or old.TypeId != expect_tid:
+            continue
+
+        # 1. capture + remove every constraint touching this geo id
+        touching = []
+        for ci in range(int(sk.ConstraintCount) - 1, -1, -1):
+            c = sk.Constraints[ci]
+            refs = [(c.First, c.FirstPos), (c.Second, c.SecondPos), (c.Third, c.ThirdPos)]
+            if any(g == old_gid for g, _ in refs):
+                driving = getattr(c, "Driving", True)
+                touching.append((c.Type, refs, getattr(c, "Value", None), driving))
+        for ci in range(int(sk.ConstraintCount) - 1, -1, -1):
+            c = sk.Constraints[ci]
+            refs = [(c.First, c.FirstPos), (c.Second, c.SecondPos), (c.Third, c.ThirdPos)]
+            if any(g == old_gid for g, _ in refs):
+                try:
+                    sk.delConstraint(ci)
+                except Exception:
+                    pass
+
+        # 2. delete the old geometry, add the replacement
+        try:
+            sk.delGeometry(old_gid)
+        except Exception:
+            continue
+        is_con = bool(el.get("construction", False))
+        new_gid = None
+        try:
+            if t == "line":
+                a, b = el["a"], el["b"]
+                new_gid = sk.addGeometry(
+                    Part.LineSegment(Vector(a[0], a[1], 0), Vector(b[0], b[1], 0)), is_con)
+            elif t == "circle":
+                c = el["c"]
+                new_gid = sk.addGeometry(
+                    Part.Circle(Vector(c[0], c[1], 0), Vector(0, 0, 1), float(el["r"])), is_con)
+            elif t == "arc":
+                c = el["c"]
+                circ = Part.Circle(Vector(c[0], c[1], 0), Vector(0, 0, 1), float(el["r"]))
+                new_gid = sk.addGeometry(
+                    Part.ArcOfCircle(circ, float(el["a0"]), float(el["a1"])), is_con)
+            elif t == "spline":
+                pts = [Vector(q[0], q[1], 0) for q in el.get("pts", [])]
+                if len(pts) >= 2:
+                    bs = Part.BSplineCurve()
+                    try:
+                        bs.interpolate(pts)
+                    except Exception:
+                        bs.buildFromPoles(pts)
+                    new_gid = sk.addGeometry(bs, is_con)
+        except Exception:
+            continue
+        if new_gid is None:
+            continue
+
+        # 3. re-add the captured constraints, remapping old_gid -> new_gid
+        def remap(g, _old=old_gid, _new=new_gid):
+            return _new if g == _old else g
+        for ctype, refs, value, driving in reversed(touching):
+            (g1, p1), (g2, p2), (g3, p3) = refs
+            try:
+                args = [ctype, remap(g1)]
+                if p1:
+                    args.append(int(p1))
+                if g2 != -2000:
+                    args.append(remap(g2))
+                    if p2:
+                        args.append(int(p2))
+                if g3 != -2000:
+                    args.append(remap(g3))
+                    if p3:
+                        args.append(int(p3))
+                if value is not None and ctype in ("Distance", "Radius", "Diameter", "Angle",
+                                                     "DistanceX", "DistanceY"):
+                    args.append(float(value))
+                new_ci = sk.addConstraint(Sketcher.Constraint(*args))
+                if not driving:
+                    sk.setDriving(new_ci, False)
+            except Exception:
+                pass
+        n += 1
+    return n
+
+
 def _remove_matching_elements(sk, removed_indices):
     """Delete geometry the editor removed from a reopened sketch. The editor
     addresses geometry by entity index (same order sketch.reopen produced);
@@ -3225,10 +3373,16 @@ def _materialize_touched_external_geometry(sk):
 
 @method("sketch.finish")
 def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None,
-                  removedConstraints=None, removedElements=None, convertedElements=None):
+                  removedConstraints=None, removedElements=None, convertedElements=None,
+                  movedElements=None):
     """Commit geometry + manual constraints and close the sketch in one call
     (editor sends everything at once so there is a single recompute)."""
     d, sk = _obj(sketchId)
+    # movedElements FIRST, before any add/remove shifts entity-index -> geoId
+    # (both those still use the reopen-order mapping too, but running this
+    # first keeps every one of them working off the ORIGINAL, un-shifted map)
+    if movedElements:
+        _move_matching_elements(sk, movedElements)
     if removedConstraints:
         _remove_matching_constraints(sk, removedConstraints)
     if removedElements:

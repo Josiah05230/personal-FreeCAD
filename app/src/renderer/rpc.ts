@@ -468,11 +468,12 @@ export const apiQuiet = {
     constraints?: unknown[],
     removedConstraints?: unknown[],
     removedElements?: number[],
-    convertedElements?: Array<[number, boolean]>
+    convertedElements?: Array<[number, boolean]>,
+    movedElements?: Array<{ index: number; entity: unknown }>
   ) =>
     rpcQuiet<{ sketchId: string; count: number; constrained: boolean; closed: boolean }>(
       'sketch.finish',
-      { sketchId, elements, constraints, removedConstraints, removedElements, convertedElements }
+      { sketchId, elements, constraints, removedConstraints, removedElements, convertedElements, movedElements }
     ),
   sketchSolve: (elements: unknown[], constraints: unknown[]) =>
     rpcQuiet<SketchSolveDTO>('sketch.solve', { elements, constraints }),

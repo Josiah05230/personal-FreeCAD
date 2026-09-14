@@ -1665,13 +1665,57 @@ note('--- Dimension tool: two NON-parallel lines auto-detect as an ANGLE, not a 
   assert(ents.length === 2, 'drew 2 non-parallel lines (got ' + ents.length + ')');
   const [lineA, lineB] = ents;
   const midOf = (l) => [(l.a[0] + l.b[0]) / 2, (l.a[1] + l.b[1]) / 2];
-  // the real angle between the two directions, for a sanity check on the
-  // pre-filled value (0-180, undirected - matches SketchController.angleValue)
+  // angleValue() picks whichever of the two supplementary angles (raw or
+  // 180-raw) is nearer the PLACEMENT point, matching the wedge makeAngleDim
+  // actually draws on screen - not just the raw 0-180 angle between the two
+  // direction vectors regardless of which side was clicked (fixed 2026-09-14:
+  // the value shown previously could read e.g. 150 when the glyph on screen
+  // was clearly showing 30). Reproduce that same wedge pick here so this
+  // sanity check matches what the app is actually supposed to do, not the
+  // old (wedge-unaware) formula.
   const dot = (u, v) => u[0] * v[0] + u[1] * v[1];
   const norm = (u) => Math.hypot(u[0], u[1]);
   const dirA = [lineA.b[0] - lineA.a[0], lineA.b[1] - lineA.a[1]];
   const dirB = [lineB.b[0] - lineB.a[0], lineB.b[1] - lineB.a[1]];
-  const expectedDeg = (Math.acos(Math.max(-1, Math.min(1, dot(dirA, dirB) / (norm(dirA) * norm(dirB))))) * 180) / Math.PI;
+  const rawDeg = (Math.acos(Math.max(-1, Math.min(1, dot(dirA, dirB) / (norm(dirA) * norm(dirB))))) * 180) / Math.PI;
+  const linesIntersect2D = (p0, d0, p1, d1) => {
+    const denom = d0[0] * d1[1] - d0[1] * d1[0];
+    if (Math.abs(denom) < 1e-9) return null;
+    const t = ((p1[0] - p0[0]) * d1[1] - (p1[1] - p0[1]) * d1[0]) / denom;
+    return [p0[0] + d0[0] * t, p0[1] + d0[1] * t];
+  };
+  const pivot = linesIntersect2D(lineA.a, dirA, lineB.a, dirB) ?? [
+    (lineA.a[0] + lineA.b[0] + lineB.a[0] + lineB.b[0]) / 4,
+    (lineA.a[1] + lineA.b[1] + lineB.a[1] + lineB.b[1]) / 4
+  ];
+  const placementUV = [70, 40]; // matches emptySpot below - the actual click point
+  const nearAng = Math.atan2(placementUV[1] - pivot[1], placementUV[0] - pivot[0]);
+  const a0ang = Math.atan2(dirA[1], dirA[0]);
+  const a1ang = Math.atan2(dirB[1], dirB[0]);
+  const wedgeNorm = (a) => {
+    let x = a;
+    while (x <= -Math.PI) x += 2 * Math.PI;
+    while (x > Math.PI) x -= 2 * Math.PI;
+    return x;
+  };
+  const candidates = [
+    [a0ang, a1ang],
+    [a0ang, a1ang + Math.PI],
+    [a0ang + Math.PI, a1ang],
+    [a0ang + Math.PI, a1ang + Math.PI]
+  ];
+  let bestSweep = wedgeNorm(a1ang - a0ang);
+  let bestScore = -Infinity;
+  for (const [s0, s1] of candidates) {
+    const mid = wedgeNorm(s0 + wedgeNorm(s1 - s0) / 2);
+    const score = Math.cos(mid - nearAng);
+    if (score > bestScore) {
+      bestScore = score;
+      bestSweep = wedgeNorm(s1 - s0);
+    }
+  }
+  const expectedDeg = Math.abs((bestSweep * 180) / Math.PI);
+  void rawDeg;
 
   pressKey('d');
   await sleep(30);

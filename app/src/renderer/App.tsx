@@ -787,6 +787,19 @@ export function App(): JSX.Element {
     const removedCons = (vpApi.current?.getRemovedSketchConstraints() ?? []) as SketchConstraint[]
     const removedEnts = vpApi.current?.getRemovedSketchEntities() ?? []
     const convertedEnts = vpApi.current?.getConvertedSketchEntities() ?? []
+    // sketch.finish's `elements` is purely additive (every entry becomes a
+    // fresh sk.addGeometry() server-side) and getNewSketchEntities() only
+    // ever covers entities added since reopen - a base entity whose raw
+    // SHAPE was dragged this session, with no dimension recording the new
+    // value, had no channel to reach the sidecar at all: the edit looked
+    // committed in the editor, but Finish silently dropped it (real user
+    // report, 2026-09-14 - a Sweep downstream of the edited sketch "didn't
+    // error or update" because nothing was ever actually sent). Send each
+    // edited base entity's new raw shape as an IN-PLACE update against its
+    // existing geo id (movedElements) - not a delete+re-add, which would
+    // silently drop every OTHER still-valid constraint on that same entity
+    // (FreeCAD auto-removes a deleted geometry's dependent constraints).
+    const movedEnts = vpApi.current?.getEditedBaseSketchEntities() ?? []
     const { frame } = sketchSession
     // optimistic origin-plane entry may not have the real id back yet
     let id = sketchSession.sketchId
@@ -819,7 +832,7 @@ export function App(): JSX.Element {
     // 2. commit to the engine in the background, then reconcile with the real
     //    (constraint-solved) geometry. Uses the quiet RPC path - no spinner.
     try {
-      await apiQuiet.sketchFinish(id, newEnts, cons, removedCons, removedEnts, convertedEnts)
+      await apiQuiet.sketchFinish(id, newEnts, cons, removedCons, removedEnts, convertedEnts, movedEnts)
       const [scene, tree] = await Promise.all([apiQuiet.sceneGet(), apiQuiet.treeGet()])
       setMeshes(scene.meshes)
       setSketches(scene.sketches ?? [])
@@ -3372,7 +3385,8 @@ export function App(): JSX.Element {
         constrainedIndices: () => vpApi.current?.testConstrainedIndices() ?? [],
         entityColorHex: (idx: number) => vpApi.current?.testEntityColorHex(idx) ?? null,
         entitySnapshot: (idx: number) => vpApi.current?.testEntitySnapshot(idx) ?? null,
-        handlePointCount: () => vpApi.current?.testHandlePointCount() ?? 0
+        handlePointCount: () => vpApi.current?.testHandlePointCount() ?? 0,
+        dimPicksState: () => vpApi.current?.testDimPicksState() ?? []
       },
 
       // --- observe ---
@@ -3801,7 +3815,23 @@ export function App(): JSX.Element {
         const commit = async (txt: string): Promise<void> => {
           const value = await resolveDimValue(txt, 'angle')
           if (value == null) return
-          vpApi.current?.setSketchAngleDimension(value)
+          // FreeCAD's Angle constraint does not reject an out-of-range value
+          // as conflicting/redundant - it just solves SOME configuration for
+          // it, which for e.g. 400 degrees visibly relocates both lines away
+          // from their shared vertex entirely (confirmed live: neither
+          // line's own endpoint stayed at the vertex any more). Validate the
+          // sane range client-side instead of letting that reach the solver
+          // at all (user report, 2026-09-14: "if I type a value, it needs
+          // to... show an error that the value is invalid").
+          if (!(value > 0) || value >= 360) {
+            flashSketchNotice(`Angle must be between 0 and 360 degrees (got ${value}).`)
+            return
+          }
+          const ok = vpApi.current?.setSketchAngleDimension(value) ?? false
+          if (!ok) {
+            flashSketchNotice('Could not set that angle - the picked lines are no longer valid.')
+            return
+          }
           onSketchChange()
         }
         if (useFloating) {
@@ -3830,7 +3860,15 @@ export function App(): JSX.Element {
         const commit = async (txt: string): Promise<void> => {
           const value = await resolveDimValue(txt)
           if (value == null) return
-          vpApi.current?.setSketchDistanceDimension(value)
+          if (!(value > 0)) {
+            flashSketchNotice(`Distance must be a positive number (got ${value}).`)
+            return
+          }
+          const ok = vpApi.current?.setSketchDistanceDimension(value) ?? false
+          if (!ok) {
+            flashSketchNotice('Could not set that distance - the picked geometry is no longer valid.')
+            return
+          }
           onSketchChange()
         }
         if (useFloating) {
@@ -3871,7 +3909,15 @@ export function App(): JSX.Element {
         const { txt, dimAs } = parseDimAs(raw)
         const value = await resolveDimValue(txt)
         if (value == null) return
-        vpApi.current?.setSketchDimension(entityIndex as number, value, dimAs)
+        if (!(value > 0)) {
+          flashSketchNotice(`${kind === 'radius' ? 'Radius/diameter' : 'Length'} must be a positive number (got ${value}).`)
+          return
+        }
+        const ok = vpApi.current?.setSketchDimension(entityIndex as number, value, dimAs) ?? false
+        if (!ok) {
+          flashSketchNotice('Could not set that dimension - the geometry is no longer valid.')
+          return
+        }
         onSketchChange()
       }
       // pre-fill with the LIVE measured value, same as the distance branch -

@@ -227,6 +227,22 @@ export class SketchController {
   /** reopened entity index -> new construction flag, for base geometry the user
    *  converted this session (sent to sketch.finish as convertedElements) */
   private convertedBase = new Map<number, boolean>()
+  /** a snapshot of each BASE entity's geometry exactly as it was at reopen
+   *  time, so finishSketch can tell "this reopened line/circle/arc's raw
+   *  SHAPE was dragged this session" apart from "it was left alone" -
+   *  sketch.finish's `elements` param is purely ADDITIVE (see
+   *  _add_sketch_elements: every element is a fresh sk.addGeometry(), never
+   *  a move of an existing one) and getNewEntities() only ever slices
+   *  entities[baseCount:], so a drag that changes a REOPENED entity's raw
+   *  geometry with no accompanying constraint change (no dimension driving
+   *  it) had NO channel to reach the sidecar at all - the edit looked like
+   *  it took in the editor, Finish silently dropped it, and anything built
+   *  from that sketch (e.g. a Sweep) correctly saw no change because none
+   *  was ever sent (real user report, 2026-09-14: "I hit finish sketch
+   *  after dragging... the sweep of that sketch didn't error or update").
+   *  Reuses the already-proven remove+re-add pipeline (removedElements +
+   *  elements) rather than inventing a new "replace" RPC. */
+  private baseGeometrySnapshot: SketchEntity[] = []
   /** set by pushRect for a Center Rectangle so commit() can anchor the crossing
    *  of its construction diagonals to the origin / axis / point the first pick
    *  landed on. Cleared right after it is consumed. */
@@ -568,6 +584,56 @@ export class SketchController {
     return this.removedBaseEntities.slice()
   }
 
+  /** Base (reopen-era) entities whose raw geometry has genuinely changed
+   *  since reopen - e.g. a radius/endpoint drag with no dimension recording
+   *  it, which sketch.finish's additive-only `elements` and getNewEntities()
+   *  (new-since-reopen only) would otherwise silently drop (see
+   *  baseGeometrySnapshot's doc comment). Excludes anything already deleted
+   *  or converted this session - those go through their own existing
+   *  channels. finishSketch treats each returned index as "remove the old
+   *  copy, add the new shape" using the SAME proven remove+re-add pipeline
+   *  a real delete already uses - not a new sidecar operation. */
+  getEditedBaseEntities(): Array<{ index: number; entity: SketchEntity }> {
+    const out: Array<{ index: number; entity: SketchEntity }> = []
+    for (let i = 0; i < this.baseGeometrySnapshot.length; i++) {
+      if (this.deletedBaseSet.has(i) || this.convertedBase.has(i)) continue
+      const before = this.baseGeometrySnapshot[i]
+      const now = this.entities[i]
+      if (!now) continue
+      if (!SketchController.sameShape(before, now)) out.push({ index: i, entity: now })
+    }
+    return out
+  }
+
+  /** true when two entities of the SAME type occupy the same raw geometry
+   *  (position/size only - construction flag and type are compared by the
+   *  caller separately). A small epsilon absorbs float noise from the local
+   *  solver's relaxation, not genuine edits. */
+  private static sameShape(a: SketchEntity, b: SketchEntity): boolean {
+    if (a.type !== b.type) return false
+    const eq = (x: number, y: number): boolean => Math.abs(x - y) < 1e-7
+    if (a.type === 'line' && b.type === 'line') {
+      return eq(a.a[0], b.a[0]) && eq(a.a[1], b.a[1]) && eq(a.b[0], b.b[0]) && eq(a.b[1], b.b[1])
+    }
+    if (a.type === 'circle' && b.type === 'circle') {
+      return eq(a.c[0], b.c[0]) && eq(a.c[1], b.c[1]) && eq(a.r, b.r)
+    }
+    if (a.type === 'arc' && b.type === 'arc') {
+      return (
+        eq(a.c[0], b.c[0]) &&
+        eq(a.c[1], b.c[1]) &&
+        eq(a.r, b.r) &&
+        eq(a.a0, b.a0) &&
+        eq(a.a1, b.a1)
+      )
+    }
+    if (a.type === 'spline' && b.type === 'spline') {
+      if (a.pts.length !== b.pts.length) return false
+      return a.pts.every((p, i) => eq(p[0], b.pts[i][0]) && eq(p[1], b.pts[i][1]))
+    }
+    return true
+  }
+
   /** Reopen-era geometry whose construction flag the user flipped this session,
    *  as [entityIndex, isConstruction] pairs (for sketch.finish
    *  convertedElements). */
@@ -590,6 +656,7 @@ export class SketchController {
   ): void {
     this.entities = ents.slice()
     this.baseCount = this.entities.length
+    this.baseGeometrySnapshot = ents.map((e) => SketchController.cloneEnt(e))
     this.constraints = cons.map((c) => ({ ...c, refs: c.refs.map((r) => ({ ...r })) }))
     this.baseConstraintCount = this.constraints.length
     this.removedBaseConstraints = []
@@ -1287,7 +1354,18 @@ export class SketchController {
     return Math.abs(cross) > Math.sin((2 * Math.PI) / 180) // > ~2 degrees off parallel
   }
 
-  /** current angle (degrees, 0-180) between the two dim-pick lines */
+  /** current angle (degrees) between the two dim-pick lines, in the SAME
+   *  wedge makeAngleDim will actually draw - picks whichever of the two
+   *  supplementary angles (θ or 180-θ) is nearer the placement point
+   *  (dimPlaceUV, i.e. where the user clicked to drop it; falls back to the
+   *  pick lines' own midpoint if not placed yet, e.g. while only hovering).
+   *  Previously this always returned the raw 0-180 angle between the two
+   *  direction vectors regardless of which side of the lines the cursor was
+   *  on, so the value shown in the edit box could read e.g. 150 when the
+   *  glyph on screen (which DOES pick the near wedge) was clearly showing
+   *  the 30-degree angle instead - user report, 2026-09-14: "it needs to...
+   *  actually place where my mouse is [and]... adding/subtracting units of
+   *  90 and 180 degrees as needed". */
   angleValue(): number | null {
     if (this.dimPicks.length < 2) return null
     const [p0, p1] = this.dimPicks
@@ -1295,11 +1373,43 @@ export class SketchController {
     const e0 = this.entities[p0.ent]
     const e1 = this.entities[p1.ent]
     if (!e0 || !e1 || e0.type !== 'line' || e1.type !== 'line') return null
-    const d0 = Math.hypot(e0.b[0] - e0.a[0], e0.b[1] - e0.a[1]) || 1
-    const d1 = Math.hypot(e1.b[0] - e1.a[0], e1.b[1] - e1.a[1]) || 1
-    const dot = ((e0.b[0] - e0.a[0]) / d0) * ((e1.b[0] - e1.a[0]) / d1) +
-      ((e0.b[1] - e0.a[1]) / d0) * ((e1.b[1] - e1.a[1]) / d1)
-    return (Math.acos(Math.max(-1, Math.min(1, dot))) * 180) / Math.PI
+    const pivot = this.linesIntersectUV(e0, e1) ?? [
+      (e0.a[0] + e0.b[0] + e1.a[0] + e1.b[0]) / 4,
+      (e0.a[1] + e0.b[1] + e1.a[1] + e1.b[1]) / 4
+    ]
+    const near = this.dimPlaceUV ?? [
+      (e0.a[0] + e0.b[0] + e1.a[0] + e1.b[0]) / 4,
+      (e0.a[1] + e0.b[1] + e1.a[1] + e1.b[1]) / 4
+    ]
+    const a0 = Math.atan2(e0.b[1] - e0.a[1], e0.b[0] - e0.a[0])
+    const a1 = Math.atan2(e1.b[1] - e1.a[1], e1.b[0] - e1.a[0])
+    const nearAng = Math.atan2(near[1] - pivot[1], near[0] - pivot[0])
+    const norm = (a: number): number => {
+      let x = a
+      while (x <= -Math.PI) x += 2 * Math.PI
+      while (x > Math.PI) x -= 2 * Math.PI
+      return x
+    }
+    // same 4-way candidate search makeAngleDim uses, so the value shown
+    // always matches the wedge actually drawn
+    const candidates: Array<[number, number]> = [
+      [a0, a1],
+      [a0, a1 + Math.PI],
+      [a0 + Math.PI, a1],
+      [a0 + Math.PI, a1 + Math.PI]
+    ]
+    let bestSweep = norm(a1 - a0)
+    let bestScore = -Infinity
+    for (const [s0, s1] of candidates) {
+      const mid = norm(s0 + norm(s1 - s0) / 2)
+      const score = Math.cos(mid - nearAng)
+      if (score > bestScore) {
+        bestScore = score
+        bestSweep = norm(s1 - s0)
+      }
+    }
+    const deg = (Math.abs(bestSweep) * 180) / Math.PI
+    return deg
   }
 
   /** commit the pending angle-between-two-lines dimension (degrees) */
@@ -4290,6 +4400,12 @@ export class SketchController {
       n += obj.geometry.getAttribute('position')?.count ?? 0
     }
     return n
+  }
+
+  /** DEBUG test hook: current dimension-tool picks, for diagnosing why a
+   *  ctrl-click sequence did or didn't land on the geometry intended. */
+  testDimPicksState(): unknown {
+    return this.dimPicks.map((p) => ('pt' in p ? { pt: p.pt } : { ent: p.ent }))
   }
 
   private pickSym(ev: { clientX: number; clientY: number }): string | null {

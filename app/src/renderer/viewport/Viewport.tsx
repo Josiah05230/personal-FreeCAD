@@ -407,6 +407,8 @@ export function Viewport({
           stateRef.current?.sketch?.getRemovedConstraints() ?? [],
         getRemovedSketchEntities: () =>
           stateRef.current?.sketch?.getRemovedEntities() ?? [],
+        getEditedBaseSketchEntities: () =>
+          stateRef.current?.sketch?.getEditedBaseEntities() ?? [],
         getConvertedSketchEntities: () =>
           stateRef.current?.sketch?.getConvertedEntities() ?? [],
         applySketchConstraint: (t) => stateRef.current?.sketch?.applyConstraint(t) ?? false,
@@ -476,6 +478,7 @@ export function Viewport({
         testEntityColorHex: (idx) => stateRef.current?.sketch?.testEntityColorHex(idx) ?? null,
         testEntitySnapshot: (idx) => stateRef.current?.sketch?.testEntitySnapshot(idx) ?? null,
         testHandlePointCount: () => stateRef.current?.sketch?.testHandlePointCount() ?? 0,
+        testDimPicksState: () => stateRef.current?.sketch?.testDimPicksState() ?? [],
         testNudgeCamera: (delta) => {
           const s = stateRef.current
           if (!s) return

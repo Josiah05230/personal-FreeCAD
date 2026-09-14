@@ -36,6 +36,11 @@ export interface ViewportApi {
   getRemovedSketchConstraints: () => RecordedSketchConstraint[]
   /** reopen-era geometry the user deleted this session, as entity indices */
   getRemovedSketchEntities: () => number[]
+  /** reopen-era geometry whose raw SHAPE changed this session (a drag with no
+   *  dimension recording it) - finishSketch removes the old copy and adds
+   *  the new one via the same removedElements + elements channels a real
+   *  delete already uses, since sketch.finish's `elements` is additive-only */
+  getEditedBaseSketchEntities: () => Array<{ index: number; entity: SketchEntity }>
   /** reopen-era geometry whose construction flag was flipped this session */
   getConvertedSketchEntities: () => Array<[number, boolean]>
   applySketchConstraint: (type: SketchConstraintType) => boolean
@@ -129,6 +134,8 @@ export interface ViewportApi {
    *  what is ACTUALLY on screen, catches a deleted entity's points staying
    *  drawn even after its own line is gone) */
   testHandlePointCount: () => number
+  /** DEBUG test hook: current dimension-tool picks */
+  testDimPicksState: () => unknown
   /** offset the camera + pivot by a world-space delta (test hook only - a
    *  reliable way to perturb the camera for a "does Fit/Home recover?" test
    *  without depending on synthetic drag-event edge cases) */
