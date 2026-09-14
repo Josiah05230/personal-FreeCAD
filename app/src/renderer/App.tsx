@@ -272,6 +272,7 @@ export function App(): JSX.Element {
 
   const [asmTree, setAsmTree] = useState<AssemblyTree | null>(null)
   const [jointType, setJointType] = useState('Revolute')
+  const [asmPins, setAsmPins] = useState<AsmPinFile>({})
 
   const [sketchSession, setSketchSession] = useState<{
     sketchId: string
@@ -389,8 +390,16 @@ export function App(): JSX.Element {
     ])
     applySceneTree(scene, tree)
     setAsmTree(asm && asm.assembly ? asm : null)
+    if (asm && asm.assembly && docPath) {
+      void window.cad
+        .asmPinRead(docPath)
+        .then(setAsmPins)
+        .catch(() => setAsmPins({}))
+    } else {
+      setAsmPins({})
+    }
     done()
-  }, [applySceneTree])
+  }, [applySceneTree, docPath])
 
   // route every queued-command failure to a notice + a resync from engine truth,
   // so a rejected op leaves the UI consistent instead of half-applied
@@ -3070,14 +3079,40 @@ export function App(): JSX.Element {
 
   // ---- assemblies ----
   // insert a component by path (no file dialog) - shared by the ribbon action
-  // and the E2E harness
+  // and the E2E harness. `pin` is optional: a git-based version lock/track
+  // (commit or branch) resolved to a real file BEFORE linking, so the
+  // sidecar's App::Link always points at a concrete path on disk exactly
+  // like the unpinned case - git resolution happens entirely up here in
+  // the main process, the sidecar needs no awareness of it at all.
   const addComponentFile = useCallback(
-    async (p: string) => {
+    async (p: string, pin?: { mode: PinMode; ref: string }) => {
       await api.assemblyCreate()
-      await api.assemblyAddComponent(p, basename(p).replace(/\.FCStd$/i, ''))
+      let linkPath = p
+      let resolvedCommit: string | undefined
+      let drift: boolean | undefined
+      if (pin) {
+        const resolved = await window.cad.asmPinResolve({ sourcePath: p, mode: pin.mode, ref: pin.ref })
+        linkPath = resolved.linkPath
+        resolvedCommit = resolved.commit
+        drift = resolved.drift
+      }
+      const name = basename(p).replace(/\.FCStd$/i, '')
+      const tree = await api.assemblyAddComponent(linkPath, name)
+      if (pin && docPath) {
+        const added = tree.components[tree.components.length - 1]
+        if (added) {
+          await window.cad.asmPinSet(docPath, added.id, {
+            sourcePath: p,
+            mode: pin.mode,
+            ref: pin.ref,
+            resolvedCommit,
+            drift
+          })
+        }
+      }
       await refreshScene()
     },
-    [refreshScene]
+    [refreshScene, docPath]
   )
 
   const addComponent = useCallback(async () => {
@@ -3085,6 +3120,64 @@ export function App(): JSX.Element {
     if (!p) return
     await addComponentFile(p)
   }, [addComponentFile])
+
+  // set/clear/refresh a component's pin. Re-linking is done by removing and
+  // re-adding the App::Link at the resolved path - simplest correct way to
+  // change what an existing link points at without new sidecar surface.
+  const setComponentPin = useCallback(
+    async (componentId: string, sourcePath: string, pin: { mode: PinMode; ref: string } | null) => {
+      if (!docPath) return
+      if (pin === null) {
+        await window.cad.asmPinSet(docPath, componentId, null)
+        // relink live (unpinned) at the real source path
+        await api.assemblyRemoveComponent(componentId).catch(() => undefined)
+        await addComponentFile(sourcePath)
+        return
+      }
+      // validate the ref resolves before tearing down the existing link, so a
+      // typo'd branch/commit name fails loudly without losing the component
+      await window.cad.asmPinResolve({ sourcePath, mode: pin.mode, ref: pin.ref })
+      await api.assemblyRemoveComponent(componentId).catch(() => undefined)
+      await addComponentFile(sourcePath, pin)
+    },
+    [docPath, addComponentFile]
+  )
+
+  // re-resolve every pinned component against its ref right now - moves a
+  // branch-tracked pin to the branch's current tip, and refreshes drift
+  // status for commit-pinned ones. Called after opening/reopening an
+  // assembly so pins reflect current reality, not stale cached state.
+  const refreshAssemblyPins = useCallback(async () => {
+    if (!docPath || !asmTree) return
+    const pins = await window.cad.asmPinRead(docPath)
+    for (const [componentId, pin] of Object.entries(pins)) {
+      if (!pin.ref) continue
+      const resolved = await window.cad.asmPinResolve(pin)
+      if (pin.mode === 'branch' && resolved.commit && resolved.commit !== pin.resolvedCommit) {
+        // branch tip moved - re-link at the new resolved commit, which also
+        // persists the updated pin (resolvedCommit + drift) via addComponentFile
+        await api.assemblyRemoveComponent(componentId).catch(() => undefined)
+        await addComponentFile(pin.sourcePath, { mode: pin.mode, ref: pin.ref })
+      } else {
+        // commit-mode pin, or a branch pin whose tip hasn't moved - just
+        // refresh the drift flag against the source repo's current state
+        await window.cad.asmPinSet(docPath, componentId, { ...pin, drift: resolved.drift })
+      }
+    }
+    setAsmPins(await window.cad.asmPinRead(docPath))
+  }, [docPath, asmTree, addComponentFile])
+
+  // re-resolve pins once per opened-assembly (not on every refreshScene -
+  // that would re-run for every unrelated edit). Fires when a document that
+  // has an assembly finishes its first load.
+  const pinRefreshedForRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!docPath || !asmTree?.assembly) return
+    const key = `${docPath}:${asmTree.assembly}`
+    if (pinRefreshedForRef.current === key) return
+    pinRefreshedForRef.current = key
+    void refreshAssemblyPins()
+  }, [docPath, asmTree?.assembly, refreshAssemblyPins])
 
   const groundComponent = useCallback(
     async (id: string) => {
@@ -3195,6 +3288,15 @@ export function App(): JSX.Element {
       // the timeline's feature-chip selection (Mirror / Pattern Type=Features)
       selectFeatures: (ids: string[]) => setTimelineSel(ids ?? []),
       addComponentFile: (p: string) => addComponentFile(p),
+      addComponentFilePinned: (p: string, mode: PinMode, ref: string) =>
+        addComponentFile(p, { mode, ref }),
+      setComponentPin: (
+        componentId: string,
+        sourcePath: string,
+        pin: { mode: PinMode; ref: string } | null
+      ) => setComponentPin(componentId, sourcePath, pin),
+      refreshAssemblyPins: () => refreshAssemblyPins(),
+      getAsmPins: () => asmPins,
 
       // --- sketch ---
       beginSketch,
@@ -3323,6 +3425,9 @@ export function App(): JSX.Element {
     runLivePreview,
     dressUpGhost,
     addComponentFile,
+    setComponentPin,
+    refreshAssemblyPins,
+    asmPins,
     sketchSession,
     status.phase,
     busy,
@@ -4088,6 +4193,8 @@ export function App(): JSX.Element {
                       onAddComponent={addComponent}
                       onGround={groundComponent}
                       onAddJoint={addJoint}
+                      pins={asmPins}
+                      onSetPin={setComponentPin}
                     />
                   )}
                   {op && (

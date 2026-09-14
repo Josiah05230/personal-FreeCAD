@@ -93,7 +93,26 @@ the seed + step + trace tail to replay.
 - Drawings (headless TechDraw): projected hidden-line views as SVG, auto + click
   dimensions, title block, BOM, PDF + DXF export.
 - Assemblies: create, insert `.FCStd` as `App::Link`, position, ground, add
-  joints from a 2-face pick (solving is experimental headless).
+  joints from a 2-face pick (solving is experimental headless). Sub-components
+  are genuinely separate files - editing and saving a part propagates to any
+  assembly that links it, next time that assembly is opened (verified live,
+  `test/e2e/scenarios/asm_live_update.js`).
+  Each component can also be git-pinned: locked to a specific commit (never
+  moves regardless of what the source repo's working tree does later) or set
+  to track a branch's tip (re-resolved on reopen / manual refresh). Pin
+  resolution is pure `git show <ref>:<path>` against the source repo - read
+  only, never touches its working tree or index, so it can never collide with
+  a collaborator's own checkout of that repo. Resolved content is cached
+  under Electron's userData dir; pin metadata (which ref, last resolved
+  commit, drift flag) lives in a `<name>.gwtcad-asm.json` companion next to
+  the assembly file. Drift (source has moved past a commit pin) is detected
+  and shown per component. No file locking across users - git has no
+  built-in mechanism for that; Git LFS's advisory `lfs lock` would be the
+  natural fit if ever needed, left as a future extension point, not built.
+  Verified end-to-end against a real multi-commit, multi-branch git repo:
+  `test/e2e/scenarios/asm_pin.js` (commit-lock immutability across working-
+  tree changes and reopen, drift detection, branch-tip tracking, and
+  isolation between independently-pinned components).
 - Parameters panel + unit-aware expression evaluator (`expr.py`); a feature dim
   typed "OD*2 + 3mm" persists and re-drives when a param changes.
 - KiCad: headless `.kicad_pcb` import (board solid + labelled placeholders),

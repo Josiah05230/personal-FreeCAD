@@ -4490,6 +4490,14 @@ def assembly_add_component(path, name=None):
     return _assembly.tree(d)
 
 
+@method("assembly.removeComponent")
+def assembly_remove_component(componentId):
+    d = session.doc()
+    r = _assembly.remove_component(d, componentId)
+    r.update(_assembly.tree(d))
+    return r
+
+
 @method("assembly.setPlacement")
 def assembly_set_placement(componentId, base=(0, 0, 0), axis=(0, 0, 1), angle=0.0):
     d = session.doc()

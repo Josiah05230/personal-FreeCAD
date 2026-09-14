@@ -43,6 +43,23 @@ export interface GitRemote {
   name: string
   url: string
 }
+export type PinMode = 'commit' | 'branch'
+export interface ComponentPin {
+  sourcePath: string
+  mode?: PinMode
+  ref?: string
+  resolvedCommit?: string
+  drift?: boolean
+}
+export interface AsmPinFile {
+  [componentId: string]: ComponentPin
+}
+export interface ResolvedPin {
+  linkPath: string
+  pinned: boolean
+  commit?: string
+  drift?: boolean
+}
 
 const cad = {
   /** true when launched by the E2E harness (`--e2e <scenario>`) - the renderer
@@ -117,6 +134,16 @@ const cad = {
   gitDiscardAll: (filePath: string) => ipcRenderer.invoke('git:discardAll', filePath) as Promise<void>,
   gitAddRemote: (filePath: string, name: string, url: string) =>
     ipcRenderer.invoke('git:addRemote', filePath, name, url) as Promise<void>,
+
+  asmPinRead: (asmPath: string) => ipcRenderer.invoke('asmPin:read', asmPath) as Promise<AsmPinFile>,
+  asmPinSet: (asmPath: string, componentId: string, pin: ComponentPin | null) =>
+    ipcRenderer.invoke('asmPin:set', asmPath, componentId, pin) as Promise<void>,
+  asmPinResolve: (pin: ComponentPin) =>
+    ipcRenderer.invoke('asmPin:resolve', pin) as Promise<ResolvedPin>,
+  asmPinResolveRefToCommit: (filePath: string, ref: string) =>
+    ipcRenderer.invoke('asmPin:resolveRefToCommit', filePath, ref) as Promise<string>,
+  asmPinCurrentCommit: (filePath: string) =>
+    ipcRenderer.invoke('asmPin:currentCommit', filePath) as Promise<string | null>,
 
   exportPdf: (html: string, outPath: string) =>
     ipcRenderer.invoke('drawing:exportPdf', html, outPath) as Promise<{ path: string }>,

@@ -372,6 +372,9 @@ export interface AssemblyComponent {
   id: string
   label: string
   grounded: boolean
+  /** file the App::Link currently resolves to - the resolved pin cache path
+   *  for a pinned component, or the live source path when unpinned */
+  linkedPath?: string | null
   placement: { base: number[]; axis: number[]; angle: number }
 }
 export interface AssemblyJoint {
@@ -1028,6 +1031,8 @@ export const api = {
       sub2
     }),
   assemblyTree: () => rpc<AssemblyTree>('assembly.tree'),
+  assemblyRemoveComponent: (componentId: string) =>
+    rpc<AssemblyTree & { removed: boolean }>('assembly.removeComponent', { componentId }),
 
   setVisibility: (id: string, visible: boolean) =>
     rpc<{ id: string; visible: boolean }>('object.setVisibility', { id, visible }),

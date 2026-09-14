@@ -43,6 +43,23 @@ interface GitRemote {
   name: string
   url: string
 }
+type PinMode = 'commit' | 'branch'
+interface ComponentPin {
+  sourcePath: string
+  mode?: PinMode
+  ref?: string
+  resolvedCommit?: string
+  drift?: boolean
+}
+interface AsmPinFile {
+  [componentId: string]: ComponentPin
+}
+interface ResolvedPin {
+  linkPath: string
+  pinned: boolean
+  commit?: string
+  drift?: boolean
+}
 
 interface CadBridge {
   isE2E: boolean
@@ -92,6 +109,11 @@ interface CadBridge {
   gitFetch(filePath: string, remote?: string): Promise<void>
   gitDiscardAll(filePath: string): Promise<void>
   gitAddRemote(filePath: string, name: string, url: string): Promise<void>
+  asmPinRead(asmPath: string): Promise<AsmPinFile>
+  asmPinSet(asmPath: string, componentId: string, pin: ComponentPin | null): Promise<void>
+  asmPinResolve(pin: ComponentPin): Promise<ResolvedPin>
+  asmPinResolveRefToCommit(filePath: string, ref: string): Promise<string>
+  asmPinCurrentCommit(filePath: string): Promise<string | null>
   exportPdf(html: string, outPath: string): Promise<{ path: string }>
   writeText(text: string, outPath: string): Promise<{ path: string }>
   readImage(path: string): Promise<string>

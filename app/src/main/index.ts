@@ -4,6 +4,7 @@ import { readdir, writeFile, readFile, mkdir, rename } from 'fs/promises'
 import { homedir } from 'os'
 import { Sidecar, loadConfig } from './sidecar'
 import * as gitw from './git'
+import * as asmPin from './assemblyPin'
 
 // repo root is one level above app/ in dev; in a packaged build this is
 // remapped by the installer (Milestone 5).
@@ -223,6 +224,21 @@ app.whenReady().then(async () => {
   ipcMain.handle('git:addRemote', (_e, filePath: string, name: string, url: string) =>
     gitw.addRemote(filePath, name, url)
   )
+
+  // --- assembly component version pins (git-based lock/track) ---
+  ipcMain.handle('asmPin:read', (_e, asmPath: string) => asmPin.readPins(asmPath))
+  ipcMain.handle(
+    'asmPin:set',
+    (_e, asmPath: string, componentId: string, pin: asmPin.ComponentPin | null) =>
+      asmPin.setPin(asmPath, componentId, pin)
+  )
+  ipcMain.handle('asmPin:resolve', async (_e, pin: asmPin.ComponentPin) =>
+    asmPin.resolveComponentSource(pin)
+  )
+  ipcMain.handle('asmPin:resolveRefToCommit', (_e, filePath: string, ref: string) =>
+    asmPin.resolveRefToCommit(filePath, ref)
+  )
+  ipcMain.handle('asmPin:currentCommit', (_e, filePath: string) => asmPin.currentCommitFor(filePath))
 
   ipcMain.handle('drawing:exportPdf', async (_e, html: string, outPath: string) => {
     const w = new BrowserWindow({ show: false, webPreferences: { offscreen: true } })

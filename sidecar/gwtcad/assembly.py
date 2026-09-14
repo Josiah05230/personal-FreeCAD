@@ -64,6 +64,33 @@ def add_component(doc, path, name=None):
     return link
 
 
+def remove_component(doc, link_name):
+    """Remove a linked component (and any joints/grounds referencing it) from
+    the assembly. Used when re-pointing a component at a different resolved
+    file (e.g. switching a git pin) - simplest correct way to change what an
+    existing App::Link points at is to drop it and add a fresh one."""
+    link = doc.getObject(link_name)
+    if link is None:
+        return {"removed": False}
+    for o in list(doc.Objects):
+        if o.Name.startswith("Joint") or o.Name.startswith("GroundedJoint"):
+            refs = []
+            for pname in ("Reference1", "Reference2"):
+                v = getattr(o, pname, None)
+                if v:
+                    refs.extend(r[0] for r in v if isinstance(r, tuple))
+            if link_name in refs or getattr(o, "Component1", "") == link_name or getattr(
+                o, "Component2", ""
+            ).startswith(link_name):
+                try:
+                    doc.removeObject(o.Name)
+                except Exception:
+                    pass
+    doc.removeObject(link_name)
+    doc.recompute()
+    return {"removed": True}
+
+
 def set_placement(doc, link_name, base, axis, angle_deg):
     link = doc.getObject(link_name)
     if link is None:
@@ -181,10 +208,22 @@ def tree(doc):
     for o in doc.Objects:
         if o.TypeId == "App::Link":
             p = o.Placement
+            linked_path = None
+            try:
+                target = o.LinkedObject
+                if target is not None and getattr(target, "Document", None) is not None:
+                    linked_path = target.Document.FileName or None
+            except Exception:
+                linked_path = None
             comps.append({
                 "id": o.Name,
                 "label": o.Label,
                 "grounded": bool(getattr(o, "Grounded", False)),
+                # the file this link's target currently lives in - NOT
+                # necessarily the original source (a pinned component is
+                # linked at a resolved cache-file path; the companion
+                # .gwtcad-asm.json tracks the real source path + pin ref)
+                "linkedPath": linked_path,
                 "placement": {
                     "base": [p.Base.x, p.Base.y, p.Base.z],
                     "axis": [p.Rotation.Axis.x, p.Rotation.Axis.y, p.Rotation.Axis.z],
