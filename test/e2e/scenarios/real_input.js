@@ -2372,6 +2372,42 @@ note('--- an arc with only ONE tangent join still has a draggable radius ---');
     `the plain-Coincident (non-tangent) hook join also followed the arc's new rim, did not tear away (gap ${weldGap2.toFixed(3)})`
   );
 
+  // THE BUG (found by code inspection after this same test still passed
+  // with the rim-pin fix in place, following a user report of a live
+  // detached-looking shape against their real file): solveLocal's tangent
+  // pass (step 3, right after the weld pass) decides which side to pivot
+  // by asking "is the OTHER side fixed, and is THIS side an arc" - it never
+  // checked whether THIS side is the one actually PINNED (being dragged
+  // this frame). So dragging arc2's own radius handle - which correctly
+  // pins arc2's points - still let this pass pivot arc2's centre BACK to
+  // match ln2's stale tangent direction, fighting the very drag that just
+  // grew it. Confirm the radius the drag set survives this pass (checked
+  // again after the loop that runs it, not just the raw e.r read above,
+  // which is set directly by applyDrag BEFORE solveLocal's passes run).
+  assert(
+    midArc2.r > beforeArc2.r + 2,
+    `the radius drag survives solveLocal's tangent-pivot pass, not silently reverted back toward the original (${beforeArc2.r} -> ${midArc2.r})`
+  );
+  // and ln2's own LENGTH should be preserved by the pivot (only its angle
+  // changes, never its far endpoint's distance from the shared point) - the
+  // arc's rim point here sits at angle a0=90 deg, straight up from centre,
+  // where the tangent line is horizontal at ANY radius, so direction alone
+  // cannot distinguish "correctly re-pivoted" from "silently left alone";
+  // length preservation can, since a no-op pivot would leave ln2's far
+  // point exactly where it started while its near point still snapped to
+  // the new (much farther away) rim, changing ln2's length instead.
+  const ln2Before = { a: [-20, 8], b: [-2, 8] };
+  const lenBefore = Math.hypot(ln2Before.b[0] - ln2Before.a[0], ln2Before.b[1] - ln2Before.a[1]);
+  const lenAfter = Math.hypot(lnMid.b[0] - lnMid.a[0], lnMid.b[1] - lnMid.a[1]);
+  // a no-op (the bug: far endpoint left behind while the near end still
+  // snaps to the new, much farther rim) would stretch this ~18-unit line to
+  // ~19.55 - a real re-pivot lands close to the original 18 (small drift
+  // from floating point / the 30-iteration relaxation, not exact)
+  assert(
+    Math.abs(lenAfter - lenBefore) < 1,
+    `the tangent-joined line's length is preserved by the pivot, not stretched by a no-op that left its far endpoint behind (before ${lenBefore.toFixed(3)}, after ${lenAfter.toFixed(3)})`
+  );
+
   fire(el7, 'pointerup', v1.x, v1.y, { buttons: 0 });
   await sleep(150);
 

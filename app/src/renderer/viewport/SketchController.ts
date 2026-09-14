@@ -3052,24 +3052,78 @@ export class SketchController {
           }
           return null
         }
+        // rotate a LINE about the shared (fixed) endpoint so it stays
+        // tangent to a fixed/pinned ARC there - the mirror of pivotArc, for
+        // when the arc side cannot be moved (it is what is actually being
+        // dragged: see the pinned-side note below). A line has no
+        // radius/centre to preserve - only its direction needs to change,
+        // to whatever is perpendicular to the arc's own radius vector at
+        // the shared point. The line's OWN far endpoint keeps its distance
+        // from the shared point (the line's length is preserved, only its
+        // angle changes) - never its far endpoint's absolute position,
+        // which would silently change the line's length instead.
+        const pivotLine = (e: SketchEntity, ownPt: 1 | 2, arcDir: [number, number]): void => {
+          if (e.type !== 'line') return
+          const far = ownPt === 1 ? e.b : e.a
+          const len = Math.hypot(far[0] - shared[0], far[1] - shared[1])
+          if (len < 1e-9) return
+          // two perpendicular candidates to the arc's radius vector;
+          // keep whichever one the far point already leans toward, so the
+          // line does not flip to point the opposite way every iteration
+          const same = (far[0] - shared[0]) * arcDir[0] + (far[1] - shared[1]) * arcDir[1] >= 0 ? 1 : -1
+          const newFar: [number, number] = [
+            shared[0] + arcDir[0] * len * same,
+            shared[1] + arcDir[1] * len * same
+          ]
+          if (ownPt === 1) e.b = newFar
+          else e.a = newFar
+        }
+        // PINNED (the entity actually being dragged this frame, e.g. its own
+        // radius/centre handle) is a stronger claim than merely "fixed"
+        // (which also includes axis/projected anchors and other entities'
+        // pinned points reached through a weld chain) - a pinned side must
+        // never be pivoted here, or this pass fights the very drag that is
+        // pinning it, undoing part of it every relaxation iteration (found
+        // via a real user file: dragging arc3's OWN radius handle, with the
+        // rim-pin fix correctly pinning arc3's points, still re-pivoted
+        // arc3's centre back to match its tangent neighbour's stale
+        // direction, because this pass only ever asked "is the OTHER side
+        // fixed", never "is THIS side the one being actively dragged").
+        const e0Pinned = pinned.has(k0)
+        const e1Pinned = pinned.has(k1)
         const e0Fixed = fixed.has(k0)
         const e1Fixed = fixed.has(k1)
-        // adjust whichever side is NOT fixed; if neither/both are fixed,
-        // prefer adjusting an arc over a line (a dragged line stays put,
-        // its tangent arc follows - matches how the weld pass already lets
-        // a pinned point win)
-        if (e1Fixed && !e0Fixed && e0.type === 'arc') {
+        // adjust whichever side is NOT fixed (and never the pinned/dragged
+        // side); if neither/both are fixed, prefer adjusting an arc over a
+        // line (a dragged line stays put, its tangent arc follows - matches
+        // how the weld pass already lets a pinned point win)
+        if (e1Fixed && !e0Fixed && !e0Pinned && e0.type === 'arc') {
           const dir = dirOf(e1)
           if (dir) pivotArc(i0, e0, r0.pt as 1 | 2, dir)
-        } else if (e0Fixed && !e1Fixed && e1.type === 'arc') {
+        } else if (e0Fixed && !e1Fixed && !e1Pinned && e1.type === 'arc') {
           const dir = dirOf(e0)
           if (dir) pivotArc(i1, e1, r1.pt as 1 | 2, dir)
-        } else if (e1.type === 'arc' && e0.type !== 'arc') {
+        } else if (e1.type === 'arc' && !e1Pinned && e0.type !== 'arc') {
           const dir = dirOf(e0)
           if (dir) pivotArc(i1, e1, r1.pt as 1 | 2, dir)
-        } else if (e0.type === 'arc') {
+        } else if (e0.type === 'arc' && !e0Pinned) {
           const dir = dirOf(e1)
           if (dir) pivotArc(i0, e0, r0.pt as 1 | 2, dir)
+        } else if (e0.type === 'arc' && e0Pinned && e1.type === 'line' && !e1Pinned) {
+          // the arc side is the one being dragged (radius/centre handle) and
+          // cannot be pivoted - rotate the LINE instead so tangency still
+          // holds at the new radius, rather than silently dropping tangency
+          // for the rest of the drag (found via code inspection after a
+          // real user file's report of a live detached-looking shape: this
+          // pass previously only ever asked "is the OTHER side fixed", never
+          // "is THIS side the one being actively dragged", so a pinned arc
+          // could still get re-pivoted back toward its neighbour's stale
+          // direction, fighting the drag).
+          const dir = dirOf(e0)
+          if (dir) pivotLine(e1, r1.pt as 1 | 2, dir)
+        } else if (e1.type === 'arc' && e1Pinned && e0.type === 'line' && !e0Pinned) {
+          const dir = dirOf(e1)
+          if (dir) pivotLine(e0, r0.pt as 1 | 2, dir)
         }
       }
       // 4. horizontal / vertical
