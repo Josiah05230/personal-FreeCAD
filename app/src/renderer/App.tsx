@@ -3227,6 +3227,7 @@ export function App(): JSX.Element {
       pendingConState: () => vpApi.current?.testPendingConState() ?? null,
       constrainedIndices: () => vpApi.current?.testConstrainedIndices() ?? [],
       entityColorHex: (idx: number) => vpApi.current?.testEntityColorHex(idx) ?? null,
+      entitySnapshot: (idx: number) => vpApi.current?.testEntitySnapshot(idx) ?? null,
       setView: (dir: [number, number, number]) => vpApi.current?.setView(dir),
       nudgeCamera: (delta: [number, number, number]) => vpApi.current?.testNudgeCamera(delta),
       setProjection: (p: 'orthographic' | 'perspective') => {
@@ -3370,6 +3371,7 @@ export function App(): JSX.Element {
         setConstruction: (on: boolean) => vpApi.current?.setSketchConstruction(on),
         constrainedIndices: () => vpApi.current?.testConstrainedIndices() ?? [],
         entityColorHex: (idx: number) => vpApi.current?.testEntityColorHex(idx) ?? null,
+        entitySnapshot: (idx: number) => vpApi.current?.testEntitySnapshot(idx) ?? null,
         handlePointCount: () => vpApi.current?.testHandlePointCount() ?? 0
       },
 

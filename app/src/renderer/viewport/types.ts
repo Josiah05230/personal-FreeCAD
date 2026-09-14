@@ -123,6 +123,8 @@ export interface ViewportApi {
   /** the actual rendered line color of entity `idx`, as a CSS hex string
    *  (test hook - what is ACTUALLY on screen, not a re-derivation) */
   testEntityColorHex: (idx: number) => string | null
+  /** DEBUG test hook: live in-memory geometry of entity `idx` right now */
+  testEntitySnapshot: (idx: number) => unknown
   /** total geometry-point handles ACTUALLY rendered right now (test hook -
    *  what is ACTUALLY on screen, catches a deleted entity's points staying
    *  drawn even after its own line is gone) */

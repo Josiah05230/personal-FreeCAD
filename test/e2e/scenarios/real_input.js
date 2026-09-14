@@ -2504,7 +2504,40 @@ note('--- radius-dragging an arc whose CENTRE is also welded to a shared vertex 
   );
 
   fire(el8, 'pointerup', w1.x, w1.y, { buttons: 0 });
-  await sleep(150);
+  // pointerup fires the REAL sidecar solve (onUp -> runSolve), which
+  // reconciles this arc's centre/radius AND sweep (a0/a1) from the actual
+  // FreeCAD solver's result - poll for it rather than a fixed sleep, since
+  // it is a genuine async RPC round trip.
+  await waitFor(() => !G.getState().busy, 4000);
+  await sleep(200);
+
+  // THE RECONCILIATION BUG: runSolve()'s reconcile step previously adopted
+  // only the solved centre/radius (c, r) for an arc, never its solved sweep
+  // (a0, a1) - so the client kept whichever STALE angles it had going into
+  // the solve, combined with the FRESH centre/radius coming out of it. Read
+  // back out (c + r*(cos a0, sin a0)) that mismatch computes a rim position
+  // that matches neither the pre- nor post-solve shape - a real, confirmed
+  // tear surviving even a fully successful, converged real solve (found via
+  // live instrumentation against the actual user file: the solver's own
+  // returned a0/a1 closed the gap to ~1e-14, but the reconciliation
+  // discarded them, 2026-09-14).
+  const afterSolve = G.sketch.entities()[arcC];
+  const lnAAfter = G.sketch.entities()[lnA];
+  const lnBAfter = G.sketch.entities()[lnB];
+  const rim1After = [
+    afterSolve.c[0] + afterSolve.r * Math.cos(afterSolve.a0),
+    afterSolve.c[1] + afterSolve.r * Math.sin(afterSolve.a0)
+  ];
+  const rim2After = [
+    afterSolve.c[0] + afterSolve.r * Math.cos(afterSolve.a1),
+    afterSolve.c[1] + afterSolve.r * Math.sin(afterSolve.a1)
+  ];
+  const rimGap1After = Math.hypot(lnAAfter.a[0] - rim1After[0], lnAAfter.a[1] - rim1After[1]);
+  const rimGap2After = Math.hypot(lnBAfter.a[0] - rim2After[0], lnBAfter.a[1] - rim2After[1]);
+  assert(
+    rimGap1After < 1e-3 && rimGap2After < 1e-3,
+    `REAL CHECK: after the real sidecar solve completes (pointer-up), the arc's rim (reading back its reconciled a0/a1, not just c/r) still matches the welded lines - gaps ${rimGap1After.toFixed(6)}, ${rimGap2After.toFixed(6)}`
+  );
 
   await G.cancelSketch();
   await idle();

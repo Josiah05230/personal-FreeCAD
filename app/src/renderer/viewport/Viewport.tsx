@@ -474,6 +474,7 @@ export function Viewport({
         testPendingConState: () => stateRef.current?.sketch?.testPendingConState() ?? null,
         testConstrainedIndices: () => stateRef.current?.sketch?.testConstrainedIndices() ?? [],
         testEntityColorHex: (idx) => stateRef.current?.sketch?.testEntityColorHex(idx) ?? null,
+        testEntitySnapshot: (idx) => stateRef.current?.sketch?.testEntitySnapshot(idx) ?? null,
         testHandlePointCount: () => stateRef.current?.sketch?.testHandlePointCount() ?? 0,
         testNudgeCamera: (delta) => {
           const s = stateRef.current

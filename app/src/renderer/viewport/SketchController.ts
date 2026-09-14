@@ -2994,10 +2994,27 @@ export class SketchController {
         const k1 = `${i1}:${r1.pt}`
         const p0 = this.ptOf(k0)
         const p1 = this.ptOf(k1)
-        // only meaningful once welded to the same point (should always be
-        // true for a real tangent join - if not, there is nothing to pivot)
-        if (Math.hypot(p0[0] - p1[0], p0[1] - p1[1]) > 1e-6) continue
-        const shared = p0
+        // A tangent-at-endpoint join has NO Coincident constraint of its own
+        // enforcing the two points share a position - that coincidence is
+        // only ever an emergent RESULT of FreeCAD's real solve, never
+        // guaranteed here mid-drag. Previously this pass required the two
+        // points to ALREADY be within 1e-6 before doing anything ("only
+        // meaningful once welded"), which is backwards: the exact moment a
+        // drag perturbs one side without the other is precisely when this
+        // join needs to be pulled back together, not skipped. Skipping left
+        // the gap only free to grow, iteration after iteration, with
+        // nothing ever closing it for the rest of the drag (real user file,
+        // 2026-09-14: arc3's rim tore away from line0 by a visibly growing
+        // gap while dragging arc3's own centre/radius handles - confirmed
+        // via live instrumentation that this exact early-exit fired on
+        // EVERY iteration of EVERY frame of the drag, the pass never ran
+        // even once). Use whichever point is the more strongly anchored
+        // side (pinned > merely fixed > neither) as the point to close the
+        // gap TOWARD, so a drag on one side still pulls the other into
+        // place instead of leaving both to drift.
+        const k0Anchored = pinned.has(k0) ? 2 : fixed.has(k0) ? 1 : 0
+        const k1Anchored = pinned.has(k1) ? 2 : fixed.has(k1) ? 1 : 0
+        const shared = k1Anchored > k0Anchored ? p1 : p0
         // prefer adjusting an arc whose OTHER endpoint is not itself fixed
         // (so a fully-pinned arc is left alone); if both are arcs, adjust
         // whichever side is not "fixed" (closer to the drag anchor logic
@@ -3065,7 +3082,21 @@ export class SketchController {
         const pivotLine = (e: SketchEntity, ownPt: 1 | 2, arcDir: [number, number]): void => {
           if (e.type !== 'line') return
           const far = ownPt === 1 ? e.b : e.a
-          const len = Math.hypot(far[0] - shared[0], far[1] - shared[1])
+          // this join's OWN endpoint is not guaranteed to already sit at
+          // `shared` - a Tangent-at-endpoint constraint has no Coincident of
+          // its own enforcing that (see the "no Coincident of its own" note
+          // above the gap-tolerant `shared` pick); measure the line's length
+          // from its CURRENT own-endpoint position before moving it, so a
+          // drag that has pulled the two points apart still preserves the
+          // line's real length when it snaps back together, rather than
+          // silently stretching/shrinking it by whatever the gap happened
+          // to be (real user file, 2026-09-14: fixing the gap-skip above
+          // alone was not enough - this pass rotated the FAR end around an
+          // assumed-already-coincident own end that was, in fact, still
+          // sitting wherever the weld pass had separately left it, so the
+          // shared vertex never actually closed).
+          const own = ownPt === 1 ? e.a : e.b
+          const len = Math.hypot(far[0] - own[0], far[1] - own[1])
           if (len < 1e-9) return
           // two perpendicular candidates to the arc's radius vector;
           // keep whichever one the far point already leans toward, so the
@@ -3075,8 +3106,13 @@ export class SketchController {
             shared[0] + arcDir[0] * len * same,
             shared[1] + arcDir[1] * len * same
           ]
-          if (ownPt === 1) e.b = newFar
-          else e.a = newFar
+          if (ownPt === 1) {
+            e.a = [...shared]
+            e.b = newFar
+          } else {
+            e.b = [...shared]
+            e.a = newFar
+          }
         }
         // PINNED (the entity actually being dragged this frame, e.g. its own
         // radius/centre handle) is a stronger claim than merely "fixed"
@@ -3243,6 +3279,21 @@ export class SketchController {
       } else if ((g.type === 'circle' || g.type === 'arc') && (ent.type === 'circle' || ent.type === 'arc')) {
         ent.c = [g.c[0], g.c[1]]
         ;(ent as { r: number }).r = g.r
+        // an arc's sweep (a0/a1) was NEVER adopted here - only c/r - so the
+        // client kept whatever STALE angles it had going into this solve,
+        // mixed with the solver's fresh centre/radius. Reading the arc's rim
+        // point back out (c + r*(cos a0, sin a0)) then computes a position
+        // that matches neither the pre-solve nor the post-solve shape - a
+        // real, confirmed tear: dragging arc3's centre/radius in a real user
+        // file left its rim visibly detached from a Coincident-welded line
+        // even AFTER the real FreeCAD solve completed and was accepted
+        // (verified live: the solver's OWN returned a0/a1 close the gap to
+        // ~1e-14, but the reconciliation here silently discarded them,
+        // 2026-09-14).
+        if (g.type === 'arc' && ent.type === 'arc') {
+          ent.a0 = g.a0
+          ent.a1 = g.a1
+        }
       }
     })
     const free = new Set(res.free)
@@ -4199,6 +4250,18 @@ export class SketchController {
   /** entity indices the app currently considers fully constrained (test hook) */
   testConstrainedIndices(): number[] {
     return [...this.constrainedSet].sort((a, b) => a - b)
+  }
+
+  /** DEBUG test hook: the live in-memory geometry of entity `idx` right now,
+   *  for investigating a drag's actual solved result rather than only what
+   *  is visible on screen. */
+  testEntitySnapshot(idx: number): unknown {
+    const e = this.entities[idx]
+    if (!e) return null
+    if (e.type === 'arc') return { type: 'arc', c: [...e.c], r: e.r, a0: e.a0, a1: e.a1 }
+    if (e.type === 'line') return { type: 'line', a: [...e.a], b: [...e.b] }
+    if (e.type === 'circle') return { type: 'circle', c: [...e.c], r: e.r }
+    return { type: e.type }
   }
 
   /** the actual rendered line color of entity `idx`, as a CSS hex string
