@@ -17,6 +17,10 @@ interface GitStatus {
   branch?: string
   dirty?: boolean
   tracked?: boolean
+  ahead?: number
+  behind?: number
+  hasUpstream?: boolean
+  detached?: boolean
 }
 interface GitCommit {
   hash: string
@@ -29,6 +33,15 @@ interface GitCommit {
 interface GitBranch {
   name: string
   current: boolean
+}
+interface GitFileChange {
+  path: string
+  index: string
+  worktree: string
+}
+interface GitRemote {
+  name: string
+  url: string
 }
 
 interface CadBridge {
@@ -49,7 +62,36 @@ interface CadBridge {
   saveDebugLog(text: string, defaultPath?: string): Promise<string | null>
   gitStatus(filePath: string): Promise<GitStatus>
   gitLog(filePath: string, limit?: number): Promise<GitCommit[]>
+  gitLogAll(filePath: string, limit?: number): Promise<GitCommit[]>
   gitBranches(filePath: string): Promise<GitBranch[]>
+  gitChangedFiles(filePath: string): Promise<GitFileChange[]>
+  gitRemotes(filePath: string): Promise<GitRemote[]>
+  gitInit(filePath: string): Promise<{ root: string }>
+  gitClone(url: string, destDir: string): Promise<{ root: string }>
+  gitAdd(filePath: string, paths?: string[]): Promise<void>
+  gitUnstage(filePath: string, paths?: string[]): Promise<void>
+  gitCommit(
+    filePath: string,
+    message: string,
+    authorName?: string,
+    authorEmail?: string
+  ): Promise<{ hash: string }>
+  gitCommitAll(
+    filePath: string,
+    message: string,
+    authorName?: string,
+    authorEmail?: string
+  ): Promise<{ hash: string }>
+  gitCreateBranch(filePath: string, name: string, from?: string): Promise<void>
+  gitCheckout(filePath: string, name: string): Promise<void>
+  gitDeleteBranch(filePath: string, name: string, force?: boolean): Promise<void>
+  gitMerge(filePath: string, from: string): Promise<{ conflict: boolean }>
+  gitAbortMerge(filePath: string): Promise<void>
+  gitPush(filePath: string, remote?: string): Promise<void>
+  gitPull(filePath: string, remote?: string): Promise<{ conflict: boolean }>
+  gitFetch(filePath: string, remote?: string): Promise<void>
+  gitDiscardAll(filePath: string): Promise<void>
+  gitAddRemote(filePath: string, name: string, url: string): Promise<void>
   exportPdf(html: string, outPath: string): Promise<{ path: string }>
   writeText(text: string, outPath: string): Promise<{ path: string }>
   readImage(path: string): Promise<string>

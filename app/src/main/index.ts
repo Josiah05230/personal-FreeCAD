@@ -189,7 +189,40 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('git:status', (_e, filePath: string) => gitw.status(filePath))
   ipcMain.handle('git:log', (_e, filePath: string, limit?: number) => gitw.log(filePath, limit))
+  ipcMain.handle('git:logAll', (_e, filePath: string, limit?: number) => gitw.logAll(filePath, limit))
   ipcMain.handle('git:branches', (_e, filePath: string) => gitw.branches(filePath))
+  ipcMain.handle('git:changedFiles', (_e, filePath: string) => gitw.changedFiles(filePath))
+  ipcMain.handle('git:remotes', (_e, filePath: string) => gitw.remotes(filePath))
+  ipcMain.handle('git:init', (_e, filePath: string) => gitw.init(filePath))
+  ipcMain.handle('git:clone', (_e, url: string, destDir: string) => gitw.clone(url, destDir))
+  ipcMain.handle('git:add', (_e, filePath: string, paths?: string[]) => gitw.add(filePath, paths))
+  ipcMain.handle('git:unstage', (_e, filePath: string, paths?: string[]) => gitw.unstage(filePath, paths))
+  ipcMain.handle(
+    'git:commit',
+    (_e, filePath: string, message: string, authorName?: string, authorEmail?: string) =>
+      gitw.commit(filePath, message, authorName, authorEmail)
+  )
+  ipcMain.handle(
+    'git:commitAll',
+    (_e, filePath: string, message: string, authorName?: string, authorEmail?: string) =>
+      gitw.commitAll(filePath, message, authorName, authorEmail)
+  )
+  ipcMain.handle('git:createBranch', (_e, filePath: string, name: string, from?: string) =>
+    gitw.createBranch(filePath, name, from)
+  )
+  ipcMain.handle('git:checkout', (_e, filePath: string, name: string) => gitw.checkout(filePath, name))
+  ipcMain.handle('git:deleteBranch', (_e, filePath: string, name: string, force?: boolean) =>
+    gitw.deleteBranch(filePath, name, force)
+  )
+  ipcMain.handle('git:merge', (_e, filePath: string, from: string) => gitw.merge(filePath, from))
+  ipcMain.handle('git:abortMerge', (_e, filePath: string) => gitw.abortMerge(filePath))
+  ipcMain.handle('git:push', (_e, filePath: string, remote?: string) => gitw.push(filePath, remote))
+  ipcMain.handle('git:pull', (_e, filePath: string, remote?: string) => gitw.pull(filePath, remote))
+  ipcMain.handle('git:fetch', (_e, filePath: string, remote?: string) => gitw.fetch(filePath, remote))
+  ipcMain.handle('git:discardAll', (_e, filePath: string) => gitw.discardAll(filePath))
+  ipcMain.handle('git:addRemote', (_e, filePath: string, name: string, url: string) =>
+    gitw.addRemote(filePath, name, url)
+  )
 
   ipcMain.handle('drawing:exportPdf', async (_e, html: string, outPath: string) => {
     const w = new BrowserWindow({ show: false, webPreferences: { offscreen: true } })

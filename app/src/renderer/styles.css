@@ -786,11 +786,17 @@ code {
   border-radius: 3px;
   background: var(--chrome-4);
   color: var(--text-dim);
+  cursor: pointer;
+}
+
+.git-branch:hover:not(.cur) {
+  color: var(--text);
 }
 
 .git-branch.cur {
   background: var(--accent);
   color: #fff;
+  cursor: default;
 }
 
 .git-log {
@@ -824,6 +830,138 @@ code {
 .git-subject {
   font-size: 11px;
   margin-top: 2px;
+}
+
+.git-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.git-btn {
+  background: var(--chrome-3);
+  border: 1px solid var(--line-soft);
+  color: var(--text-dim);
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.git-btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.git-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.git-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.git-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.git-btn-danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.git-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.git-remote-add {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 12px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.git-commitbox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.git-msg {
+  background: var(--chrome-3);
+  border: 1px solid var(--line-soft);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.git-input {
+  background: var(--chrome-3);
+  border: 1px solid var(--line-soft);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 11px;
+  font-family: inherit;
+}
+
+.git-changed {
+  max-height: 120px;
+  overflow-y: auto;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.git-changed-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 12px;
+  font-size: 10px;
+}
+
+.git-changed-code {
+  font-family: 'SF Mono', Consolas, monospace;
+  color: var(--accent-hi);
+  min-width: 16px;
+}
+
+.git-changed-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.git-branch-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px 0;
+}
+
+.git-branch-new {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+}
+
+.git-branch-new .git-input {
+  flex: 1;
 }
 
 /* ---------- floating browser ---------- */

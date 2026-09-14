@@ -17,6 +17,10 @@ export interface GitStatus {
   branch?: string
   dirty?: boolean
   tracked?: boolean
+  ahead?: number
+  behind?: number
+  hasUpstream?: boolean
+  detached?: boolean
 }
 export interface GitCommit {
   hash: string
@@ -29,6 +33,15 @@ export interface GitCommit {
 export interface GitBranch {
   name: string
   current: boolean
+}
+export interface GitFileChange {
+  path: string
+  index: string
+  worktree: string
+}
+export interface GitRemote {
+  name: string
+  url: string
 }
 
 const cad = {
@@ -63,8 +76,47 @@ const cad = {
   gitStatus: (filePath: string) => ipcRenderer.invoke('git:status', filePath) as Promise<GitStatus>,
   gitLog: (filePath: string, limit?: number) =>
     ipcRenderer.invoke('git:log', filePath, limit) as Promise<GitCommit[]>,
+  gitLogAll: (filePath: string, limit?: number) =>
+    ipcRenderer.invoke('git:logAll', filePath, limit) as Promise<GitCommit[]>,
   gitBranches: (filePath: string) =>
     ipcRenderer.invoke('git:branches', filePath) as Promise<GitBranch[]>,
+  gitChangedFiles: (filePath: string) =>
+    ipcRenderer.invoke('git:changedFiles', filePath) as Promise<GitFileChange[]>,
+  gitRemotes: (filePath: string) =>
+    ipcRenderer.invoke('git:remotes', filePath) as Promise<GitRemote[]>,
+  gitInit: (filePath: string) => ipcRenderer.invoke('git:init', filePath) as Promise<{ root: string }>,
+  gitClone: (url: string, destDir: string) =>
+    ipcRenderer.invoke('git:clone', url, destDir) as Promise<{ root: string }>,
+  gitAdd: (filePath: string, paths?: string[]) =>
+    ipcRenderer.invoke('git:add', filePath, paths) as Promise<void>,
+  gitUnstage: (filePath: string, paths?: string[]) =>
+    ipcRenderer.invoke('git:unstage', filePath, paths) as Promise<void>,
+  gitCommit: (filePath: string, message: string, authorName?: string, authorEmail?: string) =>
+    ipcRenderer.invoke('git:commit', filePath, message, authorName, authorEmail) as Promise<{
+      hash: string
+    }>,
+  gitCommitAll: (filePath: string, message: string, authorName?: string, authorEmail?: string) =>
+    ipcRenderer.invoke('git:commitAll', filePath, message, authorName, authorEmail) as Promise<{
+      hash: string
+    }>,
+  gitCreateBranch: (filePath: string, name: string, from?: string) =>
+    ipcRenderer.invoke('git:createBranch', filePath, name, from) as Promise<void>,
+  gitCheckout: (filePath: string, name: string) =>
+    ipcRenderer.invoke('git:checkout', filePath, name) as Promise<void>,
+  gitDeleteBranch: (filePath: string, name: string, force?: boolean) =>
+    ipcRenderer.invoke('git:deleteBranch', filePath, name, force) as Promise<void>,
+  gitMerge: (filePath: string, from: string) =>
+    ipcRenderer.invoke('git:merge', filePath, from) as Promise<{ conflict: boolean }>,
+  gitAbortMerge: (filePath: string) => ipcRenderer.invoke('git:abortMerge', filePath) as Promise<void>,
+  gitPush: (filePath: string, remote?: string) =>
+    ipcRenderer.invoke('git:push', filePath, remote) as Promise<void>,
+  gitPull: (filePath: string, remote?: string) =>
+    ipcRenderer.invoke('git:pull', filePath, remote) as Promise<{ conflict: boolean }>,
+  gitFetch: (filePath: string, remote?: string) =>
+    ipcRenderer.invoke('git:fetch', filePath, remote) as Promise<void>,
+  gitDiscardAll: (filePath: string) => ipcRenderer.invoke('git:discardAll', filePath) as Promise<void>,
+  gitAddRemote: (filePath: string, name: string, url: string) =>
+    ipcRenderer.invoke('git:addRemote', filePath, name, url) as Promise<void>,
 
   exportPdf: (html: string, outPath: string) =>
     ipcRenderer.invoke('drawing:exportPdf', html, outPath) as Promise<{ path: string }>,
