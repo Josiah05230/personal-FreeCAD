@@ -90,8 +90,16 @@ the seed + step + trace tail to replay.
 - Save / Open `.FCStd`; import STEP / IGES / BREP / STL / OBJ / 3MF / PLY / OFF;
   export via `io.export` (all the same formats). Companion `.gwtcad.json` holds
   params / canvases / colours / feature expressions / KiCad link.
-- Drawings (headless TechDraw): projected hidden-line views as SVG, auto + click
-  dimensions, title block, BOM, PDF + DXF export.
+- Drawings (headless TechDraw, own DRAWING ribbon tab): multi-page, front/top/
+  right/left/back/bottom/iso + section/detail/broken views (right-click a
+  view to convert it), real dimension objects (Distance/DistanceX/Y/Radius/
+  Diameter/Angle, radius<->diameter conversion, lead/trailing-zero + precision
+  formatting per-dimension or document-wide), cleanup (construction) lines,
+  notes with leaders, parametric BOM + custom savable table templates (a real
+  Spreadsheet::Sheet, not a static block), title block, PDF + DXF export.
+  Everything is native TechDraw/Spreadsheet objects in the .FCStd (no
+  companion-file shadow state) - reopen a drawing from the "Drawings" section
+  in the Data tab, not just "Drawing from Design".
 - Assemblies: create, insert `.FCStd` as `App::Link`, position, ground, add
   joints from a 2-face pick (solving is experimental headless). Sub-components
   are genuinely separate files - editing and saving a part propagates to any
@@ -326,8 +334,11 @@ the seed + step + trace tail to replay.
 - Full edit dialogs for patterns / mirror / datums (they fall back to the
   one-number "Edit Value…" prompt).
 - Assembly joint SOLVING (MbD solver is GUI-coupled headless).
-- Drawings: linear dims only, no GD&T / section / detail views. Hidden/dashed
-  lines (TechDraw headless returns none).
+- Drawings: no GD&T / tolerancing symbols. Cleanup lines only on plain part
+  views (TechDraw's cosmetic-line API isn't exposed on Section/Detail/Broken
+  views in this build). Hidden/dashed lines (TechDraw headless returns none).
+  Views don't remember exact drag position across a reopen (reflow to a
+  default grid instead - only the geometry itself round-trips).
 - Sheet metal beyond Base Flange; surface bodies / Thicken.
 - `PartDesign::Rib` absent from the bundled build (fallback in use).
 - Git panel write ops; embedded colours on STEP / 3MF import.
