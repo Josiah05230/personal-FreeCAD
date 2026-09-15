@@ -45,7 +45,30 @@ export const DEFAULT_PINNED = new Set<string>([
   'mesh.flipNormals',
   'mesh.repair',
   'mesh.separate',
-  'mesh.toSolid'
+  'mesh.toSolid',
+  // DRAWING tab - short contextual workspace, room for everything
+  'draw.front',
+  'draw.top',
+  'draw.right',
+  'draw.left',
+  'draw.back',
+  'draw.bottom',
+  'draw.iso',
+  'draw.autoLayout',
+  'draw.section',
+  'draw.detail',
+  'draw.broken',
+  'draw.dimension',
+  'draw.note',
+  'draw.cleanup',
+  'draw.bom',
+  'draw.table',
+  'draw.saveTemplate',
+  'draw.newSheet',
+  'draw.renameSheet',
+  'draw.deleteSheet',
+  'draw.exportPdf',
+  'draw.exportDxf'
 ])
 
 function readJSON<T>(key: string, fallback: T): T {

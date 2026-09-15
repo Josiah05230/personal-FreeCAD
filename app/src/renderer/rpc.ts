@@ -365,10 +365,103 @@ export interface DrawingView {
   id: string
   label: string
   direction: string
+  kind: 'part' | 'section' | 'detail' | 'broken'
+  baseViewId?: string
   scale: number
   visible: number[][][] // [poly][point][x,y]
   hidden: number[][][]
   bbox: [number, number, number, number]
+  orphanedDimensions?: string[]
+}
+
+export interface DrawingPage {
+  id: string
+  label: string
+}
+
+export type DimensionType =
+  | 'Distance'
+  | 'DistanceX'
+  | 'DistanceY'
+  | 'DistanceZ'
+  | 'Radius'
+  | 'Diameter'
+  | 'Angle'
+  | 'Angle3Pt'
+
+export interface DrawingDimension {
+  id: string
+  viewId: string
+  type: DimensionType
+  value: number | null
+}
+
+export interface DimensionFormat {
+  precision?: number
+  leadingZero?: boolean
+  trailingZeros?: boolean
+  unitSuffix?: boolean
+}
+
+export interface DrawingNote {
+  id: string
+  text: string
+  x: number
+  y: number
+  leaderId?: string | null
+}
+
+export interface CleanupLine {
+  id: string
+  p1: [number, number]
+  p2: [number, number]
+}
+
+export interface SnapTarget {
+  sub: string
+  kind: 'edge' | 'vertex' | 'cleanup'
+  p1?: [number, number]
+  p2?: [number, number]
+  p?: [number, number]
+}
+
+export interface BomRow {
+  index: number
+  label: string
+  qty: number
+  material: string
+  description: string
+}
+
+export interface TableColumn {
+  key: string
+  header: string
+  source: string
+}
+
+export interface TableTemplate {
+  name: string
+  spec: {
+    font?: string
+    textSize?: number
+    columns?: TableColumn[]
+  }
+}
+
+export interface DrawingTable {
+  id: string
+  sheetId: string
+  pageId: string
+  columns: TableColumn[]
+  rows: BomRow[]
+}
+
+export interface DrawingPageContents {
+  views: DrawingView[]
+  dimensions: DrawingDimension[]
+  notes: DrawingNote[]
+  tables: DrawingTable[]
+  cleanupLines: Record<string, CleanupLine[]>
 }
 
 export interface AssemblyComponent {
@@ -539,7 +632,19 @@ export const apiQuiet = {
     id: string,
     patch: { plane?: string; offset?: number; flip?: boolean; visible?: boolean; label?: string }
   ) => rpcQuiet<SectionDTO>('section.set', { id, ...patch }),
-  sectionDelete: (id: string) => rpcQuiet<{ deleted: string }>('section.delete', { id })
+  sectionDelete: (id: string) => rpcQuiet<{ deleted: string }>('section.delete', { id }),
+
+  drawingPageList: () => rpcQuiet<{ pages: DrawingPage[] }>('drawing.pageList'),
+  drawingPageContents: (pageId: string) =>
+    rpcQuiet<DrawingPageContents>('drawing.pageContents', { pageId }),
+  drawingSnapTargets: (viewId: string) =>
+    rpcQuiet<{ targets: SnapTarget[] }>('drawing.snapTargets', { viewId }),
+  drawingGetDimensionFormats: () =>
+    rpcQuiet<{ default: DimensionFormat; overrides: Record<string, DimensionFormat> }>(
+      'drawing.getDimensionFormats'
+    ),
+  drawingListCleanupLines: (viewId: string) =>
+    rpcQuiet<{ lines: CleanupLine[] }>('drawing.listCleanupLines', { viewId })
 }
 
 export interface SectionDTO {
@@ -1006,8 +1111,97 @@ export const api = {
   featureSetExpr: (id: string, prop: string, expr: string) =>
     rpc<{ bodies: BodyTree[] }>('feature.setExpr', { id, prop, expr }),
 
-  drawingAddView: (bodyId: string | null, direction: string, scale = 1) =>
-    rpc<DrawingView>('drawing.addView', { bodyId, direction, scale }),
+  drawingPageList: () => rpc<{ pages: DrawingPage[] }>('drawing.pageList'),
+  drawingPageContents: (pageId: string) =>
+    rpc<DrawingPageContents>('drawing.pageContents', { pageId }),
+  drawingPageCreate: (label?: string) => rpc<DrawingPage>('drawing.pageCreate', { label }),
+  drawingPageDelete: (pageId: string) => rpc<{ ok: boolean }>('drawing.pageDelete', { pageId }),
+  drawingPageRename: (pageId: string, label: string) =>
+    rpc<DrawingPage>('drawing.pageRename', { pageId, label }),
+
+  drawingAddView: (pageId: string, bodyId: string | null, direction: string, scale = 1) =>
+    rpc<DrawingView>('drawing.addView', { pageId, bodyId, direction, scale }),
+  drawingAddSectionView: (
+    pageId: string,
+    baseViewId: string,
+    plane: 'XY' | 'XZ' | 'YZ' = 'XY',
+    offset = 0,
+    flip = false
+  ) =>
+    rpc<DrawingView>('drawing.addSectionView', { pageId, baseViewId, plane, offset, flip }),
+  drawingAddDetailView: (
+    pageId: string,
+    baseViewId: string,
+    anchorX: number,
+    anchorY: number,
+    radius: number
+  ) =>
+    rpc<DrawingView>('drawing.addDetailView', { pageId, baseViewId, anchorX, anchorY, radius }),
+  drawingAddBrokenView: (
+    pageId: string,
+    baseViewId: string,
+    breaks: Array<{ axis: 'x' | 'y'; pos: number; gap: number }>
+  ) => rpc<DrawingView>('drawing.addBrokenView', { pageId, baseViewId, breaks }),
+  drawingConvertView: (
+    pageId: string,
+    viewId: string,
+    toKind: 'part' | 'section',
+    extra?: Record<string, unknown>
+  ) => rpc<DrawingView>('drawing.convertView', { pageId, viewId, toKind, ...extra }),
+
+  drawingAddDimension: (
+    pageId: string,
+    viewId: string,
+    refs: Array<{ sub: string }>,
+    kind: DimensionType = 'Distance'
+  ) => rpc<DrawingDimension>('drawing.addDimension', { pageId, viewId, refs, kind }),
+  drawingSetDimensionType: (dimId: string, kind: DimensionType) =>
+    rpc<DrawingDimension>('drawing.setDimensionType', { dimId, kind }),
+  drawingSetDimensionFormat: (dimId: string, fmt: DimensionFormat | null) =>
+    rpc<DimensionFormat | null>('drawing.setDimensionFormat', { dimId, fmt }),
+  drawingSetDefaultDimensionFormat: (fmt: DimensionFormat | null) =>
+    rpc<DimensionFormat>('drawing.setDefaultDimensionFormat', { fmt }),
+  drawingGetDimensionFormats: () =>
+    rpc<{ default: DimensionFormat; overrides: Record<string, DimensionFormat> }>(
+      'drawing.getDimensionFormats'
+    ),
+
+  drawingAddCleanupLine: (viewId: string, p1: [number, number], p2: [number, number]) =>
+    rpc<CleanupLine>('drawing.addCleanupLine', { viewId, p1, p2 }),
+  drawingListCleanupLines: (viewId: string) =>
+    rpc<{ lines: CleanupLine[] }>('drawing.listCleanupLines', { viewId }),
+  drawingRemoveCleanupLine: (viewId: string, lineId: string) =>
+    rpc<{ ok: boolean }>('drawing.removeCleanupLine', { viewId, lineId }),
+
+  drawingAddNote: (
+    pageId: string,
+    text: string,
+    x: number,
+    y: number,
+    leaderViewId?: string,
+    leaderPoint?: [number, number]
+  ) => rpc<DrawingNote>('drawing.addNote', { pageId, text, x, y, leaderViewId, leaderPoint }),
+  drawingSetNoteText: (noteId: string, text: string) =>
+    rpc<DrawingNote>('drawing.setNoteText', { noteId, text }),
+
+  drawingSnapTargets: (viewId: string) =>
+    rpc<{ targets: SnapTarget[] }>('drawing.snapTargets', { viewId }),
+
+  drawingBomRows: (sourceId?: string) => rpc<{ rows: BomRow[] }>('drawing.bomRows', { sourceId }),
+  drawingMakeTable: (
+    pageId: string,
+    rows: BomRow[],
+    columns?: TableColumn[],
+    template?: TableTemplate['spec'],
+    tableId?: string
+  ) =>
+    rpc<DrawingTable>('drawing.makeTable', { pageId, rows, columns, template, tableId }),
+  drawingSaveTableTemplate: (name: string, spec: TableTemplate['spec']) =>
+    rpc<TableTemplate>('drawing.saveTableTemplate', { name, spec }),
+  drawingListTableTemplates: () =>
+    rpc<{ templates: TableTemplate[] }>('drawing.listTableTemplates'),
+  drawingLoadTableTemplate: (name: string) =>
+    rpc<TableTemplate>('drawing.loadTableTemplate', { name }),
 
   assemblyCreate: () => rpc<{ assembly: string }>('assembly.create'),
   assemblyAddComponent: (path: string, name?: string) =>

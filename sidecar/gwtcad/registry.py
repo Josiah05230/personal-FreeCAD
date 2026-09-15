@@ -68,8 +68,8 @@ def _error(code, message, data=None):
 # lifecycle - these run outside an undo transaction.
 _NO_TXN = {
     "ping", "scene.get", "tree.get", "measure.compute", "params.list",
-    "expr.eval", "feature.primaryDim", "feature.exprs", "drawing.list",
-    "drawing.addView", "document.info", "assembly.tree",
+    "expr.eval", "feature.primaryDim", "feature.exprs",
+    "document.info", "assembly.tree",
     "session.reset", "document.open", "document.save", "document.saveAs",
     "history.undo", "history.redo",
     "io.export", "io.exportStep", "io.exportStl",
@@ -81,6 +81,18 @@ _NO_TXN = {
     "appearance.renderGet", "appearance.renderSet",
     "appearance.presetList", "appearance.presetSave", "appearance.presetDelete",
     "section.list", "section.create", "section.set", "section.delete",
+    # Drawing sheet edits are a side-channel like sections above, not tracked
+    # in the main undo history.
+    "drawing.pageList", "drawing.pageCreate", "drawing.pageDelete",
+    "drawing.pageRename", "drawing.pageContents", "drawing.addView", "drawing.addSectionView",
+    "drawing.addDetailView", "drawing.addBrokenView", "drawing.convertView",
+    "drawing.addDimension", "drawing.setDimensionType",
+    "drawing.setDimensionFormat", "drawing.setDefaultDimensionFormat",
+    "drawing.getDimensionFormats", "drawing.addCleanupLine",
+    "drawing.listCleanupLines", "drawing.removeCleanupLine",
+    "drawing.addNote", "drawing.setNoteText", "drawing.snapTargets",
+    "drawing.bomRows", "drawing.makeTable", "drawing.saveTableTemplate",
+    "drawing.listTableTemplates", "drawing.loadTableTemplate",
 }
 
 

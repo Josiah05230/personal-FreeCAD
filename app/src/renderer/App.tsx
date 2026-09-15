@@ -8,6 +8,7 @@ import {
   type SketchRender,
   type Selection,
   type DrawingView,
+  type DrawingPage,
   type AssemblyTree,
   type DatumDTO,
   type PickPlane,
@@ -30,7 +31,7 @@ import { Browser } from './ui/Browser'
 import { Timeline } from './ui/Timeline'
 import { CommandPalette } from './ui/CommandPalette'
 import { OperationDialog, type OpKind, type OpValues } from './ui/OperationDialog'
-import { DrawingSheet } from './ui/DrawingSheet'
+import { DrawingSheet, type DrawingSheetApi, type DrawingTool } from './ui/DrawingSheet'
 import { AssemblyPanel } from './ui/AssemblyPanel'
 import { SketchRibbon } from './ui/SketchRibbon'
 import { MeasurePanel, SectionPanel, MassPropsPanel, type SectionState } from './ui/InspectPanels'
@@ -245,7 +246,9 @@ export function App(): JSX.Element {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [op, setOp] = useState<OpKind | null>(null)
 
-  const [showDrawing, setShowDrawing] = useState(false)
+  const [drawingPageId, setDrawingPageId] = useState<string | null>(null)
+  const [drawingPages, setDrawingPages] = useState<DrawingPage[]>([])
+  const [drawingTool, setDrawingTool] = useState<DrawingTool>('select')
   const [paramsOpen, setParamsOpen] = useState(false)
   const [materialsOpen, setMaterialsOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -345,6 +348,7 @@ export function App(): JSX.Element {
   const [activeTab, setActiveTab] = useState('d1')
 
   const vpApi = useRef<ViewportApi | null>(null)
+  const drawApi = useRef<DrawingSheetApi | null>(null)
   const bodyId = bodies[0]?.id ?? null
 
   const markDirty = useCallback(
@@ -383,12 +387,14 @@ export function App(): JSX.Element {
   const refreshScene = useCallback(async () => {
     const done = traceSpan('refreshScene')
     rollCacheRef.current.clear()
-    const [scene, tree, asm] = await Promise.all([
+    const [scene, tree, asm, drawings] = await Promise.all([
       api.sceneGet(),
       api.treeGet(),
-      api.assemblyTree().catch(() => null)
+      api.assemblyTree().catch(() => null),
+      apiQuiet.drawingPageList().catch(() => ({ pages: [] }))
     ])
     applySceneTree(scene, tree)
+    setDrawingPages(drawings.pages)
     setAsmTree(asm && asm.assembly ? asm : null)
     if (asm && asm.assembly && docPath) {
       void window.cad
@@ -2795,7 +2801,7 @@ export function App(): JSX.Element {
       setTabs((t) => [...t.filter((x) => x.name !== 'Untitled' || x.dirty), { id, name: basename(p), dirty: false }])
       setActiveTab(id)
       setDocPath(p)
-      setShowDrawing(false)
+      setDrawingPageId(null)
       await refreshScene()
     },
     [refreshScene]
@@ -2999,7 +3005,7 @@ export function App(): JSX.Element {
     setTabs((t) => [...t, { id, name: 'Untitled', dirty: false }])
     setActiveTab(id)
     setDocPath(null)
-    setShowDrawing(false)
+    setDrawingPageId(null)
     void (async () => {
       await api.resetDocument()
       await refreshScene()
@@ -3138,18 +3144,71 @@ export function App(): JSX.Element {
   }, [selection, measureMode])
 
   // ---- drawings ----
-  const makeView = useCallback(async (dir: string): Promise<DrawingView | null> => {
+  const refreshDrawingPages = useCallback(async () => {
     try {
-      return await api.drawingAddView(null, dir, 1)
-    } catch (e) {
-      window.alert((e as Error).message)
-      return null
+      const { pages } = await apiQuiet.drawingPageList()
+      setDrawingPages(pages)
+    } catch {
+      /* ignore */
     }
   }, [])
 
+  const makeView = useCallback(
+    async (dir: string): Promise<DrawingView | null> => {
+      if (!drawingPageId) return null
+      try {
+        return await api.drawingAddView(drawingPageId, null, dir, 1)
+      } catch (e) {
+        window.alert((e as Error).message)
+        return null
+      }
+    },
+    [drawingPageId]
+  )
+
+  // creates a fresh drawing page and enters it - the "Drawing from Design"
+  // ribbon entry point. Reopening an existing one goes through openDrawing
+  // (Browser "Drawings" section double-click), not this.
   const startDrawing = useCallback(async () => {
-    setShowDrawing(true) // opens a blank sheet; user adds views
+    try {
+      const page = await api.drawingPageCreate()
+      setDrawingPageId(page.id)
+      void refreshDrawingPages()
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
+  }, [refreshDrawingPages])
+
+  const openDrawing = useCallback((pageId: string) => {
+    setDrawingPageId(pageId)
   }, [])
+
+  const renameDrawing = useCallback(
+    async (pageId: string, label: string) => {
+      try {
+        await api.drawingPageRename(pageId, label)
+        void refreshDrawingPages()
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [refreshDrawingPages]
+  )
+
+  const deleteDrawing = useCallback(
+    async (pageId: string) => {
+      if (!window.confirm('Delete this drawing? This cannot be undone.')) return
+      try {
+        await api.drawingPageDelete(pageId)
+        if (drawingPageId === pageId) setDrawingPageId(null)
+        void refreshDrawingPages()
+        markDirty()
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [drawingPageId, refreshDrawingPages]
+  )
 
   // ---- assemblies ----
   // insert a component by path (no file dialog) - shared by the ribbon action
@@ -3589,6 +3648,29 @@ export function App(): JSX.Element {
         toggleGit: () => setGitOpen((v) => !v),
         toggleSettings: () => setSettingsOpen((v) => !v),
         startDrawing,
+        drawingAddViewDir: (dir) => drawApi.current?.addView(dir) ?? Promise.resolve(),
+        drawingAutoLayout: () => drawApi.current?.autoLayout() ?? Promise.resolve(),
+        drawingSectionTool: () => drawApi.current?.sectionTool(),
+        drawingDetailTool: () => drawApi.current?.detailTool(),
+        drawingBrokenTool: () => drawApi.current?.brokenTool(),
+        drawingDimensionTool: () => setDrawingTool((t) => (t === 'dimension' ? 'select' : 'dimension')),
+        drawingNoteTool: () => setDrawingTool((t) => (t === 'note' ? 'select' : 'note')),
+        drawingCleanupTool: () => setDrawingTool((t) => (t === 'cleanup' ? 'select' : 'cleanup')),
+        drawingInsertBom: () => drawApi.current?.insertBom() ?? Promise.resolve(),
+        drawingInsertTable: () => drawApi.current?.insertTable() ?? Promise.resolve(),
+        drawingSaveAsTemplate: () => drawApi.current?.saveAsTemplate() ?? Promise.resolve(),
+        drawingNewSheet: startDrawing,
+        drawingRenameSheet: async () => {
+          if (!drawingPageId) return
+          const dw = drawingPages.find((p) => p.id === drawingPageId)
+          const next = window.prompt('Rename drawing', dw?.label ?? '')
+          if (next && next.trim()) await renameDrawing(drawingPageId, next.trim())
+        },
+        drawingDeleteSheet: async () => {
+          if (drawingPageId) await deleteDrawing(drawingPageId)
+        },
+        drawingExportPdf: () => drawApi.current?.exportPdf() ?? Promise.resolve(),
+        drawingExportDxf: () => drawApi.current?.exportDxf() ?? Promise.resolve(),
         startMeasure,
         toggleSection,
         scale: scaleBody,
@@ -3632,6 +3714,10 @@ export function App(): JSX.Element {
       projection,
       setProjection,
       startDrawing,
+      drawingPageId,
+      drawingPages,
+      renameDrawing,
+      deleteDrawing,
       startMeasure,
       toggleSection,
       scaleBody,
@@ -4112,6 +4198,7 @@ export function App(): JSX.Element {
             onSetHotkey={setHotkey}
             showAssemble={bodies.filter((b) => b.features.length > 0).length >= 2}
             sketchMode={!!sketchSession}
+            drawingMode={!!drawingPageId}
             sketchPanel={
               <SketchRibbon
                 tool={sketchTool}
@@ -4167,12 +4254,16 @@ export function App(): JSX.Element {
               )}
               {status.phase === 'boot' && <div className="overlay">Starting FreeCAD engine…</div>}
 
-              {showDrawing ? (
+              {drawingPageId ? (
                 <DrawingSheet
+                  ref={drawApi}
+                  pageId={drawingPageId}
                   makeView={makeView}
                   docPath={docPath}
                   assembly={asmTree}
-                  onBack={() => setShowDrawing(false)}
+                  onBack={() => setDrawingPageId(null)}
+                  tool={drawingTool}
+                  onToolChange={setDrawingTool}
                 />
               ) : (
                 <>
@@ -4285,6 +4376,7 @@ export function App(): JSX.Element {
                       label: s.label ?? s.id!,
                       visible: s.visible ?? true
                     }))}
+                    drawings={drawingPages}
                     visibility={visOverride}
                     selection={selection}
                     handlers={{
@@ -4299,7 +4391,14 @@ export function App(): JSX.Element {
                       onDeleteCanvas: (id) => void api.canvasDelete(id).then(() => refreshMeshesOnly()),
                       onToggleSection: (id, v) => void toggleSectionVisible(id, v),
                       onEditSection: (id) => editSection(id),
-                      onDeleteSection: (id) => void deleteSection(id)
+                      onDeleteSection: (id) => void deleteSection(id),
+                      onOpenDrawing: (id) => openDrawing(id),
+                      onRenameDrawing: (id) => {
+                        const dw = drawingPages.find((p) => p.id === id)
+                        const next = window.prompt('Rename drawing', dw?.label ?? '')
+                        if (next && next.trim()) void renameDrawing(id, next.trim())
+                      },
+                      onDeleteDrawing: (id) => void deleteDrawing(id)
                     }}
                   />
                   {asmTree && (

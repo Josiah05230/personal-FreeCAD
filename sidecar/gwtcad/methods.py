@@ -4820,8 +4820,41 @@ def measure_compute(refs):
     return out
 
 
+@method("drawing.pageList")
+def drawing_page_list():
+    d = session.doc(create=False)
+    return {"pages": _drawing.list_pages(d) if d is not None else []}
+
+
+@method("drawing.pageCreate")
+def drawing_page_create(label=None):
+    d = session.doc()
+    return _drawing.create_page(d, label=label)
+
+
+@method("drawing.pageDelete")
+def drawing_page_delete(pageId):
+    d = session.doc()
+    _drawing.delete_page(d, pageId)
+    return {"ok": True}
+
+
+@method("drawing.pageRename")
+def drawing_page_rename(pageId, label):
+    d = session.doc()
+    return _drawing.rename_page(d, pageId, label)
+
+
+@method("drawing.pageContents")
+def drawing_page_contents(pageId):
+    d = session.doc(create=False)
+    if d is None:
+        return {"views": [], "dimensions": [], "notes": [], "tables": [], "cleanupLines": {}}
+    return _drawing.page_contents(d, pageId)
+
+
 @method("drawing.addView")
-def drawing_add_view(bodyId=None, direction="front", scale=1.0):
+def drawing_add_view(pageId, bodyId=None, direction="front", scale=1.0):
     d = session.doc()
     src = None
     if bodyId:
@@ -4830,20 +4863,131 @@ def drawing_add_view(bodyId=None, direction="front", scale=1.0):
         src = session.active_body(d)
     if src is None:
         raise RpcError(APP_ERROR, "no body to project")
-    view = _drawing.make_view(d, src, direction, float(scale))
-    return view
+    return _drawing.make_view(d, pageId, src, direction, float(scale))
 
 
-@method("drawing.list")
-def drawing_list():
+@method("drawing.addSectionView")
+def drawing_add_section_view(pageId, baseViewId, plane="XY", offset=0.0, flip=False):
+    d = session.doc()
+    return _drawing.make_section(d, pageId, baseViewId, plane=plane,
+                                  offset=float(offset), flip=bool(flip))
+
+
+@method("drawing.addDetailView")
+def drawing_add_detail_view(pageId, baseViewId, anchorX, anchorY, radius):
+    d = session.doc()
+    return _drawing.make_detail(d, pageId, baseViewId, (float(anchorX), float(anchorY)),
+                                 float(radius))
+
+
+@method("drawing.addBrokenView")
+def drawing_add_broken_view(pageId, baseViewId, breaks=None):
+    d = session.doc()
+    return _drawing.make_broken(d, pageId, baseViewId, breaks or [])
+
+
+@method("drawing.convertView")
+def drawing_convert_view(pageId, viewId, toKind, **kw):
+    d = session.doc()
+    return _drawing.convert_view(d, pageId, viewId, toKind, **kw)
+
+
+@method("drawing.addDimension")
+def drawing_add_dimension(pageId, viewId, refs, kind="Distance"):
+    d = session.doc()
+    return _drawing.add_dimension(d, pageId, viewId, refs, kind=kind)
+
+
+@method("drawing.setDimensionType")
+def drawing_set_dimension_type(dimId, kind):
+    d = session.doc()
+    return _drawing.set_dimension_type(d, dimId, kind)
+
+
+@method("drawing.setDimensionFormat")
+def drawing_set_dimension_format(dimId, fmt=None):
+    return _drawing.set_dimension_format(dimId, fmt)
+
+
+@method("drawing.setDefaultDimensionFormat")
+def drawing_set_default_dimension_format(fmt=None):
+    return _drawing.set_default_dimension_format(fmt)
+
+
+@method("drawing.getDimensionFormats")
+def drawing_get_dimension_formats():
+    return {"default": session.dim_format_default(), "overrides": session.all_dim_formats()}
+
+
+@method("drawing.addCleanupLine")
+def drawing_add_cleanup_line(viewId, p1, p2):
+    d = session.doc()
+    return _drawing.add_cleanup_line(d, viewId, p1, p2)
+
+
+@method("drawing.listCleanupLines")
+def drawing_list_cleanup_lines(viewId):
     d = session.doc(create=False)
-    views = []
-    if d is not None:
-        for o in d.Objects:
-            if o.TypeId == "TechDraw::DrawViewPart":
-                views.append({"id": o.Name, "label": o.Label,
-                              "direction": getattr(o, "_gwt_dir", "front")})
-    return {"views": views}
+    return {"lines": _drawing.list_cleanup_lines(d, viewId) if d is not None else []}
+
+
+@method("drawing.removeCleanupLine")
+def drawing_remove_cleanup_line(viewId, lineId):
+    d = session.doc()
+    _drawing.remove_cleanup_line(d, viewId, lineId)
+    return {"ok": True}
+
+
+@method("drawing.addNote")
+def drawing_add_note(pageId, text, x, y, leaderViewId=None, leaderPoint=None):
+    d = session.doc()
+    return _drawing.add_note(d, pageId, text, float(x), float(y),
+                              leader_view_id=leaderViewId, leader_point=leaderPoint)
+
+
+@method("drawing.setNoteText")
+def drawing_set_note_text(noteId, text):
+    d = session.doc()
+    return _drawing.set_note_text(d, noteId, text)
+
+
+@method("drawing.snapTargets")
+def drawing_snap_targets(viewId):
+    d = session.doc(create=False)
+    if d is None:
+        return {"targets": []}
+    return {"targets": _drawing.list_snap_targets(d, viewId)}
+
+
+@method("drawing.bomRows")
+def drawing_bom_rows(sourceId=None):
+    d = session.doc(create=False)
+    if d is None:
+        return {"rows": []}
+    src = d.getObject(sourceId) if sourceId else None
+    return {"rows": _tables.bom_rows(d, src)}
+
+
+@method("drawing.makeTable")
+def drawing_make_table(pageId, tableId=None, rows=None, columns=None, template=None):
+    d = session.doc()
+    return _tables.make_table(d, pageId, rows or [], columns, template=template,
+                               table_id=tableId)
+
+
+@method("drawing.saveTableTemplate")
+def drawing_save_table_template(name, spec):
+    return _tables.save_table_template(name, spec)
+
+
+@method("drawing.listTableTemplates")
+def drawing_list_table_templates():
+    return {"templates": _tables.list_table_templates()}
+
+
+@method("drawing.loadTableTemplate")
+def drawing_load_table_template(name):
+    return _tables.load_table_template(name)
 
 
 # --------------------------------------------------------------------------- #

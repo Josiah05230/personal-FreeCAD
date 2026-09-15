@@ -6,13 +6,14 @@ import { promptText } from './PromptDialog'
 import { isPinned, normaliseCombo, type PinMap, type HotkeyMap } from '../ribbonPrefs'
 
 const TABS = ['SOLID', 'SURFACE', 'MESH', 'SHEET METAL', 'ASSEMBLE', 'APPEARANCE', 'TOOLS'] as const
-type Tab = (typeof TABS)[number] | 'SKETCH'
+type Tab = (typeof TABS)[number] | 'SKETCH' | 'DRAWING'
 
 export function Ribbon({
   commands,
   rightSlot,
   sketchMode = false,
   sketchPanel,
+  drawingMode = false,
   pins,
   hotkeys,
   onSetPin,
@@ -23,6 +24,10 @@ export function Ribbon({
   rightSlot?: React.ReactNode
   sketchMode?: boolean
   sketchPanel?: React.ReactNode
+  /** true while a drawing sheet is open - shows the contextual DRAWING tab,
+   *  rendered from the normal Command[]/groups path (unlike sketchPanel,
+   *  which replaces the ribbon body entirely) */
+  drawingMode?: boolean
   pins: PinMap
   hotkeys: HotkeyMap
   onSetPin: (id: string, pinned: boolean) => void
@@ -40,11 +45,15 @@ export function Ribbon({
       setPrevTab((p) => (tab === 'SKETCH' ? p : tab))
       setTab('SKETCH')
       setMenu(null)
+    } else if (drawingMode) {
+      setPrevTab((p) => (tab === 'DRAWING' ? p : tab))
+      setTab('DRAWING')
+      setMenu(null)
     } else {
-      setTab((t) => (t === 'SKETCH' ? prevTab : t))
+      setTab((t) => (t === 'SKETCH' || t === 'DRAWING' ? prevTab : t))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sketchMode])
+  }, [sketchMode, drawingMode])
 
   // if the ASSEMBLE tab disappears while it is active, fall back to SOLID
   useEffect(() => {
@@ -87,7 +96,11 @@ export function Ribbon({
   ]
 
   const baseTabs = TABS.filter((t) => t !== 'ASSEMBLE' || showAssemble)
-  const tabList: Tab[] = sketchMode ? [...baseTabs, 'SKETCH'] : [...baseTabs]
+  const tabList: Tab[] = sketchMode
+    ? [...baseTabs, 'SKETCH']
+    : drawingMode
+      ? [...baseTabs, 'DRAWING']
+      : [...baseTabs]
 
   return (
     <div className="ribbon">
@@ -97,7 +110,7 @@ export function Ribbon({
             key={t}
             className={
               (t === tab ? 'ribbon-tab active' : 'ribbon-tab') +
-              (t === 'SKETCH' ? ' contextual' : '')
+              (t === 'SKETCH' || t === 'DRAWING' ? ' contextual' : '')
             }
             onClick={() => {
               setTab(t)

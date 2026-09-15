@@ -39,6 +39,22 @@ export interface CommandContext {
   toggleGit: () => void
   toggleSettings: () => void
   startDrawing: () => Promise<void>
+  drawingAddViewDir: (dir: string) => Promise<void>
+  drawingAutoLayout: () => Promise<void>
+  drawingSectionTool: () => void
+  drawingDetailTool: () => void
+  drawingBrokenTool: () => void
+  drawingDimensionTool: () => void
+  drawingNoteTool: () => void
+  drawingCleanupTool: () => void
+  drawingInsertBom: () => Promise<void>
+  drawingInsertTable: () => Promise<void>
+  drawingSaveAsTemplate: () => Promise<void>
+  drawingNewSheet: () => Promise<void>
+  drawingRenameSheet: () => Promise<void>
+  drawingDeleteSheet: () => Promise<void>
+  drawingExportPdf: () => Promise<void>
+  drawingExportDxf: () => Promise<void>
   startMeasure: () => void
   toggleSection: () => void
   scale: () => Promise<void>
@@ -141,6 +157,29 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'appr.render', title: 'Render Image', group: 'Export', tab: 'APPEARANCE', icon: 'canvas', run: () => ctx.toggleAppearance() },
     // --- drawing ---
     { id: 'draw.fromDesign', title: 'Drawing from Design', group: 'Drawing', tab: 'TOOLS', icon: 'sketch', run: () => ctx.startDrawing() },
+    // --- DRAWING tab (contextual, entered from draw.fromDesign or the Data panel) ---
+    { id: 'draw.front', title: 'Front', group: 'Views', tab: 'DRAWING', icon: 'plane', run: () => ctx.drawingAddViewDir('front') },
+    { id: 'draw.top', title: 'Top', group: 'Views', tab: 'DRAWING', icon: 'plane', run: () => ctx.drawingAddViewDir('top') },
+    { id: 'draw.right', title: 'Right', group: 'Views', tab: 'DRAWING', icon: 'plane', run: () => ctx.drawingAddViewDir('right') },
+    { id: 'draw.left', title: 'Left', group: 'Views', tab: 'DRAWING', icon: 'plane', run: () => ctx.drawingAddViewDir('left') },
+    { id: 'draw.back', title: 'Back', group: 'Views', tab: 'DRAWING', icon: 'plane', run: () => ctx.drawingAddViewDir('back') },
+    { id: 'draw.bottom', title: 'Bottom', group: 'Views', tab: 'DRAWING', icon: 'plane', run: () => ctx.drawingAddViewDir('bottom') },
+    { id: 'draw.iso', title: 'Isometric', group: 'Views', tab: 'DRAWING', icon: 'plane', run: () => ctx.drawingAddViewDir('iso') },
+    { id: 'draw.autoLayout', title: 'Auto-layout', group: 'Views', tab: 'DRAWING', icon: 'patternRect', run: () => ctx.drawingAutoLayout() },
+    { id: 'draw.section', title: 'Section View', group: 'Views', tab: 'DRAWING', icon: 'plane', hotkey: 's', run: () => ctx.drawingSectionTool() },
+    { id: 'draw.detail', title: 'Detail View', group: 'Views', tab: 'DRAWING', icon: 'point', run: () => ctx.drawingDetailTool() },
+    { id: 'draw.broken', title: 'Broken View', group: 'Views', tab: 'DRAWING', icon: 'combine', run: () => ctx.drawingBrokenTool() },
+    { id: 'draw.dimension', title: 'Dimension', group: 'Annotate', tab: 'DRAWING', icon: 'axis', hotkey: 'd', run: () => ctx.drawingDimensionTool() },
+    { id: 'draw.note', title: 'Note', group: 'Annotate', tab: 'DRAWING', icon: 'sketch', hotkey: 'n', run: () => ctx.drawingNoteTool() },
+    { id: 'draw.cleanup', title: 'Cleanup Line', group: 'Annotate', tab: 'DRAWING', icon: 'draft', run: () => ctx.drawingCleanupTool() },
+    { id: 'draw.bom', title: 'Insert BOM', group: 'Tables', tab: 'DRAWING', icon: 'combine', run: () => ctx.drawingInsertBom() },
+    { id: 'draw.table', title: 'Insert Table', group: 'Tables', tab: 'DRAWING', icon: 'combine', run: () => ctx.drawingInsertTable() },
+    { id: 'draw.saveTemplate', title: 'Save as Template…', group: 'Tables', tab: 'DRAWING', icon: 'point', run: () => ctx.drawingSaveAsTemplate() },
+    { id: 'draw.newSheet', title: 'New Sheet', group: 'Sheet', tab: 'DRAWING', icon: 'sketch', run: () => ctx.drawingNewSheet() },
+    { id: 'draw.renameSheet', title: 'Rename Sheet', group: 'Sheet', tab: 'DRAWING', icon: 'point', run: () => ctx.drawingRenameSheet() },
+    { id: 'draw.deleteSheet', title: 'Delete Sheet', group: 'Sheet', tab: 'DRAWING', icon: 'point', run: () => ctx.drawingDeleteSheet() },
+    { id: 'draw.exportPdf', title: 'PDF', group: 'Export', tab: 'DRAWING', icon: 'point', run: () => ctx.drawingExportPdf() },
+    { id: 'draw.exportDxf', title: 'DXF', group: 'Export', tab: 'DRAWING', icon: 'point', run: () => ctx.drawingExportDxf() },
     // --- file / view ---
     { id: 'file.new', title: 'New Design', group: 'File', tab: 'TOOLS', icon: 'point', hotkey: 'ctrl n', run: () => ctx.newDesign() },
     { id: 'file.open', title: 'Open…', group: 'File', tab: 'TOOLS', icon: 'point', hotkey: 'ctrl o', run: () => ctx.open() },

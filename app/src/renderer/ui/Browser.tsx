@@ -8,6 +8,11 @@ export interface SectionNode {
   visible: boolean
 }
 
+export interface DrawingNode {
+  id: string
+  label: string
+}
+
 export interface BrowserHandlers {
   onToggleVisibility: (id: string, visible: boolean) => void
   onToggleGroup: (group: 'bodies' | 'sketches' | 'origin', visible: boolean) => void
@@ -21,6 +26,9 @@ export interface BrowserHandlers {
   onToggleSection?: (id: string, visible: boolean) => void
   onEditSection?: (id: string) => void
   onDeleteSection?: (id: string) => void
+  onOpenDrawing?: (id: string) => void
+  onRenameDrawing?: (id: string) => void
+  onDeleteDrawing?: (id: string) => void
 }
 
 const Eye = ({ on }: { on: boolean }): JSX.Element =>
@@ -120,6 +128,7 @@ export function Browser({
   bodies,
   canvases = [],
   sections = [],
+  drawings = [],
   handlers,
   visibility,
   selection
@@ -127,6 +136,7 @@ export function Browser({
   bodies: BodyTree[]
   canvases?: CanvasDTO[]
   sections?: SectionNode[]
+  drawings?: DrawingNode[]
   handlers: BrowserHandlers
   visibility: Record<string, boolean>
   selection: Selection[]
@@ -330,6 +340,26 @@ export function Browser({
                   },
                   { separator: true, label: '' },
                   { label: 'Delete', danger: true, onClick: () => handlers.onDeleteSection?.(s.id) }
+                ]}
+              />
+            ))}
+          </Row>
+        )}
+
+        {drawings.length > 0 && (
+          <Row depth={1} label="Drawings" glyph="☷" defaultOpen={false}>
+            {drawings.map((dw) => (
+              <Row
+                key={dw.id}
+                depth={2}
+                label={dw.label}
+                glyph="☷"
+                onEditDbl={() => handlers.onOpenDrawing?.(dw.id)}
+                menu={[
+                  { label: 'Open', onClick: () => handlers.onOpenDrawing?.(dw.id) },
+                  { label: 'Rename…', onClick: () => handlers.onRenameDrawing?.(dw.id) },
+                  { separator: true, label: '' },
+                  { label: 'Delete', danger: true, onClick: () => handlers.onDeleteDrawing?.(dw.id) }
                 ]}
               />
             ))}

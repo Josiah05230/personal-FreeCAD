@@ -3,6 +3,8 @@
 One document at a time for now. Milestone 2 (assemblies) turns this into a small
 document set keyed by path.
 """
+import time
+
 import FreeCAD as App
 
 _DEFAULT_NAME = "GWTCAD"
@@ -211,6 +213,26 @@ _canvas_seq = [0]
 _sections = {}
 _section_seq = [0]
 
+# Drawing pages (TechDraw::DrawPage objects). The page + everything on it
+# (views/dims/notes/tables) is a real native object living in the .FCStd, so
+# it round-trips for free on save/open with no help from here - this registry
+# only remembers id->label (+ ordering) so the Browser tree has stable labels
+# across reopen, since a bare TechDraw::DrawPage has no GWT-CAD-specific slot
+# for that beyond its own .Label.
+_drawings = {}
+_drawing_seq = [0]
+
+# Per-dimension format override: {dimId: {"precision":int, "leadingZero":bool,
+# "trailingZeros":bool, "unitSuffix":bool}}. FreeCAD's own FormatSpec render
+# (FormattedValue) needs a GUI ViewProvider and is empty headlessly, so
+# GWT-CAD formats dimension text itself client-side from the raw value; this
+# is just the override storage, keyed by the DrawViewDimension's object name.
+_dim_formats = {}
+
+# Document-wide default dimension format; None means "use the built-in
+# default" (2 decimals, leading zero, no trailing-zero stripping, unit shown).
+_dim_format_default = {}
+
 
 def add_section(plane="XY", offset=0.0, flip=False, label=None):
     _section_seq[0] += 1
@@ -250,6 +272,61 @@ def remove_section(sid):
     _sections.pop(sid, None)
 
 
+def add_drawing(label=None, drawing_id=None):
+    if drawing_id and drawing_id not in _drawings:
+        did = drawing_id
+    else:
+        _drawing_seq[0] += 1
+        did = "Drawing%d" % _drawing_seq[0]
+    _drawings[did] = {"id": did, "label": label or did}
+    try:
+        n = int(did.replace("Drawing", ""))
+        _drawing_seq[0] = max(_drawing_seq[0], n)
+    except Exception:
+        pass
+    return _drawings[did]
+
+
+def rename_drawing(did, label):
+    if did in _drawings:
+        _drawings[did]["label"] = label
+    return _drawings.get(did)
+
+
+def drawings():
+    return list(_drawings.values())
+
+
+def remove_drawing(did):
+    _drawings.pop(did, None)
+    _dim_formats.pop(did, None)
+
+
+def dim_format(dim_id):
+    return dict(_dim_formats[dim_id]) if dim_id in _dim_formats else None
+
+
+def set_dim_format(dim_id, fmt):
+    if fmt is None:
+        _dim_formats.pop(dim_id, None)
+    else:
+        _dim_formats[dim_id] = dict(fmt)
+
+
+def all_dim_formats():
+    return {k: dict(v) for k, v in _dim_formats.items()}
+
+
+def dim_format_default():
+    return dict(_dim_format_default)
+
+
+def set_dim_format_default(fmt):
+    _dim_format_default.clear()
+    if fmt:
+        _dim_format_default.update(fmt)
+
+
 def add_canvas(plane_role, w_mm, h_mm, image=None):
     _canvas_seq[0] += 1
     cid = "Canvas%d" % _canvas_seq[0]
@@ -273,6 +350,20 @@ def load_state(blob):
             _section_seq[0] = max(_section_seq[0], int(sid.replace("Section", "")))
         except Exception:
             pass
+    _drawings.clear()
+    for dw in blob.get("drawings", []):
+        if dw.get("id"):
+            _drawings[dw["id"]] = dw
+    _drawing_seq[0] = 0
+    for did in _drawings:
+        try:
+            _drawing_seq[0] = max(_drawing_seq[0], int(did.replace("Drawing", "")))
+        except Exception:
+            pass
+    _dim_formats.clear()
+    _dim_formats.update(blob.get("dimFormats", {}) or {})
+    _dim_format_default.clear()
+    _dim_format_default.update(blob.get("dimFormatDefault", {}) or {})
     _colors.clear()
     _colors.update(blob.get("colors", {}))
     _params.clear()
@@ -311,7 +402,10 @@ def dump_state():
             "appearance": all_object_appearances(),
             "renderSettings": render_settings(),
             "appearancePresets": appearance_presets(),
-            "sections": list(_sections.values())}
+            "sections": list(_sections.values()),
+            "drawings": list(_drawings.values()),
+            "dimFormats": all_dim_formats(),
+            "dimFormatDefault": dim_format_default()}
 
 
 def canvases():
@@ -431,6 +525,7 @@ def doc(create=True):
 def reset():
     d = _find(_state["name"])
     if d is not None:
+        _settle_detail_views(d)
         App.closeDocument(d.Name)
     d = _enable_undo(App.newDocument(_DEFAULT_NAME))
     _state["name"] = d.Name
@@ -451,14 +546,36 @@ def reset():
     _canvas_seq[0] = 0
     _sections.clear()
     _section_seq[0] = 0
+    _drawings.clear()
+    _drawing_seq[0] = 0
+    _dim_formats.clear()
+    _dim_format_default.clear()
     return d
+
+
+def _settle_detail_views(d):
+    """TechDraw::DrawViewDetail computes its cut on a background worker in
+    this FreeCAD build; closing/opening a document that has one before it
+    settles segfaults headlessly (confirmed live, both on document.open just
+    having loaded one and on closeDocument of a document holding one). One
+    more recompute + a short sleep reliably lets it finish first; skipped
+    entirely when the document has no detail views, so a normal open/close
+    pays nothing extra."""
+    try:
+        if any(o.TypeId == "TechDraw::DrawViewDetail" for o in d.Objects):
+            d.recompute()
+            time.sleep(0.3)
+    except Exception:
+        pass
 
 
 def open_path(path):
     d = _find(_state["name"])
     if d is not None:
+        _settle_detail_views(d)
         App.closeDocument(d.Name)
     d = _enable_undo(App.openDocument(path))
+    _settle_detail_views(d)
     _state["name"] = d.Name
     _state["path"] = path
     return d
