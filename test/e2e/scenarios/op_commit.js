@@ -13,6 +13,7 @@
  */
 
 const feats = (st) => (st.bodies[0] ? st.bodies[0].features : []);
+const featsRaw = async () => (await rpc('tree.get')).bodies[0].features;
 const anyErr = (st) => st.bodies.some((b) => b.features.some((f) => f.error));
 const okBtnDisabled = () => {
   const b = document.querySelector('.opdlg-ok');
@@ -23,6 +24,37 @@ const okBtnDisabled = () => {
 let bid = null;
 let vEdges = [];
 let anyEdge = 'Edge1';
+
+// re-derive the body's current vertical edges from the LIVE mesh - a
+// dress-up (fillet/chamfer) renumbers Edge* on the body it touches, so a
+// snapshot taken before it runs can point at edges that no longer exist (or
+// mean something else) by the time a LATER op in this same run picks by
+// that stale name. Confirmed live: chamfer picking a pre-fillet vEdges[1]
+// against the post-fillet body silently landed on "No edges specified" -
+// FreeCAD never threw, tree.get just marked the feature Invalid, and only
+// checking `"Error" in State` (not `"Invalid"`) let it go unnoticed.
+//
+// Requires near-FULL pad-height edges (>=11, pad is 12 tall) specifically to
+// exclude a fillet's own rounded blend-seam edges: those ARE vertical too
+// but shorter (the radius is trimmed off each end), and FreeCAD legitimately
+// refuses to chamfer one ("not C0 continuous" - confirmed live) - picking
+// one is a fragile TEST target, not a product bug.
+async function refreshVerticalEdges() {
+  const mesh = (await rpc('scene.get')).meshes.find((m) => m.id === bid) || (await rpc('scene.get')).meshes[0];
+  bid = mesh.id;
+  vEdges = [];
+  for (const e of mesh.edges || []) {
+    const p = e.points;
+    if (p.length >= 6) {
+      const dx = Math.abs(p[0] - p[p.length - 3]);
+      const dy = Math.abs(p[1] - p[p.length - 2]);
+      const dz = Math.abs(p[2] - p[p.length - 1]);
+      if (dx < 1e-3 && dy < 1e-3 && dz > 1) vEdges.push('Edge' + (e.edge + 1));
+    }
+  }
+  anyEdge = 'Edge' + ((mesh.edges && mesh.edges[0] ? mesh.edges[0].edge : 0) + 1);
+  note('vertical edges (refreshed): ' + JSON.stringify(vEdges) + '  anyEdge=' + anyEdge);
+}
 
 async function rebuildBase(label) {
   note(label);
@@ -42,20 +74,8 @@ async function rebuildBase(label) {
   await G.applyOp('extrude', { operation: 'Join', mode: 'Blind', length: 12 });
   await idle();
   assert(feats(G.getState()).some((f) => f.kind === 'solid'), label + ': base pad built');
-  const mesh = (await rpc('scene.get')).meshes[0];
-  bid = mesh.id;
-  vEdges = [];
-  for (const e of mesh.edges || []) {
-    const p = e.points;
-    if (p.length >= 6) {
-      const dx = Math.abs(p[0] - p[p.length - 3]);
-      const dy = Math.abs(p[1] - p[p.length - 2]);
-      const dz = Math.abs(p[2] - p[p.length - 1]);
-      if (dx < 1e-3 && dy < 1e-3 && dz > 1) vEdges.push('Edge' + (e.edge + 1));
-    }
-  }
-  anyEdge = 'Edge' + ((mesh.edges && mesh.edges[0] ? mesh.edges[0].edge : 0) + 1);
-  note('vertical edges: ' + JSON.stringify(vEdges) + '  anyEdge=' + anyEdge);
+  bid = (await rpc('scene.get')).meshes[0].id;
+  await refreshVerticalEdges();
 }
 
 await rebuildBase('reset + rect -> extrude 12 (body for the profile / dress-up ops)');
@@ -99,6 +119,10 @@ async function checkCommit(kind, setup, applyVals, opts = {}) {
     assert(st.status === 'ready', `${kind}: app still ready after a soft apply`);
   } else {
     assert(!err, `${kind}: applied without throwing (${err || 'ok'})`);
+    if (anyErr(st)) {
+      const raw = await featsRaw();
+      note(`${kind}: DEBUG errored features (raw tree.get) = ` + JSON.stringify(raw.filter((f) => f.error)));
+    }
     assert(!anyErr(st), `${kind}: no feature error after apply`);
     assert(
       feats(st).length >= before,
@@ -129,10 +153,17 @@ await checkCommit(
   { radius: 2 }
 );
 
+// a fresh base body for chamfer, rather than reusing the fillet's - some of
+// the fillet's OWN rounded edges are vertical and near-full-height too, so
+// picking by the same "tall + vertical" heuristic against the fillet's
+// output can land on the fillet's own blend seam, which FreeCAD legitimately
+// refuses to chamfer ("not C0 continuous", confirmed live) - a fragile TEST
+// target chained off a dress-up result, not a product bug.
+await rebuildBase('fresh base for chamfer (avoid the fillet body own blend-seam edges)');
 await checkCommit(
   'chamfer',
   async () => {
-    G.pick({ kind: 'edge', bodyId: bid, sub: vEdges[1] || vEdges[0] || anyEdge, point: [0, 0, 0] }, false);
+    G.pick({ kind: 'edge', bodyId: bid, sub: vEdges[0] || anyEdge, point: [0, 0, 0] }, false);
   },
   { size: 1.5 }
 );

@@ -3089,66 +3089,85 @@ def _move_matching_elements(sk, moved):
     untouched line survived the delete as a dangling/wrong reference, not
     an error).
 
-    What this does instead: for each moved entity, capture every constraint
-    referencing its geo id (by content, not object identity - constraint
-    objects are not stable across delGeometry), remove just those, delete
-    the old geometry, add the replacement, then re-add the captured
-    constraints with every reference to the old geo id rewritten to the
-    new one. Every OTHER constraint (on other geometry) is never touched.
+    What this does instead: capture every constraint referencing ANY moved
+    entity's geo id (by content, not object identity - constraint objects
+    are not stable across delGeometry), across the WHOLE batch up front and
+    de-duplicated (a Coincident weld between two entities that are BOTH being
+    moved touches both their geo ids - processing it from each side would
+    capture it twice and, worse, remap only one side per pass, leaving a
+    dangling or self-referential constraint - confirmed live: a shrunk
+    rectangle whose 4 sides all moved in one call left constraints like
+    Coincident(2,2,2,1), the same geo id on both sides, and 2 of the 4 sides
+    silently stuck at their OLD coordinates). Remove all of them, delete +
+    replace every moved geometry, then re-add each captured constraint ONCE
+    with EVERY old geo id in the whole batch rewritten to its new one, not
+    just the one entity that constraint happened to be captured under. Every
+    OTHER constraint (on geometry nothing here touches) is never touched.
     """
     if not moved:
         return 0
-    ent_to_geo = {}
-    ei = 0
-    for gid, g in enumerate(sk.Geometry):
-        if g.TypeId in _REOPEN_GEO_TIDS:
-            ent_to_geo[ei] = gid
-            ei += 1
 
     import Part
     from FreeCAD import Vector
     import Sketcher
 
-    n = 0
+    def _reopen_map():
+        """entity index (reopen order) -> current geo id."""
+        m = {}
+        i = 0
+        for gid, g in enumerate(sk.Geometry):
+            if g.TypeId in _REOPEN_GEO_TIDS:
+                m[i] = gid
+                i += 1
+        return m
+
+    expect_tid_by_type = {"line": "Part::GeomLineSegment", "circle": "Part::GeomCircle",
+                           "arc": "Part::GeomArcOfCircle", "spline": "Part::GeomBSplineCurve"}
+
+    reopen_map = _reopen_map()
+    targets = []  # [(old_gid, el), ...] - resolved BEFORE any deletion starts
     for item in moved:
         idx = int(item.get("index", -1))
         el = item.get("entity") or {}
-        old_gid = ent_to_geo.get(idx)
+        old_gid = reopen_map.get(idx)
         if old_gid is None:
             continue
-        old = sk.Geometry[old_gid]
         t = el.get("type")
+        expect_tid = expect_tid_by_type.get(t)
         # only replace like-for-like - a type change here would mean the
         # editor converted the entity, which goes through convertedElements
         # (construction) or a real delete+add (elements/removedElements),
         # never this path
-        expect_tid = {"line": "Part::GeomLineSegment", "circle": "Part::GeomCircle",
-                      "arc": "Part::GeomArcOfCircle", "spline": "Part::GeomBSplineCurve"}.get(t)
-        if expect_tid is None or old.TypeId != expect_tid:
+        if expect_tid is None or sk.Geometry[old_gid].TypeId != expect_tid:
             continue
+        targets.append((old_gid, el))
+    if not targets:
+        return 0
+    old_gids = {g for g, _ in targets}
 
-        # 1. capture + remove every constraint touching this geo id
-        touching = []
-        for ci in range(int(sk.ConstraintCount) - 1, -1, -1):
-            c = sk.Constraints[ci]
-            refs = [(c.First, c.FirstPos), (c.Second, c.SecondPos), (c.Third, c.ThirdPos)]
-            if any(g == old_gid for g, _ in refs):
-                driving = getattr(c, "Driving", True)
-                touching.append((c.Type, refs, getattr(c, "Value", None), driving))
-        for ci in range(int(sk.ConstraintCount) - 1, -1, -1):
-            c = sk.Constraints[ci]
-            refs = [(c.First, c.FirstPos), (c.Second, c.SecondPos), (c.Third, c.ThirdPos)]
-            if any(g == old_gid for g, _ in refs):
-                try:
-                    sk.delConstraint(ci)
-                except Exception:
-                    pass
+    # 1. capture + remove every constraint touching ANY moved geo id, ONCE
+    touching = []
+    for ci in range(int(sk.ConstraintCount) - 1, -1, -1):
+        c = sk.Constraints[ci]
+        refs = [(c.First, c.FirstPos), (c.Second, c.SecondPos), (c.Third, c.ThirdPos)]
+        if any(g in old_gids for g, _ in refs):
+            driving = getattr(c, "Driving", True)
+            touching.append((c.Type, refs, getattr(c, "Value", None), driving))
+            try:
+                sk.delConstraint(ci)
+            except Exception:
+                pass
 
-        # 2. delete the old geometry, add the replacement
+    # 2. delete the old geometry (highest gid first so earlier gids in this
+    #    same batch stay valid) and add each replacement, building the full
+    #    old-gid -> new-gid remap as we go
+    remap_table = {}
+    for old_gid, el in sorted(targets, key=lambda p: p[0], reverse=True):
         try:
             sk.delGeometry(old_gid)
         except Exception:
             continue
+        t = el.get("type")
         is_con = bool(el.get("construction", False))
         new_gid = None
         try:
@@ -3178,33 +3197,49 @@ def _move_matching_elements(sk, moved):
             continue
         if new_gid is None:
             continue
+        # every OTHER already-recorded remap that pointed at a gid >= this
+        # deletion point just shifted down by one (delGeometry on old_gid
+        # shifts every later index down) - correct the table before adding
+        # this batch's own new entry, so the FINAL remap always reflects
+        # each moved entity's truly-final new gid, however many deletions
+        # happened after it in this loop
+        for k in list(remap_table):
+            v = remap_table[k]
+            if v > old_gid:
+                remap_table[k] = v - 1
+        remap_table[old_gid] = new_gid
 
-        # 3. re-add the captured constraints, remapping old_gid -> new_gid
-        def remap(g, _old=old_gid, _new=new_gid):
-            return _new if g == _old else g
-        for ctype, refs, value, driving in reversed(touching):
-            (g1, p1), (g2, p2), (g3, p3) = refs
-            try:
-                args = [ctype, remap(g1)]
-                if p1:
-                    args.append(int(p1))
-                if g2 != -2000:
-                    args.append(remap(g2))
-                    if p2:
-                        args.append(int(p2))
-                if g3 != -2000:
-                    args.append(remap(g3))
-                    if p3:
-                        args.append(int(p3))
-                if value is not None and ctype in ("Distance", "Radius", "Diameter", "Angle",
-                                                     "DistanceX", "DistanceY"):
-                    args.append(float(value))
-                new_ci = sk.addConstraint(Sketcher.Constraint(*args))
-                if not driving:
-                    sk.setDriving(new_ci, False)
-            except Exception:
-                pass
-        n += 1
+    # 3. re-add each captured constraint ONCE, remapping every reference
+    #    against the FULL batch remap (not just whichever entity it was
+    #    captured under) - a constraint between two entities that BOTH moved
+    #    needs BOTH sides rewritten, or it dangles / becomes self-referential
+    def remap(g):
+        return remap_table.get(g, g)
+
+    n = 0
+    for ctype, refs, value, driving in reversed(touching):
+        (g1, p1), (g2, p2), (g3, p3) = refs
+        try:
+            args = [ctype, remap(g1)]
+            if p1:
+                args.append(int(p1))
+            if g2 != -2000:
+                args.append(remap(g2))
+                if p2:
+                    args.append(int(p2))
+            if g3 != -2000:
+                args.append(remap(g3))
+                if p3:
+                    args.append(int(p3))
+            if value is not None and ctype in ("Distance", "Radius", "Diameter", "Angle",
+                                                 "DistanceX", "DistanceY"):
+                args.append(float(value))
+            new_ci = sk.addConstraint(Sketcher.Constraint(*args))
+            if not driving:
+                sk.setDriving(new_ci, False)
+            n += 1
+        except Exception:
+            pass
     return n
 
 
@@ -3407,7 +3442,6 @@ def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None,
     # a NULL pad - strip them and re-solve until clean
     dropped = _strip_redundant_constraints(sk, d)
 
-    sk.Visibility = True
     # a re-finished (edited) sketch: push the change into any hidden copies that
     # other features were built from, so "edit the sketch" updates them all
     build.sync_ref_copies(d, sk)
@@ -3438,15 +3472,22 @@ def sketch_finish(sketchId, autoConstrain=True, elements=None, constraints=None,
     # end, this is equivalent to the old None; if it is not, the marker
     # correctly stays where the sketch actually is.
     body = sk.getParentGeoFeatureGroup()
-    if body is not None and session.marker(body.Name):
+    if body is not None:
         names = [f.Name for f in body.Group if f.TypeId != "App::Origin"]
         at_end = sketchId == names[-1] if names else True
-        session.set_marker(
-            body.Name,
-            None if at_end else sketchId,
-            tip_at_rollback=body.Tip.Name if body.Tip else None,
-        )
-        session.set_rolled_empty(body.Name, False)
+        # Delegate the marker + visibility to the same routine the timeline
+        # scrubber uses, instead of hand-setting the marker and then forcing
+        # sk.Visibility = True unconditionally. A sketch downstream features
+        # have already consumed (Pad/Sweep/... .Profile) must stay HIDDEN -
+        # the solid it feeds is what belongs on screen, not a leftover
+        # wireframe outline of the profile drawn on top of it. Previously
+        # every Finish forced the sketch visible and nothing hid it again
+        # until the user happened to also move the timeline scrubber, so for
+        # however long until the next rollTo the outline sat drawn over the
+        # already-correctly-updated solid and read as a stale "ghost" of the
+        # pre-edit shape. (User report, 2026-09-14: drag + Finish + roll down
+        # the timeline still showed the old shape.)
+        history_roll_to(body.Name, None if at_end else sketchId)
     return {
         "sketchId": sketchId,
         "count": int(sk.GeometryCount),
@@ -4018,6 +4059,27 @@ def feature_set_expr(id, prop, expr):
     return tree_get()
 
 
+def _feature_error_text(f):
+    """A human-readable reason `f` is in an error/invalid state, or None.
+    `ErrorText` is often empty even on a genuinely broken feature (confirmed
+    live: a Fillet whose radius no longer fits its shrunk edge reports
+    State=['Touched','Invalid'] with ErrorText=None) - getStatusString()
+    reliably has the real message FreeCAD already logged internally, but
+    also returns a cosmetic "Valid" on a perfectly healthy feature - only
+    consult it once State already says something IS wrong."""
+    state = getattr(f, "State", None) or []
+    if not ("Error" in state or "Invalid" in state):
+        return None
+    try:
+        st = getattr(f, "ErrorText", "") or ""
+        if not str(st).strip() and hasattr(f, "getStatusString"):
+            st = f.getStatusString() or ""
+    except Exception:
+        st = ""
+    st = str(st).strip()
+    return st or None
+
+
 @method("tree.get")
 def tree_get():
     """Feature tree for the timeline + browser."""
@@ -4062,7 +4124,9 @@ def tree_get():
                     "afterTip": f.Name in suppressed,
                     "suppressed": bool(getattr(f, "Suppressed", getattr(f, "Suppress", False))),
                     "visible": bool(getattr(f, "Visibility", False)) and f.Name not in suppressed,
-                    "error": bool(getattr(f, "State", None) and "Error" in f.State),
+                    "error": bool(getattr(f, "State", None) and
+                                  ("Error" in f.State or "Invalid" in f.State)),
+                    "errorText": _feature_error_text(f),
                 })
             origin = []
             try:

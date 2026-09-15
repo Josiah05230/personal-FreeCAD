@@ -358,7 +358,11 @@ export function Timeline({
                 (f.suppressed ? ' suppressed' : '') +
                 (selected.has(f.id) ? ' selected' : '')
               }
-              title={`${f.label}  ·  ${f.opType}\nClick to select · Shift/Ctrl click to multi-select · double-click to edit`}
+              title={
+                `${f.label}  ·  ${f.opType}` +
+                (f.error ? `\n⚠ ${f.errorText || 'Failed to recompute'}` : '') +
+                '\nClick to select · Shift/Ctrl click to multi-select · double-click to edit'
+              }
               onDoubleClick={() => handlers.onEdit(f.id)}
               onContextMenu={(e) => {
                 e.preventDefault()

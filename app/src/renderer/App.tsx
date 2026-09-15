@@ -800,7 +800,7 @@ export function App(): JSX.Element {
     // silently drop every OTHER still-valid constraint on that same entity
     // (FreeCAD auto-removes a deleted geometry's dependent constraints).
     const movedEnts = vpApi.current?.getEditedBaseSketchEntities() ?? []
-    const { frame } = sketchSession
+    const { frame, isEdit, bodyId: sketchBodyId } = sketchSession
     // optimistic origin-plane entry may not have the real id back yet
     let id = sketchSession.sketchId
     if (!id && sketchOnRef.current) {
@@ -831,6 +831,9 @@ export function App(): JSX.Element {
 
     // 2. commit to the engine in the background, then reconcile with the real
     //    (constraint-solved) geometry. Uses the quiet RPC path - no spinner.
+    const erroredBefore = new Set(
+      bodies.flatMap((b) => b.features).filter((f) => f.error).map((f) => f.id)
+    )
     try {
       await apiQuiet.sketchFinish(id, newEnts, cons, removedCons, removedEnts, convertedEnts, movedEnts)
       const [scene, tree] = await Promise.all([apiQuiet.sceneGet(), apiQuiet.treeGet()])
@@ -838,11 +841,43 @@ export function App(): JSX.Element {
       setSketches(scene.sketches ?? [])
       setDatums(scene.datums ?? [])
       setBodies(tree.bodies)
+      // A feature downstream of this sketch (Sweep, Pad, ...) can fail to
+      // regenerate on recompute with NO exception thrown - FreeCAD just
+      // leaves it in an error state holding its last-good shape, silently.
+      // Flag anything that newly went red so the edit doesn't look like it
+      // "did nothing" when it actually broke something further down the
+      // tree. (User report, 2026-09-14: a Sweep "didn't error or update"
+      // after a profile edit + Finish + roll down the timeline.)
+      const newlyErrored = tree.bodies
+        .flatMap((b) => b.features)
+        .filter((f) => f.error && !erroredBefore.has(f.id))
+      if (newlyErrored.length) {
+        flashSketchNotice(
+          `${newlyErrored.map((f) => f.label).join(', ')} failed to update from this sketch change` +
+            (newlyErrored[0].errorText ? `: ${newlyErrored[0].errorText}` : '.')
+        )
+      }
+      // Re-finishing an EXISTING sketch (editSketch rolled the marker back to
+      // it) must resume all the way to the tip, same as cancelling an edit
+      // already does - sketch.finish's own marker logic instead parks on the
+      // sketch itself, which is correct for a BRAND NEW sketch drawn mid
+      // timeline (see the comment on that block) but wrong here: an edited
+      // sketch already has real downstream consumers (Pad/Sweep/...), and
+      // leaving the marker sitting on it forces its raw wireframe visible as
+      // an "at the rollback point" overlay on top of the already-correctly-
+      // updated solid - the exact stale-looking "ghost" of the pre-edit shape
+      // the user reported (2026-09-14), right up until they happened to also
+      // scrub the timeline themselves.
+      if (isEdit && sketchBodyId) {
+        await apiQuiet.rollTo(sketchBodyId, null).catch(() => undefined)
+        rollCacheRef.current.clear()
+        await refreshScene()
+      }
     } catch (e) {
       window.alert((e as Error).message)
       await refreshScene()
     }
-  }, [sketchSession, resetSketchUi, markDirty, refreshScene])
+  }, [sketchSession, resetSketchUi, markDirty, refreshScene, bodies, flashSketchNotice])
 
   const cancelSketch = useCallback(async () => {
     trace('ACTION cancelSketch', { queueBusy: cmdRef.current.busy })

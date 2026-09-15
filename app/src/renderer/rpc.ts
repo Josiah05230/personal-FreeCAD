@@ -14,6 +14,7 @@ export interface Feature {
   suppressed?: boolean
   visible: boolean
   error: boolean
+  errorText?: string | null
 }
 
 export interface OriginItem {
