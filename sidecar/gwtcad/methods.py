@@ -4,6 +4,7 @@ Milestone 0 surface only: enough to build a demo solid headless, stream it to th
 viewport, and describe its feature tree. Real modelling operations arrive in
 Milestone 1.
 """
+import math
 import os
 
 import FreeCAD as App
@@ -14,6 +15,7 @@ from .registry import method, RpcError, APP_ERROR
 from . import session
 from . import build
 from . import drawing as _drawing
+from . import tables as _tables
 from . import assembly as _assembly
 from .tessellate import tessellate_shape
 from .vocab import op_name, next_label
@@ -567,6 +569,60 @@ def feature_revolve(sketchId=None, angle=360.0, axis="V", axisRef=None,
     return tree_get()
 
 
+def _check_sweep_path_angle(prof, spine_ref, path_obj):
+    """A Sweep needs its path to travel AWAY from the profile's own plane - a
+    path edge that runs WITHIN that plane (e.g. one of the profile sketch's
+    own face's boundary edges) always produces a degenerate/self-intersecting
+    solid, confirmed live: a perfectly valid, closed stadium profile swept
+    along a straight edge of the very face it was drawn on failed 100% of the
+    time (near-zero/negative Volume, isValid()=False) while the SAME profile
+    along an edge actually perpendicular to that face worked every time.
+    FreeCAD's own error for this ("sweep produced an invalid shape") gives no
+    hint that the PATH CHOICE itself is the problem, not the profile - raise
+    something the user can actually act on before even attempting the build.
+
+    Only a hard warning (angle < ~10 degrees from lying flat in-plane, i.e.
+    the path's own direction is within ~10 degrees of PERPENDICULAR to the
+    profile's normal) - a shallow but nonzero angle is legitimate (an
+    angled/tapered sweep) and must not be blocked."""
+    try:
+        normal = prof.Placement.Rotation.multVec(App.Vector(0, 0, 1))
+    except Exception:
+        return
+    tangent = None
+    try:
+        if spine_ref is not None:
+            obj, subs = spine_ref
+            shape = getattr(obj, "Shape", None)
+            sub0 = subs[0] if isinstance(subs, list) and subs else subs
+            edge = shape.getElement(sub0) if (shape is not None and sub0) else \
+                (shape.Edges[0] if shape is not None and shape.Edges else None)
+        else:
+            shape = getattr(path_obj, "Shape", None)
+            edge = shape.Edges[0] if shape is not None and shape.Edges else None
+        if edge is not None:
+            p0 = edge.valueAt(edge.FirstParameter)
+            p1 = edge.valueAt(edge.LastParameter)
+            tangent = p1 - p0
+    except Exception:
+        return
+    if tangent is None or tangent.Length < 1e-9:
+        return
+    tangent.normalize()
+    # angle between the path's direction and the profile's OWN plane (not its
+    # normal) - 0 degrees means the path lies flat inside the profile's plane
+    angle_from_plane = 90.0 - math.degrees(math.acos(min(1.0, max(-1.0, abs(tangent.dot(normal))))))
+    if angle_from_plane < 10.0:
+        raise RpcError(
+            APP_ERROR,
+            "This path runs almost entirely within the profile's own sketch "
+            "plane, not away from it - a sweep needs to travel roughly "
+            "perpendicular to the profile, not sideways along it. Pick a "
+            "different path (or redraw the profile on a plane that actually "
+            "faces the path direction)."
+        )
+
+
 @method("feature.sweep")
 def feature_sweep(profileId, pathId=None, pathRef=None, cut=False, operation=None,
                   orientation="Path", transition="Transformed"):
@@ -602,6 +658,8 @@ def feature_sweep(profileId, pathId=None, pathRef=None, cut=False, operation=Non
         path_obj = d.getObject(pathId) if pathId else None
         if path_obj is None:
             raise RpcError(APP_ERROR, "sweep needs a path sketch or edge")
+
+    _check_sweep_path_angle(prof, spine_ref, path_obj)
 
     tid = "PartDesign::SubtractivePipe" if op == "cut" else "PartDesign::AdditivePipe"
     pipe = body.newObject(tid, "Sweep")
@@ -2056,6 +2114,8 @@ _TYPE_KIND = {
     "PartDesign::Mirrored": "mirror",
     "PartDesign::LinearPattern": "patternLinear",
     "PartDesign::PolarPattern": "patternCircular",
+    "PartDesign::AdditivePipe": "sweep",
+    "PartDesign::SubtractivePipe": "sweep",
 }
 
 
@@ -2109,6 +2169,23 @@ def _axis_ref(o):
         return {"kind": "sketch", "id": feat.Name, "sub": subs[0] if subs else None}
     b = feat.getParentGeoFeatureGroup() or feat
     return {"kind": "edge", "bodyId": getattr(b, "Name", ""), "sub": subs[0] if subs else ""}
+
+
+def _spine_ref(o):
+    """A Sweep's Spine -> {kind:'sketch',id} or {kind:'edge',bodyId,sub:[...]}
+    - unlike _axis_ref this keeps EVERY sub (a sweep path can be several
+    connected edges around a bend, ctrl/shift-clicked one at a time)."""
+    sp = getattr(o, "Spine", None)
+    if not sp:
+        return None
+    feat, subs = (sp[0], list(sp[1])) if isinstance(sp, (tuple, list)) else (sp, [])
+    if feat is None:
+        return None
+    if getattr(feat, "TypeId", "") == "Sketcher::SketchObject":
+        src = getattr(feat, build.REF_TAG, "")
+        return {"kind": "sketch", "id": src or feat.Name}
+    b = feat.getParentGeoFeatureGroup() or feat
+    return {"kind": "edge", "bodyId": getattr(b, "Name", ""), "sub": subs}
 
 
 def _link_ref(link):
@@ -2185,6 +2262,22 @@ def _set_feature_values(o, values):
     elif T == "PartDesign::Hole":
         num("Diameter", "diameter")
         num("Depth", "depth")
+    elif T in ("PartDesign::AdditivePipe", "PartDesign::SubtractivePipe"):
+        # "operation" (Join vs Cut) is really TWO DIFFERENT FreeCAD TypeIds
+        # (AdditivePipe / SubtractivePipe) - not a property on either, so it
+        # is not settable here (same as Mirror/Pattern's own fixed
+        # "operation" value, see their comment above) - only orientation and
+        # transition are real in-place edits.
+        if "orientation" in v:
+            try:
+                o.Mode = "Frenet" if str(v["orientation"]).lower().startswith("path") else "Fixed"
+            except Exception:
+                pass
+        if "transition" in v:
+            try:
+                o.Transition = str(v["transition"])
+            except Exception:
+                pass
     elif T == "PartDesign::LinearPattern":
         if "count" in v:
             try:
@@ -2234,6 +2327,25 @@ def _set_feature_refs(d, o, body, refs):
         subs = r.get("edges") or r.get("faces")
         if subs and getattr(o, "Base", None):
             o.Base = (o.Base[0], list(subs))
+    elif T in ("PartDesign::AdditivePipe", "PartDesign::SubtractivePipe"):
+        pr = r.get("profile")
+        if pr and pr.get("kind") == "sketch":
+            sk = d.getObject(pr.get("id") or "")
+            if sk is not None:
+                o.Profile = build.reusable_profile(d, body, sk)
+        pth = r.get("path")
+        if pth:
+            if pth.get("kind") == "sketch":
+                sk = d.getObject(pth.get("id") or "")
+                if sk is not None:
+                    o.Spine = (sk, [])
+            elif pth.get("kind") == "edge":
+                src = d.getObject(pth.get("bodyId") or "")
+                base = src.Tip if (src is not None and src.TypeId == "PartDesign::Body") else src
+                subs = pth.get("sub")
+                subs = subs if isinstance(subs, list) else ([subs] if subs else [])
+                if base is not None and subs:
+                    o.Spine = (base, subs)
     elif T in ("PartDesign::Mirrored", "PartDesign::LinearPattern",
                "PartDesign::PolarPattern"):
         pa = r.get("planeOrAxis") or r.get("axis")
@@ -2308,6 +2420,12 @@ def feature_get(id):
     elif T == "PartDesign::Hole":
         values["diameter"] = _prop_value(o, "Diameter")
         values["depth"] = _prop_value(o, "Depth")
+    elif T in ("PartDesign::AdditivePipe", "PartDesign::SubtractivePipe"):
+        values["operation"] = "Cut" if T == "PartDesign::SubtractivePipe" else "Join"
+        values["orientation"] = "Path" if str(getattr(o, "Mode", "Frenet")) == "Frenet" else "Parallel"
+        values["transition"] = str(getattr(o, "Transition", "Transformed"))
+        refs["profile"] = _profile_ref(o)
+        refs["path"] = _spine_ref(o)
     elif T in ("PartDesign::Mirrored", "PartDesign::LinearPattern",
                "PartDesign::PolarPattern"):
         body = o.getParentGeoFeatureGroup()
@@ -3027,35 +3145,73 @@ def _remove_matching_constraints(sk, removed):
 
 def _strip_redundant_constraints(sk, d, max_passes=8):
     """Delete the constraints FreeCAD flags as redundant / partially redundant,
-    re-solving between passes because removing one can expose another. Leaves
-    conflicting constraints alone (a real user contradiction). Returns how many
-    were dropped."""
+    re-solving between passes because removing one can expose another (or turn
+    a "conflicting" report into a clean "redundant" one - see below).
+
+    A closed tangent loop (e.g. a hand-drawn stadium: 2 lines + 2 arcs, all 4
+    corners welded, all 4 tangents applied - exactly the construction
+    real_input.js's own stadium tests use) has ONE tangent condition already
+    implied by the other three once the loop closes. FreeCAD reports that
+    same situation as RedundantConstraints on one solve path and as
+    ConflictingConstraints on another - confirmed live, byte-identical
+    geometry/constraint calls, the only difference being how the geometry got
+    there (through sketch.finish's own add path vs constructed directly).
+    Previously this only ever stripped the Redundant/PartiallyRedundant case
+    and explicitly left ConflictingConstraints alone as "a real user
+    contradiction" - so whenever the solver happened to classify this exact,
+    perfectly legitimate stadium as a conflict instead, NOTHING stripped it:
+    the sketch stayed 0-wire / unsolved with no error surfaced anywhere,
+    and a Sweep built from it either failed outright or, once already built,
+    silently kept its last-good shape forever after any edit to that profile.
+
+    Still only removes ONE at a time, re-solving after each, and only KEEPS
+    a removal that actually shrinks the conflict/redundant set - a real
+    contradiction (e.g. two directly opposed dimension values) won't resolve
+    that way and is left alone, same as before, just no longer conflated with
+    a closed tangent loop's single implied constraint.
+    """
     dropped = 0
-    for _ in range(max_passes):
+
+    def flagged():
         try:
-            red = sorted(
-                {int(i) for i in getattr(sk, "RedundantConstraints", ())} |
-                {int(i) for i in getattr(sk, "PartiallyRedundantConstraints", ())},
-                reverse=True,
-            )
+            red = {int(i) for i in getattr(sk, "RedundantConstraints", ())} | \
+                  {int(i) for i in getattr(sk, "PartiallyRedundantConstraints", ())}
+            conf = {int(i) for i in getattr(sk, "ConflictingConstraints", ())}
+        except Exception:
+            return None, None
+        return red, conf
+
+    for _ in range(max_passes):
+        red, conf = flagged()
+        if red is None:
+            break
+        if red:
+            ci = max(red)
+        elif conf:
+            ci = max(conf)
+        else:
+            break
+        before_total = len(red) + len(conf)
+        if not (1 <= ci <= int(sk.ConstraintCount)):
+            break
+        try:
+            sk.delConstraint(ci - 1)
         except Exception:
             break
-        if not red:
-            break
-        removed_any = False
-        for ci in red:
-            if 1 <= ci <= int(sk.ConstraintCount):
-                try:
-                    sk.delConstraint(ci - 1)
-                    dropped += 1
-                    removed_any = True
-                except Exception:
-                    pass
         try:
             d.recompute()
         except Exception:
             pass
-        if not removed_any:
+        dropped += 1
+        new_red, new_conf = flagged()
+        if new_red is None:
+            break
+        after_total = len(new_red) + len(new_conf)
+        # this removal made no progress (a true contradiction won't shrink
+        # the flagged set by removing one side of it) - it's already gone,
+        # so just stop here rather than keep chewing through real user
+        # constraints one at a time
+        if after_total >= before_total and not new_red:
             break
     return dropped
 

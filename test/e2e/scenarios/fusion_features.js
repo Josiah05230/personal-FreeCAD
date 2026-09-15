@@ -505,10 +505,17 @@ await idle();
     elements: [{ type: 'circle', c: [0, 0], r: 4 }],
     constraints: []
   });
+  // path: PERPENDICULAR to the profile's own YZ plane - XZ_Plane's local
+  // u-axis maps to world X (see _ORIGIN_FRAMES), which travels AWAY from a
+  // YZ-plane profile; [0,0]->[0,40] (local v = world Z) runs WITHIN that
+  // plane instead and produced a degenerate, near-zero-volume "solid" that
+  // used to pass silently - feature.sweep now rejects that case outright
+  // with a clear error (2026-09-15 fix), which is what actually caught this
+  // test's own path was pointed the wrong way the whole time.
   const path = await rpc('sketch.on', { ref: { kind: 'origin', role: 'XZ_Plane' } });
   await rpc('sketch.finish', {
     sketchId: path.sketchId,
-    elements: [{ type: 'line', a: [0, 0], b: [0, 40] }],
+    elements: [{ type: 'line', a: [0, 0], b: [40, 0] }],
     constraints: []
   });
   await G.refresh();

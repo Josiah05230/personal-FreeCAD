@@ -199,6 +199,8 @@ export interface FeatureEdit {
   values?: Record<string, number | string | boolean>
   refs?: {
     profile?: { kind: 'sketch'; id: string } | { kind: 'face'; bodyId: string; sub: string }
+    /** sweep: the path - another sketch, or one or more connected body edges */
+    path?: { kind: 'sketch'; id: string } | { kind: 'edge'; bodyId: string; sub: string[] }
     edges?: string[]
     faces?: string[]
     axis?: GeomRef

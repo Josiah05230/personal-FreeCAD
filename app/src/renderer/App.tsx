@@ -1021,6 +1021,26 @@ export function App(): JSX.Element {
         if (pl?.role) refs.planeOrAxis = { kind: 'origin', role: pl.role }
         else if (pl) refs.planeOrAxis = { kind: 'plane', id: pl.planeId }
         else if (fc[0]) refs.planeOrAxis = { kind: 'face', bodyId: fc[0].bodyId, sub: fc[0].sub }
+      } else if (kind === 'sweep') {
+        // same slot-based resolution as the CREATE path (case 'sweep' below)
+        // - a flat `selection` scan can't tell "profile sketch" from "path
+        // sketch" apart when both are sketches, so the dialog's own
+        // Profile/Path boxes (applySlotSelRef) are authoritative here too.
+        const slotSel = applySlotSelRef.current
+        const profileSketchId = (slotSel?.profile ?? []).find((s) => s.kind === 'sketch')?.sketchId
+        const pathItems = slotSel?.path ?? selection.filter((s) => s.kind !== 'sketch' || s.sketchId !== profileSketchId)
+        const pathSketchSel = pathItems.find(
+          (s) => s.kind === 'sketch' && s.sketchId !== profileSketchId
+        ) as Extract<Selection, { kind: 'sketch' }> | undefined
+        const pathEdges = pathItems.filter((s) => s.kind === 'edge') as Array<{
+          bodyId: string
+          sub: string
+        }>
+        const pathBodyId = pathEdges[0]?.bodyId
+        const pathSubs = pathEdges.filter((e) => e.bodyId === pathBodyId).map((e) => e.sub)
+        if (profileSketchId) refs.profile = { kind: 'sketch', id: profileSketchId }
+        if (pathSketchSel) refs.path = { kind: 'sketch', id: pathSketchSel.sketchId }
+        else if (pathBodyId && pathSubs.length) refs.path = { kind: 'edge', bodyId: pathBodyId, sub: pathSubs }
       } else if (kind === 'mirror' || kind === 'patternLinear' || kind === 'patternCircular') {
         // plane / axis / direction pick: a datum-plane or an edge/face
         if (pl?.role) refs.planeOrAxis = { kind: 'origin', role: pl.role }
@@ -2587,6 +2607,12 @@ export function App(): JSX.Element {
           sub: r.profile.sub,
           point: [0, 0, 0]
         } as Selection)
+      // sweep: the path, either another sketch or one or more connected
+      // body edges (ctrl/shift-clicked around a bend)
+      if (r.path?.kind === 'sketch') sels.push({ kind: 'sketch', sketchId: r.path.id } as Selection)
+      else if (r.path?.kind === 'edge')
+        for (const sub of r.path.sub ?? [])
+          sels.push({ kind: 'edge', bodyId: r.path.bodyId, sub, point: [0, 0, 0] } as Selection)
       for (const e of r.edges ?? [])
         sels.push({
           // fillet / chamfer let a Face* sub ride in the edge list ("round all
@@ -3706,8 +3732,17 @@ export function App(): JSX.Element {
     for (const m of meshes) consider(m.id, m.visible)
     for (const sk of sketches) consider(sk.id, sk.visible)
     for (const dm of datums) consider(dm.id, dm.visible)
+    // the sketch currently open for editing has its own LIVE 2D editor
+    // overlay (SketchController's entGroup, redrawn every frame including
+    // mid-drag) - the outer 3D scene's copy of that same sketch is a static
+    // snapshot from whenever it was last reopened/finished and never tracks
+    // a live drag, so leaving it visible draws a frozen duplicate of the
+    // pre-drag shape right on top of (or next to) the one actually moving.
+    // (User report, 2026-09-15, screenshot: dragging a slot profile showed
+    // the old un-dragged outline still sitting there as a separate copy.)
+    if (sketchSession?.sketchId) s.add(sketchSession.sketchId)
     return s
-  }, [visOverride, meshes, sketches, datums])
+  }, [visOverride, meshes, sketches, datums, sketchSession])
 
   const onSketchChange = useCallback(() => {
     setSketchCount(vpApi.current?.getSketchEntities().length ?? 0)
