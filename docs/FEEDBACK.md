@@ -37,6 +37,34 @@ clear it as you go.
 
 ## Recently addressed (this session)
 
+- **Export / import / KiCad / mesh / parametric-expression pass, all
+  verified live** (screenshot-driven, same Playwright driver): Export to
+  STEP and STL both produce real, valid files (checked STEP header + a
+  real binary STL). Import brings an STL back in as a genuine mesh object.
+  The MESH tab's "Convert Mesh" (flats mode) rebuilds a real sketchable
+  BRep solid from a mesh - confirmed a sketch can actually be started on
+  its face (the exact class of bug FEEDBACK previously tracked as fixed).
+  KiCad PCB import/re-sync tested against a real production board file
+  (PowerSyncController.kicad_pcb, ~40 real components) - correct board
+  outline, correct per-component placement/rotation/layer, and re-sync
+  replaces in place (mesh count unchanged, no duplicate geometry) rather
+  than appending duplicates. The McMaster-Carr panel is a real embedded
+  Chromium view (Electron `WebContentsView`, composited outside the
+  renderer's own DOM - same category as native OS dialogs) that
+  genuinely navigated to mcmaster.com; it can't be screenshotted through
+  Playwright's page API for that structural reason, not because anything
+  is broken - confirmed via `mcmaster:currentUrl` instead of pixels. The
+  Parameters panel's expression evaluator is real and genuinely
+  parametric: added `BoardWidth = 50mm + 10mm` (evaluated to 60), drove
+  an Extrude's Distance with `BoardWidth / 2` (evaluated to 30, matched
+  the built geometry), then edited BoardWidth's expression afterward and
+  watched the already-built Extrude silently re-derive its distance
+  (30 -> 55) with no re-entry into its own dialog - real dependency-graph
+  recompute, not a one-time evaluation.
+  Added `GWTCAD_AUTO_SAVE_PATH` coverage for the export dialog too
+  (`dialog:export` in main/index.ts), matching save/open from the
+  previous session, so this pass didn't need any native-dialog
+  workaround beyond what already existed.
 - **A single-part document had no way to start an assembly at all.**
   "Insert Component" lived only on the ASSEMBLE tab, which only appears once
   2+ bodies already have features - exactly the state inserting the FIRST

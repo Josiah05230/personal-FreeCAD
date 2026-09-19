@@ -160,6 +160,7 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('dialog:export', async (_e, defaultPath?: string) => {
     if (E2E) return null
+    if (AUTO_SAVE_PATH) return defaultPath ?? AUTO_SAVE_PATH
     const r = await dialog.showSaveDialog(win!, {
       defaultPath,
       filters: [
