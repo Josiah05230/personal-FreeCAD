@@ -139,6 +139,12 @@ export function buildCommands(ctx: CommandContext): Command[] {
     // this was the only way in and it was not somewhere a first-time user
     // would think to look for "start a drawing" (user feedback, 2026-09-19)
     { id: 'ins.drawing', title: 'Drawing from Design', group: 'Insert', tab: 'SOLID', icon: 'sketch', run: () => ctx.startDrawing() },
+    // Insert Component is normally on ASSEMBLE, but that tab only appears
+    // once 2+ bodies already have features - exactly the state inserting the
+    // FIRST component would create. A document with a single part had no way
+    // to start an assembly at all (user feedback, 2026-09-19). Also reachable
+    // here so the first insert isn't a dead end.
+    { id: 'ins.component', title: 'Insert Component', group: 'Insert', tab: 'SOLID', icon: 'combine', run: () => ctx.addComponent() },
     // --- assemble ---
     { id: 'asm.newComponent', title: 'Insert Component', group: 'Assemble', tab: 'ASSEMBLE', icon: 'combine', run: () => ctx.addComponent() },
     { id: 'asm.joint', title: 'Joint', group: 'Assemble', tab: 'ASSEMBLE', icon: 'axis', hotkey: 'j', run: () => ctx.addJoint() },

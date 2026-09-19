@@ -37,6 +37,29 @@ clear it as you go.
 
 ## Recently addressed (this session)
 
+- **A single-part document had no way to start an assembly at all.**
+  "Insert Component" lived only on the ASSEMBLE tab, which only appears once
+  2+ bodies already have features - exactly the state inserting the FIRST
+  component would create. Reproduced live: a fresh document with one part
+  had no ASSEMBLE tab and no "Insert Component" anywhere in the whole app.
+  Fixed the same way as the Drawing entry point below: also added to SOLID's
+  Insert group. Verified end-to-end - inserted a real second .FCStd as an
+  `App::Link` component (`assembly.tree` showed it linked correctly).
+- **Full feature pass, verified live in a real running document (not just
+  read in source):** Sketch -> Extrude, Revolve (profile off-axis -> real
+  hollow washer), Fillet, Chamfer, Shell, Draft, Sweep (profile + path
+  sketch -> real swept solid), Loft (two profiles at different heights via
+  a Datum Plane -> real tapered frustum), Hole (with live counterbore
+  preview), Combine/boolean Fuse (two bodies -> one, ASSEMBLE tab correctly
+  appears/disappears as body count with features crosses 2), undo/redo, and
+  the full save -> quit -> reopen round-trip (needed a new dev-only
+  `GWTCAD_AUTO_SAVE_PATH` env var, see driver.mjs, since native save/open
+  dialogs are outside Playwright's reach). Rectangular Pattern and Mirror
+  both correctly rejected genuinely-invalid inputs (self-intersecting
+  pattern spacing; an off-center non-symmetric mirror plane) with a clear
+  error toast instead of corrupting the model - confirmed as correct
+  behavior, not a bug. All features actually built real, inspectable
+  geometry - no silent no-ops found in this pass.
 - **"Drawing from Design" was only reachable from TOOLS.** A document with no
   drawing yet has no "Drawings" browser row and no DRAWING ribbon tab (both
   only appear once a drawing exists), so the sole entry point to create the
