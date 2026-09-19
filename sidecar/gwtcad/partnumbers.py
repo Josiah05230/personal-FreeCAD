@@ -231,6 +231,18 @@ def _rows_for_seq(rows, pn_seq):
     return [r for r in rows if r.get("pn_seq") == pn_seq]
 
 
+def _row_for_pn(rows, pn):
+    """The exact row for a full PN (with rev digit, e.g. PSG0080) - unlike
+    _current_row, this does NOT resolve to whatever the current rev is; it
+    reports the exact revision asked for, or None if that exact PN was never
+    reserved. Used for BOM resolution, where "what's literally in this
+    assembly" matters more than "what's current" - see pn_bom_for_document."""
+    for r in rows:
+        if r.get("pn") == pn:
+            return r
+    return None
+
+
 def _current_row(rows, pn_seq):
     """The highest-rev row for a sequence - its current state - or None if
     the sequence doesn't exist at all."""
@@ -562,6 +574,48 @@ def pn_set_lifecycle(pnSeq, lifecycle):
         return {"pnSeq": pnSeq, "lifecycle": lifecycle, "unchanged": True}
     _commit_and_push(reg_repo, "%s: lifecycle -> %s" % (pnSeq, lifecycle), attempt)
     return {"pnSeq": pnSeq, "lifecycle": lifecycle}
+
+
+@method("pn.resolveBomFilenames")
+def pn_resolve_bom_filenames(filenames):
+    """Resolve a list of {"filename": "<PN>.FCStd", "qty": N} entries (one
+    per distinct part an assembly's App::Link components point at - see
+    methods.drawing_bom_rows for the equivalent CAD-label-based grouping;
+    this does the same job keyed by filename/PN instead) against the
+    registry.
+
+    Each entry resolves to the EXACT PN implied by its filename if that PN
+    was actually ever reserved - not forced to whatever the current revision
+    of that sequence is. An assembly that links an old-rev file reports that
+    old PN as-is; that's a feature, not a bug - it surfaces a stale assembly
+    link rather than silently "correcting" it. A filename with no matching
+    registry row (never PN'd, or an orphaned/renamed file) is simply
+    dropped - this is the one place "no CAD-derived PN, no BOM entry" is
+    enforced, per how kit BOMs are meant to work: only genuinely PN'd
+    sub-parts show up.
+
+    Kept independent of any FreeCAD API - the caller (methods.py) does all
+    document/assembly traversal and hands this pure filename+qty data,
+    since partnumbers.py otherwise never touches FreeCAD documents."""
+    cfg = _load_config()
+    _sync_pull(_registry_path(cfg))
+    rows = _read_registry(cfg)
+
+    resolved = []
+    for entry in filenames:
+        filename = entry.get("filename") or ""
+        qty = int(entry.get("qty") or 1)
+        if not filename.lower().endswith(".fcstd"):
+            continue
+        pn = filename[:-len(".fcstd")] if filename.lower().endswith(".fcstd") else filename
+        row = _row_for_pn(rows, pn)
+        if row is None:
+            continue
+        resolved.append({
+            "pn": row["pn"], "componentName": row.get("description", ""),
+            "qty": qty,
+        })
+    return {"items": resolved}
 
 
 @method("pn.tagDocument")

@@ -18,6 +18,7 @@ from . import drawing as _drawing
 from . import tables as _tables
 from . import sheet_templates as _sheet_templates
 from . import assembly as _assembly
+from . import partnumbers as _partnumbers
 from .tessellate import tessellate_shape
 from .vocab import op_name, next_label
 from . import expr as _expr
@@ -3096,22 +3097,29 @@ def _apply_sketch_constraints(sk, constraints, emap, projmap=None):
         refs = c.get("refs", [])
         before = int(sk.ConstraintCount)
         try:
-            if ct in ("Distance", "Radius", "Diameter") and refs:
+            if ct in ("Distance", "DistanceX", "DistanceY", "Radius", "Diameter") and refs:
                 v = float(c.get("value", 0) or 0)
                 if ct in ("Radius", "Diameter") and v > 0:
                     # single-ref dimensional constraint on a circle/arc
                     sk.addConstraint(Sketcher.Constraint(ct, gid(refs[0]), v))
                 elif v > 0 and len(refs) >= 2:
-                    # point-to-point, or point-to-line (2nd ref has no pt)
+                    # point-to-point, or point-to-line (2nd ref has no pt) -
+                    # DistanceX/DistanceY take the SAME ref shape as Distance
+                    # (horizontal-only / vertical-only projection instead of
+                    # the full path length) - these were previously declared
+                    # "valid" elsewhere in this file but had NO handler here
+                    # at all, so a client-sent DistanceX/Y silently vanished
+                    # (fell through to the bare except below and got dropped
+                    # from `applied`, with no error surfaced anywhere).
                     p2 = refs[1].get("pt")
                     if p2 is not None:
                         sk.addConstraint(Sketcher.Constraint(
-                            "Distance",
+                            ct,
                             gid(refs[0]), int(refs[0].get("pt", 1)),
                             gid(refs[1]), int(p2), v))
                     else:
                         sk.addConstraint(Sketcher.Constraint(
-                            "Distance",
+                            ct,
                             gid(refs[0]), int(refs[0].get("pt", 1)),
                             gid(refs[1]), v))
                 elif v > 0:
@@ -5280,11 +5288,12 @@ def drawing_remove_cleanup_line(viewId, lineId):
 
 
 @method("drawing.addNote")
-def drawing_add_note(pageId, text, x, y, leaderViewId=None, leaderPoint=None, font=None, textSize=None):
+def drawing_add_note(pageId, text, x, y, leaderViewId=None, leaderPoint=None, font=None, textSize=None,
+                      textStyle=None, color=None):
     d = session.doc()
     return _drawing.add_note(d, pageId, text, float(x), float(y),
                               leader_view_id=leaderViewId, leader_point=leaderPoint,
-                              font=font, textSize=textSize)
+                              font=font, textSize=textSize, textStyle=textStyle, color=color)
 
 
 @method("drawing.setNoteText")
@@ -5294,9 +5303,9 @@ def drawing_set_note_text(noteId, text):
 
 
 @method("drawing.setNoteStyle")
-def drawing_set_note_style(noteId, font=None, textSize=None):
+def drawing_set_note_style(noteId, font=None, textSize=None, textStyle=None, color=None):
     d = session.doc()
-    return _drawing.set_note_style(d, noteId, font=font, textSize=textSize)
+    return _drawing.set_note_style(d, noteId, font=font, textSize=textSize, textStyle=textStyle, color=color)
 
 
 @method("drawing.moveNote")
@@ -5434,6 +5443,33 @@ def assembly_tree():
     if d is None:
         return {"assembly": None, "components": [], "joints": []}
     return _assembly.tree(d)
+
+
+@method("assembly.bomPns")
+def assembly_bom_pns():
+    """This assembly's kit BOM as registry PNs: {pn, componentName, qty} per
+    distinct sub-part, for however many App::Link components resolve to a
+    PN that was actually reserved. A component linking a file with no
+    matching registry row (never PN'd, or a resolved cache-file path from a
+    pinned component rather than the original source - see assembly.tree's
+    linkedPath note) is silently skipped, not reported as an error - this
+    is the intended "no CAD-derived PN, no BOM entry" behavior, not a
+    partial failure. Used by the order guide builder to offer "add this
+    kit's contents" - see partnumbers.pn_resolve_bom_filenames for the
+    actual registry lookup."""
+    d = session.doc(create=False)
+    if d is None:
+        return {"items": []}
+    info = _assembly.tree(d)
+    counts = {}
+    for comp in info.get("components", []):
+        path = comp.get("linkedPath")
+        if not path:
+            continue
+        filename = os.path.basename(path)
+        counts[filename] = counts.get(filename, 0) + 1
+    filenames = [{"filename": fn, "qty": qty} for fn, qty in counts.items()]
+    return _partnumbers.pn_resolve_bom_filenames(filenames)
 
 
 _BREP_EXT = {".step", ".stp", ".iges", ".igs", ".brep", ".brp"}
