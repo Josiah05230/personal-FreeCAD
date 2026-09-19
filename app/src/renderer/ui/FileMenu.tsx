@@ -11,6 +11,50 @@ export interface FileActions {
   onNewRevision?: () => void
   onPnBrowser: () => void
   onCompanySettings: () => void
+  /** Current document's lifecycle (in_work / active / discontinued), or
+   * undefined if it has no PN - only shown/settable when a PN is tagged. */
+  currentLifecycle?: string | null
+  onSetLifecycle?: (lifecycle: 'in_work' | 'active' | 'discontinued') => void
+}
+
+const LIFECYCLE_LABELS: Record<string, string> = {
+  in_work: 'In Work',
+  active: 'Active',
+  discontinued: 'Discontinued'
+}
+const LIFECYCLE_OPTIONS = ['in_work', 'active', 'discontinued'] as const
+
+/** Lifecycle is a tri-state choice, not a single action, so it gets a small
+ * row of inline options instead of the flat item() list above - showing all
+ * three at once (current one highlighted) since there's no existing
+ * hover-submenu mechanism in this menu to build a nested picker on. */
+function LifecycleSubmenu({
+  current,
+  onSet
+}: {
+  current: string
+  onSet: (lc: 'in_work' | 'active' | 'discontinued') => void
+}): JSX.Element {
+  return (
+    <div className="filemenu-lifecycle">
+      <span className="filemenu-lifecycle-label">Lifecycle</span>
+      <div className="filemenu-lifecycle-options">
+        {LIFECYCLE_OPTIONS.map((lc) => (
+          <button
+            key={lc}
+            className={`filemenu-lifecycle-btn${lc === current ? ' active' : ''}`}
+            disabled={lc === current}
+            onClick={(e) => {
+              e.stopPropagation()
+              onSet(lc)
+            }}
+          >
+            {LIFECYCLE_LABELS[lc]}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 /** The dropdown behind the document-name caret in the app bar. */
@@ -54,6 +98,15 @@ export function FileMenu({
             <div className="filemenu-sep" />
             {item('New Part…', actions.onNewPart)}
             {actions.onNewRevision && item('New Revision', actions.onNewRevision)}
+            {actions.onSetLifecycle && actions.currentLifecycle && (
+              <LifecycleSubmenu
+                current={actions.currentLifecycle}
+                onSet={(lc) => {
+                  setOpen(false)
+                  actions.onSetLifecycle?.(lc)
+                }}
+              />
+            )}
             {item('Part Number Manager…', actions.onPnBrowser)}
             {item('Company Directories…', actions.onCompanySettings)}
             <div className="filemenu-sep" />

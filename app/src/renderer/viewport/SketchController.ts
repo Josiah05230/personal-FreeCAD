@@ -125,6 +125,8 @@ export interface RecordedConstraint {
   type:
     | SketchConstraintType
     | 'Distance'
+    | 'DistanceX'
+    | 'DistanceY'
     | 'Radius'
     | 'Diameter'
     | 'Angle'
@@ -245,6 +247,15 @@ export class SketchController {
    *  dimension - set right before onDimensionRequest fires, read once by
    *  dimRequestWorldPos, then cleared */
   private dimPlaceUV: [number, number] | null = null
+  /** which axis a point-to-point dimension pick measures along - 'distance'
+   *  (the real point-to-point path length), or 'distanceX'/'distanceY' (a
+   *  horizontal- or vertical-only projection). Auto-detected from the
+   *  placement drag's direction (see firePendingDim), or forced by Shift-
+   *  clicking to place, which cycles through all three instead - "should
+   *  just be by dragging my mouse [but] we want shift to cycle it too so the
+   *  user can force it if they struggle" (user request, 2026-09-19). Reset
+   *  whenever a fresh dim-pick session starts (see startDimPick). */
+  private dimAxisKind: 'distance' | 'distanceX' | 'distanceY' = 'distance'
   private hoverIdx = -1
   /** live drag-gesture state (real FreeCAD solver, via dragApi) - no shadow
    *  geometry: every dragMove response's `geometry` array IS the render state,
@@ -747,8 +758,17 @@ export class SketchController {
     this.scheduleSolve()
   }
 
-  /** Replace the projected-geometry set (from sketch.on / reopen / project). */
+  /** Replace the projected-geometry set (from sketch.on / reopen / project).
+   *  Snapshots first so a user's "Project geometry" click is one Ctrl+Z step,
+   *  same as any other geometry-adding action - previously this was the one
+   *  mutator in the whole controller that never called snapshot(), so
+   *  projected geometry could never be undone at all (user report,
+   *  2026-09-18: "I can't ctrl-z projected geometry"). The initial load call
+   *  from loadExisting() also goes through here, but that immediately clears
+   *  undoStack right after, so the extra snapshot pushed here is discarded
+   *  before it could ever be popped - harmless. */
   setProjected(projected: Array<{ geoId: number } & SketchEntity>): void {
+    this.snapshot()
     this.projected = (projected ?? []).map((p) => {
       const { geoId, ...rest } = p
       return { geoId, ent: { ...(rest as SketchEntity), projected: true } as SketchEntity }
@@ -785,6 +805,7 @@ export class SketchController {
     removedBaseConstraints: RecordedConstraint[]
     deletedBaseSet: Set<number>
     convertedBase: Map<number, boolean>
+    projected: Array<{ geoId: number; ent: SketchEntity }>
   }> = []
 
   private dragMoved = false
@@ -795,6 +816,7 @@ export class SketchController {
     removedBaseConstraints: RecordedConstraint[]
     deletedBaseSet: Set<number>
     convertedBase: Map<number, boolean>
+    projected: Array<{ geoId: number; ent: SketchEntity }>
   } | null = null
   private noticeAt = 0
 
@@ -818,6 +840,10 @@ export class SketchController {
     return this.constraints.map((c) => ({ ...c, refs: c.refs.map((r) => ({ ...r })) }))
   }
 
+  private cloneProjected(): Array<{ geoId: number; ent: SketchEntity }> {
+    return this.projected.map((p) => ({ geoId: p.geoId, ent: SketchController.cloneEnt(p.ent) }))
+  }
+
   /** current reopen-era bookkeeping, cloned - the part of a snapshot that
    *  isn't `entities`/`constraints` but must still round-trip through undo */
   private cloneBaseTracking(): {
@@ -838,7 +864,12 @@ export class SketchController {
   }
 
   private snapshot(): void {
-    this.undoStack.push({ ents: this.cloneEnts(), cons: this.cloneCons(), ...this.cloneBaseTracking() })
+    this.undoStack.push({
+      ents: this.cloneEnts(),
+      cons: this.cloneCons(),
+      ...this.cloneBaseTracking(),
+      projected: this.cloneProjected()
+    })
     if (this.undoStack.length > 120) this.undoStack.shift()
   }
 
@@ -861,6 +892,7 @@ export class SketchController {
     this.removedBaseConstraints = s.removedBaseConstraints
     this.deletedBaseSet = s.deletedBaseSet
     this.convertedBase = s.convertedBase
+    this.projected = s.projected
     if (this.baseCount > this.entities.length) this.baseCount = this.entities.length
     if (this.baseConstraintCount > this.constraints.length)
       this.baseConstraintCount = this.constraints.length
@@ -1229,6 +1261,67 @@ export class SketchController {
       : { new: pr.e - this.baseCount, sub: 0, pt: pr.pt }
   }
 
+  /** sketch-plane uv of a dimension-tool pick (a point, or a whole entity's
+   *  own midpoint / centre) */
+  private dimPickUV(p: { pt: PtRef } | { ent: number }): [number, number] {
+    return 'pt' in p ? this.ptUV(p.pt) : this.entMidUV(p.ent)
+  }
+
+  /** Decide (or, with Shift held, cycle) which axis a point-to-point
+   *  dimension measures along, from the direction the user dragged to place
+   *  it relative to the line connecting the two picked points - "should
+   *  just be by dragging my mouse" (user request, 2026-09-19): drag mostly
+   *  along that line's own direction -> the real point-to-point Distance;
+   *  drag mostly horizontally or vertically away from it -> DistanceX /
+   *  DistanceY. Only applies to point-to-point / point-to-line picks (whole
+   *  LINE-LINE picks either form an Angle or a line-to-line gap Distance,
+   *  neither of which has a meaningful X/Y split here). Shift-clicking to
+   *  place cycles distance -> distanceX -> distanceY -> distance regardless
+   *  of drag direction, so the user can force it when the auto-detect picks
+   *  the wrong one on an ambiguous drag. */
+  private updateDimAxisKind(shift: boolean): void {
+    if (shift) {
+      this.dimAxisKind =
+        this.dimAxisKind === 'distance'
+          ? 'distanceX'
+          : this.dimAxisKind === 'distanceX'
+            ? 'distanceY'
+            : 'distance'
+      return
+    }
+    this.dimAxisKind = 'distance'
+    if (this.dimPicksAreAngle() || this.dimPicks.length < 2 || !this.dimPlaceUV) return
+    const [p0, p1] = this.dimPicks
+    // a line-line pick (both whole entities, not points) only has a single
+    // perpendicular-gap Distance value - no X/Y split makes sense there
+    if (!('pt' in p0) && !('pt' in p1)) return
+    const a = this.dimPickUV(p0)
+    const b = this.dimPickUV(p1)
+    const dx = b[0] - a[0]
+    const dy = b[1] - a[1]
+    const lineLen = Math.hypot(dx, dy)
+    if (lineLen < 1e-6) return
+    // unit vector along the two points' own connecting line, and its
+    // perpendicular - project the placement offset (from the midpoint) onto
+    // each to see which the user actually dragged toward
+    const ux = dx / lineLen
+    const uy = dy / lineLen
+    const mx = (a[0] + b[0]) / 2
+    const my = (a[1] + b[1]) / 2
+    const offX = this.dimPlaceUV[0] - mx
+    const offY = this.dimPlaceUV[1] - my
+    const alongPath = Math.abs(offX * ux + offY * uy)
+    const alongX = Math.abs(offX)
+    const alongY = Math.abs(offY)
+    if (alongPath >= alongX && alongPath >= alongY) {
+      this.dimAxisKind = 'distance'
+    } else if (alongX >= alongY) {
+      this.dimAxisKind = 'distanceX'
+    } else {
+      this.dimAxisKind = 'distanceY'
+    }
+  }
+
   /** the dimension tool has collected 2 picks - ask the app for a value */
   private fireDistanceDim(): void {
     this.onDimensionRequest?.(null, this.dimPicksAreAngle() ? 'angle' : 'distance')
@@ -1340,9 +1433,10 @@ export class SketchController {
    *  angle when both are non-parallel lines. A single lone POINT with
    *  nothing else has no dimension of its own, so this is a no-op until a
    *  2nd pick arrives (ctrl-click adds one without placing). */
-  private firePendingDim(uv: [number, number]): void {
+  private firePendingDim(uv: [number, number], shift = false): void {
     if (this.dimPicks.length >= 2) {
       this.dimPlaceUV = uv
+      this.updateDimAxisKind(shift)
       this.fireDistanceDim()
       this.dimPlaceUV = null
       return
@@ -1400,7 +1494,11 @@ export class SketchController {
   }
 
   /** current distance between the two dim picks - point-point, point-line,
-   *  or line-line (perpendicular gap between two parallel lines) */
+   *  or line-line (perpendicular gap between two parallel lines). A
+   *  point-point/point-line pick respects dimAxisKind: 'distanceX'/'distanceY'
+   *  read the horizontal/vertical-only projection instead of the full path
+   *  length (see updateDimAxisKind - drag direction picks this, Shift cycles
+   *  it). */
   distancePickValue(): number | null {
     if (this.dimPicks.length < 2) return null
     const [p0, p1] = this.dimPicks
@@ -1411,6 +1509,8 @@ export class SketchController {
       const a = this.ptUV(ptSide.pt)
       if ('pt' in otherSide) {
         const b = this.ptUV(otherSide.pt)
+        if (this.dimAxisKind === 'distanceX') return Math.abs(b[0] - a[0])
+        if (this.dimAxisKind === 'distanceY') return Math.abs(b[1] - a[1])
         return Math.hypot(b[0] - a[0], b[1] - a[1])
       }
       const e = this.entities[otherSide.ent]
@@ -1436,7 +1536,9 @@ export class SketchController {
   }
 
   /** commit the pending point-to-point / point-to-line / line-to-line
-   *  distance dimension */
+   *  distance dimension - as a plain Distance, or DistanceX/DistanceY per
+   *  dimAxisKind (only meaningful for a point-point/point-line pick; a
+   *  line-line pick always commits as a plain Distance regardless). */
   setDistanceDimension(value: number): boolean {
     if (!(value > 0) || this.dimPicks.length < 2) return false
     const [p0, p1] = this.dimPicks
@@ -1446,14 +1548,21 @@ export class SketchController {
     // geometrically equivalent for two parallel lines and keeps a single,
     // well-defined ref shape
     let first: { pt: PtRef } | { ent: number } = p0
-    if (!('pt' in p0) && !('pt' in p1)) {
+    const lineLinePick = !('pt' in p0) && !('pt' in p1)
+    if (lineLinePick) {
       const e0 = this.entities[p0.ent]
       if (!e0 || e0.type !== 'line') return false
       first = { pt: { e: p0.ent, pt: 1 } }
     }
+    const type: RecordedConstraint['type'] =
+      !lineLinePick && this.dimAxisKind !== 'distance'
+        ? this.dimAxisKind === 'distanceX'
+          ? 'DistanceX'
+          : 'DistanceY'
+        : 'Distance'
     this.snapshot()
     const refs: RecordedConstraint['refs'] = [this.dimPickRef(first), this.dimPickRef(p1)]
-    this.constraints.push({ type: 'Distance', refs, value })
+    this.constraints.push({ type, refs, value })
     this.lastUserConstraint = this.constraints.length - 1
     this.dimPicks = []
     this.selectedPts = []
@@ -1486,10 +1595,8 @@ export class SketchController {
     if (kind === 'distance' || kind === 'angle') {
       if (this.dimPicks.length < 2) return null
       const [p0, p1] = this.dimPicks
-      const uvOf = (p: { pt: PtRef } | { ent: number }): [number, number] =>
-        'pt' in p ? this.ptUV(p.pt) : this.entMidUV(p.ent)
-      const a = uvOf(p0)
-      const b = uvOf(p1)
+      const a = this.dimPickUV(p0)
+      const b = this.dimPickUV(p1)
       const mu = (a[0] + b[0]) / 2
       const mv = (a[1] + b[1]) / 2
       const w = this.toWorld(mu, mv)
@@ -1576,7 +1683,7 @@ export class SketchController {
       // space to place it"). With nothing armed yet, an empty click is a
       // no-op (nothing to place).
       if (!pick) {
-        if (this.dimPicks.length > 0) this.firePendingDim(raw)
+        if (this.dimPicks.length > 0) this.firePendingDim(raw, ev.shiftKey)
         else this.redraw()
         return
       }
@@ -1598,6 +1705,7 @@ export class SketchController {
         // plain click: SWITCH which line/point is being dimensioned - starts
         // a fresh single-pick session, discarding anything else queued
         this.dimPicks = [pick]
+        this.dimAxisKind = 'distance'
       }
       this.redraw()
       return
@@ -1791,7 +1899,12 @@ export class SketchController {
   private startDrag(idx: number, posId: 0 | 1 | 2 | 3, uv: [number, number]): void {
     if (!this.dragApi) return
     this.dragMoved = false
-    this.preDragSnap = { ents: this.cloneEnts(), cons: this.cloneCons(), ...this.cloneBaseTracking() }
+    this.preDragSnap = {
+      ents: this.cloneEnts(),
+      cons: this.cloneCons(),
+      ...this.cloneBaseTracking(),
+      projected: this.cloneProjected()
+    }
     trace('sketch drag start', { idx, posId, entType: this.entities[idx]?.type })
     const { allEnts, cons, proj } = this.dragPayload()
     const startCall = this.dragApi.start(allEnts, cons, proj)
@@ -2840,6 +2953,22 @@ export class SketchController {
     return r.new != null ? r.new + this.baseCount : -1
   }
 
+  /** UV of the point a Distance/DistanceX/DistanceY constraint ref names -
+   *  the sketch origin (geo:-1), or an entity's endpoint/rim/centre point.
+   *  Used to draw a real dimension glyph for a point-to-point distance,
+   *  which previously had none at all (see rebuildDims' own comment on the
+   *  "no dimension glyph yet" gap this fills in). */
+  private refPointUV(r: RecordedConstraint['refs'][number]): [number, number] | null {
+    if (r.geo === -1) return [0, 0]
+    const ei = this.entIdxOfRef(r)
+    const e = this.entities[ei]
+    if (!e) return null
+    const pt = r.pt ?? 1
+    if (pt === 3 && (e.type === 'circle' || e.type === 'arc')) return [...(e as { c: [number, number] }).c]
+    if (pt === 1 || pt === 2) return entPoint(e, pt)
+    return null
+  }
+
   // --- headless constraint solve (fully-constrained colouring + reconcile) --- //
 
   private scheduleSolve(): void {
@@ -2871,10 +3000,25 @@ export class SketchController {
     } catch {
       return
     }
-    if (!res || seq !== this.solveSeq || this.drag || this.band) return
+    if (!res) return
 
     // over-constraint veto: if the constraint the user just added is what the
-    // solver flags as conflicting / redundant, pull it back out and say why
+    // solver flags as conflicting / redundant, pull it back out and say why.
+    // This must run even when a NEWER solve has since been scheduled/started
+    // (seq !== this.solveSeq) or a drag has begun - previously the whole veto
+    // was gated behind the same staleness/drag check as the geometry
+    // reconcile below, so a redundant constraint (e.g. an Angle dimension
+    // that duplicates an already-fully-determined Tangent+Parallel chain)
+    // added right before the user kept interacting would never get vetoed at
+    // all: this specific response arrives "stale," the check is skipped, and
+    // the redundant constraint sits in the list permanently, poisoning every
+    // later solve (FreeCAD hard-fails/free-DOF-mis-solves the WHOLE sketch
+    // when ANY constraint is genuinely redundant, not just that one) - a real
+    // user trace (2026-09-19) showed exactly this: an Angle dimension stayed
+    // in `redundant` across 100+ seconds and dozens of solves, and the
+    // sketch's downstream geometry visibly reshuffled on every later solve/
+    // drag since the solver had a whole family of valid solutions to pick
+    // from instead of a fully-determined one.
     if (this.lastUserConstraint >= 0 && this.lastUserConstraint < this.constraints.length) {
       const i = this.lastUserConstraint
       const conflict = (res.conflicting ?? []).includes(i) || (res.malformed ?? []).includes(i)
@@ -2894,8 +3038,12 @@ export class SketchController {
         this.onChange()
         return
       }
+      // this response is authoritative for the veto (checked above) even if
+      // stale for reconciling geometry - only clear the flag once a response
+      // has actually had a chance to veto it.
+      this.lastUserConstraint = -1
     }
-    this.lastUserConstraint = -1
+    if (seq !== this.solveSeq || this.drag || this.band) return
 
     // reconcile: adopt the solved coordinates (indices are absolute now).
     // Construction geometry is solved and adopted too - it can carry real
@@ -3807,7 +3955,20 @@ export class SketchController {
     this.symEnts.clear()
 
     this.constraints.forEach((con, ci) => {
-      if (con.type === 'Distance' || con.type === 'Radius' || con.type === 'Diameter') return // shown as dims
+      // DistanceX/DistanceY were missing from this exclusion - they have no
+      // entry in SYM_GLYPH either, so they silently got NEITHER a glyph NOR
+      // dimension-label treatment: a genuinely invisible, unclickable
+      // constraint sitting in the sketch with no on-screen representation at
+      // all (user report, 2026-09-19: "hidden dimensions" - a dimension
+      // exists but has no visible label and can't be selected).
+      if (
+        con.type === 'Distance' ||
+        con.type === 'DistanceX' ||
+        con.type === 'DistanceY' ||
+        con.type === 'Radius' ||
+        con.type === 'Diameter'
+      )
+        return // shown as dims
       const glyph = SketchController.SYM_GLYPH[con.type]
       if (!glyph) return
       const key = `con${ci}`
@@ -4232,11 +4393,35 @@ export class SketchController {
         )
         continue
       }
+      if (con.type === 'DistanceX' || con.type === 'DistanceY') {
+        // point-to-point horizontal/vertical-only dimension - previously had
+        // NO handler at all (fell through every branch here to the final
+        // `continue`), so it drove the solver but was genuinely invisible
+        // and unclickable on screen (user report, 2026-09-19: "hidden
+        // dimensions" - a dimension that exists but has no visible label).
+        if (con.refs.length < 2) continue
+        const p0 = this.refPointUV(con.refs[0])
+        const p1 = this.refPointUV(con.refs[1])
+        if (!p0 || !p1) continue
+        const sel = this.selectedDim === ci
+        const a: [number, number] = con.type === 'DistanceX' ? p0 : [p0[0], p1[1]]
+        const b: [number, number] = con.type === 'DistanceX' ? [p1[0], p0[1]] : p1
+        this.dimGroup.add(this.makeDim(a, b, con.type === 'DistanceX' ? 1 : -1, this.fmt(con.value), true, -1, [0, 0], sel))
+        continue
+      }
       if (con.type !== 'Distance' && con.type !== 'Radius' && con.type !== 'Diameter') continue
       const r0 = con.refs[0]
-      // point-to-point / point-to-line distances have no dimension glyph yet -
-      // the constraint still drives the solver
-      if (con.type === 'Distance' && (con.refs.length >= 2 || r0.pt != null)) continue
+      // a point-to-point / point-to-line Distance (2 refs, or a lone point
+      // ref) draws along the real two points instead of an entity's own a/b
+      if (con.type === 'Distance' && (con.refs.length >= 2 || r0.pt != null)) {
+        if (con.refs.length < 2) continue
+        const p0 = this.refPointUV(con.refs[0])
+        const p1 = this.refPointUV(con.refs[1])
+        if (!p0 || !p1) continue
+        const sel = this.selectedDim === ci
+        this.dimGroup.add(this.makeDim(p0, p1, 1, this.fmt(con.value), true, -1, [0, 0], sel))
+        continue
+      }
       const i = r0.geo != null ? r0.geo : (r0.new ?? 0) + this.baseCount
       const e = this.entities[i]
       if (!e || e.construction) continue

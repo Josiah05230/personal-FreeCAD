@@ -438,6 +438,8 @@ export interface DimensionFormat {
   unitSuffix?: boolean
 }
 
+export type NoteTextStyle = 'Normal' | 'Bold' | 'Italic' | 'Bold-Italic'
+
 export interface DrawingNote {
   id: string
   text: string
@@ -446,6 +448,8 @@ export interface DrawingNote {
   leaderId?: string | null
   font?: string
   textSize?: number
+  textStyle?: NoteTextStyle
+  color?: string
 }
 
 export interface CleanupLine {
@@ -1250,12 +1254,28 @@ export const api = {
     leaderViewId?: string,
     leaderPoint?: [number, number],
     font?: string,
-    textSize?: number
-  ) => rpc<DrawingNote>('drawing.addNote', { pageId, text, x, y, leaderViewId, leaderPoint, font, textSize }),
+    textSize?: number,
+    textStyle?: NoteTextStyle,
+    color?: string
+  ) =>
+    rpc<DrawingNote>('drawing.addNote', {
+      pageId,
+      text,
+      x,
+      y,
+      leaderViewId,
+      leaderPoint,
+      font,
+      textSize,
+      textStyle,
+      color
+    }),
   drawingSetNoteText: (noteId: string, text: string) =>
     rpc<DrawingNote>('drawing.setNoteText', { noteId, text }),
-  drawingSetNoteStyle: (noteId: string, style: { font?: string; textSize?: number }) =>
-    rpc<DrawingNote>('drawing.setNoteStyle', { noteId, ...style }),
+  drawingSetNoteStyle: (
+    noteId: string,
+    style: { font?: string; textSize?: number; textStyle?: NoteTextStyle; color?: string }
+  ) => rpc<DrawingNote>('drawing.setNoteStyle', { noteId, ...style }),
   drawingMoveNote: (noteId: string, x: number, y: number) =>
     rpc<DrawingNote>('drawing.moveNote', { noteId, x, y }),
   drawingRemoveNote: (noteId: string) =>
@@ -1458,7 +1478,19 @@ export const api = {
       openedPath
     }),
   pnRelocate: (pnSeq: string, newPath: string) =>
-    rpc<{ ok: boolean; unchanged?: boolean }>('pn.relocate', { pnSeq, newPath })
+    rpc<{ ok: boolean; unchanged?: boolean }>('pn.relocate', { pnSeq, newPath }),
+  pnSetLifecycle: (pnSeq: string, lifecycle: string) =>
+    rpc<{ pnSeq: string; lifecycle: string; unchanged?: boolean }>('pn.setLifecycle', {
+      pnSeq,
+      lifecycle
+    }),
+  /** Live-derives the currently open assembly's kit BOM from its App::Link
+   * children, resolved against the registry - does NOT read/write bom.csv,
+   * see pnSaveBom/pnBomFor for the persisted snapshot. */
+  assemblyBomPns: () => rpc<{ items: BomItem[] }>('assembly.bomPns', {}),
+  pnSaveBom: (pn: string, items: BomItem[]) =>
+    rpc<{ pn: string; itemCount: number }>('pn.saveBom', { pn, items }),
+  pnBomFor: (pn: string) => rpc<{ items: BomItem[] }>('pn.bomFor', { pn })
 }
 
 export interface CompanyConfig {
@@ -1482,8 +1514,17 @@ export interface PartRecord {
   mfg_pn: string
   purchasing_link: string
   status: string
+  /** in_work / active / discontinued - per-pn_seq, carries forward across revisions. */
+  lifecycle: string
   rev_date: string
   created: string
+}
+
+/** One kit-item in an assembly's captured BOM (pn.bomFor / pn.saveBom / assembly.bomPns). */
+export interface BomItem {
+  pn: string
+  componentName: string
+  qty: number
 }
 
 export interface PnAssignment {

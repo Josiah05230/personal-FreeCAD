@@ -420,6 +420,67 @@ app.whenReady().then(async () => {
         process.stderr.write(`[e2e] harness error: ${(e as Error).message}\n`)
         code = 1
       }
+      if (process.env.E2E_SHOT) {
+        try {
+          const img = await w.webContents.capturePage()
+          await writeFile(process.env.E2E_SHOT, img.toPNG())
+          process.stdout.write(`[e2e] wrote screenshot to ${process.env.E2E_SHOT}\n`)
+        } catch (e) {
+          process.stderr.write(`[e2e] screenshot failed: ${(e as Error).message}\n`)
+        }
+      }
+      app.exit(code)
+    })()
+  }
+
+  // --drive <script.js> : like --e2e but deliberately does NOT set
+  // window.__E2E_ENV, so promptText/promptForm show REAL dialogs instead of
+  // auto-cancelling - lets a script click through Note/Section View/etc.
+  // dialogs the same way a real user would. Combine with E2E_SHOT to
+  // screenshot the result. Dev-only manual verification tool, not part of
+  // the automated suite.
+  const driveIdx = process.argv.indexOf('--drive')
+  if (driveIdx !== -1 && win) {
+    const scriptPath = process.argv[driveIdx + 1]
+    void (async () => {
+      const w = win!
+      let code = 1
+      try {
+        for (let i = 0; i < 120; i++) {
+          const ready = await w.webContents
+            .executeJavaScript(
+              `(async () => (window.__gwtcad && (await window.cad.rpc('ping',{}).then(()=>1).catch(()=>0))) ? 1 : 0)()`
+            )
+            .catch(() => 0)
+          if (ready) break
+          await new Promise((r) => setTimeout(r, 500))
+        }
+        const harness = await readFile(resolve(REPO_ROOT, 'test/e2e/harness.js'), 'utf-8')
+        const script = await readFile(resolve(process.cwd(), scriptPath), 'utf-8')
+        const raw = await w.webContents.executeJavaScript(
+          `(async () => {
+             ${harness}
+             try { await (async () => { ${script}
+             })() } catch (e) { _failed++; _lines.push('not ok - script threw: ' + ((e && e.message) || e)) }
+             return { passed: _passed, failed: _failed, lines: _lines }
+           })()`
+        )
+        const res = raw as { passed: number; failed: number; lines: string[] }
+        process.stdout.write(res.lines.join('\n') + `\n\n# ${scriptPath}: ${res.passed} passed, ${res.failed} failed\n`)
+        code = res.failed === 0 ? 0 : 1
+      } catch (e) {
+        process.stderr.write(`[drive] error: ${(e as Error).message}\n`)
+        code = 1
+      }
+      if (process.env.E2E_SHOT) {
+        try {
+          const img = await w.webContents.capturePage()
+          await writeFile(process.env.E2E_SHOT, img.toPNG())
+          process.stdout.write(`[drive] wrote screenshot to ${process.env.E2E_SHOT}\n`)
+        } catch (e) {
+          process.stderr.write(`[drive] screenshot failed: ${(e as Error).message}\n`)
+        }
+      }
       app.exit(code)
     })()
   }

@@ -259,9 +259,16 @@ export function App(): JSX.Element {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [newPartOpen, setNewPartOpen] = useState(false)
   const [newPartProject, setNewPartProject] = useState<string | undefined>(undefined)
+  const [newPartPrefill, setNewPartPrefill] = useState<
+    { name?: string; description?: string; mfg?: string; mfgPn?: string; purchasingLink?: string } | undefined
+  >(undefined)
+  const [pendingMcMaster, setPendingMcMaster] = useState<
+    { stepPath: string; meta: Record<string, unknown> } | undefined
+  >(undefined)
   const [pnBrowserOpen, setPnBrowserOpen] = useState(false)
   const [companySettingsOpen, setCompanySettingsOpen] = useState(false)
   const [currentPn, setCurrentPn] = useState<string | null>(null)
+  const [currentLifecycle, setCurrentLifecycle] = useState<string | null>(null)
   const [canUndo, setCanUndo] = useState(false)
   const [canRedo, setCanRedo] = useState(false)
   const [pins, setPins] = useState<PinMap>(() => loadPinned())
@@ -2822,8 +2829,13 @@ export function App(): JSX.Element {
       setDocPath(p)
       setDrawingPageId(null)
       setCurrentPn(opened.partNumber?.pn ?? null)
+      setCurrentLifecycle(null)
       if (opened.partNumber?.pn) {
         const pnSeq = opened.partNumber.pn.slice(0, -1)
+        void api
+          .pnResolve(pnSeq)
+          .then((r) => setCurrentLifecycle(r.row.lifecycle ?? null))
+          .catch(() => setCurrentLifecycle(null))
         void api
           .pnCheckLocation(pnSeq, p)
           .then((check) => {
@@ -3052,20 +3064,36 @@ export function App(): JSX.Element {
   // A PN was just reserved (registry row committed) - reset to a clean
   // document, save it at the reserved path, tag the session with the PN so
   // it gets mirrored onto real FreeCAD document properties on every save,
-  // then open the New Part dialog's result as the active tab.
+  // then open the New Part dialog's result as the active tab. If a McMaster
+  // download is pending (the dialog was opened from the MMC panel rather
+  // than File > New), import that STEP file into this newly-tagged document
+  // and re-save so the saved file carries both the PN and the actual CAD
+  // geometry, not just an empty PN-tagged shell.
   const createPart = useCallback(
     async (info: { pn: string; path: string; name: string; description: string }) => {
       setNewPartOpen(false)
+      const mcmaster = pendingMcMaster
+      setPendingMcMaster(undefined)
+      setNewPartPrefill(undefined)
       try {
         await api.resetDocument()
         await api.pnTagDocument(info.pn, info.name, info.description)
         await api.saveAs(info.path)
+        if (mcmaster) {
+          const r = await api.importModel(mcmaster.stepPath)
+          const partNumber = (mcmaster.meta.partNumber as string) ?? 'unknown'
+          for (const id of r.imported) {
+            await api.tagMcMaster(id, partNumber, mcmaster.meta)
+          }
+          await api.save()
+        }
         const id = `d${Date.now()}`
         setTabs((t) => [...t, { id, name: basename(info.path), dirty: false }])
         setActiveTab(id)
         setDocPath(info.path)
         setDrawingPageId(null)
         setCurrentPn(info.pn)
+        setCurrentLifecycle('in_work') // pn.reserve always seeds new parts in_work
         await refreshScene()
       } catch (e) {
         window.alert(
@@ -3074,7 +3102,7 @@ export function App(): JSX.Element {
         )
       }
     },
-    [refreshScene]
+    [refreshScene, pendingMcMaster]
   )
 
   const newRevision = useCallback(async () => {
@@ -3091,10 +3119,49 @@ export function App(): JSX.Element {
       )
       setDocPath(res.path ?? docPath)
       setCurrentPn(res.pn)
+      setCurrentLifecycle('in_work') // pn.newRevision always resets to in_work
+      // Re-derive the kit BOM from the assembly at its new revision and
+      // persist it - keeps bom.csv from ever drifting behind what's
+      // actually in the CAD document. A part with no App::Link children
+      // just saves an empty BOM, which reads back as "no BOM defined."
+      try {
+        const bom = await api.assemblyBomPns()
+        await api.pnSaveBom(res.pn, bom.items)
+      } catch (bomErr) {
+        console.error('Failed to save BOM for new revision:', bomErr)
+      }
     } catch (e) {
       window.alert((e as Error).message)
     }
   }, [currentPn, docPath, activeTab])
+
+  // Lifecycle can only be changed on the currently open document (see
+  // pn.setLifecycle) - this guarantees the BOM re-capture below always
+  // reflects the actual live assembly, with no separate "open this other
+  // file in the background" resolution needed.
+  const setLifecycle = useCallback(
+    async (lifecycle: 'in_work' | 'active' | 'discontinued') => {
+      if (!currentPn) return
+      const pnSeq = currentPn.slice(0, -1)
+      try {
+        await api.pnSetLifecycle(pnSeq, lifecycle)
+        setCurrentLifecycle(lifecycle)
+        // Re-derive and persist the BOM on every lifecycle change, not just
+        // revision bumps - marking a part active is exactly the moment its
+        // assembly should be considered validated/trustworthy, so this is
+        // when a stale bom.csv snapshot most needs correcting.
+        try {
+          const bom = await api.assemblyBomPns()
+          await api.pnSaveBom(currentPn, bom.items)
+        } catch (bomErr) {
+          console.error('Failed to save BOM for lifecycle change:', bomErr)
+        }
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [currentPn]
+  )
 
   const openPnFile = useCallback(
     async (path: string) => {
@@ -4248,7 +4315,9 @@ export function App(): JSX.Element {
           onNewPart: () => setNewPartOpen(true),
           onNewRevision: currentPn ? newRevision : undefined,
           onPnBrowser: () => setPnBrowserOpen(true),
-          onCompanySettings: () => setCompanySettingsOpen(true)
+          onCompanySettings: () => setCompanySettingsOpen(true),
+          currentLifecycle,
+          onSetLifecycle: currentPn ? setLifecycle : undefined
         }}
         history={{
           onUndo: () => void doUndo(),
@@ -4639,27 +4708,35 @@ export function App(): JSX.Element {
                   {mcmasterOpen && (
                     <McMasterPanel
                       onClose={() => setMcMasterOpen(false)}
-                      onImported={() => {
-                        // the panel resets to a fresh document before importing -
-                        // reflect that as a new, untitled/untagged tab rather than
-                        // leaving the tab bar pointed at whatever was open before.
-                        const id = `d${Date.now()}`
-                        setTabs((t) => [...t, { id, name: 'Untitled', dirty: true }])
-                        setActiveTab(id)
-                        setDocPath(null)
-                        setCurrentPn(null)
-                        setDrawingPageId(null)
-                        rollCacheRef.current.clear()
-                        void refreshScene()
+                      onReady={(info) => {
+                        // a purchased MMC part is a real company part - route it
+                        // through the same PN-reserve flow as File > New instead
+                        // of dropping an untagged file on disk. createPart() picks
+                        // pendingMcMaster back up once a PN is assigned, imports
+                        // the downloaded STEP file, and tags it.
+                        setMcMasterOpen(false)
+                        setPendingMcMaster(info)
+                        const meta = info.meta
+                        setNewPartPrefill({
+                          name: (meta.title as string) || undefined,
+                          description: (meta.subtitle as string) || undefined,
+                          mfg: 'McMaster-Carr',
+                          mfgPn: (meta.partNumber as string) || undefined,
+                          purchasingLink: (meta.url as string) || undefined
+                        })
+                        setNewPartOpen(true)
                       }}
                     />
                   )}
                   {newPartOpen && (
                     <NewPartDialog
                       initialProject={newPartProject}
+                      prefill={newPartPrefill}
                       onClose={() => {
                         setNewPartOpen(false)
                         setNewPartProject(undefined)
+                        setNewPartPrefill(undefined)
+                        setPendingMcMaster(undefined)
                       }}
                       onCreated={(info) => {
                         setNewPartProject(undefined)

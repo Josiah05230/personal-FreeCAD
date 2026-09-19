@@ -216,6 +216,38 @@ def _read_registry(cfg):
         return list(csv.DictReader(f))
 
 
+# bom.csv: one row per kit-item, keyed by the EXACT assembly pn (not
+# pn_seq) that was open when the BOM was captured - a snapshot of "what's
+# literally in this assembly at this revision," not a live-recomputed
+# value. Fully replaced (all of an assembly pn's rows at once) every time
+# pn_save_bom runs, since the caller always hands over the complete current
+# BOM, never a partial update.
+_BOM_FIELDS = ["pn", "item_pn", "item_component_name", "qty"]
+
+
+def _bom_csv(cfg):
+    return os.path.join(_registry_path(cfg), "bom.csv")
+
+
+def _read_bom(cfg):
+    path = _bom_csv(cfg)
+    if not os.path.exists(path):
+        return []
+    with open(path, newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def _write_bom(cfg, rows):
+    path = _bom_csv(cfg)
+    tmp = path + ".tmp"
+    with open(tmp, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=_BOM_FIELDS)
+        w.writeheader()
+        for row in rows:
+            w.writerow({k: row.get(k, "") for k in _BOM_FIELDS})
+    os.replace(tmp, path)
+
+
 def _write_registry(cfg, rows):
     path = _registry_csv(cfg)
     tmp = path + ".tmp"
@@ -616,6 +648,56 @@ def pn_resolve_bom_filenames(filenames):
             "qty": qty,
         })
     return {"items": resolved}
+
+
+@method("pn.saveBom")
+def pn_save_bom(pn, items):
+    """Replace bom.csv's rows for this exact assembly pn with the given
+    kit-item list (each {pn, componentName, qty} - the shape
+    pn.resolveBomFilenames already returns). Called by the caller right
+    after re-deriving the BOM live from the open assembly (see
+    assembly.bomPns) - on every revision bump and every lifecycle change,
+    so bom.csv never drifts from what the CAD document actually contains.
+    An assembly with an empty items list still gets a (now-empty) entry
+    removed rather than left stale - "no items" and "never captured" both
+    end up as "no rows for this pn", which is what pn.bomFor below treats
+    as "no BOM"."""
+    cfg = _load_config()
+    repo = _registry_path(cfg)
+
+    def attempt():
+        rows = [r for r in _read_bom(cfg) if r.get("pn") != pn]
+        for item in items:
+            rows.append({
+                "pn": pn, "item_pn": item.get("pn", ""),
+                "item_component_name": item.get("componentName", ""),
+                "qty": str(int(item.get("qty") or 1)),
+            })
+        _write_bom(cfg, rows)
+        return True
+
+    _sync_pull(repo)
+    attempt()
+    _commit_and_push(repo, "%s: BOM updated (%d items)" % (pn, len(items)), attempt)
+    return {"pn": pn, "itemCount": len(items)}
+
+
+@method("pn.bomFor")
+def pn_bom_for(pn):
+    """The captured kit BOM for an exact assembly pn (not pn_seq - a BOM
+    snapshot is tied to the specific revision it was captured from, same as
+    everything else pn.resolveBomFilenames reports). Empty list if this pn
+    has no assembly (never had App::Link children) or was never saved -
+    both cases mean "no defined BOM" to callers, same as the portal side
+    treats them."""
+    cfg = _load_config()
+    _sync_pull(_registry_path(cfg))
+    rows = [r for r in _read_bom(cfg) if r.get("pn") == pn]
+    return {"items": [
+        {"pn": r.get("item_pn", ""), "componentName": r.get("item_component_name", ""),
+         "qty": int(r.get("qty") or 1)}
+        for r in rows
+    ]}
 
 
 @method("pn.tagDocument")

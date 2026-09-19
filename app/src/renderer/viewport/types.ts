@@ -13,7 +13,7 @@ export interface RenderImageOptions {
 }
 
 export interface RecordedSketchConstraint {
-  type: SketchConstraintType | 'Distance' | 'Radius' | 'Diameter' | 'Angle' | 'Symmetric'
+  type: SketchConstraintType | 'Distance' | 'DistanceX' | 'DistanceY' | 'Radius' | 'Diameter' | 'Angle' | 'Symmetric'
   refs: Array<{ new?: number; geo?: number; sub?: number; pt?: number }>
   value?: number
 }

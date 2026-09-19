@@ -241,8 +241,13 @@ await freshSketch();
     aEnts[aArc].c[0] + Math.cos(aEnts[aArc].a0) * aEnts[aArc].r,
     aEnts[aArc].c[1] + Math.sin(aEnts[aArc].a0) * aEnts[aArc].r
   ];
-  // draw a line ending exactly there, telling the controller its end snapped to the arc start
-  const aLn = G.sketch.addEntity({ type: 'line', a: [-15, as[1]], b: as }, [null, { idx: aArc, pt: 1 }]);
+  // draw a line ending exactly there, telling the controller its end snapped
+  // to the arc start - the line must actually run ALONG the arc's tangent
+  // direction at that point (here a0=PI -> tangent [0,-1], i.e. vertical) for
+  // this to be a genuine tangent condition; a line perpendicular to the
+  // tangent (e.g. horizontal here) is just a plain coincident touch, not a
+  // tangency, and autoTangent correctly falls back to Coincident for that.
+  const aLn = G.sketch.addEntity({ type: 'line', a: [as[0], as[1] - 15], b: as }, [null, { idx: aArc, pt: 1 }]);
   await sleep(120);
   note('all new constraints: ' + JSON.stringify(G.sketch.newConstraints()));
   const nc = G.sketch.newConstraints().filter(

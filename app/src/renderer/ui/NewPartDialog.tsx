@@ -13,11 +13,13 @@ import { api, type CompanyConfig } from '../rpc'
 export function NewPartDialog({
   onClose,
   onCreated,
-  initialProject
+  initialProject,
+  prefill
 }: {
   onClose: () => void
   onCreated: (info: { pn: string; path: string; name: string; description: string }) => void
   initialProject?: string
+  prefill?: { name?: string; description?: string; mfg?: string; mfgPn?: string; purchasingLink?: string }
 }): JSX.Element {
   const [cfg, setCfg] = useState<CompanyConfig | null>(null)
   const [types, setTypes] = useState<Record<string, string>>({})
@@ -25,11 +27,11 @@ export function NewPartDialog({
   const [type, setType] = useState<string>('')
   const [available, setAvailable] = useState<number[]>([])
   const [seq, setSeq] = useState<number | null>(null)
-  const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
-  const [mfg, setMfg] = useState('')
-  const [mfgPn, setMfgPn] = useState('')
-  const [purchasingLink, setPurchasingLink] = useState('')
+  const [name, setName] = useState(prefill?.name ?? '')
+  const [description, setDescription] = useState(prefill?.description ?? '')
+  const [mfg, setMfg] = useState(prefill?.mfg ?? '')
+  const [mfgPn, setMfgPn] = useState(prefill?.mfgPn ?? '')
+  const [purchasingLink, setPurchasingLink] = useState(prefill?.purchasingLink ?? '')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 

@@ -144,10 +144,23 @@ def make_table(doc, page_id, rows, columns=None, template=None, table_id=None):
     font = (template or {}).get("font", "osifont")
     text_size = float((template or {}).get("textSize", 3.0))
 
-    sheet_name = table_id or "BOMSheet"
-    sheet = doc.getObject(sheet_name)
-    if sheet is None or sheet.TypeId != "Spreadsheet::Sheet":
-        sheet = doc.addObject("Spreadsheet::Sheet", sheet_name)
+    # table_id is only ever the CALLER's existing view name (see below, not
+    # this sheet's own name) - a fresh insert (table_id=None) previously fell
+    # back to the SAME hardcoded "BOMSheet" name every time, so any second
+    # "new" table silently reused (and overwrote the contents of) the first
+    # one instead of actually being a second table (user report, 2026-09-19:
+    # "When I hit insert BOM, it replaced my table... I should be able to
+    # have a BOM and other tables all over the place"). Let FreeCAD's own
+    # addObject auto-naming (BOMSheet, BOMSheet001, ...) give each fresh
+    # table a genuinely distinct name, same pattern used everywhere else in
+    # this file (e.g. DrawViewAnnotation "Note").
+    if table_id:
+        view = doc.getObject(table_id)
+        sheet = view.Source if view is not None and view.TypeId == "TechDraw::DrawViewSpreadsheet" else None
+        if sheet is None or sheet.TypeId != "Spreadsheet::Sheet":
+            sheet = doc.addObject("Spreadsheet::Sheet", "BOMSheet")
+    else:
+        sheet = doc.addObject("Spreadsheet::Sheet", "BOMSheet")
 
     # remember the real column spec (header text alone is lossy - re-deriving
     # `source` from a lowercased header on reload would silently break any
@@ -173,10 +186,12 @@ def make_table(doc, page_id, rows, columns=None, template=None, table_id=None):
             sheet.set(cell, _cell_value(row, col))
     doc.recompute()
 
-    view_name = (table_id or "BOMSheet") + "View"
-    view = doc.getObject(view_name)
+    # reuse the SAME view object already resolved above by its real id when
+    # editing an existing table (table_id given); otherwise create a
+    # genuinely new one with FreeCAD's own auto-naming, same as the sheet.
+    view = doc.getObject(table_id) if table_id else None
     if view is None or view.TypeId != "TechDraw::DrawViewSpreadsheet":
-        view = doc.addObject("TechDraw::DrawViewSpreadsheet", view_name)
+        view = doc.addObject("TechDraw::DrawViewSpreadsheet", "BOMSheetView")
         page.addView(view)
     view.Source = sheet
     last_col = chr(ord("A") + max(len(columns) - 1, 0))

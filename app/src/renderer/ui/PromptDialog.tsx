@@ -13,6 +13,11 @@ export interface PromptField {
   placeholder?: string
   /** render as a <select> instead of a text input */
   options?: string[]
+  /** render as a <textarea> - Enter inserts a newline instead of submitting
+   *  the form (Ctrl/Cmd+Enter submits instead), for genuinely multi-line
+   *  text like a drawing note (user report, 2026-09-19: "I also can't seem
+   *  to make multi-line notes or anything") */
+  multiline?: boolean
 }
 
 interface PromptRequest {
@@ -46,6 +51,24 @@ export function promptText(
   })
 }
 
+/** Single-field, multi-line convenience (a <textarea>, Enter inserts a
+ *  newline, Ctrl/Cmd+Enter submits). Resolves to the string, or null if
+ *  cancelled. */
+export function promptMultiline(
+  title: string,
+  value = '',
+  placeholder = ''
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    if (!_open || _e2e()) return resolve(null)
+    _open({
+      title,
+      fields: [{ key: 'v', label: title, value, placeholder, multiline: true }],
+      resolve: (r) => resolve(r ? r.v : null)
+    })
+  })
+}
+
 /** Multi-field form. Resolves to a {key: value} map, or null if cancelled. */
 export function promptForm(
   title: string,
@@ -61,7 +84,7 @@ export function promptForm(
 export function PromptHost(): JSX.Element | null {
   const [req, setReq] = useState<PromptRequest | null>(null)
   const [vals, setVals] = useState<Record<string, string>>({})
-  const firstRef = useRef<HTMLInputElement | HTMLSelectElement>(null)
+  const firstRef = useRef<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(null)
 
   useEffect(() => {
     _open = (r) => {
@@ -83,7 +106,7 @@ export function PromptHost(): JSX.Element | null {
       const el = firstRef.current
       if (el && document.activeElement !== el) {
         el.focus()
-        if (el instanceof HTMLInputElement) el.select()
+        if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) el.select()
       }
       if (++tries < 6) raf = requestAnimationFrame(grab)
     }
@@ -124,6 +147,24 @@ export function PromptHost(): JSX.Element | null {
                     </option>
                   ))}
                 </select>
+              ) : f.multiline ? (
+                <textarea
+                  ref={i === 0 ? (firstRef as React.RefObject<HTMLTextAreaElement>) : undefined}
+                  autoFocus={i === 0}
+                  rows={5}
+                  value={vals[f.key] ?? ''}
+                  placeholder={f.placeholder}
+                  onChange={(e) => setVals((v) => ({ ...v, [f.key]: e.target.value }))}
+                  onKeyDown={(e) => {
+                    // Enter inserts a real newline (default textarea
+                    // behavior) instead of submitting the form like every
+                    // other field here - only Ctrl/Cmd+Enter submits.
+                    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                      e.preventDefault()
+                      done(true)
+                    }
+                  }}
+                />
               ) : (
                 <input
                   ref={i === 0 ? (firstRef as React.RefObject<HTMLInputElement>) : undefined}

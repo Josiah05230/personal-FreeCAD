@@ -260,11 +260,16 @@ def page_contents(doc, page_id):
                         and getattr(leader, "LeaderParent", None) is o):
                     leader_id = leader.Name
                     break
-            notes.append({
-                "id": o.Name, "text": "\n".join(o.Text) if o.Text else "",
-                "x": float(o.X), "y": float(o.Y), "leaderId": leader_id,
-                "font": str(o.Font), "textSize": float(o.TextSize),
-            })
+            # was a hand-rolled duplicate of _note_dto that predated
+            # textStyle/color - reuse _note_dto directly so a reopened
+            # drawing's notes come back with the same fields a freshly-added
+            # note does (bug: Bold/Italic/color silently vanished from
+            # page_contents even though add_note/set_note_style set them
+            # correctly - the Text formatting toolbar reads its state FROM
+            # this payload, so it looked like clicking Bold did nothing).
+            note_entry = _note_dto(o)
+            note_entry["leaderId"] = leader_id
+            notes.append(note_entry)
         elif tid == "TechDraw::DrawViewSpreadsheet":
             sheet = o.Source
             rows = []
@@ -395,7 +400,11 @@ def make_section(doc, page_id, base_view_id, plane="XY", offset=0.0, flip=False)
     view.SectionOrigin = origin
     view.Direction = base.Direction
     view.Scale = base.Scale
-    view.Label = "Section %s" % view.Name
+    # NOT "Section %s" % view.Name - view.Name is itself "Section" (FreeCAD's
+    # own auto-naming from addObject's requested name above), which doubled
+    # up as "Section Section" once the frontend appends its own direction/
+    # kind suffix (DrawingSheet.tsx's ViewBox: "{label} — {direction} (kind)").
+    view.Label = "%s section" % _get_tag(base, "_gwt_dir", "front").title()
     base.Visibility = False
     _tag(view, "_gwt_kind", "section")
     _tag(view, "_gwt_base", base.Name)
@@ -423,7 +432,9 @@ def make_detail(doc, page_id, base_view_id, anchor_xy, radius):
     view.Radius = float(radius)
     view.Direction = base.Direction
     view.Scale = base.Scale * 2.0
-    view.Label = "Detail %s" % view.Name
+    # see make_section's comment - avoid "Detail Detail" from echoing
+    # view.Name (FreeCAD's own auto-name) back into the label.
+    view.Label = "%s detail" % _get_tag(base, "_gwt_dir", "front").title()
     _tag(view, "_gwt_kind", "detail")
     _tag(view, "_gwt_base", base.Name)
     doc.recompute()
@@ -455,7 +466,9 @@ def make_broken(doc, page_id, base_view_id, breaks):
     view.Source = base.Source
     view.Direction = base.Direction
     view.Scale = base.Scale
-    view.Label = "Broken %s" % view.Name
+    # see make_section's comment - avoid "Broken Broken" from echoing
+    # view.Name (FreeCAD's own auto-name) back into the label.
+    view.Label = "%s broken" % _get_tag(base, "_gwt_dir", "front").title()
     brk = []
     for b in (breaks or []):
         brk.append({
@@ -742,25 +755,48 @@ def remove_cleanup_line(doc, view_id, line_id):
 # notes / leaders
 # --------------------------------------------------------------------------- #
 
+def _rgb_to_hex(rgba):
+    r, g, b = rgba[0], rgba[1], rgba[2]
+    return "#%02x%02x%02x" % (round(r * 255), round(g * 255), round(b * 255))
+
+
+def _hex_to_rgb(hexcolor):
+    h = str(hexcolor).lstrip("#")
+    if len(h) != 6:
+        return (0.0, 0.0, 0.0)
+    return (int(h[0:2], 16) / 255.0, int(h[2:4], 16) / 255.0, int(h[4:6], 16) / 255.0)
+
+
 def _note_dto(ann):
     return {
         "id": ann.Name, "text": "\n".join(ann.Text), "x": float(ann.X), "y": float(ann.Y),
         "font": str(ann.Font), "textSize": float(ann.TextSize),
+        "textStyle": str(ann.TextStyle), "color": _rgb_to_hex(ann.TextColor),
     }
 
 
 def add_note(doc, page_id, text, x, y, leader_view_id=None, leader_point=None,
-              font=None, textSize=None):
+              font=None, textSize=None, textStyle=None, color=None):
     page = get_page(doc, page_id)
     ann = doc.addObject("TechDraw::DrawViewAnnotation", "Note")
     page.addView(ann)
-    ann.Text = [str(text)]
+    # Text is a StringList, one entry per visual line - a single entry
+    # containing an embedded "\n" does not render as multiple lines (it's a
+    # real property list, not free text with newlines inside one entry), so
+    # a genuinely multi-line note must split on "\n" here (paired with
+    # _note_dto's "\n".join(ann.Text) below to reconstruct the original
+    # string for the frontend/RPC boundary).
+    ann.Text = str(text).split("\n")
     ann.X = float(x)
     ann.Y = float(y)
     if font:
         ann.Font = str(font)
     if textSize:
         ann.TextSize = float(textSize)
+    if textStyle:
+        ann.TextStyle = str(textStyle)
+    if color:
+        ann.TextColor = _hex_to_rgb(color)
     doc.recompute()
 
     leader_id = None
@@ -786,12 +822,12 @@ def set_note_text(doc, note_id, text):
     ann = doc.getObject(note_id)
     if ann is None or ann.TypeId != "TechDraw::DrawViewAnnotation":
         raise RpcError(APP_ERROR, "no such note: %r" % note_id)
-    ann.Text = [str(text)]
+    ann.Text = str(text).split("\n")  # see add_note's comment on Text being a StringList
     doc.recompute()
     return _note_dto(ann)
 
 
-def set_note_style(doc, note_id, font=None, textSize=None):
+def set_note_style(doc, note_id, font=None, textSize=None, textStyle=None, color=None):
     ann = doc.getObject(note_id)
     if ann is None or ann.TypeId != "TechDraw::DrawViewAnnotation":
         raise RpcError(APP_ERROR, "no such note: %r" % note_id)
@@ -799,6 +835,10 @@ def set_note_style(doc, note_id, font=None, textSize=None):
         ann.Font = str(font)
     if textSize:
         ann.TextSize = float(textSize)
+    if textStyle:
+        ann.TextStyle = str(textStyle)
+    if color:
+        ann.TextColor = _hex_to_rgb(color)
     doc.recompute()
     return _note_dto(ann)
 

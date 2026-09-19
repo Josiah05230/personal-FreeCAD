@@ -175,6 +175,44 @@ code {
   margin: 4px 6px;
 }
 
+.filemenu-lifecycle {
+  padding: 6px 10px;
+}
+
+.filemenu-lifecycle-label {
+  display: block;
+  color: var(--text-dim);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.filemenu-lifecycle-options {
+  display: flex;
+  gap: 4px;
+}
+
+.filemenu-lifecycle-btn {
+  flex: 1;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.filemenu-lifecycle-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.filemenu-lifecycle-btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  font-weight: 600;
+  cursor: default;
+}
+
 .qat {
   display: flex;
   gap: 1px;
@@ -1971,6 +2009,58 @@ code {
 }
 
 .drawing-adddir.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.drawing-text-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  background: var(--chrome-3);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+}
+
+.drawing-text-toolbar select,
+.drawing-text-toolbar input[type='number'] {
+  background: var(--chrome-1);
+  border: 1px solid var(--line-soft);
+  color: var(--text);
+  border-radius: 3px;
+  padding: 2px 4px;
+  font-size: 10px;
+}
+
+.drawing-text-toolbar input[type='color'] {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+}
+
+.drawing-text-toolbar button {
+  background: transparent;
+  border: 1px solid var(--line-soft);
+  color: var(--text-dim);
+  border-radius: 3px;
+  padding: 2px 7px;
+  cursor: pointer;
+  font-size: 11px;
+  min-width: 22px;
+}
+
+.drawing-text-toolbar button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.drawing-text-toolbar button.active {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;

@@ -11,13 +11,14 @@ import {
   type DrawingNote,
   type DrawingView,
   type DrawingPageContents,
+  type NoteTextStyle,
   type SnapTarget,
   type TableColumn,
   type TableTemplate
 } from '../rpc'
 import { basename } from '../util'
 import { ContextMenu, type MenuItem } from './ContextMenu'
-import { promptText, promptForm } from './PromptDialog'
+import { promptText, promptForm, promptMultiline } from './PromptDialog'
 import { formatDimension, DEFAULT_DIM_FORMAT } from '../dimensionFormat'
 
 interface Placed {
@@ -33,12 +34,81 @@ interface Placed {
   recreate?: () => Promise<DrawingView>
 }
 
+interface TableState {
+  id: string
+  rows: Array<BomRow | Record<string, string | number>>
+  columns: TableColumn[]
+  showGrid: boolean
+  gridColor: string
+  rowHeight: number
+  x: number
+  y: number
+}
+
+/** A view's own nested <svg> uses viewBox="minX -maxY (maxX-minX) (maxY-minY)"
+ *  (see ViewBox's render) so its local (0,0) is the geometry's top-left
+ *  corner (minX, maxY), Y pointing down - the same origin the outer <g
+ *  transform="translate(placed.x, placed.y)"> sits at. So a view-UV point
+ *  (u, v) - what onViewPick's snap targets and dimPending are in - maps to
+ *  ABSOLUTE sheet coordinates as (placed.x + (u-minX)*scale, placed.y +
+ *  (maxY-v)*scale), not a bare `placed.x + u*scale` (which only happens to
+ *  be right when minX is 0 and ignores the Y flip entirely) - the previous
+ *  dimension-label code did exactly that bare multiply, which is why a
+ *  dimension's text rendered near the view's corner instead of at the
+ *  picked location (user report, 2026-09-19: "it was in the middle of the
+ *  view... that seems way wrong"). */
+function uvToLocal(pl: Placed, uv: [number, number]): [number, number] {
+  const [minX, , , maxY] = pl.view.bbox
+  return [(uv[0] - minX) * pl.scale, (maxY - uv[1]) * pl.scale]
+}
+
+/** a placed view's on-sheet footprint, derived from its own bbox + scale -
+ *  shared by every view-creation tool's overlap-avoidance placement. */
+function footprint(p: Placed): { x: number; y: number; w: number; h: number } {
+  const [minX, minY, maxX, maxY] = p.view.bbox
+  return { x: p.x, y: p.y, w: (maxX - minX) * p.scale, h: (maxY - minY) * p.scale }
+}
+
 // ISO A3 landscape sheet in mm
 const SHEET_W = 420
 const SHEET_H = 297
 const MARGIN = 10
 
 const flip = (poly: number[][]): [number, number][] => poly.map((p) => [p[0], -p[1]])
+
+/** Find the next sheet position for a newly-placed view (w x h mm, already
+ *  scaled) that doesn't overlap any already-placed view's own footprint.
+ *  Scans a coarse grid of candidate slots left-to-right, top-to-bottom and
+ *  returns the first that clears every existing view by GAP mm on all
+ *  sides - falls back to stacking past the bottom of the sheet (still
+ *  non-overlapping, just off the visible page) rather than ever silently
+ *  overlapping, since a hardcoded fixed offset can't account for how big
+ *  the view actually is (a small nudge overlaps a large view; see the
+ *  2026-09-19 bug report where Front+Top landed on top of each other). */
+function findOpenSlot(
+  existing: { x: number; y: number; w: number; h: number }[],
+  w: number,
+  h: number
+): { x: number; y: number } {
+  const GAP = 8
+  const STEP = 10
+  const overlaps = (x: number, y: number): boolean =>
+    existing.some(
+      (p) =>
+        x < p.x + p.w + GAP &&
+        x + w + GAP > p.x &&
+        y < p.y + p.h + GAP &&
+        y + h + GAP > p.y
+    )
+  for (let y = MARGIN + 20; y <= SHEET_H - h - MARGIN; y += STEP) {
+    for (let x = MARGIN + 6; x <= SHEET_W - w - MARGIN; x += STEP) {
+      if (!overlaps(x, y)) return { x, y }
+    }
+  }
+  // sheet is full - stack below the last row rather than overlap
+  const maxBottom = existing.reduce((m, p) => Math.max(m, p.y + p.h), MARGIN + 20)
+  return { x: MARGIN + 6, y: maxBottom + GAP }
+}
 
 /** A jagged "break line" glyph across a view's bbox at the given axis/
  *  position, standard CAD convention for marking a broken-out section -
@@ -353,17 +423,26 @@ export const DrawingSheet = forwardRef<
     notes: Map<string, { x: number; y: number }>
   } | null>(null)
   const noteDrag = useRef<{ id: string; ox: number; oy: number; origX: number; origY: number } | null>(null)
+  const tableDrag = useRef<{ id: string; ox: number; oy: number; origX: number; origY: number } | null>(null)
   const [cleanupLines, setCleanupLines] = useState<Record<string, CleanupLine[]>>({})
   const [snapTargets, setSnapTargets] = useState<Record<string, SnapTarget[]>>({})
-  const [table, setTable] = useState<{
-    id: string
-    rows: Array<BomRow | Record<string, string | number>>
-    columns: TableColumn[]
-    showGrid: boolean
-    gridColor: string
-    rowHeight: number
-  } | null>(null)
-  const [editingCell, setEditingCell] = useState<{ row: number; col: number; value: string } | null>(null)
+  const [tables, setTables] = useState<TableState[]>([])
+  // multiple tables can coexist on one sheet (a BOM plus any number of plain
+  // tables) - Insert BOM used to unconditionally replace whatever single
+  // table already existed (user report, 2026-09-19: "When I hit insert BOM,
+  // it replaced my table. I should be able to have a BOM and other tables
+  // all over the place. Not just a single one"). selTableId (rather than a
+  // plain boolean) tracks WHICH one is selected now that there can be more
+  // than one.
+  const [selTableId, setSelTableId] = useState<string | null>(null)
+  const [editingCell, setEditingCell] = useState<{ tableId: string; row: number; col: number; value: string } | null>(null)
+  // per-table column-width override (mm) - colW is otherwise always derived
+  // from column count (130 / columns.length); "Column Width…" in the
+  // table's right-click menu lets the user pin an explicit width instead
+  // (user report, 2026-09-19: "in your little right click menu for the
+  // table, there is no row width" - row HEIGHT was already editable;
+  // column WIDTH, which is what was actually missing, is this).
+  const [columnWidthOverride, setColumnWidthOverride] = useState<Record<string, number>>({})
   // command-pattern undo/redo: each entry knows its own real inverse RPC
   // call, not just a local-state snapshot - a plain state snapshot would
   // leave orphaned server-side TechDraw objects behind (e.g. undoing
@@ -436,7 +515,13 @@ export const DrawingSheet = forwardRef<
     sub: string
     p: [number, number]
   } | null>(null)
-  const [dimLabelPos, setDimLabelPos] = useState<Record<string, [number, number]>>({})
+  // p1/p2 are the two picked points (view-UV space) a dimension measures
+  // between, and labelUV is where its value text sits (also view-UV) - all
+  // three needed to draw real witness/extension lines, not just floating
+  // text (see uvToLocal below for the UV -> sheet-local conversion).
+  const [dimGeom, setDimGeom] = useState<
+    Record<string, { p1: [number, number]; p2: [number, number]; labelUV: [number, number] }>
+  >({})
   const [menu, setMenu] = useState<{ x: number; y: number; viewId: string } | null>(null)
   const [dimMenu, setDimMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
   const [dimFormats, setDimFormats] = useState<{
@@ -501,16 +586,18 @@ export const DrawingSheet = forwardRef<
         setDims(c.dimensions)
         setNotes(c.notes)
         setCleanupLines(c.cleanupLines)
-        if (c.tables[0]) {
-          setTable({
-            id: c.tables[0].id,
-            rows: c.tables[0].rows,
-            columns: c.tables[0].columns,
+        setTables(
+          c.tables.map((t, i) => ({
+            id: t.id,
+            rows: t.rows,
+            columns: t.columns,
             showGrid: true,
             gridColor: '#111',
-            rowHeight: 5
-          })
-        }
+            rowHeight: 5,
+            x: MARGIN + 4 + i * 8,
+            y: MARGIN + 4 + i * 8
+          }))
+        )
         for (const v of c.views) void refreshSnapTargets(v.id)
       } catch {
         /* a brand-new page has nothing to rehydrate - blank sheet is correct */
@@ -528,8 +615,7 @@ export const DrawingSheet = forwardRef<
       if (!v) return
       const [minX, minY, maxX, maxY] = v.bbox
       const fit = Math.min(120 / Math.max(maxX - minX, 1), 90 / Math.max(maxY - minY, 1), 2)
-      const x = MARGIN + 6 + placed.length * 12
-      const y = MARGIN + 20 + placed.length * 12
+      const { x, y } = findOpenSlot(placed.map(footprint), (maxX - minX) * fit, (maxY - minY) * fit)
       const recreate = async (): Promise<DrawingView> => {
         const v2 = await makeView(dir)
         if (!v2) throw new Error('could not recreate this view')
@@ -691,6 +777,16 @@ export const DrawingSheet = forwardRef<
       setNotes((cur) => cur.map((n) => (n.id === id ? { ...n, x, y } : n)))
       return
     }
+    if (tableDrag.current && sheetRef.current) {
+      const svg = sheetRef.current.querySelector('svg') as SVGSVGElement
+      const pt = svg.createSVGPoint()
+      pt.x = e.clientX
+      pt.y = e.clientY
+      const p = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+      const { id: dragId, ox, oy } = tableDrag.current
+      setTables((cur) => cur.map((t) => (t.id === dragId ? { ...t, x: p.x - ox, y: p.y - oy } : t)))
+      return
+    }
     if (!drag.current || !sheetRef.current) return
     const svg = sheetRef.current.querySelector('svg') as SVGSVGElement
     const pt = svg.createSVGPoint()
@@ -721,12 +817,15 @@ export const DrawingSheet = forwardRef<
       viewId: string,
       refs: Array<{ sub: string }>,
       kind: DimensionType = 'Distance',
-      labelPos?: [number, number]
+      geom?: { p1: [number, number]; p2: [number, number] }
     ) => {
       try {
         const d = await api.drawingAddDimension(pageId, viewId, refs, kind)
         setDims((cur) => [...cur, d])
-        if (labelPos) setDimLabelPos((cur) => ({ ...cur, [d.id]: labelPos }))
+        if (geom) {
+          const labelUV: [number, number] = [(geom.p1[0] + geom.p2[0]) / 2, (geom.p1[1] + geom.p2[1]) / 2]
+          setDimGeom((cur) => ({ ...cur, [d.id]: { ...geom, labelUV } }))
+        }
         pushUndo({
           undo: async () => {
             await api.drawingRemoveDimension(d.id)
@@ -735,7 +834,10 @@ export const DrawingSheet = forwardRef<
           redo: async () => {
             const d2 = await api.drawingAddDimension(pageId, viewId, refs, kind)
             setDims((cur) => [...cur, d2])
-            if (labelPos) setDimLabelPos((cur) => ({ ...cur, [d2.id]: labelPos }))
+            if (geom) {
+              const labelUV: [number, number] = [(geom.p1[0] + geom.p2[0]) / 2, (geom.p1[1] + geom.p2[1]) / 2]
+              setDimGeom((cur) => ({ ...cur, [d2.id]: { ...geom, labelUV } }))
+            }
           }
         })
       } catch (e) {
@@ -753,8 +855,22 @@ export const DrawingSheet = forwardRef<
           if (!dimPending) {
             setDimPending({ viewId, sub, p })
           } else if (dimPending.viewId === viewId) {
-            const mid: [number, number] = [(dimPending.p[0] + p[0]) / 2, (dimPending.p[1] + p[1]) / 2]
-            void addDimension(viewId, [{ sub: dimPending.sub }, { sub }], 'Distance', mid)
+            // guard against the same point picked twice (two clicks that
+            // both snapped to the identical vertex/edge-end) - that used to
+            // silently create a genuine but useless 0-value dimension with
+            // no warning at all (user report, 2026-09-19: "I got one to
+            // show up and it said 0"). A real distinct pick is required.
+            const samePoint =
+              sub === dimPending.sub &&
+              Math.hypot(p[0] - dimPending.p[0], p[1] - dimPending.p[1]) < 1e-6
+            if (samePoint) {
+              window.alert('Pick a different point for the second end of the dimension.')
+              return
+            }
+            void addDimension(viewId, [{ sub: dimPending.sub }, { sub }], 'Distance', {
+              p1: dimPending.p,
+              p2: p
+            })
             setDimPending(null)
           } else {
             setDimPending({ viewId, sub, p })
@@ -822,8 +938,8 @@ export const DrawingSheet = forwardRef<
     const offset = Number(res.offset) || 0
     try {
       const v = await api.drawingAddSectionView(pageId, base.view.id, plane, offset)
-      const x = base.x + 60
-      const y = base.y
+      const [minX, minY, maxX, maxY] = v.bbox
+      const { x, y } = findOpenSlot(placed.map(footprint), (maxX - minX) * base.scale, (maxY - minY) * base.scale)
       const recreate = (): Promise<DrawingView> => api.drawingAddSectionView(pageId, base.view.id, plane, offset)
       setPlaced((cur) => [...cur, { view: v, x, y, scale: base.scale, recreate }])
       void refreshSnapTargets(v.id)
@@ -860,9 +976,9 @@ export const DrawingSheet = forwardRef<
     const radius = Number(res.radius) || 5
     try {
       const v = await api.drawingAddDetailView(pageId, base.view.id, ax, ay, radius)
-      const x = base.x + 60
-      const y = base.y
       const scale = Math.max(base.scale, 0.5)
+      const [minX, minY, maxX, maxY] = v.bbox
+      const { x, y } = findOpenSlot(placed.map(footprint), (maxX - minX) * scale, (maxY - minY) * scale)
       const recreate = (): Promise<DrawingView> => api.drawingAddDetailView(pageId, base.view.id, ax, ay, radius)
       setPlaced((cur) => [...cur, { view: v, x, y, scale, recreate }])
       void refreshSnapTargets(v.id)
@@ -897,8 +1013,8 @@ export const DrawingSheet = forwardRef<
     const breaks = [{ axis: (res.axis as 'x' | 'y') || 'x', pos: Number(res.pos) || 0, gap: Number(res.gap) || 10 }]
     try {
       const v = await api.drawingAddBrokenView(pageId, base.view.id, breaks)
-      const x = base.x
-      const y = base.y + 80
+      const [minX, minY, maxX, maxY] = v.bbox
+      const { x, y } = findOpenSlot(placed.map(footprint), (maxX - minX) * base.scale, (maxY - minY) * base.scale)
       const recreate = (): Promise<DrawingView> => api.drawingAddBrokenView(pageId, base.view.id, breaks)
       setPlaced((cur) => [...cur, { view: v, x, y, scale: base.scale, recreate }])
       void refreshSnapTargets(v.id)
@@ -1075,6 +1191,32 @@ export const DrawingSheet = forwardRef<
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [doDrawingUndo, doDrawingRedo])
 
+  // Escape always backs out of whatever's active, one layer at a time - the
+  // current tool first (same effect as clicking "Done"), then any selection
+  // if already in the select tool. User report (2026-09-19): "anytime I hit
+  // 'esc' it should exit whatever tool I am currently in" - previously
+  // Escape did nothing at all in the drawing editor (no handler existed).
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      if (tool !== 'select') {
+        setTool('select')
+        setDimPending(null)
+        setCleanupPending(null)
+        return
+      }
+      setSel(null)
+      setSelNote(null)
+      setSelMultiViews(new Set())
+      setSelMultiNotes(new Set())
+      setSelTableId(null)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [tool])
+
   // space+drag pans the sheet (checked live via the ref in onPointerDown,
   // not React state, so it never lags a frame behind the actual key state)
   useEffect(() => {
@@ -1100,59 +1242,58 @@ export const DrawingSheet = forwardRef<
     }
   }, [])
 
+  // rough on-sheet footprint for a not-yet-placed table, so a new one lands
+  // in an open spot instead of stacking exactly on top of an existing one
+  const tableFootprint = (t: { columns: TableColumn[]; rows: unknown[]; rowHeight: number }): { w: number; h: number } => ({
+    w: Math.max(20, 130 / Math.max(t.columns.length, 1)) * t.columns.length,
+    h: t.rowHeight * (t.rows.length + 1)
+  })
+
   const insertBom = useCallback(
     async (template?: TableTemplate) => {
-      const previous = table
       try {
         const { rows } = await api.drawingBomRows(assembly?.assembly ?? undefined)
         if (rows.length === 0) {
           window.alert('Nothing to list yet - add a body or component to the model first.')
           return
         }
-        const t = await api.drawingMakeTable(
-          pageId,
-          rows,
-          template?.spec.columns,
-          template?.spec,
-          table?.id
+        // always create a NEW table - Insert BOM used to reuse whatever
+        // single table already existed (passing its id here), silently
+        // replacing it; a BOM and any number of plain tables can now coexist
+        // side by side (user report, 2026-09-19).
+        const t = await api.drawingMakeTable(pageId, rows, template?.spec.columns, template?.spec)
+        const fp = tableFootprint({ columns: t.columns, rows: t.rows, rowHeight: template?.spec.rowHeight ?? 5 })
+        const { x, y } = findOpenSlot(
+          tables.map((tb) => ({ x: tb.x, y: tb.y, ...tableFootprint(tb) })),
+          fp.w,
+          fp.h
         )
-        const next = {
+        const next: TableState = {
           id: t.id,
           rows: t.rows,
           columns: t.columns,
           showGrid: template?.spec.showGrid ?? true,
           gridColor: template?.spec.gridColor ?? '#111',
-          rowHeight: template?.spec.rowHeight ?? 5
+          rowHeight: template?.spec.rowHeight ?? 5,
+          x,
+          y
         }
-        setTable(next)
-        pushUndo(
-          previous
-            ? {
-                undo: async () => {
-                  await api.drawingMakeTable(pageId, previous.rows, previous.columns, undefined, previous.id)
-                  setTable(previous)
-                },
-                redo: async () => {
-                  await api.drawingMakeTable(pageId, next.rows, next.columns, undefined, next.id)
-                  setTable(next)
-                }
-              }
-            : {
-                undo: async () => {
-                  await api.drawingRemoveTable(t.id)
-                  setTable(null)
-                },
-                redo: async () => {
-                  const t2 = await api.drawingMakeTable(pageId, rows, template?.spec.columns, template?.spec, t.id)
-                  setTable({ ...next, id: t2.id, rows: t2.rows, columns: t2.columns })
-                }
-              }
-        )
+        setTables((cur) => [...cur, next])
+        pushUndo({
+          undo: async () => {
+            await api.drawingRemoveTable(t.id)
+            setTables((cur) => cur.filter((tb) => tb.id !== t.id))
+          },
+          redo: async () => {
+            const t2 = await api.drawingMakeTable(pageId, rows, template?.spec.columns, template?.spec, t.id)
+            setTables((cur) => [...cur, { ...next, id: t2.id, rows: t2.rows, columns: t2.columns }])
+          }
+        })
       } catch (e) {
         window.alert((e as Error).message)
       }
     },
-    [assembly, pageId, table, pushUndo]
+    [assembly, pageId, tables, pushUndo]
   )
 
   // A plain table is NOT a BOM - it should start genuinely blank (the user's
@@ -1180,88 +1321,104 @@ export const DrawingSheet = forwardRef<
         for (const c of columns) row[c.source] = ''
         return row
       })
-      const previous = table
       try {
-        const t = await api.drawingMakeTable(pageId, rows, columns, template?.spec, table?.id)
-        const next = {
+        // always create a NEW table, same reasoning as insertBom - Insert
+        // Table used to replace whatever single table already existed.
+        const t = await api.drawingMakeTable(pageId, rows, columns, template?.spec)
+        const fp = tableFootprint({ columns: t.columns, rows: t.rows, rowHeight: template?.spec.rowHeight ?? 5 })
+        const { x, y } = findOpenSlot(
+          tables.map((tb) => ({ x: tb.x, y: tb.y, ...tableFootprint(tb) })),
+          fp.w,
+          fp.h
+        )
+        const next: TableState = {
           id: t.id,
           rows: t.rows,
           columns: t.columns,
           showGrid: template?.spec.showGrid ?? true,
           gridColor: template?.spec.gridColor ?? '#111',
-          rowHeight: template?.spec.rowHeight ?? 5
+          rowHeight: template?.spec.rowHeight ?? 5,
+          x,
+          y
         }
-        setTable(next)
-        pushUndo(
-          previous
-            ? {
-                undo: async () => {
-                  await api.drawingMakeTable(pageId, previous.rows, previous.columns, undefined, previous.id)
-                  setTable(previous)
-                },
-                redo: async () => {
-                  await api.drawingMakeTable(pageId, next.rows, next.columns, undefined, next.id)
-                  setTable(next)
-                }
-              }
-            : {
-                undo: async () => {
-                  await api.drawingRemoveTable(t.id)
-                  setTable(null)
-                },
-                redo: async () => {
-                  const t2 = await api.drawingMakeTable(pageId, rows, columns, template?.spec, t.id)
-                  setTable({ ...next, id: t2.id, rows: t2.rows, columns: t2.columns })
-                }
-              }
-        )
+        setTables((cur) => [...cur, next])
+        pushUndo({
+          undo: async () => {
+            await api.drawingRemoveTable(t.id)
+            setTables((cur) => cur.filter((tb) => tb.id !== t.id))
+          },
+          redo: async () => {
+            const t2 = await api.drawingMakeTable(pageId, rows, columns, template?.spec, t.id)
+            setTables((cur) => [...cur, { ...next, id: t2.id, rows: t2.rows, columns: t2.columns }])
+          }
+        })
       } catch (e) {
         window.alert((e as Error).message)
       }
     },
-    [pageId, table, pushUndo]
+    [pageId, tables, pushUndo]
   )
 
+  const updateTable = useCallback((id: string, patch: Partial<TableState> | ((t: TableState) => Partial<TableState>)) => {
+    setTables((cur) => cur.map((t) => (t.id === id ? { ...t, ...(typeof patch === 'function' ? patch(t) : patch) } : t)))
+  }, [])
+
+  const saveTableAsTemplate = useCallback(
+    async (tableId: string) => {
+      const t = tables.find((x) => x.id === tableId)
+      if (!t) {
+        window.alert('Insert a table first, then save it as a template.')
+        return
+      }
+      const name2 = await promptText('Template name', '')
+      if (!name2 || !name2.trim()) return
+      try {
+        await api.drawingSaveTableTemplate(name2.trim(), {
+          columns: t.columns,
+          showGrid: t.showGrid,
+          gridColor: t.gridColor,
+          rowHeight: t.rowHeight
+        })
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [tables]
+  )
+
+  // ribbon-level "Save as Template…" (no specific table in mind) - acts on
+  // whichever table is currently selected, or the most recently added one
+  // when nothing is selected, now that multiple tables can coexist.
   const saveAsTemplate = useCallback(async () => {
-    if (!table) {
+    const id = selTableId ?? tables[tables.length - 1]?.id
+    if (!id) {
       window.alert('Insert a table first, then save it as a template.')
       return
     }
-    const name2 = await promptText('Template name', '')
-    if (!name2 || !name2.trim()) return
-    try {
-      await api.drawingSaveTableTemplate(name2.trim(), {
-        columns: table.columns,
-        showGrid: table.showGrid,
-        gridColor: table.gridColor,
-        rowHeight: table.rowHeight
-      })
-    } catch (e) {
-      window.alert((e as Error).message)
-    }
-  }, [table])
+    await saveTableAsTemplate(id)
+  }, [selTableId, tables, saveTableAsTemplate])
 
   const setTableCell = useCallback(
-    async (rowIdx: number, source: string, value: string) => {
-      if (!table) return
-      const oldValue = String((table.rows[rowIdx] as unknown as Record<string, unknown>)?.[source] ?? '')
-      const rows = table.rows.map((row, i) => (i === rowIdx ? { ...row, [source]: value } : row))
-      const tableId = table.id
-      const columns = table.columns
-      setTable((cur) => (cur ? { ...cur, rows } : cur))
+    async (tableId: string, rowIdx: number, source: string, value: string) => {
+      const t = tables.find((x) => x.id === tableId)
+      if (!t) return
+      const oldValue = String((t.rows[rowIdx] as unknown as Record<string, unknown>)?.[source] ?? '')
+      const rows = t.rows.map((row, i) => (i === rowIdx ? { ...row, [source]: value } : row))
+      const columns = t.columns
+      updateTable(tableId, { rows })
       try {
-        const t = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
-        setTable((cur) => (cur ? { ...cur, rows: t.rows } : cur))
+        const res = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
+        updateTable(tableId, { rows: res.rows })
         if (String(oldValue) !== value) {
           pushUndo({
             undo: async () => {
               const revertRows = rows.map((row, i) => (i === rowIdx ? { ...row, [source]: oldValue } : row))
               const t2 = await api.drawingMakeTable(pageId, revertRows, columns, undefined, tableId)
-              setTable((cur) => (cur ? { ...cur, rows: t2.rows } : cur))
+              updateTable(tableId, { rows: t2.rows })
             },
             redo: async () => {
               const t2 = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
-              setTable((cur) => (cur ? { ...cur, rows: t2.rows } : cur))
+              updateTable(tableId, { rows: t2.rows })
             }
           })
         }
@@ -1269,16 +1426,229 @@ export const DrawingSheet = forwardRef<
         window.alert((e as Error).message)
       }
     },
-    [table, pageId, pushUndo]
+    [tables, pageId, pushUndo, updateTable]
   )
 
-  const setTableGridStyle = useCallback((style: Partial<{ showGrid: boolean; gridColor: string; rowHeight: number }>) => {
-    setTable((cur) => (cur ? { ...cur, ...style } : cur))
-  }, [])
+  const setTableGridStyle = useCallback(
+    (tableId: string, style: Partial<{ showGrid: boolean; gridColor: string; rowHeight: number }>) => {
+      updateTable(tableId, style)
+    },
+    [updateTable]
+  )
+
+  const moveTable = useCallback(
+    (tableId: string, x: number, y: number, orig?: { x: number; y: number }) => {
+      updateTable(tableId, { x, y })
+      if (orig) {
+        pushUndo({
+          undo: async () => updateTable(tableId, { x: orig.x, y: orig.y }),
+          redo: async () => updateTable(tableId, { x, y })
+        })
+      }
+    },
+    [pushUndo, updateTable]
+  )
+
+  const deleteTable = useCallback(
+    async (tableId: string) => {
+      const doomed = tables.find((t) => t.id === tableId)
+      if (!doomed) return
+      try {
+        await api.drawingRemoveTable(doomed.id)
+        setTables((cur) => cur.filter((t) => t.id !== tableId))
+        setSelTableId((cur) => (cur === tableId ? null : cur))
+        pushUndo({
+          undo: async () => {
+            const t = await api.drawingMakeTable(pageId, doomed.rows, doomed.columns, undefined, doomed.id)
+            setTables((cur) => [...cur, { ...doomed, rows: t.rows, columns: t.columns, id: t.id }])
+          },
+          redo: async () => {
+            await api.drawingRemoveTable(doomed.id)
+            setTables((cur) => cur.filter((t) => t.id !== doomed.id))
+          }
+        })
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [tables, pageId, pushUndo]
+  )
+
+  const renameColumn = useCallback(
+    async (tableId: string, colIdx: number) => {
+      const t = tables.find((x) => x.id === tableId)
+      if (!t) return
+      const col = t.columns[colIdx]
+      const name = await promptText('Column heading', col.header)
+      if (name === null || name === undefined || name === col.header) return
+      const columns = t.columns.map((c, i) => (i === colIdx ? { ...c, header: name } : c))
+      const rows = t.rows
+      try {
+        const res = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
+        updateTable(tableId, { columns: res.columns })
+        pushUndo({
+          undo: async () => {
+            const t2 = await api.drawingMakeTable(pageId, rows, t.columns, undefined, tableId)
+            updateTable(tableId, { columns: t2.columns })
+          },
+          redo: async () => {
+            const t2 = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
+            updateTable(tableId, { columns: t2.columns })
+          }
+        })
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [tables, pageId, pushUndo, updateTable]
+  )
+
+  const addTableRow = useCallback(
+    async (tableId: string) => {
+      const t = tables.find((x) => x.id === tableId)
+      if (!t) return
+      const blank: Record<string, string | number> = { index: t.rows.length + 1 }
+      for (const c of t.columns) blank[c.source] = ''
+      const rows = [...t.rows, blank]
+      const { columns } = t
+      try {
+        const res = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
+        updateTable(tableId, { rows: res.rows })
+        pushUndo({
+          undo: async () => {
+            const t2 = await api.drawingMakeTable(pageId, t.rows, columns, undefined, tableId)
+            updateTable(tableId, { rows: t2.rows })
+          },
+          redo: async () => {
+            const t2 = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
+            updateTable(tableId, { rows: t2.rows })
+          }
+        })
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [tables, pageId, pushUndo, updateTable]
+  )
+
+  const deleteTableRow = useCallback(
+    async (tableId: string, rowIdx: number) => {
+      const t = tables.find((x) => x.id === tableId)
+      if (!t || t.rows.length <= 1) {
+        window.alert('A table needs at least one row.')
+        return
+      }
+      const rows = t.rows.filter((_, i) => i !== rowIdx)
+      const { columns } = t
+      const previousRows = t.rows
+      try {
+        const res = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
+        updateTable(tableId, { rows: res.rows })
+        pushUndo({
+          undo: async () => {
+            const t2 = await api.drawingMakeTable(pageId, previousRows, columns, undefined, tableId)
+            updateTable(tableId, { rows: t2.rows })
+          },
+          redo: async () => {
+            const t2 = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
+            updateTable(tableId, { rows: t2.rows })
+          }
+        })
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [tables, pageId, pushUndo, updateTable]
+  )
+
+  const addTableColumn = useCallback(
+    async (tableId: string) => {
+      const t = tables.find((x) => x.id === tableId)
+      if (!t) return
+      const n = t.columns.length
+      const key = `col${n}`
+      const columns = [...t.columns, { key, header: `Column ${n + 1}`, source: key }]
+      const rows = t.rows.map(
+        (r) => ({ ...(r as unknown as Record<string, string | number>), [key]: '' }) as Record<string, string | number>
+      )
+      const previousColumns = t.columns
+      const previousRows = t.rows
+      try {
+        const res = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
+        updateTable(tableId, { rows: res.rows, columns: res.columns })
+        pushUndo({
+          undo: async () => {
+            const t2 = await api.drawingMakeTable(pageId, previousRows, previousColumns, undefined, tableId)
+            updateTable(tableId, { rows: t2.rows, columns: t2.columns })
+          },
+          redo: async () => {
+            const t2 = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
+            updateTable(tableId, { rows: t2.rows, columns: t2.columns })
+          }
+        })
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [tables, pageId, pushUndo, updateTable]
+  )
+
+  const deleteTableColumn = useCallback(
+    async (tableId: string, colIdx: number) => {
+      const t = tables.find((x) => x.id === tableId)
+      if (!t || t.columns.length <= 1) {
+        window.alert('A table needs at least one column.')
+        return
+      }
+      const removed = t.columns[colIdx]
+      const columns = t.columns.filter((_, i) => i !== colIdx)
+      const rows = t.rows.map((r) => {
+        const row = { ...(r as unknown as Record<string, string | number>) }
+        delete row[removed.source]
+        return row
+      })
+      const previousColumns = t.columns
+      const previousRows = t.rows
+      try {
+        const res = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
+        updateTable(tableId, { rows: res.rows, columns: res.columns })
+        pushUndo({
+          undo: async () => {
+            const t2 = await api.drawingMakeTable(pageId, previousRows, previousColumns, undefined, tableId)
+            updateTable(tableId, { rows: t2.rows, columns: t2.columns })
+          },
+          redo: async () => {
+            const t2 = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
+            updateTable(tableId, { rows: t2.rows, columns: t2.columns })
+          }
+        })
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [tables, pageId, pushUndo, updateTable]
+  )
+
+  // Delete/Backspace also removes the table when it's the current selection
+  // - a separate effect from the view/note one above since deleteTable is
+  // declared after that point in this component. Same input-guard so typing
+  // in a cell editor or a promptForm field isn't intercepted.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return
+      if (!selTableId) return
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      e.preventDefault()
+      void deleteTable(selTableId)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [selTableId, deleteTable])
 
   const addNote = useCallback(
     async (viewId: string | null, p: [number, number]) => {
-      const text = await promptText('Note text', '')
+      const text = await promptMultiline('Note text', '')
       if (!text || !text.trim()) return
       try {
         const n = await api.drawingAddNote(
@@ -1309,16 +1679,12 @@ export const DrawingSheet = forwardRef<
     [pageId, pushUndo]
   )
 
-  const editNoteText = useCallback(async (noteId: string) => {
-    const current = notes.find((n) => n.id === noteId)
-    if (!current) return
-    const oldText = current.text
-    const text = await promptText('Note text', current.text)
-    if (text === null || text === undefined) return
-    try {
-      const n = await api.drawingSetNoteText(noteId, text)
-      setNotes((cur) => cur.map((x) => (x.id === noteId ? { ...x, ...n } : x)))
-      if (text !== oldText) {
+  const applyNoteText = useCallback(
+    async (noteId: string, oldText: string, text: string) => {
+      if (text === oldText) return
+      try {
+        const n = await api.drawingSetNoteText(noteId, text)
+        setNotes((cur) => cur.map((x) => (x.id === noteId ? { ...x, ...n } : x)))
         pushUndo({
           undo: async () => {
             const n2 = await api.drawingSetNoteText(noteId, oldText)
@@ -1329,11 +1695,38 @@ export const DrawingSheet = forwardRef<
             setNotes((cur) => cur.map((x) => (x.id === noteId ? { ...x, ...n2 } : x)))
           }
         })
+      } catch (e) {
+        window.alert((e as Error).message)
       }
-    } catch (e) {
-      window.alert((e as Error).message)
-    }
-  }, [notes, pushUndo])
+    },
+    [pushUndo]
+  )
+
+  const editNoteText = useCallback(
+    async (noteId: string) => {
+      const current = notes.find((n) => n.id === noteId)
+      if (!current) return
+      const text = await promptMultiline('Note text', current.text)
+      if (text === null || text === undefined) return
+      void applyNoteText(noteId, current.text, text)
+    },
+    [notes, applyNoteText]
+  )
+
+  // symbol buttons in the Text toolbar append directly to the note's
+  // current text instead of opening the edit-text prompt - a real F360-style
+  // "insert this symbol at the end" convenience (per-cursor-position
+  // insertion isn't possible without owning the text field's own cursor,
+  // which the toolbar button doesn't have access to; appending is still far
+  // better than the prompt-per-symbol dialog this would otherwise need)
+  const insertNoteSymbol = useCallback(
+    (noteId: string, sym: string) => {
+      const current = notes.find((n) => n.id === noteId)
+      if (!current) return
+      void applyNoteText(noteId, current.text, current.text + sym)
+    },
+    [notes, applyNoteText]
+  )
 
   const moveNote = useCallback(
     async (noteId: string, x: number, y: number, from?: { x: number; y: number }) => {
@@ -1363,9 +1756,14 @@ export const DrawingSheet = forwardRef<
   )
 
   const setNoteStyle = useCallback(
-    async (noteId: string, style: { font?: string; textSize?: number }) => {
+    async (
+      noteId: string,
+      style: { font?: string; textSize?: number; textStyle?: NoteTextStyle; color?: string }
+    ) => {
       const current = notes.find((n) => n.id === noteId)
-      const oldStyle = current ? { font: current.font, textSize: current.textSize } : undefined
+      const oldStyle = current
+        ? { font: current.font, textSize: current.textSize, textStyle: current.textStyle, color: current.color }
+        : undefined
       try {
         const n = await api.drawingSetNoteStyle(noteId, style)
         setNotes((cur) => cur.map((x) => (x.id === noteId ? { ...x, ...n } : x)))
@@ -1471,20 +1869,136 @@ export const DrawingSheet = forwardRef<
           </span>
         )}
         <span className="drawing-spacer" />
-        {(dims.length > 0 || placed.length > 0 || notes.length > 0) && (
+        {(dims.length > 0 || placed.length > 0 || notes.length > 0 || tables.length > 0) && (
           <button
             className="drawing-adddir"
             onClick={() => {
               setPlaced([])
               setDims([])
-              setDimLabelPos({})
+              setDimGeom({})
               setNotes([])
-              setTable(null)
+              setTables([])
             }}
           >
             Clear
           </button>
         )}
+        {selNote &&
+          (() => {
+            const n = notes.find((x) => x.id === selNote)
+            if (!n) return null
+            const style = n.textStyle ?? 'Normal'
+            const bold = style === 'Bold' || style === 'Bold-Italic'
+            const italic = style === 'Italic' || style === 'Bold-Italic'
+            const toggleStyle = (which: 'bold' | 'italic'): void => {
+              const nextBold = which === 'bold' ? !bold : bold
+              const nextItalic = which === 'italic' ? !italic : italic
+              const next: NoteTextStyle =
+                nextBold && nextItalic ? 'Bold-Italic' : nextBold ? 'Bold' : nextItalic ? 'Italic' : 'Normal'
+              void setNoteStyle(n.id, { textStyle: next })
+            }
+            return (
+              <span className="drawing-text-toolbar">
+                <select
+                  title="Font"
+                  value={n.font ?? 'osifont'}
+                  onChange={(e) => void setNoteStyle(n.id, { font: e.target.value })}
+                >
+                  {['osifont', 'sans-serif', 'serif', 'monospace'].map((f) => (
+                    <option key={f} value={f}>
+                      {f}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  title="Font size (mm)"
+                  type="number"
+                  min={1}
+                  step={0.5}
+                  value={n.textSize ?? 3.4}
+                  onChange={(e) => void setNoteStyle(n.id, { textSize: Number(e.target.value) || 3.4 })}
+                  style={{ width: '3.5em' }}
+                />
+                <button
+                  title="Bold"
+                  aria-pressed={bold}
+                  className={bold ? 'active' : undefined}
+                  onClick={() => toggleStyle('bold')}
+                  style={{ fontWeight: 'bold' }}
+                >
+                  B
+                </button>
+                <button
+                  title="Italic"
+                  aria-pressed={italic}
+                  className={italic ? 'active' : undefined}
+                  onClick={() => toggleStyle('italic')}
+                  style={{ fontStyle: 'italic' }}
+                >
+                  I
+                </button>
+                <input
+                  title="Text color"
+                  type="color"
+                  value={n.color ?? '#333333'}
+                  onChange={(e) => void setNoteStyle(n.id, { color: e.target.value })}
+                />
+                {['Ø', '°', '±', '⌀', '△'].map((sym) => (
+                  <button key={sym} title={`Insert ${sym}`} onClick={() => insertNoteSymbol(n.id, sym)}>
+                    {sym}
+                  </button>
+                ))}
+              </span>
+            )
+          })()}
+        {selTableId &&
+          (() => {
+            const t = tables.find((x) => x.id === selTableId)
+            if (!t) return null
+            return (
+              <span className="drawing-text-toolbar">
+                <button title={t.showGrid ? 'Hide Grid Lines' : 'Show Grid Lines'} onClick={() => setTableGridStyle(t.id, { showGrid: !t.showGrid })}>
+                  Grid
+                </button>
+                <input
+                  title="Grid line color"
+                  type="color"
+                  value={t.gridColor}
+                  onChange={(e) => setTableGridStyle(t.id, { gridColor: e.target.value || '#111' })}
+                />
+                <input
+                  title="Row height (mm)"
+                  type="number"
+                  min={1}
+                  step={0.5}
+                  value={t.rowHeight}
+                  onChange={(e) => setTableGridStyle(t.id, { rowHeight: Number(e.target.value) || 5 })}
+                  style={{ width: '3.5em' }}
+                />
+                <input
+                  title="Column width (mm)"
+                  type="number"
+                  min={5}
+                  step={1}
+                  value={columnWidthOverride[t.id] ?? Math.max(20, 130 / t.columns.length)}
+                  onChange={(e) => {
+                    const w = Number(e.target.value)
+                    if (w > 0) setColumnWidthOverride((cur) => ({ ...cur, [t.id]: w }))
+                  }}
+                  style={{ width: '3.5em' }}
+                />
+                <button title="Add Row" onClick={() => void addTableRow(t.id)}>
+                  +Row
+                </button>
+                <button title="Add Column" onClick={() => void addTableColumn(t.id)}>
+                  +Col
+                </button>
+                <button title="Delete Table" onClick={() => void deleteTable(t.id)}>
+                  Delete
+                </button>
+              </span>
+            )
+          })()}
         <span className="drawing-zoom">
           <button title="Zoom out" onClick={() => zoomBy(1.25)}>
             −
@@ -1516,7 +2030,12 @@ export const DrawingSheet = forwardRef<
             // band window-select, same left-to-right="contained" / right-
             // to-left="touches" convention the main 3D viewport uses
             const target = e.target as Element
-            if (tool === 'select' && !target.closest('[data-view-box]') && !target.closest('[data-note]')) {
+            if (
+              tool === 'select' &&
+              !target.closest('[data-view-box]') &&
+              !target.closest('[data-note]') &&
+              !target.closest('[data-table]')
+            ) {
               const svg = e.currentTarget
               const pt = svg.createSVGPoint()
               pt.x = e.clientX
@@ -1560,6 +2079,7 @@ export const DrawingSheet = forwardRef<
                 setSelMultiNotes(noteIds)
                 setSel(null)
                 setSelNote(null)
+                setSelTableId(null)
               }
               setBand(null)
             }
@@ -1602,6 +2122,14 @@ export const DrawingSheet = forwardRef<
               const n = notes.find((x) => x.id === id)
               if (n) void moveNote(id, n.x, n.y, { x: origX, y: origY })
             }
+            if (tableDrag.current) {
+              const { id: dragId, origX, origY } = tableDrag.current
+              tableDrag.current = null
+              const t = tables.find((x) => x.id === dragId)
+              if (t && (t.x !== origX || t.y !== origY)) {
+                moveTable(dragId, t.x, t.y, { x: origX, y: origY })
+              }
+            }
           }}
           style={{ cursor: spaceHeld.current ? 'grab' : undefined }}
           onClick={(e) => {
@@ -1613,7 +2141,16 @@ export const DrawingSheet = forwardRef<
             // handles the click itself (select/drag or a dimension/cleanup
             // pick) and this handler must not also deselect it.
             const target = e.target as Element
-            const clickedInsideView = target.closest('[data-view-box]') !== null
+            // an existing note under the note tool must NOT also trigger
+            // "place a new note here" - previously data-note wasn't excluded
+            // here, so clicking an EXISTING note while the Note tool was
+            // still active (it never auto-exits after placing one) opened a
+            // brand-new note's text prompt right on top of it, which read as
+            // "clicking a note edits it" (user report, 2026-09-19).
+            const clickedInsideView =
+              target.closest('[data-view-box]') !== null ||
+              target.closest('[data-table]') !== null ||
+              target.closest('[data-note]') !== null
             if (justBandSelected.current) {
               justBandSelected.current = false
               return
@@ -1623,6 +2160,7 @@ export const DrawingSheet = forwardRef<
               setSelNote(null)
               setSelMultiViews(new Set())
               setSelMultiNotes(new Set())
+              setSelTableId(null)
               if (tool === 'note') {
                 const svg = e.currentTarget as SVGSVGElement
                 const pt = svg.createSVGPoint()
@@ -1630,6 +2168,10 @@ export const DrawingSheet = forwardRef<
                 pt.y = e.clientY
                 const p = pt.matrixTransform(svg.getScreenCTM()!.inverse())
                 void addNote(null, [p.x, p.y])
+                // one-shot tool: return to Select after placing, matching
+                // Dimension/Cleanup Line's own "Done" affordance instead of
+                // silently staying armed for every future click
+                setTool('select')
               }
             }
           }}
@@ -1682,6 +2224,7 @@ export const DrawingSheet = forwardRef<
                 setSelNote(null)
                 setSelMultiViews(new Set())
                 setSelMultiNotes(new Set())
+                setSelTableId(null)
                 drag.current = { i, ox: p.x - pl.x, oy: p.y - pl.y }
               }}
               onContextMenu={(e) => {
@@ -1756,15 +2299,72 @@ export const DrawingSheet = forwardRef<
             if (!pl || d.value === null) return null
             const fmt = { ...dimFormats.default, ...(dimFormats.overrides[d.id] ?? {}) }
             const text = formatDimension(d.value, d.type, fmt || DEFAULT_DIM_FORMAT)
-            const localPos = dimLabelPos[d.id]
-            const labelX = localPos ? pl.x + localPos[0] * pl.scale : pl.x + 2
-            const labelY = localPos ? pl.y - localPos[1] * pl.scale : pl.y - 2
+            const geom = dimGeom[d.id]
+            // fall back to a corner label (no witness lines) only for a
+            // dimension whose geometry we never recorded - e.g. one already
+            // on the page when this drawing was reopened, before per-
+            // dimension geometry existed. A freshly-placed dimension always
+            // has geom and gets real extension/dimension lines below.
+            if (!geom) {
+              return (
+                <text
+                  key={d.id}
+                  x={pl.x + 2}
+                  y={pl.y - 2}
+                  fontSize={3.4}
+                  textAnchor="middle"
+                  fill="#c47f16"
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    setMenu(null)
+                    setDimMenu({
+                      x: e.clientX,
+                      y: e.clientY,
+                      items: [{ label: 'Delete Dimension', danger: true, onClick: () => void deleteDimension(d.id) }]
+                    })
+                  }}
+                >
+                  {text}
+                </text>
+              )
+            }
+            const [p1x, p1y] = uvToLocal(pl, geom.p1)
+            const [p2x, p2y] = uvToLocal(pl, geom.p2)
+            const [labelX, labelY] = uvToLocal(pl, geom.labelUV)
+            // the dimension line runs through the label, parallel to p1->p2;
+            // each witness (extension) line runs from its measured point out
+            // to that dimension line, standard technical-drawing convention.
+            const dx = p2x - p1x
+            const dy = p2y - p1y
+            const len = Math.hypot(dx, dy) || 1
+            const ux = dx / len
+            const uy = dy / len
+            // perpendicular offset of the dimension line from the p1-p2 axis,
+            // i.e. how far the label was dragged off that axis
+            const midx = (p1x + p2x) / 2
+            const midy = (p1y + p2y) / 2
+            const offX = labelX - midx
+            const offY = labelY - midy
+            const perpOff = offX * -uy + offY * ux // signed distance along the perpendicular
+            const dlx1 = p1x - uy * perpOff
+            const dly1 = p1y + ux * perpOff
+            const dlx2 = p2x - uy * perpOff
+            const dly2 = p2y + ux * perpOff
+            const arrow = (x: number, y: number, dirx: number, diry: number): string => {
+              const s = 1.6
+              const backx = x - dirx * s
+              const backy = y - diry * s
+              const nx = -diry * s * 0.35
+              const ny = dirx * s * 0.35
+              return `${x},${y} ${backx + nx},${backy + ny} ${backx - nx},${backy - ny}`
+            }
             return (
               <g
                 key={d.id}
+                transform={`translate(${pl.x} ${pl.y})`}
                 stroke="#c47f16"
                 fill="#c47f16"
-                strokeWidth={0.3}
+                strokeWidth={0.25}
                 onContextMenu={(e) => {
                   e.preventDefault()
                   const items: MenuItem[] = []
@@ -1810,6 +2410,14 @@ export const DrawingSheet = forwardRef<
                   setDimMenu({ x: e.clientX, y: e.clientY, items })
                 }}
               >
+                {/* extension (witness) lines: from each measured point out to the dimension line */}
+                <line x1={p1x} y1={p1y} x2={dlx1} y2={dly1} strokeWidth={0.2} />
+                <line x1={p2x} y1={p2y} x2={dlx2} y2={dly2} strokeWidth={0.2} />
+                {/* dimension line, split around the label */}
+                <line x1={dlx1} y1={dly1} x2={labelX - ux * 6} y2={labelY - uy * 6} />
+                <line x1={labelX + ux * 6} y1={labelY + uy * 6} x2={dlx2} y2={dly2} />
+                <polygon points={arrow(dlx1, dly1, -ux, -uy)} stroke="none" />
+                <polygon points={arrow(dlx2, dly2, ux, uy)} stroke="none" />
                 <text x={labelX} y={labelY} fontSize={3.4} textAnchor="middle" stroke="none">
                   {text}
                 </text>
@@ -1825,7 +2433,9 @@ export const DrawingSheet = forwardRef<
               y={n.y}
               fontSize={n.textSize ?? 3.4}
               fontFamily={n.font || undefined}
-              fill={selNote === n.id || selMultiNotes.has(n.id) ? '#0696d7' : '#333'}
+              fontWeight={n.textStyle === 'Bold' || n.textStyle === 'Bold-Italic' ? 'bold' : undefined}
+              fontStyle={n.textStyle === 'Italic' || n.textStyle === 'Bold-Italic' ? 'italic' : undefined}
+              fill={selNote === n.id || selMultiNotes.has(n.id) ? '#0696d7' : n.color || '#333'}
               style={{ cursor: 'move' }}
               onPointerDown={(e) => {
                 e.stopPropagation()
@@ -1847,6 +2457,7 @@ export const DrawingSheet = forwardRef<
                 setSelNote(n.id)
                 setSelMultiViews(new Set())
                 setSelMultiNotes(new Set())
+                setSelTableId(null)
                 const svg = sheetRef.current?.querySelector('svg') as SVGSVGElement | null
                 if (!svg) return
                 const pt = svg.createSVGPoint()
@@ -1887,130 +2498,227 @@ export const DrawingSheet = forwardRef<
                 })
               }}
             >
-              {n.text}
+              {/* split on real newlines into separate lines - plain SVG
+                  <text> collapses \n like any other whitespace, so a
+                  multi-line note used to render as one run-on line (user
+                  report, 2026-09-19: "I also can't seem to make multi-line
+                  notes"). dy="1.2em" on every line after the first spaces
+                  them at a normal line-height below the previous one. */}
+              {n.text.split('\n').map((line, i) => (
+                <tspan key={i} x={n.x} dy={i === 0 ? 0 : '1.2em'}>
+                  {line || ' '}
+                </tspan>
+              ))}
             </text>
           ))}
 
-          {table &&
-            (() => {
-              const rowH = table.rowHeight
-              const colW = Math.max(20, 130 / table.columns.length)
-              const tableW = colW * table.columns.length
-              const tableH = rowH * (table.rows.length + 1)
-              return (
-                <g
-                  transform={`translate(${MARGIN + 4} ${MARGIN + 4})`}
-                  onContextMenu={(e) => {
-                    e.preventDefault()
-                    setMenu(null)
-                    setDimMenu({
-                      x: e.clientX,
-                      y: e.clientY,
-                      items: [
-                        {
-                          label: table.showGrid ? 'Hide Grid Lines' : 'Show Grid Lines',
-                          onClick: () => setTableGridStyle({ showGrid: !table.showGrid })
-                        },
-                        {
-                          label: 'Grid Color…',
-                          onClick: () => {
-                            void (async () => {
-                              const res = await promptForm('Table Grid', [
-                                { key: 'color', label: 'Grid line color (hex)', value: table.gridColor }
-                              ])
-                              if (res) setTableGridStyle({ gridColor: res.color || '#111' })
-                            })()
-                          }
-                        },
-                        {
-                          label: 'Row Height…',
-                          onClick: () => {
-                            void (async () => {
-                              const res = await promptForm('Table Grid', [
-                                { key: 'h', label: 'Row height (mm)', value: String(table.rowHeight) }
-                              ])
-                              if (res) setTableGridStyle({ rowHeight: Number(res.h) || 5 })
-                            })()
-                          }
-                        }
-                      ]
-                    })
+          {tables.map((table) => {
+            const rowH = table.rowHeight
+            const colW = columnWidthOverride[table.id] ?? Math.max(20, 130 / table.columns.length)
+            const tableW = colW * table.columns.length
+            const tableH = rowH * (table.rows.length + 1)
+            const tableContextMenu = (e: React.MouseEvent): void => {
+              e.preventDefault()
+              setMenu(null)
+              setDimMenu({
+                x: e.clientX,
+                y: e.clientY,
+                items: [
+                  { label: 'Add Row', onClick: () => void addTableRow(table.id) },
+                  { label: 'Add Column', onClick: () => void addTableColumn(table.id) },
+                  { separator: true, label: '' },
+                  {
+                    label: table.showGrid ? 'Hide Grid Lines' : 'Show Grid Lines',
+                    onClick: () => setTableGridStyle(table.id, { showGrid: !table.showGrid })
+                  },
+                  {
+                    label: 'Grid Color…',
+                    onClick: () => {
+                      void (async () => {
+                        const res = await promptForm('Table Grid', [
+                          { key: 'color', label: 'Grid line color (hex)', value: table.gridColor }
+                        ])
+                        if (res) setTableGridStyle(table.id, { gridColor: res.color || '#111' })
+                      })()
+                    }
+                  },
+                  {
+                    label: 'Row Height…',
+                    onClick: () => {
+                      void (async () => {
+                        const res = await promptForm('Table Grid', [
+                          { key: 'h', label: 'Row height (mm)', value: String(table.rowHeight) }
+                        ])
+                        if (res) setTableGridStyle(table.id, { rowHeight: Number(res.h) || 5 })
+                      })()
+                    }
+                  },
+                  {
+                    label: 'Column Width…',
+                    onClick: () => {
+                      void (async () => {
+                        const res = await promptForm('Table Grid', [
+                          { key: 'w', label: 'Column width (mm)', value: String(colW) }
+                        ])
+                        if (!res) return
+                        const w = Number(res.w)
+                        if (!(w > 0)) return
+                        // colW is derived (130 / columns.length) rather than
+                        // stored - persist an explicit override so a chosen
+                        // width survives a rows/columns change. Widened here
+                        // via a per-table override map keyed by table id.
+                        setColumnWidthOverride((cur) => ({ ...cur, [table.id]: w }))
+                      })()
+                    }
+                  },
+                  { separator: true, label: '' },
+                  { label: 'Save as Template…', onClick: () => void saveTableAsTemplate(table.id) },
+                  { label: 'Delete Table', danger: true, onClick: () => void deleteTable(table.id) }
+                ]
+              })
+            }
+            const selTable = selTableId === table.id
+            return (
+              <g key={table.id} data-table={table.id} transform={`translate(${table.x} ${table.y})`}>
+                {/* selection/drag hit area - covers the full table so it's
+                    grabbable anywhere, same "whole bbox is live" fix already
+                    applied to views (see ViewBox's own comment) rather than
+                    needing pixel-perfect border clicks */}
+                <rect
+                  x={-1}
+                  y={-1}
+                  width={tableW + 2}
+                  height={tableH + 2}
+                  fill="#ffffff01"
+                  stroke={selTable ? '#0696d7' : 'transparent'}
+                  strokeWidth={0.6}
+                  style={{ cursor: 'move' }}
+                  onPointerDown={(e) => {
+                    e.stopPropagation()
+                    if (editingCell) return
+                    setSel(null)
+                    setSelNote(null)
+                    setSelMultiViews(new Set())
+                    setSelMultiNotes(new Set())
+                    setSelTableId(table.id)
+                    if (!sheetRef.current) return
+                    const svg = sheetRef.current.querySelector('svg') as SVGSVGElement
+                    const pt = svg.createSVGPoint()
+                    pt.x = e.clientX
+                    pt.y = e.clientY
+                    const p = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+                    tableDrag.current = { id: table.id, ox: p.x - table.x, oy: p.y - table.y, origX: table.x, origY: table.y }
                   }}
-                >
-                  {table.showGrid && (
-                    <g stroke={table.gridColor} strokeWidth={0.25} fill="none">
-                      <rect x={0} y={0} width={tableW} height={tableH} />
-                      {table.columns.slice(1).map((c, i) => (
-                        <line key={c.key} x1={colW * (i + 1)} y1={0} x2={colW * (i + 1)} y2={tableH} />
-                      ))}
-                      {table.rows.map((_row, i) => (
-                        <line key={`r${i}`} x1={0} y1={rowH * (i + 1)} x2={tableW} y2={rowH * (i + 1)} />
-                      ))}
-                    </g>
-                  )}
-                  {table.columns.map((c, ci) => (
-                    <text key={c.key} x={colW * ci + 1.5} y={rowH - 1.5} fontSize={3.2} fontWeight="bold">
+                  onContextMenu={tableContextMenu}
+                />
+                {table.showGrid && (
+                  <g stroke={table.gridColor} strokeWidth={0.25} fill="none">
+                    <rect x={0} y={0} width={tableW} height={tableH} />
+                    {table.columns.slice(1).map((c, i) => (
+                      <line key={c.key} x1={colW * (i + 1)} y1={0} x2={colW * (i + 1)} y2={tableH} />
+                    ))}
+                    {table.rows.map((_row, i) => (
+                      <line key={`r${i}`} x1={0} y1={rowH * (i + 1)} x2={tableW} y2={rowH * (i + 1)} />
+                    ))}
+                  </g>
+                )}
+                {table.columns.map((c, ci) => (
+                  <g key={c.key}>
+                    <rect
+                      x={colW * ci}
+                      y={0}
+                      width={colW}
+                      height={rowH}
+                      fill="transparent"
+                      style={{ cursor: 'text' }}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation()
+                        void renameColumn(table.id, ci)
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault()
+                        setMenu(null)
+                        setDimMenu({
+                          x: e.clientX,
+                          y: e.clientY,
+                          items: [
+                            { label: 'Rename Column…', onClick: () => void renameColumn(table.id, ci) },
+                            { label: 'Delete Column', danger: true, onClick: () => void deleteTableColumn(table.id, ci) }
+                          ]
+                        })
+                      }}
+                    />
+                    <text x={colW * ci + 1.5} y={rowH - 1.5} fontSize={3.2} fontWeight="bold" style={{ pointerEvents: 'none' }}>
                       {c.header}
                     </text>
-                  ))}
-                  {table.rows.map((row, ri) =>
-                    table.columns.map((c, ci) => {
-                      const isEditing = editingCell && editingCell.row === ri && editingCell.col === ci
-                      const value = String((row as unknown as Record<string, unknown>)[c.source] ?? '')
-                      return (
-                        <g key={`${ri}-${c.key}`}>
-                          <rect
-                            x={colW * ci}
-                            y={rowH * (ri + 1)}
-                            width={colW}
-                            height={rowH}
-                            fill={isEditing ? '#0696d71a' : 'transparent'}
-                            style={{ cursor: 'text' }}
-                            onDoubleClick={(e) => {
-                              e.stopPropagation()
-                              setEditingCell({ row: ri, col: ci, value })
-                            }}
-                          />
-                          {isEditing ? (
-                            <foreignObject x={colW * ci} y={rowH * (ri + 1)} width={colW} height={rowH}>
-                              <input
-                                autoFocus
-                                defaultValue={value}
-                                style={{ width: '100%', height: '100%', fontSize: '3.2px', border: 'none', outline: '1px solid #0696d7', boxSizing: 'border-box' }}
-                                onBlur={(e) => {
-                                  void setTableCell(ri, c.source, e.currentTarget.value)
-                                  setEditingCell(null)
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') e.currentTarget.blur()
-                                  if (e.key === 'Escape') {
-                                    e.currentTarget.value = value
-                                    setEditingCell(null)
-                                  }
-                                }}
-                              />
-                            </foreignObject>
-                          ) : (
-                            <text
-                              x={colW * ci + 1.5}
-                              y={rowH * (ri + 1) + rowH - 1.5}
-                              fontSize={3.2}
-                              style={{ cursor: 'text' }}
-                              onDoubleClick={(e) => {
-                                e.stopPropagation()
-                                setEditingCell({ row: ri, col: ci, value })
+                  </g>
+                ))}
+                {table.rows.map((row, ri) =>
+                  table.columns.map((c, ci) => {
+                    const isEditing = editingCell && editingCell.tableId === table.id && editingCell.row === ri && editingCell.col === ci
+                    const value = String((row as unknown as Record<string, unknown>)[c.source] ?? '')
+                    return (
+                      <g key={`${ri}-${c.key}`}>
+                        <rect
+                          x={colW * ci}
+                          y={rowH * (ri + 1)}
+                          width={colW}
+                          height={rowH}
+                          fill={isEditing ? '#0696d71a' : 'transparent'}
+                          style={{ cursor: 'text' }}
+                          onDoubleClick={(e) => {
+                            e.stopPropagation()
+                            setEditingCell({ tableId: table.id, row: ri, col: ci, value })
+                          }}
+                          onContextMenu={(e) => {
+                            e.preventDefault()
+                            setMenu(null)
+                            setDimMenu({
+                              x: e.clientX,
+                              y: e.clientY,
+                              items: [
+                                { label: 'Delete Row', danger: true, onClick: () => void deleteTableRow(table.id, ri) },
+                                { label: 'Delete Column', danger: true, onClick: () => void deleteTableColumn(table.id, ci) }
+                              ]
+                            })
+                          }}
+                        />
+                        {isEditing ? (
+                          <foreignObject x={colW * ci} y={rowH * (ri + 1)} width={colW} height={rowH}>
+                            <input
+                              autoFocus
+                              defaultValue={value}
+                              style={{ width: '100%', height: '100%', fontSize: '3.2px', border: 'none', outline: '1px solid #0696d7', boxSizing: 'border-box' }}
+                              onBlur={(e) => {
+                                void setTableCell(table.id, ri, c.source, e.currentTarget.value)
+                                setEditingCell(null)
                               }}
-                            >
-                              {value}
-                            </text>
-                          )}
-                        </g>
-                      )
-                    })
-                  )}
-                </g>
-              )
-            })()}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') e.currentTarget.blur()
+                                if (e.key === 'Escape') {
+                                  e.currentTarget.value = value
+                                  setEditingCell(null)
+                                }
+                              }}
+                            />
+                          </foreignObject>
+                        ) : (
+                          <text
+                            x={colW * ci + 1.5}
+                            y={rowH * (ri + 1) + rowH - 1.5}
+                            fontSize={3.2}
+                            style={{ cursor: 'text', pointerEvents: 'none' }}
+                          >
+                            {value}
+                          </text>
+                        )}
+                      </g>
+                    )
+                  })
+                )}
+              </g>
+            )
+          })}
 
           {showTitleBlock && (
             <g transform={`translate(${SHEET_W - MARGIN - 90} ${SHEET_H - MARGIN - 26})`}>

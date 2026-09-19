@@ -1,27 +1,24 @@
 import { useEffect, useRef, useState } from 'react'
-import { api } from '../rpc'
 
 /**
  * "Insert McMaster-Carr Component" - F360-style embedded browser: a real
  * Chromium view (WebContentsView in the main process, positioned to track
  * this panel's content slot every frame) renders mcmaster.com directly, so
- * the user searches/browses their actual site. Two actions read off
- * whatever page is currently loaded in that view:
- *  - "Import CAD" resets to a fresh document (an MMC part is its own
- *    component, never merged into whatever design happened to be open),
- *    clicks MMC's own CAD-download control, and feeds the resulting STEP
- *    file into that clean document via the normal importModel path.
- *  - the full page (spec table, price, description, images) is scraped and
- *    stamped onto the imported object as McMaster metadata.
+ * the user searches/browses their actual site. "Import CAD" downloads the
+ * STEP file and scrapes the page (spec table, price, description, images),
+ * then hands both off to the caller via `onReady` - a purchased MMC part is
+ * a real company part, so it goes through the same New Part / PN-reserve
+ * flow as anything else rather than landing as an untagged file; this panel
+ * doesn't touch the FreeCAD document itself or the registry.
  * The slot div itself renders nothing - it's just a positioning reference,
  * the actual pixels come from the native view layered on top of it by main.
  */
 export function McMasterPanel({
   onClose,
-  onImported
+  onReady
 }: {
   onClose: () => void
-  onImported: () => void
+  onReady: (info: { stepPath: string; meta: Record<string, unknown> }) => void
 }): JSX.Element {
   const slotRef = useRef<HTMLDivElement>(null)
   const [url, setUrl] = useState('https://www.mcmaster.com/')
@@ -85,23 +82,12 @@ export function McMasterPanel({
         throw new Error('Open a McMaster-Carr part page first.')
       }
       setBusy('Downloading CAD model...')
-      const path = await window.cad.mcmasterDownloadCad('STEP')
+      const stepPath = await window.cad.mcmasterDownloadCad('STEP')
       setBusy('Scraping part data...')
       const meta = await window.cad.mcmasterScrapeCurrentPart()
-      // An MMC part is its own component, never merged into whatever design
-      // happened to be open in the background - start from a clean document.
-      setBusy('Starting a new component...')
-      await api.resetDocument()
-      setBusy('Importing into design...')
-      const r = await api.importModel(path)
-      if (r.imported.length && meta) {
-        const partNumber = (meta.partNumber as string) ?? 'unknown'
-        for (const id of r.imported) {
-          await api.tagMcMaster(id, partNumber, meta)
-        }
-        setLastImported({ partNumber, title: meta.title as string | undefined })
-      }
-      onImported()
+      const partNumber = (meta?.partNumber as string) ?? 'unknown'
+      setLastImported({ partNumber, title: meta?.title as string | undefined })
+      onReady({ stepPath, meta: meta ?? {} })
       setBusy(null)
     } catch (e) {
       setErr((e as Error).message)
@@ -154,7 +140,7 @@ export function McMasterPanel({
           className="mcmaster-import"
           disabled={!isProductPage || !!busy}
           onClick={() => void doImport()}
-          title={isProductPage ? 'Download the CAD model and insert it into the design' : 'Open a part page first'}
+          title={isProductPage ? 'Download the CAD model and assign it a company part number' : 'Open a part page first'}
         >
           Import CAD
         </button>
@@ -168,7 +154,7 @@ export function McMasterPanel({
           {err && <span className="mcmaster-err">{err}</span>}
           {!busy && !err && lastImported && (
             <span>
-              Imported {lastImported.partNumber}
+              Downloaded {lastImported.partNumber}
               {lastImported.title ? ` - ${lastImported.title}` : ''}
             </span>
           )}
