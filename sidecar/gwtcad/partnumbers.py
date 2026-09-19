@@ -400,15 +400,20 @@ def _fmt_pn(project, type, seq, rev):
 # Suppliers whose part number deterministically maps to a working product
 # URL, keyed by a lowercased mfg-name match. McMaster-Carr's own catalog
 # number IS the URL slug on their site (mcmaster.com/<mfgPn>/); DigiKey's
-# search-by-keyword endpoint reliably resolves a manufacturer part number to
-# its product page. This is intentionally a short, explicit list rather than
-# a generic "guess a URL" scheme - most suppliers (Amazon, JLCPCB, ...) don't
-# have a reliable part-number-to-URL mapping, so those are left blank for a
-# human to paste in, same as always.
+# and Mouser's search/product endpoints reliably resolve a manufacturer part
+# number to its product page; for Amazon, mfg_pn in this registry is always
+# the ASIN when mfg=Amazon (confirmed against every existing Amazon row),
+# and amazon.com/dp/<ASIN> is Amazon's own canonical product-page scheme.
+# This is intentionally a short, explicit list rather than a generic "guess
+# a URL" scheme - most suppliers (Heilind, JLCPCB, ...) don't have a
+# reliable part-number-to-URL mapping, so those are left blank for a human
+# to paste in, same as always.
 _AUTO_LINK_BUILDERS = {
     "mcmaster-carr": lambda mfg_pn: "https://www.mcmaster.com/%s/" % mfg_pn,
     "mcmaster":      lambda mfg_pn: "https://www.mcmaster.com/%s/" % mfg_pn,
     "digikey":       lambda mfg_pn: "https://www.digikey.com/en/products/result?keywords=%s" % mfg_pn,
+    "mouser":        lambda mfg_pn: "https://www.mouser.com/ProductDetail/%s" % mfg_pn,
+    "amazon":        lambda mfg_pn: "https://www.amazon.com/dp/%s" % mfg_pn,
 }
 
 
