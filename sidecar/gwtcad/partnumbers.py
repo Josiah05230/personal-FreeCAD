@@ -353,19 +353,54 @@ def _fmt_pn(project, type, seq, rev):
     return "%s%s%03d%d" % (project, type, seq, rev)
 
 
+# Suppliers whose part number deterministically maps to a working product
+# URL, keyed by a lowercased mfg-name match. McMaster-Carr's own catalog
+# number IS the URL slug on their site (mcmaster.com/<mfgPn>/); DigiKey's
+# search-by-keyword endpoint reliably resolves a manufacturer part number to
+# its product page. This is intentionally a short, explicit list rather than
+# a generic "guess a URL" scheme - most suppliers (Amazon, JLCPCB, ...) don't
+# have a reliable part-number-to-URL mapping, so those are left blank for a
+# human to paste in, same as always.
+_AUTO_LINK_BUILDERS = {
+    "mcmaster-carr": lambda mfg_pn: "https://www.mcmaster.com/%s/" % mfg_pn,
+    "mcmaster":      lambda mfg_pn: "https://www.mcmaster.com/%s/" % mfg_pn,
+    "digikey":       lambda mfg_pn: "https://www.digikey.com/en/products/result?keywords=%s" % mfg_pn,
+}
+
+
+def _auto_purchasing_link(mfg, mfg_pn):
+    """A generated purchasing link for known suppliers when mfg_pn is given,
+    or "" if mfg isn't one of the suppliers we know how to link (the caller
+    still just leaves purchasing_link blank in that case, same as before this
+    existed)."""
+    if not mfg or not mfg_pn:
+        return ""
+    builder = _AUTO_LINK_BUILDERS.get(mfg.strip().lower())
+    if not builder:
+        return ""
+    from urllib.parse import quote
+    return builder(quote(mfg_pn.strip(), safe=""))
+
+
 @method("pn.reserve")
 def pn_reserve(project, type, seq, name, description, mfg=None, mfgPn=None, purchasingLink=None):
     """Assign a brand-new PN at rev 0 and append its row to the registry.
     Rev 0's reason is always "Initial revision" - only later revisions
     require the user to state why. Returns the assigned PN string and the
     relative path the caller should save the new .FCStd at (caller still
-    does the actual FreeCAD saveAs - this RPC only reserves the identity)."""
+    does the actual FreeCAD saveAs - this RPC only reserves the identity).
+
+    If purchasingLink is left blank and mfg is a supplier whose part number
+    maps to a real product URL (McMaster-Carr, DigiKey), it's auto-filled
+    from mfgPn - see _AUTO_LINK_BUILDERS. An explicitly given purchasingLink
+    is never overridden."""
     cfg = _load_config()
     seq = int(seq)
     repo = _registry_path(cfg)
     pn_seq = "%s%s%03d" % (project, type, seq)
     relpath = _filename_for(project, type, seq, 0)
     pn = _fmt_pn(project, type, seq, 0)
+    link = purchasingLink or _auto_purchasing_link(mfg, mfgPn)
 
     def attempt():
         rows = _read_registry(cfg)
@@ -377,7 +412,7 @@ def pn_reserve(project, type, seq, name, description, mfg=None, mfgPn=None, purc
             "pn": pn, "pn_seq": pn_seq, "project": project, "type": type,
             "seq": "%03d" % seq, "rev": "0", "name": name or "",
             "description": description, "reason": "Initial revision",
-            "mfg": mfg or "", "mfg_pn": mfgPn or "", "purchasing_link": purchasingLink or "",
+            "mfg": mfg or "", "mfg_pn": mfgPn or "", "purchasing_link": link,
             "status": "active", "lifecycle": "in_work",
             "rev_date": _now_iso(), "created": _now_iso(),
             "repo_relpath": relpath,
@@ -461,14 +496,25 @@ def pn_new_revision(pnSeq, reason, mfg=None, mfgPn=None, purchasingLink=None):
         # specified" here rather than "blank it out". Not worth the extra
         # parameter noise for something this rare - edit registry.csv by hand
         # if it's ever actually needed.
+        #
+        # purchasingLink is resolved AFTER mfg/mfgPn so that changing to a
+        # different mfg_pn on this revision (without also repasting a new
+        # link) re-generates the link for the NEW part rather than silently
+        # carrying forward a link that now points at the wrong product.
+        new_mfg    = mfg if mfg is not None else cur2.get("mfg", "")
+        new_mfg_pn = mfgPn if mfgPn is not None else cur2.get("mfg_pn", "")
+        if purchasingLink is not None:
+            new_link = purchasingLink
+        elif mfgPn is not None or mfg is not None:
+            new_link = _auto_purchasing_link(new_mfg, new_mfg_pn)
+        else:
+            new_link = cur2.get("purchasing_link", "")
         rows2.append({
             "pn": _fmt_pn(project, type, seq, new_rev), "pn_seq": pnSeq,
             "project": project, "type": type, "seq": cur2["seq"], "rev": str(new_rev),
             "name": cur2.get("name", ""), "description": cur2.get("description", ""),
             "reason": reason.strip(),
-            "mfg": mfg if mfg is not None else cur2.get("mfg", ""),
-            "mfg_pn": mfgPn if mfgPn is not None else cur2.get("mfg_pn", ""),
-            "purchasing_link": purchasingLink if purchasingLink is not None else cur2.get("purchasing_link", ""),
+            "mfg": new_mfg, "mfg_pn": new_mfg_pn, "purchasing_link": new_link,
             "status": "active", "lifecycle": "in_work",
             "rev_date": _now_iso(), "created": _now_iso(),
             "repo_relpath": new_relpath,
