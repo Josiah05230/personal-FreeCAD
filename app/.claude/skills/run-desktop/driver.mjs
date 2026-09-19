@@ -107,6 +107,14 @@ const COMMANDS = {
     console.log(`clicked (${x},${y})`);
   },
 
+  // pause between chained commands sent in one tmux send-keys batch, so a
+  // whole multi-step flow can be queued at once without each step racing the
+  // previous one's async completion
+  async wait(ms) {
+    await new Promise((r) => setTimeout(r, Number(ms) || 500));
+    console.log(`waited ${ms}ms`);
+  },
+
   async 'right-click'(argstr) {
     if (!page) return console.log('ERROR: launch first');
     const [x, y] = (argstr || '').split(/\s+/).map(Number);

@@ -63,6 +63,18 @@ export function Ribbon({
     }
   }, [showAssemble, tab])
 
+  // Escape closes an open group overflow dropdown, same as every other
+  // popup/menu in the app - it previously stayed open and could overlap
+  // whatever Escape was actually meant to cancel (e.g. leaving sketch mode).
+  useEffect(() => {
+    if (!menu) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setMenu(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [menu])
+
   const groups = useMemo(() => {
     const forTab = commands.filter((c) => c.tab === tab)
     const order: string[] = []

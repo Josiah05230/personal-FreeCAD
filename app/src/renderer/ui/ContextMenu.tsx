@@ -35,13 +35,18 @@ export function ContextMenu({
 
   useEffect(() => {
     const h = (): void => onClose()
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose()
+    }
     window.addEventListener('click', h)
     window.addEventListener('resize', h)
     window.addEventListener('blur', h)
+    window.addEventListener('keydown', onKey)
     return () => {
       window.removeEventListener('click', h)
       window.removeEventListener('resize', h)
       window.removeEventListener('blur', h)
+      window.removeEventListener('keydown', onKey)
     }
   }, [onClose])
 

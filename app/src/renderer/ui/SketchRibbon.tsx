@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { SketchTool, SketchConstraintType } from '../viewport/SketchController'
 import { isPinned, type PinMap } from '../ribbonPrefs'
 
@@ -81,6 +81,19 @@ export function SketchRibbon({
   onSetPin: (id: string, pinned: boolean) => void
 }): JSX.Element {
   const [menu, setMenu] = useState<{ group: string; x: number; y: number } | null>(null)
+
+  // Escape closes an open group overflow dropdown first; App.tsx's own
+  // Escape handler (cancel current tool / clear selection) still runs too,
+  // since this listener never stops propagation - both effects are wanted.
+  useEffect(() => {
+    if (!menu) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setMenu(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [menu])
+
   const shown = (pin: string, dflt: Set<string>): boolean =>
     pin in pins ? isPinned(pin, pins) : dflt.has(pin)
 

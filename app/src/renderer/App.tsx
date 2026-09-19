@@ -3666,7 +3666,8 @@ export function App(): JSX.Element {
         entitySnapshot: (idx: number) => vpApi.current?.testEntitySnapshot(idx) ?? null,
         handlePointCount: () => vpApi.current?.testHandlePointCount() ?? 0,
         fillCount: () => vpApi.current?.testFillCount() ?? 0,
-        dimPicksState: () => vpApi.current?.testDimPicksState() ?? []
+        dimPicksState: () => vpApi.current?.testDimPicksState() ?? [],
+        dimAxisKind: () => vpApi.current?.testDimAxisKind() ?? { kind: 'distance', forced: null }
       },
 
       // --- observe ---
@@ -4289,7 +4290,14 @@ export function App(): JSX.Element {
         <FirstRun
           onDone={(initial) => {
             setShowFirstRun(false)
-            if (initial && Object.keys(initial).length) applyRenderSettings(initial)
+            // a brand-new, untouched document must not open already flagged
+            // dirty - the wizard is setting an app-level viewport preference,
+            // not editing a document, so don't mark the tab unsaved for it
+            // (was showing "Untitled *" before the user had done anything).
+            if (initial && Object.keys(initial).length) {
+              applyRenderSettings(initial)
+              markDirty(false)
+            }
           }}
         />
       )}

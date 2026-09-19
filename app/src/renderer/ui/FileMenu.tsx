@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 export interface FileActions {
   onNew: () => void
@@ -66,6 +66,15 @@ export function FileMenu({
   actions: FileActions
 }): JSX.Element {
   const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
 
   const item = (label: string, fn: () => void, key?: string): JSX.Element => (
     <div

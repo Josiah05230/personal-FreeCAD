@@ -37,6 +37,29 @@ clear it as you go.
 
 ## Recently addressed (this session)
 
+- **"Drawing from Design" was only reachable from TOOLS.** A document with no
+  drawing yet has no "Drawings" browser row and no DRAWING ribbon tab (both
+  only appear once a drawing exists), so the sole entry point to create the
+  FIRST one was an unlabeled button buried in TOOLS - not discoverable by a
+  first-time user, and not where the app's own docs describe it (a whole
+  DRAWING ribbon tab). Added the same command to SOLID's Insert group
+  (Fusion's actual "Insert > Drawing" location), verified it now shows there.
+- **Escape did not close an open ribbon/menu dropdown.** The SOLID/SKETCH
+  ribbon group overflow ("Insert ▾" etc.) and every right-click context menu
+  closed on outside-click but not on Escape, unlike the command palette and
+  prompt dialogs - reproduced live (opened Insert, pressed Escape, menu stayed
+  open, overlapping the next prompt). Fixed in the shared `ContextMenu` (fixes
+  every right-click menu app-wide), the ribbon's own dropdown, the sketch
+  ribbon's dropdown, and the File menu - each additively, so a mode-level
+  Escape handler underneath (e.g. sketch tool cancel) still also runs.
+- **A brand-new, never-touched document opened already flagged dirty**
+  ("Untitled *" with no features, right after finishing the first-run
+  wizard). The wizard's "apply my chosen viewport look" call went through
+  `applyRenderSettings`, whose `markDirty(true)` is correct for a real
+  mid-session appearance change but wrong for a one-time app-level
+  preference on a document with nothing to lose yet. Fixed by explicitly
+  clearing the dirty flag right after that one call; verified the title bar
+  now reads "Untitled" with no asterisk on a fresh launch.
 - **Data Panel hid every folder with no .FCStd in it.** `fs:listDir` used
   "does this dir contain a design within 3 levels" as a hard filter on
   DIRECTORIES, not just files - so a fresh/non-CAD folder (a company folder

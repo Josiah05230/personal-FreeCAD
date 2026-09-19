@@ -133,6 +133,12 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'ins.kicad', title: 'Import KiCad PCB', group: 'Insert', tab: 'SOLID', icon: 'combine', run: () => ctx.importKicad() },
     { id: 'ins.kicadSync', title: 'Re-sync KiCad PCB', group: 'Insert', tab: 'SOLID', icon: 'combine', run: () => ctx.reimportKicad() },
     { id: 'ins.mcmaster', title: 'McMaster-Carr Component', group: 'Insert', tab: 'SOLID', icon: 'combine', run: () => ctx.toggleMcMaster() },
+    // also reachable here (not just TOOLS > Drawing) - a document with no
+    // drawing yet has no "Drawings" browser row and no DRAWING ribbon tab
+    // (both are created BY this command / only appear once one exists), so
+    // this was the only way in and it was not somewhere a first-time user
+    // would think to look for "start a drawing" (user feedback, 2026-09-19)
+    { id: 'ins.drawing', title: 'Drawing from Design', group: 'Insert', tab: 'SOLID', icon: 'sketch', run: () => ctx.startDrawing() },
     // --- assemble ---
     { id: 'asm.newComponent', title: 'Insert Component', group: 'Assemble', tab: 'ASSEMBLE', icon: 'combine', run: () => ctx.addComponent() },
     { id: 'asm.joint', title: 'Joint', group: 'Assemble', tab: 'ASSEMBLE', icon: 'axis', hotkey: 'j', run: () => ctx.addJoint() },

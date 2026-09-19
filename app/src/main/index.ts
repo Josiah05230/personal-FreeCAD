@@ -125,9 +125,16 @@ app.whenReady().then(async () => {
   // --e2e / fuzz: never pop a native file dialog (it would block the run) -
   // behave as if the user hit Cancel.
   const E2E = process.argv.includes('--e2e')
+  // GWTCAD_AUTO_SAVE_PATH: for interactive manual/agent driving only (the
+  // run-desktop Playwright driver) - a native save/open dialog is outside the
+  // Chromium render tree and can't be screenshotted or clicked through
+  // Playwright's page API, which would otherwise dead-end any drive session
+  // at the first Ctrl+S. Undocumented, dev-only, never set by a real user.
+  const AUTO_SAVE_PATH = process.env.GWTCAD_AUTO_SAVE_PATH
 
   ipcMain.handle('dialog:save', async (_e, defaultPath?: string) => {
     if (E2E) return null
+    if (AUTO_SAVE_PATH) return defaultPath ?? AUTO_SAVE_PATH
     const r = await dialog.showSaveDialog(win!, {
       defaultPath,
       filters: [{ name: 'FreeCAD Design', extensions: ['FCStd'] }]
@@ -137,6 +144,7 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('dialog:open', async (_e, filters?: { name: string; extensions: string[] }[]) => {
     if (E2E) return null
+    if (AUTO_SAVE_PATH) return AUTO_SAVE_PATH
     const r = await dialog.showOpenDialog(win!, {
       properties: ['openFile'],
       filters: filters ?? [{ name: 'FreeCAD Design', extensions: ['FCStd'] }]
