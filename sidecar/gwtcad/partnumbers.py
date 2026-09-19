@@ -4,14 +4,25 @@ files that carry them across a company's per-project git repos.
 
 Layout this module assumes (all paths come from ~/.gwtcad/company.json, none
 are hardcoded):
-  - one shared "registry" repo holding registry.csv (one row per PN sequence,
-    not per revision) and types.yaml (project-defined type-letter map);
-  - one git repo per project (keyed by a 2-letter project code) plus one
-    "hardware" repo, each holding the actual .FCStd files;
+  - one shared "registry" repo holding registry.csv and types.yaml (a
+    project-defined type-letter map);
+  - one git repo PER PROJECT (keyed by a 2-letter project code), each holding
+    the actual .FCStd files. A reusable-hardware library (bolts, magnets, MMC
+    connectors, ...) is just an ordinary project with its own code (e.g. HW)
+    - there is no separate "hardware" concept in this module; its type
+      letters simply happen to be arbitrary/sequential rather than a fixed
+      A=Assembly-style map, which is a types.yaml content choice, not a code
+      path difference;
   - a PN is "[project][type][seq3][rev1]", e.g. PSA0080. seq is fixed for the
     part's life; a revision bump copies the current file to the next rev
-    number and updates the registry's current_rev - the old rev file is left
-    alone on disk and in git history.
+    number - the old rev file is left alone on disk and in git history.
+
+registry.csv holds ONE ROW PER REVISION (not per sequence) - this mirrors the
+company's existing tracking spreadsheet, where every revision carries its own
+changelog reason, date, and (for purchased/off-the-shelf parts) manufacturer
+info that genuinely changes between revisions (e.g. a PCB vendor switch). A
+sequence's "current" row is whichever of its rows has the highest rev number;
+pn_current_row() below is the one place that logic lives.
 
 Git is the concurrency control: reserving a PN or bumping a revision means
 pull -> mutate registry.csv -> commit -> push, retrying against a freshly
@@ -32,9 +43,19 @@ from .registry import method, RpcError, APP_ERROR
 
 _CONFIG_PATH = os.path.expanduser("~/.gwtcad/company.json")
 
+# One row per revision. mfg/mfg_pn/purchasing_link are optional (blank for
+# self-designed parts, populated where known for purchased/off-the-shelf
+# hardware - e.g. auto-filled from a McMaster-Carr import's scraped metadata).
+# repo_relpath is only a cached HINT of where <pn>.FCStd last lived within its
+# project repo, not authoritative - a file may be organized into subfolders
+# and moved freely by hand (Finder, `git mv`, ...), so every lookup verifies
+# the hint still exists on disk and falls back to a recursive filename search
+# (self-healing the hint) rather than trusting it blindly. See
+# _find_part_file below.
 _REGISTRY_FIELDS = [
-    "pn_seq", "project", "type", "seq", "current_rev", "name", "description",
-    "repo_relpath", "status", "created", "modified",
+    "pn", "pn_seq", "project", "type", "seq", "rev", "name", "description",
+    "reason", "mfg", "mfg_pn", "purchasing_link", "status", "rev_date", "created",
+    "repo_relpath",
 ]
 
 _MAX_PUSH_RETRIES = 5
@@ -46,16 +67,15 @@ _MAX_PUSH_RETRIES = 5
 
 def _load_config():
     if not os.path.exists(_CONFIG_PATH):
-        return {"registryPath": None, "projects": {}, "hardware": None}
+        return {"registryPath": None, "projects": {}}
     try:
         import json
         with open(_CONFIG_PATH) as f:
             cfg = json.load(f)
     except Exception:
-        return {"registryPath": None, "projects": {}, "hardware": None}
+        return {"registryPath": None, "projects": {}}
     cfg.setdefault("registryPath", None)
     cfg.setdefault("projects", {})
-    cfg.setdefault("hardware", None)
     return cfg
 
 
@@ -74,28 +94,23 @@ def pn_get_company_config():
 
 
 @method("pn.setCompanyConfig")
-def pn_set_company_config(registryPath=None, projects=None, hardware=None):
+def pn_set_company_config(registryPath=None, projects=None):
     cfg = _load_config()
     if registryPath is not None:
         cfg["registryPath"] = registryPath
     if projects is not None:
         cfg["projects"] = projects
-    if hardware is not None:
-        cfg["hardware"] = hardware
     _save_config(cfg)
     return cfg
 
 
 def _repo_path_for(cfg, project):
-    """Resolve a 2-letter project code (or the literal "hardware") to its
-    repo path, raising a clear app error if company.json isn't set up for it
-    yet rather than a bare KeyError."""
-    if project == "hardware":
-        entry = cfg.get("hardware")
-        path = entry.get("repoPath") if entry else None
-    else:
-        entry = (cfg.get("projects") or {}).get(project)
-        path = entry.get("repoPath") if entry else None
+    """Resolve a 2-letter project code to its repo path, raising a clear app
+    error if company.json isn't set up for it yet rather than a bare
+    KeyError. A reusable-hardware library is just a project like any other -
+    there is no special-cased code here for it."""
+    entry = (cfg.get("projects") or {}).get(project)
+    path = entry.get("repoPath") if entry else None
     if not path or not os.path.isdir(path):
         raise RpcError(APP_ERROR,
                         "project '%s' has no valid repoPath in company.json - "
@@ -173,7 +188,7 @@ def _commit_and_push(repo, message, retry_fn):
 
 
 # --------------------------------------------------------------------------- #
-# registry.csv
+# registry.csv - one row per revision
 # --------------------------------------------------------------------------- #
 
 def _registry_csv(cfg):
@@ -199,6 +214,45 @@ def _write_registry(cfg, rows):
     os.replace(tmp, path)
 
 
+def _rows_for_seq(rows, pn_seq):
+    return [r for r in rows if r.get("pn_seq") == pn_seq]
+
+
+def _current_row(rows, pn_seq):
+    """The highest-rev row for a sequence - its current state - or None if
+    the sequence doesn't exist at all."""
+    seq_rows = _rows_for_seq(rows, pn_seq)
+    if not seq_rows:
+        return None
+    return max(seq_rows, key=lambda r: int(r["rev"]))
+
+
+def _filename_for(project, type, seq, rev):
+    return "%s.FCStd" % _fmt_pn(project, type, seq, rev)
+
+
+def _find_part_file(repo, filename, hint_relpath=None):
+    """Where <filename> actually lives inside repo. Checks the cached hint
+    first (fast path - true almost always, since files don't move on their
+    own), then falls back to a recursive search by exact filename so a part
+    that got reorganized into a subfolder by hand is still found without any
+    registry update. Returns (abspath, relpath) or (None, None) if genuinely
+    missing. Search order for the fallback is arbitrary among ties - a
+    filename collision (same PN.FCStd in two places) shouldn't happen since
+    PNs are unique, but if it ever does, whichever os.walk finds first wins;
+    not worth guarding against something that indicates a worse problem."""
+    if hint_relpath:
+        hint_abs = os.path.join(repo, hint_relpath)
+        if os.path.isfile(hint_abs):
+            return hint_abs, hint_relpath
+    for dirpath, dirnames, filenames in os.walk(repo):
+        dirnames[:] = [d for d in dirnames if d != ".git"]
+        if filename in filenames:
+            abspath = os.path.join(dirpath, filename)
+            return abspath, os.path.relpath(abspath, repo)
+    return None, None
+
+
 def _types_yaml(cfg):
     return os.path.join(_registry_path(cfg), "types.yaml")
 
@@ -222,18 +276,45 @@ def _now_iso():
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
+def _current_rows(rows):
+    """One row per sequence - each sequence's highest-rev row only. This is
+    what "the registry" means for anything that isn't specifically asking
+    for revision history."""
+    by_seq = {}
+    for r in rows:
+        seq = r.get("pn_seq")
+        if not seq:
+            continue
+        cur = by_seq.get(seq)
+        if cur is None or int(r["rev"]) > int(cur["rev"]):
+            by_seq[seq] = r
+    return list(by_seq.values())
+
+
 @method("pn.listAll")
 def pn_list_all(project=None, status=None):
+    """Current-revision snapshot of every PN sequence (not full history -
+    see pn.history for a sequence's past revisions)."""
     cfg = _load_config()
     if not cfg.get("registryPath"):
         return {"parts": []}
     _sync_pull(_registry_path(cfg))
-    rows = _read_registry(cfg)
+    rows = _current_rows(_read_registry(cfg))
     if project:
         rows = [r for r in rows if r.get("project") == project]
     if status:
         rows = [r for r in rows if r.get("status") == status]
     return {"parts": rows}
+
+
+@method("pn.history")
+def pn_history(pnSeq):
+    """Every revision ever recorded for a sequence, oldest first."""
+    cfg = _load_config()
+    _sync_pull(_registry_path(cfg))
+    rows = _rows_for_seq(_read_registry(cfg), pnSeq)
+    rows.sort(key=lambda r: int(r["rev"]))
+    return {"revisions": rows}
 
 
 @method("pn.listAvailableSeq")
@@ -260,28 +341,32 @@ def _fmt_pn(project, type, seq, rev):
 
 
 @method("pn.reserve")
-def pn_reserve(project, type, seq, name, description):
-    """Assign a brand-new PN at rev 0 and append it to the registry. Returns
-    the assigned PN string and the relative path the caller should save the
-    new .FCStd at (caller still does the actual FreeCAD saveAs - this RPC
-    only reserves the identity)."""
+def pn_reserve(project, type, seq, name, description, mfg=None, mfgPn=None, purchasingLink=None):
+    """Assign a brand-new PN at rev 0 and append its row to the registry.
+    Rev 0's reason is always "Initial revision" - only later revisions
+    require the user to state why. Returns the assigned PN string and the
+    relative path the caller should save the new .FCStd at (caller still
+    does the actual FreeCAD saveAs - this RPC only reserves the identity)."""
     cfg = _load_config()
     seq = int(seq)
     repo = _registry_path(cfg)
     pn_seq = "%s%s%03d" % (project, type, seq)
-    relpath = "%s.FCStd" % _fmt_pn(project, type, seq, 0)
+    relpath = _filename_for(project, type, seq, 0)
+    pn = _fmt_pn(project, type, seq, 0)
 
     def attempt():
         rows = _read_registry(cfg)
-        if any(r.get("pn_seq") == pn_seq for r in rows):
+        if _rows_for_seq(rows, pn_seq):
             # Someone else already took this exact seq - caller must retry
             # with a fresh pn.listAvailableSeq; nothing for us to commit.
             return False
         rows.append({
-            "pn_seq": pn_seq, "project": project, "type": type,
-            "seq": "%03d" % seq, "current_rev": "0", "name": name,
-            "description": description, "repo_relpath": relpath,
-            "status": "active", "created": _now_iso(), "modified": _now_iso(),
+            "pn": pn, "pn_seq": pn_seq, "project": project, "type": type,
+            "seq": "%03d" % seq, "rev": "0", "name": name or "",
+            "description": description, "reason": "Initial revision",
+            "mfg": mfg or "", "mfg_pn": mfgPn or "", "purchasing_link": purchasingLink or "",
+            "status": "active", "rev_date": _now_iso(), "created": _now_iso(),
+            "repo_relpath": relpath,
         })
         _write_registry(cfg, rows)
         return True
@@ -291,36 +376,46 @@ def pn_reserve(project, type, seq, name, description):
         raise RpcError(APP_ERROR,
                         "PN %s was just taken by someone else - pick another "
                         "sequence number" % pn_seq)
-    _commit_and_push(repo, "Reserve PN %s0 (%s)" % (pn_seq, name), attempt)
+    _commit_and_push(repo, "Reserve PN %s (%s)" % (pn, description), attempt)
 
-    return {"pn": _fmt_pn(project, type, seq, 0), "pnSeq": pn_seq, "rev": 0,
-            "repoRelpath": relpath, "name": name, "description": description}
+    return {"pn": pn, "pnSeq": pn_seq, "rev": 0, "repoRelpath": relpath,
+            "name": name or "", "description": description}
 
 
 @method("pn.newRevision")
-def pn_new_revision(pnSeq):
-    """Copy the current-rev file to the next rev number in its project repo
-    and advance current_rev in the registry. The OLD rev file is left in
-    place on disk and in git history - this never overwrites or deletes it."""
+def pn_new_revision(pnSeq, reason, mfg=None, mfgPn=None, purchasingLink=None):
+    """Copy the current-rev file to the next rev number in its project repo,
+    append a NEW row for that revision (carrying forward name/description
+    unless the caller changed them), and mark the prior top row obsolete.
+    reason is required - it's the per-revision changelog note the sheet this
+    replaced always carried ('Updated LDO REG...', 'Switched to ESP', ...).
+    The OLD rev file is left in place on disk and in git history - this
+    never overwrites or deletes it."""
+    if not reason or not reason.strip():
+        raise RpcError(APP_ERROR, "a revision reason is required")
     cfg = _load_config()
     reg_repo = _registry_path(cfg)
     _sync_pull(reg_repo)
     rows = _read_registry(cfg)
-    row = next((r for r in rows if r.get("pn_seq") == pnSeq), None)
-    if row is None:
+    cur = _current_row(rows, pnSeq)
+    if cur is None:
         raise RpcError(APP_ERROR, "unknown PN sequence: %s" % pnSeq)
 
-    project, type, seq = row["project"], row["type"], int(row["seq"])
-    old_rev = int(row["current_rev"])
+    project, type, seq = cur["project"], cur["type"], int(cur["seq"])
+    old_rev = int(cur["rev"])
     new_rev = old_rev + 1
     proj_repo = _repo_path_for(cfg, project)
 
-    old_relpath = row["repo_relpath"]
-    new_relpath = "%s.FCStd" % _fmt_pn(project, type, seq, new_rev)
-    old_abspath = os.path.join(proj_repo, old_relpath)
+    old_filename = _filename_for(project, type, seq, old_rev)
+    old_abspath, old_relpath = _find_part_file(proj_repo, old_filename, cur.get("repo_relpath"))
+    if old_abspath is None:
+        raise RpcError(APP_ERROR,
+                        "current rev file %s not found anywhere under %s" % (old_filename, proj_repo))
+    # The new revision's file lands NEXT TO the old one (same folder) rather
+    # than always at the repo root - preserves whatever organization the
+    # project uses (mechanical/, electrical/, ...).
+    new_relpath = os.path.join(os.path.dirname(old_relpath), _filename_for(project, type, seq, new_rev))
     new_abspath = os.path.join(proj_repo, new_relpath)
-    if not os.path.isfile(old_abspath):
-        raise RpcError(APP_ERROR, "current rev file missing on disk: %s" % old_abspath)
     if os.path.exists(new_abspath):
         raise RpcError(APP_ERROR, "target rev file already exists: %s" % new_abspath)
 
@@ -334,25 +429,40 @@ def pn_new_revision(pnSeq):
 
     def attempt():
         rows2 = _read_registry(cfg)
-        row2 = next((r for r in rows2 if r.get("pn_seq") == pnSeq), None)
-        if row2 is None or int(row2["current_rev"]) != old_rev:
+        cur2 = _current_row(rows2, pnSeq)
+        if cur2 is None or int(cur2["rev"]) != old_rev:
             # Someone else already bumped this PN's revision since we
             # started - our copied file is now stale/wrong, surface that.
             raise RpcError(APP_ERROR,
                             "PN %s's revision changed underneath us - retry" % pnSeq)
-        row2["current_rev"] = str(new_rev)
-        row2["repo_relpath"] = new_relpath
-        row2["modified"] = _now_iso()
+        cur2["status"] = "obsolete"
+        # mfg/mfgPn/purchasingLink carry forward from the prior revision
+        # unless explicitly overridden - there's no way to CLEAR one of these
+        # via a revision bump (only replace it), since None means "not
+        # specified" here rather than "blank it out". Not worth the extra
+        # parameter noise for something this rare - edit registry.csv by hand
+        # if it's ever actually needed.
+        rows2.append({
+            "pn": _fmt_pn(project, type, seq, new_rev), "pn_seq": pnSeq,
+            "project": project, "type": type, "seq": cur2["seq"], "rev": str(new_rev),
+            "name": cur2.get("name", ""), "description": cur2.get("description", ""),
+            "reason": reason.strip(),
+            "mfg": mfg if mfg is not None else cur2.get("mfg", ""),
+            "mfg_pn": mfgPn if mfgPn is not None else cur2.get("mfg_pn", ""),
+            "purchasing_link": purchasingLink if purchasingLink is not None else cur2.get("purchasing_link", ""),
+            "status": "active", "rev_date": _now_iso(), "created": _now_iso(),
+            "repo_relpath": new_relpath,
+        })
         _write_registry(cfg, rows2)
         return True
 
     _sync_pull(reg_repo)
     attempt()
-    _commit_and_push(reg_repo, "Advance %s to rev %d" % (pnSeq, new_rev), attempt)
+    _commit_and_push(reg_repo, "%s: rev %d - %s" % (pnSeq, new_rev, reason.strip()), attempt)
 
     return {"pn": _fmt_pn(project, type, seq, new_rev), "pnSeq": pnSeq,
-            "rev": new_rev, "repoRelpath": new_relpath,
-            "path": new_abspath, "name": row["name"], "description": row["description"]}
+            "rev": new_rev, "repoRelpath": new_relpath, "path": new_abspath,
+            "name": cur.get("name", ""), "description": cur.get("description", "")}
 
 
 @method("pn.tagDocument")
@@ -368,16 +478,13 @@ def pn_tag_document(pn, name, description):
 
 @method("pn.repoForPath")
 def pn_repo_for_path(path):
-    """Which configured project/hardware repo (if any) a filesystem path
-    falls under - used by the New Design flow to decide whether saving there
-    requires a PN. Returns {"project": None} for anything outside every
-    configured repo (untracked scratch work stays untracked)."""
+    """Which configured project repo (if any) a filesystem path falls under
+    - used by the New Design flow to decide whether saving there requires a
+    PN. Returns {"project": None} for anything outside every configured repo
+    (untracked scratch work stays untracked)."""
     cfg = _load_config()
     path = os.path.abspath(os.path.expanduser(path))
     candidates = list((cfg.get("projects") or {}).items())
-    hw = cfg.get("hardware")
-    if hw and hw.get("repoPath"):
-        candidates.append(("hardware", hw))
     best = None
     for code, entry in candidates:
         repo = entry.get("repoPath")
@@ -395,11 +502,12 @@ def pn_repo_for_path(path):
 @method("pn.checkLocation")
 def pn_check_location(pnSeq, openedPath):
     """A document tagged with pnSeq was just opened from openedPath - does
-    that match where the registry thinks its current rev lives? Mismatches
-    happen whenever a file is moved/renamed outside GWT-CAD (Finder, a plain
-    `mv`, a manual git operation) rather than through pn.newRevision. This
-    never auto-corrects anything; the caller decides whether to offer
-    updating the registry to match reality."""
+    that match pn.resolve's answer for it? Since pn.resolve itself falls back
+    to a recursive filename search, this only fires for a genuine anomaly:
+    e.g. a stray duplicate copy of <pn>.FCStd sitting somewhere else in the
+    repo (or a different repo) that the user opened directly by mistake
+    instead of through pn.resolve/the PN browser. Never auto-corrects
+    anything; the caller decides what to do."""
     cfg = _load_config()
     if not cfg.get("registryPath"):
         return {"matches": True}
@@ -414,37 +522,42 @@ def pn_check_location(pnSeq, openedPath):
 
 @method("pn.relocate")
 def pn_relocate(pnSeq, newPath):
-    """Update the registry's repo_relpath for pnSeq's CURRENT rev to match a
-    file that was moved/renamed outside GWT-CAD, without touching the file
-    itself (it's already at newPath). Fails if newPath isn't inside the PN's
-    own project repo - that would mean the part actually changed projects,
-    which needs a human decision, not an automatic registry patch."""
+    """Refresh the registry's cached location hint for pnSeq's current rev to
+    newPath, where the user just confirmed that's the file's real location
+    (e.g. after pn.checkLocation flagged a mismatch). Fails if newPath isn't
+    inside the PN's own project repo (that's a project change, a human
+    decision) or doesn't have the right filename for this PN/rev (that's a
+    different part, not a move)."""
     cfg = _load_config()
     reg_repo = _registry_path(cfg)
 
     def attempt():
         rows = _read_registry(cfg)
-        row = next((r for r in rows if r.get("pn_seq") == pnSeq), None)
-        if row is None:
+        cur = _current_row(rows, pnSeq)
+        if cur is None:
             raise RpcError(APP_ERROR, "unknown PN sequence: %s" % pnSeq)
-        proj_repo = os.path.abspath(_repo_path_for(cfg, row["project"]))
+        proj_repo = os.path.abspath(_repo_path_for(cfg, cur["project"]))
         new_abs = os.path.abspath(os.path.expanduser(newPath))
         if not (new_abs == proj_repo or new_abs.startswith(proj_repo + os.sep)):
             raise RpcError(APP_ERROR,
                             "%s is outside %s's repo (%s) - this looks like a "
-                            "project change, not a simple move" % (newPath, row["project"], proj_repo))
+                            "project change, not a simple move" % (newPath, cur["project"], proj_repo))
+        expected_name = _filename_for(cur["project"], cur["type"], int(cur["seq"]), int(cur["rev"]))
+        if os.path.basename(new_abs) != expected_name:
+            raise RpcError(APP_ERROR,
+                            "%s doesn't look like %s's current rev file - "
+                            "expected a file named %s" % (newPath, pnSeq, expected_name))
         relpath = os.path.relpath(new_abs, proj_repo)
-        if row["repo_relpath"] == relpath:
+        if cur.get("repo_relpath") == relpath:
             return False
-        row["repo_relpath"] = relpath
-        row["modified"] = _now_iso()
+        cur["repo_relpath"] = relpath
         _write_registry(cfg, rows)
         return True
 
     _sync_pull(reg_repo)
     if not attempt():
         return {"ok": True, "unchanged": True}
-    _commit_and_push(reg_repo, "Relocate %s to match moved file" % pnSeq, attempt)
+    _commit_and_push(reg_repo, "Update location hint for %s" % pnSeq, attempt)
     return {"ok": True}
 
 
@@ -452,13 +565,39 @@ def pn_relocate(pnSeq, newPath):
 def pn_resolve(pnSeqOrFull):
     """Absolute path to a PN's current-rev file. Accepts either the bare
     sequence id (PSA008) or a full PN with rev digit (PSA0080) - the rev
-    digit is ignored, this always resolves to whatever current_rev is."""
+    digit is ignored, this always resolves to whatever the current rev is.
+    The file may live anywhere in its project repo (organized into whatever
+    subfolders the project uses) - this checks the registry's cached hint
+    first, then falls back to a recursive filename search if the hint is
+    stale, and self-heals the hint when the search finds it somewhere else."""
     pn_seq = pnSeqOrFull[:-1] if pnSeqOrFull[-1:].isdigit() and len(pnSeqOrFull) > 6 else pnSeqOrFull
     cfg = _load_config()
     _sync_pull(_registry_path(cfg))
     rows = _read_registry(cfg)
-    row = next((r for r in rows if r.get("pn_seq") == pn_seq), None)
-    if row is None:
+    cur = _current_row(rows, pn_seq)
+    if cur is None:
         raise RpcError(APP_ERROR, "unknown PN: %s" % pnSeqOrFull)
-    repo = _repo_path_for(cfg, row["project"])
-    return {"path": os.path.join(repo, row["repo_relpath"]), "row": row}
+    repo = _repo_path_for(cfg, cur["project"])
+    filename = _filename_for(cur["project"], cur["type"], int(cur["seq"]), int(cur["rev"]))
+    abspath, relpath = _find_part_file(repo, filename, cur.get("repo_relpath"))
+    if abspath is None:
+        raise RpcError(APP_ERROR,
+                        "%s not found anywhere under %s" % (filename, repo))
+    if relpath != cur.get("repo_relpath"):
+        # The hint was stale (file got moved by hand) - heal it so the next
+        # lookup takes the fast path instead of re-searching.
+        def attempt():
+            rows2 = _read_registry(cfg)
+            cur2 = _current_row(rows2, pn_seq)
+            if cur2 is None or cur2.get("repo_relpath") == relpath:
+                return False
+            cur2["repo_relpath"] = relpath
+            _write_registry(cfg, rows2)
+            return True
+        try:
+            reg_repo = _registry_path(cfg)
+            if attempt():
+                _commit_and_push(reg_repo, "Update location hint for %s" % pn_seq, attempt)
+        except RpcError:
+            pass  # healing the hint is best-effort - resolving the path still succeeds
+    return {"path": abspath, "row": cur}

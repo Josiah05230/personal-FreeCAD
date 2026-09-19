@@ -3079,9 +3079,11 @@ export function App(): JSX.Element {
 
   const newRevision = useCallback(async () => {
     if (!currentPn || !docPath) return
+    const reason = await promptText('Reason for this revision (required)')
+    if (!reason || !reason.trim()) return
     const pnSeq = currentPn.slice(0, -1)
     try {
-      const res = await api.pnNewRevision(pnSeq)
+      const res = await api.pnNewRevision(pnSeq, reason.trim())
       await api.pnTagDocument(res.pn, res.name, res.description)
       await api.saveAs(res.path ?? docPath)
       setTabs((t) =>
@@ -4638,6 +4640,15 @@ export function App(): JSX.Element {
                     <McMasterPanel
                       onClose={() => setMcMasterOpen(false)}
                       onImported={() => {
+                        // the panel resets to a fresh document before importing -
+                        // reflect that as a new, untitled/untagged tab rather than
+                        // leaving the tab bar pointed at whatever was open before.
+                        const id = `d${Date.now()}`
+                        setTabs((t) => [...t, { id, name: 'Untitled', dirty: true }])
+                        setActiveTab(id)
+                        setDocPath(null)
+                        setCurrentPn(null)
+                        setDrawingPageId(null)
                         rollCacheRef.current.clear()
                         void refreshScene()
                       }}

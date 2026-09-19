@@ -27,6 +27,9 @@ export function NewPartDialog({
   const [seq, setSeq] = useState<number | null>(null)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
+  const [mfg, setMfg] = useState('')
+  const [mfgPn, setMfgPn] = useState('')
+  const [purchasingLink, setPurchasingLink] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -40,7 +43,6 @@ export function NewPartDialog({
       }
       const codes = Object.keys(c.projects)
       if (codes.length) setProject(codes[0])
-      if (c.hardware && !codes.length) setProject('hardware')
     })
   }, [])
 
@@ -55,10 +57,7 @@ export function NewPartDialog({
   }, [project, type])
 
   const projectChoices = cfg
-    ? [
-        ...Object.entries(cfg.projects).map(([code, p]) => ({ code, label: `${code} - ${p.name}` })),
-        ...(cfg.hardware ? [{ code: 'hardware', label: 'Hardware library' }] : [])
-      ]
+    ? Object.entries(cfg.projects).map(([code, p]) => ({ code, label: `${code} - ${p.name}` }))
     : []
 
   const notConfigured = cfg !== null && projectChoices.length === 0
@@ -70,9 +69,17 @@ export function NewPartDialog({
     setBusy(true)
     setErr(null)
     try {
-      const res = await api.pnReserve(project, type, seq, name.trim(), description.trim())
-      const repoPath =
-        project === 'hardware' ? cfg?.hardware?.repoPath : cfg?.projects[project]?.repoPath
+      const res = await api.pnReserve(
+        project,
+        type,
+        seq,
+        name.trim(),
+        description.trim(),
+        mfg.trim() || undefined,
+        mfgPn.trim() || undefined,
+        purchasingLink.trim() || undefined
+      )
+      const repoPath = cfg?.projects[project]?.repoPath
       if (!repoPath) throw new Error('project has no repo path configured')
       const path = `${repoPath}/${res.repoRelpath}`
       onCreated({ pn: res.pn, path, name: res.name, description: res.description })
@@ -101,8 +108,8 @@ export function NewPartDialog({
       <div className="settings-body">
         {notConfigured && (
           <div className="settings-hint">
-            No project/hardware repos are configured yet. Open Company
-            Directories (File menu) to set them up first.
+            No project repos are configured yet. Open Company Directories
+            (File menu) to set them up first.
           </div>
         )}
 
@@ -169,6 +176,22 @@ export function NewPartDialog({
             placeholder='Description (e.g. 1/2" x 2" Hex Head Grade 8 Bolt)'
             value={description}
             onChange={(e) => setDescription(e.target.value)}
+          />
+        </div>
+
+        <div className="settings-section">Manufacturer info (optional)</div>
+        <div className="settings-hint">
+          For purchased/off-the-shelf hardware - leave blank for parts you design yourself.
+        </div>
+        <div className="settings-row">
+          <input placeholder="MFG (e.g. DigiKey, McMaster-Carr)" value={mfg} onChange={(e) => setMfg(e.target.value)} />
+          <input placeholder="MFG part number" value={mfgPn} onChange={(e) => setMfgPn(e.target.value)} />
+        </div>
+        <div className="settings-row">
+          <input
+            placeholder="Purchasing link"
+            value={purchasingLink}
+            onChange={(e) => setPurchasingLink(e.target.value)}
           />
         </div>
 

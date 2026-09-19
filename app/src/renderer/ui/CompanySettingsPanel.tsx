@@ -2,12 +2,12 @@ import { useEffect, useState } from 'react'
 import { api, type CompanyConfig } from '../rpc'
 
 /**
- * Where the company's PN registry and per-project/hardware git repos live on
- * THIS machine. Every path here is local and independently configurable -
- * project repos, the hardware repo, and the shared registry repo are all
- * separate git repos (only the registry's PN rows need to be globally
- * consistent, so it's the one shared source of truth; project/hardware repos
- * are otherwise independent).
+ * Where the company's PN registry and per-project git repos live on THIS
+ * machine. Every path here is local and independently configurable - each
+ * project (including a reusable-hardware library, which is just a project
+ * like any other, e.g. code "HW") is its own git repo; only the shared
+ * registry repo's PN rows need to stay globally consistent across all of
+ * them.
  */
 export function CompanySettingsPanel({ onClose }: { onClose: () => void }): JSX.Element {
   const [cfg, setCfg] = useState<CompanyConfig | null>(null)
@@ -30,12 +30,6 @@ export function CompanySettingsPanel({ onClose }: { onClose: () => void }): JSX.
     const p = await pickDir()
     if (!p || !cfg) return
     save({ ...cfg, registryPath: p })
-  }
-
-  const setHardwarePath = async (): Promise<void> => {
-    const p = await pickDir()
-    if (!p || !cfg) return
-    save({ ...cfg, hardware: { repoPath: p } })
   }
 
   const setProjectPath = async (code: string): Promise<void> => {
@@ -90,19 +84,11 @@ export function CompanySettingsPanel({ onClose }: { onClose: () => void }): JSX.
           read/write the same registry repo, so PNs stay unique company-wide.
         </div>
 
-        <div className="settings-section">Hardware library</div>
-        <div className="settings-row">
-          <span title={cfg.hardware?.repoPath ?? ''}>{cfg.hardware?.repoPath ?? 'Not set'}</span>
-          <button onClick={() => void setHardwarePath()}>Choose…</button>
-        </div>
-        <div className="settings-hint">
-          One repo for reusable off-the-shelf parts (bolts, magnets, MMC
-          connectors, ...). Uses the same PN reserve/browse/open flow as any
-          project - just pick "hardware" instead of a project when assigning
-          a PN.
-        </div>
-
         <div className="settings-section">Projects</div>
+        <div className="settings-hint">
+          A reusable-hardware library (bolts, magnets, MMC connectors, ...) is
+          just a project like any other - give it its own code (e.g. HW) below.
+        </div>
         {Object.entries(cfg.projects).map(([code, p]) => (
           <div key={code} className="settings-row">
             <span>

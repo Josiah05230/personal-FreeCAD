@@ -7,8 +7,10 @@ import { api } from '../rpc'
  * this panel's content slot every frame) renders mcmaster.com directly, so
  * the user searches/browses their actual site. Two actions read off
  * whatever page is currently loaded in that view:
- *  - "Import CAD" clicks MMC's own CAD-download control and feeds the
- *    resulting STEP file into the model via the normal importModel path.
+ *  - "Import CAD" resets to a fresh document (an MMC part is its own
+ *    component, never merged into whatever design happened to be open),
+ *    clicks MMC's own CAD-download control, and feeds the resulting STEP
+ *    file into that clean document via the normal importModel path.
  *  - the full page (spec table, price, description, images) is scraped and
  *    stamped onto the imported object as McMaster metadata.
  * The slot div itself renders nothing - it's just a positioning reference,
@@ -71,11 +73,25 @@ export function McMasterPanel({
 
   const doImport = async (): Promise<void> => {
     setErr(null)
-    setBusy('Downloading CAD model...')
+    setBusy('Checking page...')
     try {
+      // The enabled/disabled state of the Import button is driven by `url`,
+      // which only refreshes on a 1s poll - re-check the live URL right here
+      // so a click that slipped through during that window (e.g. right after
+      // navigating off a part page) still aborts instead of importing from
+      // whatever unrelated page is now loaded.
+      const liveUrl = await window.cad.mcmasterCurrentUrl()
+      if (!/mcmaster\.com\/[A-Za-z0-9]+\/?/.test(liveUrl)) {
+        throw new Error('Open a McMaster-Carr part page first.')
+      }
+      setBusy('Downloading CAD model...')
       const path = await window.cad.mcmasterDownloadCad('STEP')
       setBusy('Scraping part data...')
       const meta = await window.cad.mcmasterScrapeCurrentPart()
+      // An MMC part is its own component, never merged into whatever design
+      // happened to be open in the background - start from a clean document.
+      setBusy('Starting a new component...')
+      await api.resetDocument()
       setBusy('Importing into design...')
       const r = await api.importModel(path)
       if (r.imported.length && meta) {

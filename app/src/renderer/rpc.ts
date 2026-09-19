@@ -1418,11 +1418,36 @@ export const api = {
     rpc<{ available: number[] }>('pn.listAvailableSeq', { project, type, count }),
   pnListAll: (project?: string, status?: string) =>
     rpc<{ parts: PartRecord[] }>('pn.listAll', { project, status }),
-  pnReserve: (project: string, type: string, seq: number, name: string, description: string) =>
-    rpc<PnAssignment>('pn.reserve', { project, type, seq, name, description }),
-  pnNewRevision: (pnSeq: string) => rpc<PnAssignment>('pn.newRevision', { pnSeq }),
+  pnReserve: (
+    project: string,
+    type: string,
+    seq: number,
+    name: string,
+    description: string,
+    mfg?: string,
+    mfgPn?: string,
+    purchasingLink?: string
+  ) =>
+    rpc<PnAssignment>('pn.reserve', {
+      project,
+      type,
+      seq,
+      name,
+      description,
+      mfg,
+      mfgPn,
+      purchasingLink
+    }),
+  pnNewRevision: (
+    pnSeq: string,
+    reason: string,
+    mfg?: string,
+    mfgPn?: string,
+    purchasingLink?: string
+  ) => rpc<PnAssignment>('pn.newRevision', { pnSeq, reason, mfg, mfgPn, purchasingLink }),
   pnResolve: (pnSeqOrFull: string) =>
     rpc<{ path: string; row: PartRecord }>('pn.resolve', { pnSeqOrFull }),
+  pnHistory: (pnSeq: string) => rpc<{ revisions: PartRecord[] }>('pn.history', { pnSeq }),
   pnTagDocument: (pn: string, name: string, description: string) =>
     rpc<{ ok: boolean }>('pn.tagDocument', { pn, name, description }),
   pnRepoForPath: (path: string) =>
@@ -1439,21 +1464,26 @@ export const api = {
 export interface CompanyConfig {
   registryPath: string | null
   projects: Record<string, { name: string; repoPath: string }>
-  hardware: { repoPath: string } | null
 }
 
+/** One revision's row in the registry (registry.csv has one row per revision;
+ * pn.listAll returns just the current-rev row for each sequence). */
 export interface PartRecord {
+  pn: string
   pn_seq: string
   project: string
   type: string
   seq: string
-  current_rev: string
+  rev: string
   name: string
   description: string
-  repo_relpath: string
+  reason: string
+  mfg: string
+  mfg_pn: string
+  purchasing_link: string
   status: string
+  rev_date: string
   created: string
-  modified: string
 }
 
 export interface PnAssignment {

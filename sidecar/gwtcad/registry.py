@@ -101,6 +101,7 @@ _NO_TXN = {
     "pn.getCompanyConfig", "pn.setCompanyConfig", "pn.listTypes", "pn.listAll",
     "pn.listAvailableSeq", "pn.reserve", "pn.newRevision", "pn.resolve",
     "pn.tagDocument", "pn.repoForPath", "pn.checkLocation", "pn.relocate",
+    "pn.history",
 }
 
 
