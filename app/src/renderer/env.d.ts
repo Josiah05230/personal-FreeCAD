@@ -70,6 +70,7 @@ interface CadBridge {
   listDir(dir?: string): Promise<DirListing>
   saveDialog(defaultPath?: string): Promise<string | null>
   openDialog(filters?: { name: string; extensions: string[] }[]): Promise<string | null>
+  openDirectoryDialog(): Promise<string | null>
   exportDialog(defaultPath?: string): Promise<string | null>
   saveRender(
     dataUrl: string,
@@ -124,6 +125,16 @@ interface CadBridge {
   siblingDirs(path: string): Promise<string[]>
   captureThumb(design: string): Promise<{ path: string | null }>
   thumb(design: string): Promise<string | null>
+  mcmasterShow(bounds: { x: number; y: number; width: number; height: number }): Promise<void>
+  mcmasterSetBounds(bounds: { x: number; y: number; width: number; height: number }): Promise<void>
+  mcmasterHide(): Promise<void>
+  mcmasterCurrentUrl(): Promise<string>
+  mcmasterGoBack(): Promise<void>
+  mcmasterGoForward(): Promise<void>
+  mcmasterGoHome(): Promise<void>
+  mcmasterNavigate(input: string): Promise<void>
+  mcmasterDownloadCad(format?: 'STEP' | 'IGES'): Promise<string>
+  mcmasterScrapeCurrentPart(): Promise<Record<string, unknown> | null>
 }
 
 interface Window {

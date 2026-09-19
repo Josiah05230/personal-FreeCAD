@@ -7,6 +7,10 @@ export interface FileActions {
   onSaveAs: () => void
   onExport: () => void
   onImport: () => void
+  onNewPart: () => void
+  onNewRevision?: () => void
+  onPnBrowser: () => void
+  onCompanySettings: () => void
 }
 
 /** The dropdown behind the document-name caret in the app bar. */
@@ -47,6 +51,11 @@ export function FileMenu({
             <div className="filemenu-sep" />
             {item('Save', actions.onSave, 'Ctrl+S')}
             {item('Save As…', actions.onSaveAs)}
+            <div className="filemenu-sep" />
+            {item('New Part…', actions.onNewPart)}
+            {actions.onNewRevision && item('New Revision', actions.onNewRevision)}
+            {item('Part Number Manager…', actions.onPnBrowser)}
+            {item('Company Directories…', actions.onCompanySettings)}
             <div className="filemenu-sep" />
             {item('Import…', actions.onImport)}
             {item('Export…', actions.onExport)}

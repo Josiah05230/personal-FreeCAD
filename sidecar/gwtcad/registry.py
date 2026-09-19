@@ -75,6 +75,7 @@ _NO_TXN = {
     "io.export", "io.exportStep", "io.exportStl",
     "object.setVisibility", "visibility.setGroup",
     "datum.planePreview", "kicad.status", "sketch.solve",
+    "sketch.dragStart", "sketch.dragMove", "sketch.dragEnd",
     "feature.previewUpdate", "feature.editPreview", "feature.get",
     "feature.previewSetBase",
     "appearance.get", "appearance.set", "appearance.clear",
@@ -86,13 +87,20 @@ _NO_TXN = {
     "drawing.pageList", "drawing.pageCreate", "drawing.pageDelete",
     "drawing.pageRename", "drawing.pageContents", "drawing.addView", "drawing.addSectionView",
     "drawing.addDetailView", "drawing.addBrokenView", "drawing.convertView",
-    "drawing.addDimension", "drawing.setDimensionType",
+    "drawing.removeView",
+    "drawing.addDimension", "drawing.removeDimension", "drawing.setDimensionType",
     "drawing.setDimensionFormat", "drawing.setDefaultDimensionFormat",
     "drawing.getDimensionFormats", "drawing.addCleanupLine",
     "drawing.listCleanupLines", "drawing.removeCleanupLine",
-    "drawing.addNote", "drawing.setNoteText", "drawing.snapTargets",
-    "drawing.bomRows", "drawing.makeTable", "drawing.saveTableTemplate",
+    "drawing.addNote", "drawing.setNoteText", "drawing.setNoteStyle",
+    "drawing.moveNote", "drawing.removeNote", "drawing.snapTargets",
+    "drawing.bomRows", "drawing.makeTable", "drawing.removeTable", "drawing.saveTableTemplate",
     "drawing.listTableTemplates", "drawing.loadTableTemplate",
+    "drawing.listSheetTemplates", "drawing.saveSheetTemplate", "drawing.applySheetTemplate",
+    # PN registry: plain file/git bookkeeping, no FreeCAD document involved.
+    "pn.getCompanyConfig", "pn.setCompanyConfig", "pn.listTypes", "pn.listAll",
+    "pn.listAvailableSeq", "pn.reserve", "pn.newRevision", "pn.resolve",
+    "pn.tagDocument", "pn.repoForPath", "pn.checkLocation", "pn.relocate",
 }
 
 

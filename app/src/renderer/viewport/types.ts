@@ -134,6 +134,9 @@ export interface ViewportApi {
    *  what is ACTUALLY on screen, catches a deleted entity's points staying
    *  drawn even after its own line is gone) */
   testHandlePointCount: () => number
+  /** number of closed profiles the live sketch fill preview currently sees
+   *  (test hook - lineLoops()'s only introspection point) */
+  testFillCount: () => number
   /** DEBUG test hook: current dimension-tool picks */
   testDimPicksState: () => unknown
   /** offset the camera + pivot by a world-space delta (test hook only - a

@@ -25,6 +25,12 @@ interface Placed {
   x: number // sheet mm, top-left of the view's bbox
   y: number
   scale: number
+  /** how this view was created, so deleteView's undo can recreate an
+   *  equivalent one - a plain view keeps its make_view args; section/
+   *  detail/broken keep their own creation call, tolerant of the base
+   *  view having since been deleted itself (recreate() just fails loudly
+   *  in that case, same as the original create action would have). */
+  recreate?: () => Promise<DrawingView>
 }
 
 // ISO A3 landscape sheet in mm
@@ -33,6 +39,38 @@ const SHEET_H = 297
 const MARGIN = 10
 
 const flip = (poly: number[][]): [number, number][] => poly.map((p) => [p[0], -p[1]])
+
+/** A jagged "break line" glyph across a view's bbox at the given axis/
+ *  position, standard CAD convention for marking a broken-out section -
+ *  purely visual (see DrawingView.breaks' comment for why). Returns SVG
+ *  path point strings for the zigzag line, in the view's own local (y-up,
+ *  pre-flip) coordinate space. */
+function breakLinePoints(
+  axis: 'x' | 'y',
+  pos: number,
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number
+): [number, number][] {
+  const zigzags = 5
+  const amp = axis === 'x' ? (maxX - minX) * 0.02 : (maxY - minY) * 0.02
+  const pts: [number, number][] = []
+  if (axis === 'x') {
+    const span = maxY - minY
+    for (let i = 0; i <= zigzags; i++) {
+      const y = minY + (span * i) / zigzags
+      pts.push([pos + (i % 2 === 0 ? -amp : amp), y])
+    }
+  } else {
+    const span = maxX - minX
+    for (let i = 0; i <= zigzags; i++) {
+      const x = minX + (span * i) / zigzags
+      pts.push([x, pos + (i % 2 === 0 ? -amp : amp)])
+    }
+  }
+  return pts
+}
 
 export type DrawingTool = 'select' | 'dimension' | 'note' | 'cleanup'
 
@@ -46,6 +84,7 @@ export interface DrawingSheetApi {
   insertBom: () => Promise<void>
   insertTable: (template?: TableTemplate) => Promise<void>
   saveAsTemplate: () => Promise<void>
+  loadSheetTemplate: () => Promise<void>
   exportPdf: () => Promise<void>
   exportDxf: () => Promise<void>
 }
@@ -53,19 +92,23 @@ export interface DrawingSheetApi {
 function ViewBox({
   placed,
   selected,
+  hovered,
   tool,
   snapTargets,
   onDown,
   onContextMenu,
-  onPick
+  onPick,
+  onHover
 }: {
   placed: Placed
   selected: boolean
+  hovered: boolean
   tool: DrawingTool
   snapTargets: SnapTarget[]
   onDown: (e: React.PointerEvent) => void
   onContextMenu: (e: React.MouseEvent) => void
   onPick: (sub: string, p: [number, number]) => void
+  onHover: (over: boolean) => void
 }): JSX.Element {
   const { view } = placed
   const [minX, minY, maxX, maxY] = view.bbox
@@ -116,26 +159,63 @@ function ViewBox({
     return bestD < 4 / placed.scale ? best : null
   }
 
+  // Selection/hover hit-testing and dimension/cleanup snap-picking used to
+  // fight over the same click via CSS pointer-events routing (a stroke-only
+  // rect so clicks could "fall through" to the nested view <svg> below) -
+  // that made a view only draggable/hoverable along its exact border pixel,
+  // and picking tools only work when the click also happened to land on
+  // that border. Route both through ONE handler on a rect that always
+  // covers the FULL bbox instead: decide in JS whether a click/hover is a
+  // "pick a snap target" action (tool is dimension/cleanup) or a "grab the
+  // view" action (tool is select), rather than relying on which DOM element
+  // physically received the event.
+  const [snapHover, setSnapHover] = useState<[number, number] | null>(null)
+
+  const handlePointerDown = (e: React.PointerEvent): void => {
+    if (tool === 'select') {
+      onDown(e)
+      return
+    }
+    if (tool === 'dimension' || tool === 'cleanup') {
+      const p = toData(e)
+      const target = nearestTarget(p)
+      onPick(target?.sub ?? '', target ? (target.p ?? target.p1 ?? p) : p)
+    }
+  }
+
+  // a picking tool (dimension/cleanup) with no visual cue for what's about
+  // to be picked is indistinguishable from "the tool doesn't work" - show a
+  // small highlighted ring at whatever snap target the cursor is nearest,
+  // so a click's result is predictable instead of a silent miss.
+  const handlePointerMoveForSnap = (e: React.PointerEvent): void => {
+    if (tool !== 'dimension' && tool !== 'cleanup') {
+      if (snapHover) setSnapHover(null)
+      return
+    }
+    const p = toData(e)
+    const target = nearestTarget(p)
+    setSnapHover(target ? (target.p ?? target.p1 ?? null) : null)
+  }
+
   return (
-    <g transform={`translate(${placed.x} ${placed.y})`}>
+    <g
+      data-view-box={placed.view.id}
+      transform={`translate(${placed.x} ${placed.y})`}
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => {
+        onHover(false)
+        setSnapHover(null)
+      }}
+    >
       <rect
         width={w}
         height={h}
-        fill="none"
-        stroke={selected ? '#0696d7' : '#00000022'}
-        strokeWidth={0.3}
-        style={{
-          cursor: tool === 'select' ? 'move' : 'crosshair',
-          // in select mode the whole box should drag; in a picking tool
-          // (dimension/note/cleanup) only the visible border should
-          // intercept clicks (for right-click / drag-select) so clicks
-          // through the middle reach the nested view <svg> beneath it for
-          // edge/vertex snapping - `fill="none"` alone still hit-tests the
-          // whole rect in this Chromium build, confirmed live (a click dead
-          // center landed on this rect, never reaching the view svg).
-          pointerEvents: tool === 'select' ? 'visiblePainted' : 'stroke'
-        }}
-        onPointerDown={tool === 'select' ? onDown : undefined}
+        fill="#ffffff01"
+        stroke={selected ? '#0696d7' : hovered ? '#0696d766' : '#00000022'}
+        strokeWidth={selected || hovered ? 0.5 : 0.3}
+        style={{ cursor: tool === 'select' ? 'move' : 'crosshair', pointerEvents: 'visiblePainted' }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMoveForSnap}
         onContextMenu={onContextMenu}
       />
       <svg
@@ -145,15 +225,7 @@ function ViewBox({
         width={w}
         height={h}
         viewBox={`${minX} ${-maxY} ${maxX - minX} ${maxY - minY}`}
-        onClick={
-          tool === 'dimension' || tool === 'cleanup'
-            ? (e) => {
-                const p = toData(e)
-                const target = nearestTarget(p)
-                onPick(target?.sub ?? '', target ? (target.p ?? target.p1 ?? p) : p)
-              }
-            : undefined
-        }
+        style={{ pointerEvents: 'none' }}
       >
         {view.hidden.map((poly, i) => (
           <polyline
@@ -174,8 +246,40 @@ function ViewBox({
             strokeWidth={0.45}
           />
         ))}
+        {view.kind === 'broken' &&
+          (view.breaks ?? []).map((b, i) => {
+            const half = b.gap / 2
+            const lineA = breakLinePoints(b.axis, b.position - half, minX, minY, maxX, maxY)
+            const lineB = breakLinePoints(b.axis, b.position + half, minX, minY, maxX, maxY)
+            return (
+              <g key={`brk${i}`}>
+                <polyline
+                  points={flip(lineA).map((p) => p.join(',')).join(' ')}
+                  fill="none"
+                  stroke="#0696d7"
+                  strokeWidth={0.4}
+                />
+                <polyline
+                  points={flip(lineB).map((p) => p.join(',')).join(' ')}
+                  fill="none"
+                  stroke="#0696d7"
+                  strokeWidth={0.4}
+                />
+              </g>
+            )
+          })}
+        {snapHover && (
+          <circle
+            cx={snapHover[0]}
+            cy={-snapHover[1]}
+            r={1.6 / placed.scale}
+            fill="none"
+            stroke="#0696d7"
+            strokeWidth={0.5 / placed.scale}
+          />
+        )}
       </svg>
-      <text x={0} y={h + 4} fontSize={3.4} fill="#333">
+      <text x={0} y={h + 4} fontSize={3.4} fill={hovered || selected ? '#0696d7' : '#333'}>
         {view.label} — {view.direction}
         {view.kind !== 'part' ? ` (${view.kind})` : ''}
       </text>
@@ -223,11 +327,101 @@ export const DrawingSheet = forwardRef<
 >(function DrawingSheet({ pageId, makeView, docPath, assembly, onBack, tool: toolProp, onToolChange }, ref) {
   const [placed, setPlaced] = useState<Placed[]>([])
   const [sel, setSel] = useState<number | null>(null)
+  const [hover, setHover] = useState<number | null>(null)
   const [dims, setDims] = useState<DrawingDimension[]>([])
   const [notes, setNotes] = useState<DrawingNote[]>([])
+  const [selNote, setSelNote] = useState<string | null>(null)
+  // rubber-band window-select: everything ELSE selected alongside sel/
+  // selNote (which stay the "primary" selection - the one a context menu
+  // or a single-item tool like Section View acts on). Delete and group-drag
+  // act on sel/selNote UNION these sets, same two-tier pattern the main 3D
+  // viewport doesn't need (it has no single-vs-primary distinction) but the
+  // drawing sheet does, since several existing tools (sectionTool etc.)
+  // already assume exactly one base view.
+  const [selMultiViews, setSelMultiViews] = useState<Set<string>>(new Set())
+  const [selMultiNotes, setSelMultiNotes] = useState<Set<string>>(new Set())
+  const [band, setBand] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null)
+  // a band-drag's pointerup and the resulting synthetic click land on the
+  // SAME target - without this, the click handler's "empty sheet click
+  // deselects everything" logic would immediately undo the selection the
+  // band drag just made, one event later in the same gesture.
+  const justBandSelected = useRef(false)
+  const groupDrag = useRef<{
+    startX: number
+    startY: number
+    views: Map<string, { x: number; y: number }>
+    notes: Map<string, { x: number; y: number }>
+  } | null>(null)
+  const noteDrag = useRef<{ id: string; ox: number; oy: number; origX: number; origY: number } | null>(null)
   const [cleanupLines, setCleanupLines] = useState<Record<string, CleanupLine[]>>({})
   const [snapTargets, setSnapTargets] = useState<Record<string, SnapTarget[]>>({})
-  const [table, setTable] = useState<{ id: string; rows: BomRow[]; columns: TableColumn[] } | null>(null)
+  const [table, setTable] = useState<{
+    id: string
+    rows: Array<BomRow | Record<string, string | number>>
+    columns: TableColumn[]
+    showGrid: boolean
+    gridColor: string
+    rowHeight: number
+  } | null>(null)
+  const [editingCell, setEditingCell] = useState<{ row: number; col: number; value: string } | null>(null)
+  // command-pattern undo/redo: each entry knows its own real inverse RPC
+  // call, not just a local-state snapshot - a plain state snapshot would
+  // leave orphaned server-side TechDraw objects behind (e.g. undoing
+  // "add view" would need to actually delete the view object, not just
+  // hide it from `placed`). App.tsx's global Ctrl+Z is scoped away from
+  // this while a drawing is open (see the App.tsx wiring), so this stack
+  // is the only thing driving undo/redo while editing a drawing.
+  const undoStack = useRef<Array<{ undo: () => Promise<void>; redo: () => Promise<void> }>>([])
+  const redoStack = useRef<Array<{ undo: () => Promise<void>; redo: () => Promise<void> }>>([])
+  const pushUndo = useCallback((entry: { undo: () => Promise<void>; redo: () => Promise<void> }) => {
+    undoStack.current.push(entry)
+    if (undoStack.current.length > 100) undoStack.current.shift()
+    redoStack.current = []
+  }, [])
+  const undoInFlight = useRef(false)
+  const doDrawingUndo = useCallback(async () => {
+    if (undoInFlight.current) return
+    const entry = undoStack.current.pop()
+    if (!entry) return
+    undoInFlight.current = true
+    try {
+      await entry.undo()
+      redoStack.current.push(entry)
+    } catch (e) {
+      window.alert((e as Error).message)
+    } finally {
+      undoInFlight.current = false
+    }
+  }, [])
+  const doDrawingRedo = useCallback(async () => {
+    if (undoInFlight.current) return
+    const entry = redoStack.current.pop()
+    if (!entry) return
+    undoInFlight.current = true
+    try {
+      await entry.redo()
+      undoStack.current.push(entry)
+    } catch (e) {
+      window.alert((e as Error).message)
+    } finally {
+      undoInFlight.current = false
+    }
+  }, [])
+  // a brand-new page has NO title block - it's opt-in via "Load Template",
+  // per the user's ask that a new drawing start genuinely blank rather than
+  // always pre-filling a title block regardless of intent
+  const [showTitleBlock, setShowTitleBlock] = useState(false)
+  // sheet zoom/pan - a totally separate concept from a placed VIEW's own
+  // `scale` field (that's how big a projection is drawn on the page; this
+  // is how close the camera looking at the page is). viewBox = a sub-
+  // rectangle of the fixed SHEET_W x SHEET_H page: zoom shrinks/grows that
+  // rectangle around the cursor, pan translates it.
+  const [viewBox, setViewBox] = useState({ x: 0, y: 0, w: SHEET_W, h: SHEET_H })
+  const panRef = useRef<{ x: number; y: number; vbx: number; vby: number } | null>(null)
+  const spaceHeld = useRef(false)
+  // bumped only to force a re-render when spaceHeld's REF value changes (a
+  // ref alone doesn't trigger one), purely so the pan cursor updates
+  const [, setForceRerender] = useState(0)
   const [toolState, setToolState] = useState<DrawingTool>('select')
   const tool = toolProp ?? toolState
   const setTool = useCallback(
@@ -308,7 +502,14 @@ export const DrawingSheet = forwardRef<
         setNotes(c.notes)
         setCleanupLines(c.cleanupLines)
         if (c.tables[0]) {
-          setTable({ id: c.tables[0].id, rows: c.tables[0].rows, columns: c.tables[0].columns })
+          setTable({
+            id: c.tables[0].id,
+            rows: c.tables[0].rows,
+            columns: c.tables[0].columns,
+            showGrid: true,
+            gridColor: '#111',
+            rowHeight: 5
+          })
         }
         for (const v of c.views) void refreshSnapTargets(v.id)
       } catch {
@@ -327,13 +528,29 @@ export const DrawingSheet = forwardRef<
       if (!v) return
       const [minX, minY, maxX, maxY] = v.bbox
       const fit = Math.min(120 / Math.max(maxX - minX, 1), 90 / Math.max(maxY - minY, 1), 2)
-      setPlaced((cur) => [
-        ...cur,
-        { view: v, x: MARGIN + 6 + cur.length * 12, y: MARGIN + 20 + cur.length * 12, scale: fit }
-      ])
+      const x = MARGIN + 6 + placed.length * 12
+      const y = MARGIN + 20 + placed.length * 12
+      const recreate = async (): Promise<DrawingView> => {
+        const v2 = await makeView(dir)
+        if (!v2) throw new Error('could not recreate this view')
+        return v2
+      }
+      setPlaced((cur) => [...cur, { view: v, x, y, scale: fit, recreate }])
       void refreshSnapTargets(v.id)
+      pushUndo({
+        undo: async () => {
+          await api.drawingRemoveView(v.id)
+          setPlaced((cur) => cur.filter((pl) => pl.view.id !== v.id))
+        },
+        redo: async () => {
+          const v2 = await makeView(dir)
+          if (!v2) return
+          setPlaced((cur) => [...cur, { view: v2, x, y, scale: fit }])
+          void refreshSnapTargets(v2.id)
+        }
+      })
     },
-    [makeView, refreshSnapTargets]
+    [makeView, refreshSnapTargets, placed, pushUndo]
   )
 
   const autoLayout = useCallback(async (): Promise<void> => {
@@ -354,7 +571,126 @@ export const DrawingSheet = forwardRef<
     }
   }, [makeView, refreshSnapTargets])
 
+  const loadSheetTemplate = useCallback(async (): Promise<void> => {
+    try {
+      const { templates } = await api.drawingListSheetTemplates()
+      const res = await promptForm('Load Template', [
+        {
+          key: 'name',
+          label: 'Template',
+          value: templates[0]?.name ?? 'Blank',
+          options: templates.map((t) => t.name)
+        }
+      ])
+      if (!res) return
+      const tpl = await api.drawingApplySheetTemplate(res.name)
+      setShowTitleBlock(tpl.titleBlock)
+      const specs: [string, number, number][] = [
+        ['front', 40, 60],
+        ['right', 200, 60],
+        ['top', 40, 170],
+        ['iso', 220, 170]
+      ]
+      for (let i = 0; i < tpl.views.length; i++) {
+        const dir = tpl.views[i]
+        const [, x, y] = specs[i % specs.length]
+        const v = await makeView(dir)
+        if (!v) continue
+        const [minX, minY, maxX, maxY] = v.bbox
+        const fit = Math.min(120 / Math.max(maxX - minX, 1), 90 / Math.max(maxY - minY, 1), 2)
+        setPlaced((cur) => [...cur, { view: v, x, y, scale: fit }])
+        void refreshSnapTargets(v.id)
+      }
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
+  }, [makeView, refreshSnapTargets])
+
+  // wheel-to-zoom, centred on the cursor: convert the pointer's CLIENT
+  // position to sheet-space BEFORE resizing viewBox, then re-anchor so that
+  // same sheet point stays under the cursor after the resize (standard
+  // "zoom toward cursor" math for an SVG viewBox).
+  const onWheel = (e: React.WheelEvent<SVGSVGElement>): void => {
+    e.preventDefault()
+    const svg = e.currentTarget
+    const pt = svg.createSVGPoint()
+    pt.x = e.clientX
+    pt.y = e.clientY
+    const before = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+    const factor = e.deltaY > 0 ? 1.12 : 1 / 1.12
+    setViewBox((vb) => {
+      const w = Math.min(Math.max(vb.w * factor, 20), SHEET_W * 4)
+      const h = w * (vb.h / vb.w)
+      const x = before.x - ((before.x - vb.x) / vb.w) * w
+      const y = before.y - ((before.y - vb.y) / vb.h) * h
+      return { x, y, w, h }
+    })
+  }
+
+  const zoomFit = useCallback((): void => setViewBox({ x: 0, y: 0, w: SHEET_W, h: SHEET_H }), [])
+  const zoomBy = useCallback((factor: number): void => {
+    setViewBox((vb) => {
+      const w = Math.min(Math.max(vb.w * factor, 20), SHEET_W * 4)
+      const h = w * (vb.h / vb.w)
+      const cx = vb.x + vb.w / 2
+      const cy = vb.y + vb.h / 2
+      return { x: cx - w / 2, y: cy - h / 2, w, h }
+    })
+  }, [])
+
   const onPointerMove = (e: React.PointerEvent): void => {
+    if (panRef.current && sheetRef.current) {
+      const { x, y, vbx, vby } = panRef.current
+      const svg = sheetRef.current.querySelector('svg') as SVGSVGElement
+      const scaleX = viewBox.w / svg.clientWidth
+      const scaleY = viewBox.h / svg.clientHeight
+      setViewBox((vb) => ({ ...vb, x: vbx - (e.clientX - x) * scaleX, y: vby - (e.clientY - y) * scaleY }))
+      return
+    }
+    if (band && sheetRef.current) {
+      const svg = sheetRef.current.querySelector('svg') as SVGSVGElement
+      const pt = svg.createSVGPoint()
+      pt.x = e.clientX
+      pt.y = e.clientY
+      const p = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+      setBand((b) => (b ? { ...b, x1: p.x, y1: p.y } : b))
+      return
+    }
+    if (groupDrag.current && sheetRef.current) {
+      const svg = sheetRef.current.querySelector('svg') as SVGSVGElement
+      const pt = svg.createSVGPoint()
+      pt.x = e.clientX
+      pt.y = e.clientY
+      const p = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+      const { startX, startY, views, notes: notesStart } = groupDrag.current
+      const dx = p.x - startX
+      const dy = p.y - startY
+      setPlaced((cur) =>
+        cur.map((pl) => {
+          const orig = views.get(pl.view.id)
+          return orig ? { ...pl, x: orig.x + dx, y: orig.y + dy } : pl
+        })
+      )
+      setNotes((cur) =>
+        cur.map((n) => {
+          const orig = notesStart.get(n.id)
+          return orig ? { ...n, x: orig.x + dx, y: orig.y + dy } : n
+        })
+      )
+      return
+    }
+    if (noteDrag.current && sheetRef.current) {
+      const svg = sheetRef.current.querySelector('svg') as SVGSVGElement
+      const pt = svg.createSVGPoint()
+      pt.x = e.clientX
+      pt.y = e.clientY
+      const p = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+      const { id, ox, oy } = noteDrag.current
+      const x = p.x - ox
+      const y = p.y - oy
+      setNotes((cur) => cur.map((n) => (n.id === id ? { ...n, x, y } : n)))
+      return
+    }
     if (!drag.current || !sheetRef.current) return
     const svg = sheetRef.current.querySelector('svg') as SVGSVGElement
     const pt = svg.createSVGPoint()
@@ -391,11 +727,22 @@ export const DrawingSheet = forwardRef<
         const d = await api.drawingAddDimension(pageId, viewId, refs, kind)
         setDims((cur) => [...cur, d])
         if (labelPos) setDimLabelPos((cur) => ({ ...cur, [d.id]: labelPos }))
+        pushUndo({
+          undo: async () => {
+            await api.drawingRemoveDimension(d.id)
+            setDims((cur) => cur.filter((x) => x.id !== d.id))
+          },
+          redo: async () => {
+            const d2 = await api.drawingAddDimension(pageId, viewId, refs, kind)
+            setDims((cur) => [...cur, d2])
+            if (labelPos) setDimLabelPos((cur) => ({ ...cur, [d2.id]: labelPos }))
+          }
+        })
       } catch (e) {
         window.alert((e as Error).message)
       }
     },
-    [pageId]
+    [pageId, pushUndo]
   )
 
   const onViewPick = useCallback(
@@ -430,7 +777,19 @@ export const DrawingSheet = forwardRef<
           } else if (cleanupPending.viewId === viewId) {
             void api
               .drawingAddCleanupLine(viewId, cleanupPending.p, p)
-              .then((cl) => setCleanupLines((cur) => ({ ...cur, [viewId]: [...(cur[viewId] ?? []), cl] })))
+              .then((cl) => {
+                setCleanupLines((cur) => ({ ...cur, [viewId]: [...(cur[viewId] ?? []), cl] }))
+                pushUndo({
+                  undo: async () => {
+                    await api.drawingRemoveCleanupLine(viewId, cl.id)
+                    setCleanupLines((cur) => ({ ...cur, [viewId]: (cur[viewId] ?? []).filter((x) => x.id !== cl.id) }))
+                  },
+                  redo: async () => {
+                    const cl2 = await api.drawingAddCleanupLine(viewId, cl.p1, cl.p2)
+                    setCleanupLines((cur) => ({ ...cur, [viewId]: [...(cur[viewId] ?? []), cl2] }))
+                  }
+                })
+              })
               .catch((e: Error) => window.alert(e.message))
             setCleanupPending(null)
           } else {
@@ -440,7 +799,7 @@ export const DrawingSheet = forwardRef<
         }
         onViewPick(viewId)(sub, p)
       },
-    [tool, cleanupPending, onViewPick]
+    [tool, cleanupPending, onViewPick, pushUndo]
   )
 
   const sectionTool = useCallback(async () => {
@@ -449,27 +808,40 @@ export const DrawingSheet = forwardRef<
       return
     }
     const base = placed[sel]
+    // a cut plane whose normal is parallel to the view's own line of sight
+    // shows no new geometry (rejected server-side) - default to a plane
+    // that's always safe for this view's direction instead of a fixed "XY"
+    // (which is degenerate for a top/bottom view, whose direction IS Z).
+    const safePlane = base.view.direction === 'top' || base.view.direction === 'bottom' ? 'XZ' : 'XY'
     const res = await promptForm('Section View', [
-      { key: 'plane', label: 'Cut plane (XY / XZ / YZ)', value: 'XY' },
+      { key: 'plane', label: 'Cut plane (XY / XZ / YZ)', value: safePlane },
       { key: 'offset', label: 'Offset (mm)', value: '0' }
     ])
     if (!res) return
+    const plane = (res.plane.toUpperCase() as 'XY' | 'XZ' | 'YZ') || 'XY'
+    const offset = Number(res.offset) || 0
     try {
-      const v = await api.drawingAddSectionView(
-        pageId,
-        base.view.id,
-        (res.plane.toUpperCase() as 'XY' | 'XZ' | 'YZ') || 'XY',
-        Number(res.offset) || 0
-      )
-      setPlaced((cur) => [
-        ...cur,
-        { view: v, x: base.x + 60, y: base.y, scale: base.scale }
-      ])
+      const v = await api.drawingAddSectionView(pageId, base.view.id, plane, offset)
+      const x = base.x + 60
+      const y = base.y
+      const recreate = (): Promise<DrawingView> => api.drawingAddSectionView(pageId, base.view.id, plane, offset)
+      setPlaced((cur) => [...cur, { view: v, x, y, scale: base.scale, recreate }])
       void refreshSnapTargets(v.id)
+      pushUndo({
+        undo: async () => {
+          await api.drawingRemoveView(v.id)
+          setPlaced((cur) => cur.filter((pl) => pl.view.id !== v.id))
+        },
+        redo: async () => {
+          const v2 = await api.drawingAddSectionView(pageId, base.view.id, plane, offset)
+          setPlaced((cur) => [...cur, { view: v2, x, y, scale: base.scale }])
+          void refreshSnapTargets(v2.id)
+        }
+      })
     } catch (e) {
       window.alert((e as Error).message)
     }
-  }, [sel, placed, pageId, refreshSnapTargets])
+  }, [sel, placed, pageId, refreshSnapTargets, pushUndo])
 
   const detailTool = useCallback(async () => {
     if (sel === null) {
@@ -483,23 +855,32 @@ export const DrawingSheet = forwardRef<
       { key: 'radius', label: 'Circle radius (mm)', value: '5' }
     ])
     if (!res) return
+    const ax = Number(res.x) || 0
+    const ay = Number(res.y) || 0
+    const radius = Number(res.radius) || 5
     try {
-      const v = await api.drawingAddDetailView(
-        pageId,
-        base.view.id,
-        Number(res.x) || 0,
-        Number(res.y) || 0,
-        Number(res.radius) || 5
-      )
-      setPlaced((cur) => [
-        ...cur,
-        { view: v, x: base.x + 60, y: base.y, scale: Math.max(base.scale, 0.5) }
-      ])
+      const v = await api.drawingAddDetailView(pageId, base.view.id, ax, ay, radius)
+      const x = base.x + 60
+      const y = base.y
+      const scale = Math.max(base.scale, 0.5)
+      const recreate = (): Promise<DrawingView> => api.drawingAddDetailView(pageId, base.view.id, ax, ay, radius)
+      setPlaced((cur) => [...cur, { view: v, x, y, scale, recreate }])
       void refreshSnapTargets(v.id)
+      pushUndo({
+        undo: async () => {
+          await api.drawingRemoveView(v.id)
+          setPlaced((cur) => cur.filter((pl) => pl.view.id !== v.id))
+        },
+        redo: async () => {
+          const v2 = await api.drawingAddDetailView(pageId, base.view.id, ax, ay, radius)
+          setPlaced((cur) => [...cur, { view: v2, x, y, scale }])
+          void refreshSnapTargets(v2.id)
+        }
+      })
     } catch (e) {
       window.alert((e as Error).message)
     }
-  }, [sel, placed, pageId, refreshSnapTargets])
+  }, [sel, placed, pageId, refreshSnapTargets, pushUndo])
 
   const brokenTool = useCallback(async () => {
     if (sel === null) {
@@ -513,16 +894,29 @@ export const DrawingSheet = forwardRef<
       { key: 'gap', label: 'Gap (mm)', value: '10' }
     ])
     if (!res) return
+    const breaks = [{ axis: (res.axis as 'x' | 'y') || 'x', pos: Number(res.pos) || 0, gap: Number(res.gap) || 10 }]
     try {
-      const v = await api.drawingAddBrokenView(pageId, base.view.id, [
-        { axis: (res.axis as 'x' | 'y') || 'x', pos: Number(res.pos) || 0, gap: Number(res.gap) || 10 }
-      ])
-      setPlaced((cur) => [...cur, { view: v, x: base.x, y: base.y + 80, scale: base.scale }])
+      const v = await api.drawingAddBrokenView(pageId, base.view.id, breaks)
+      const x = base.x
+      const y = base.y + 80
+      const recreate = (): Promise<DrawingView> => api.drawingAddBrokenView(pageId, base.view.id, breaks)
+      setPlaced((cur) => [...cur, { view: v, x, y, scale: base.scale, recreate }])
       void refreshSnapTargets(v.id)
+      pushUndo({
+        undo: async () => {
+          await api.drawingRemoveView(v.id)
+          setPlaced((cur) => cur.filter((pl) => pl.view.id !== v.id))
+        },
+        redo: async () => {
+          const v2 = await api.drawingAddBrokenView(pageId, base.view.id, breaks)
+          setPlaced((cur) => [...cur, { view: v2, x, y, scale: base.scale }])
+          void refreshSnapTargets(v2.id)
+        }
+      })
     } catch (e) {
       window.alert((e as Error).message)
     }
-  }, [sel, placed, pageId, refreshSnapTargets])
+  }, [sel, placed, pageId, refreshSnapTargets, pushUndo])
 
   const convertView = useCallback(
     async (viewId: string, toKind: 'part' | 'section') => {
@@ -542,12 +936,177 @@ export const DrawingSheet = forwardRef<
     [pageId, refreshSnapTargets]
   )
 
+  const deleteView = useCallback(
+    async (viewId: string) => {
+      const doomed = placed.find((pl) => pl.view.id === viewId)
+      // Cleanup lines have simple p1/p2 snapshots and can be faithfully
+      // re-added to a recreated view. Dimensions cannot: their refs are raw
+      // edge/vertex names ("Edge3") resolved against the ORIGINAL view
+      // object, which a delete-then-recreate replaces with a new one whose
+      // geometry may not even enumerate edges in the same order - same
+      // "orphaned, may need to be redrawn" limitation convertView already
+      // has to live with (see its own orphanedDimensions handling below).
+      const removedCleanup = cleanupLines[viewId] ?? []
+      const removedDimCount = dims.filter((d) => d.viewId === viewId).length
+      try {
+        const res = await api.drawingRemoveView(viewId)
+        setPlaced((cur) => cur.filter((pl) => pl.view.id !== viewId))
+        setDims((cur) => cur.filter((d) => !res.removedDimensions.includes(d.id)))
+        setCleanupLines((cur) => {
+          const next = { ...cur }
+          delete next[viewId]
+          return next
+        })
+        setSel(null)
+        setHover(null)
+        if (doomed?.recreate) {
+          const { recreate, x, y, scale } = doomed
+          // tracks whichever id this view CURRENTLY has, across however
+          // many undo/redo cycles happen - redo needs the id undo's own
+          // recreate() call just produced, not the original (now-deleted)
+          // viewId this whole action closed over.
+          const liveId = { current: viewId }
+          pushUndo({
+            undo: async () => {
+              const v2 = await recreate()
+              liveId.current = v2.id
+              setPlaced((cur) => [...cur, { view: v2, x, y, scale, recreate }])
+              void refreshSnapTargets(v2.id)
+              for (const cl of removedCleanup) {
+                const cl2 = await api.drawingAddCleanupLine(v2.id, cl.p1, cl.p2)
+                setCleanupLines((cur) => ({ ...cur, [v2.id]: [...(cur[v2.id] ?? []), cl2] }))
+              }
+              if (removedDimCount > 0) {
+                window.alert(
+                  `The view is back, but ${removedDimCount} dimension(s) on it could not be restored and will need to be redrawn.`
+                )
+              }
+            },
+            redo: async () => {
+              await api.drawingRemoveView(liveId.current)
+              setPlaced((cur) => cur.filter((pl) => pl.view.id !== liveId.current))
+              setCleanupLines((cur) => {
+                const next = { ...cur }
+                delete next[liveId.current]
+                return next
+              })
+            }
+          })
+        }
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [placed, dims, cleanupLines, refreshSnapTargets, pushUndo]
+  )
+
+  const deleteNote = useCallback(
+    async (noteId: string) => {
+      const doomed = notes.find((n) => n.id === noteId)
+      try {
+        await api.drawingRemoveNote(noteId)
+        setNotes((cur) => cur.filter((n) => n.id !== noteId))
+        setSelNote((cur) => (cur === noteId ? null : cur))
+        if (doomed) {
+          const liveId = { current: noteId }
+          pushUndo({
+            undo: async () => {
+              const n2 = await api.drawingAddNote(pageId, doomed.text, doomed.x, doomed.y, undefined, undefined, doomed.font, doomed.textSize)
+              liveId.current = n2.id
+              setNotes((cur) => [...cur, n2])
+            },
+            redo: async () => {
+              await api.drawingRemoveNote(liveId.current)
+              setNotes((cur) => cur.filter((n) => n.id !== liveId.current))
+            }
+          })
+        }
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [notes, pageId, pushUndo]
+  )
+
+  // Delete/Backspace removes whichever view(s)/note(s) are currently
+  // selected - the single primary selection AND anything from a rubber-
+  // band multi-select, together - skip while typing in any input (the
+  // note text editor, a promptForm field, etc.) so Backspace there edits
+  // text, not deletes.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      const viewIds = new Set(selMultiViews)
+      if (sel !== null && placed[sel]) viewIds.add(placed[sel].view.id)
+      const noteIds = new Set(selMultiNotes)
+      if (selNote) noteIds.add(selNote)
+      if (viewIds.size === 0 && noteIds.size === 0) return
+      e.preventDefault()
+      for (const id of viewIds) void deleteView(id)
+      for (const id of noteIds) void deleteNote(id)
+      setSelMultiViews(new Set())
+      setSelMultiNotes(new Set())
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [sel, placed, selNote, selMultiViews, selMultiNotes, deleteView, deleteNote])
+
+  // Ctrl+Z/Ctrl+Y (or Cmd on macOS) undo/redo drawing edits while a drawing
+  // is open. App.tsx's own global Ctrl+Z is scoped away from this case (see
+  // its wiring) specifically so the two don't fight over the same keys -
+  // this is the ONLY handler for them while editing a drawing.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      const ctrl = e.ctrlKey || e.metaKey
+      if (!ctrl) return
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      if (e.key.toLowerCase() === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        void doDrawingUndo()
+      } else if (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey)) {
+        e.preventDefault()
+        void doDrawingRedo()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [doDrawingUndo, doDrawingRedo])
+
+  // space+drag pans the sheet (checked live via the ref in onPointerDown,
+  // not React state, so it never lags a frame behind the actual key state)
+  useEffect(() => {
+    const down = (e: KeyboardEvent): void => {
+      if (e.code === 'Space' && !spaceHeld.current) {
+        const target = e.target as HTMLElement | null
+        if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return
+        spaceHeld.current = true
+        setForceRerender((n) => n + 1)
+      }
+    }
+    const up = (e: KeyboardEvent): void => {
+      if (e.code === 'Space') {
+        spaceHeld.current = false
+        setForceRerender((n) => n + 1)
+      }
+    }
+    document.addEventListener('keydown', down)
+    document.addEventListener('keyup', up)
+    return () => {
+      document.removeEventListener('keydown', down)
+      document.removeEventListener('keyup', up)
+    }
+  }, [])
+
   const insertBom = useCallback(
     async (template?: TableTemplate) => {
+      const previous = table
       try {
         const { rows } = await api.drawingBomRows(assembly?.assembly ?? undefined)
         if (rows.length === 0) {
-          window.alert('No assembly components found for a BOM.')
+          window.alert('Nothing to list yet - add a body or component to the model first.')
           return
         }
         const t = await api.drawingMakeTable(
@@ -557,19 +1116,110 @@ export const DrawingSheet = forwardRef<
           template?.spec,
           table?.id
         )
-        setTable({ id: t.id, rows: t.rows, columns: t.columns })
+        const next = {
+          id: t.id,
+          rows: t.rows,
+          columns: t.columns,
+          showGrid: template?.spec.showGrid ?? true,
+          gridColor: template?.spec.gridColor ?? '#111',
+          rowHeight: template?.spec.rowHeight ?? 5
+        }
+        setTable(next)
+        pushUndo(
+          previous
+            ? {
+                undo: async () => {
+                  await api.drawingMakeTable(pageId, previous.rows, previous.columns, undefined, previous.id)
+                  setTable(previous)
+                },
+                redo: async () => {
+                  await api.drawingMakeTable(pageId, next.rows, next.columns, undefined, next.id)
+                  setTable(next)
+                }
+              }
+            : {
+                undo: async () => {
+                  await api.drawingRemoveTable(t.id)
+                  setTable(null)
+                },
+                redo: async () => {
+                  const t2 = await api.drawingMakeTable(pageId, rows, template?.spec.columns, template?.spec, t.id)
+                  setTable({ ...next, id: t2.id, rows: t2.rows, columns: t2.columns })
+                }
+              }
+        )
       } catch (e) {
         window.alert((e as Error).message)
       }
     },
-    [assembly, pageId, table]
+    [assembly, pageId, table, pushUndo]
   )
 
+  // A plain table is NOT a BOM - it should start genuinely blank (the user's
+  // own row/column count, empty cells to fill in themselves), not silently
+  // reuse the BOM's auto-populated part list. Only "Insert BOM" auto-fills
+  // from the model.
   const insertTable = useCallback(
     async (template?: TableTemplate) => {
-      await insertBom(template)
+      const res = await promptForm('Insert Table', [
+        { key: 'rows', label: 'Rows', value: '3' },
+        { key: 'cols', label: 'Columns', value: String(template?.spec.columns?.length ?? 3) }
+      ])
+      if (!res) return
+      const nRows = Math.max(1, Number(res.rows) || 3)
+      const nCols = Math.max(1, Number(res.cols) || 3)
+      const columns =
+        template?.spec.columns ??
+        Array.from({ length: nCols }, (_, i) => ({
+          key: `col${i}`,
+          header: `Column ${i + 1}`,
+          source: `col${i}`
+        }))
+      const rows = Array.from({ length: nRows }, (_, r) => {
+        const row: Record<string, string | number> = { index: r + 1 }
+        for (const c of columns) row[c.source] = ''
+        return row
+      })
+      const previous = table
+      try {
+        const t = await api.drawingMakeTable(pageId, rows, columns, template?.spec, table?.id)
+        const next = {
+          id: t.id,
+          rows: t.rows,
+          columns: t.columns,
+          showGrid: template?.spec.showGrid ?? true,
+          gridColor: template?.spec.gridColor ?? '#111',
+          rowHeight: template?.spec.rowHeight ?? 5
+        }
+        setTable(next)
+        pushUndo(
+          previous
+            ? {
+                undo: async () => {
+                  await api.drawingMakeTable(pageId, previous.rows, previous.columns, undefined, previous.id)
+                  setTable(previous)
+                },
+                redo: async () => {
+                  await api.drawingMakeTable(pageId, next.rows, next.columns, undefined, next.id)
+                  setTable(next)
+                }
+              }
+            : {
+                undo: async () => {
+                  await api.drawingRemoveTable(t.id)
+                  setTable(null)
+                },
+                redo: async () => {
+                  const t2 = await api.drawingMakeTable(pageId, rows, columns, template?.spec, t.id)
+                  setTable({ ...next, id: t2.id, rows: t2.rows, columns: t2.columns })
+                }
+              }
+        )
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
     },
-    [insertBom]
+    [pageId, table, pushUndo]
   )
 
   const saveAsTemplate = useCallback(async () => {
@@ -580,11 +1230,51 @@ export const DrawingSheet = forwardRef<
     const name2 = await promptText('Template name', '')
     if (!name2 || !name2.trim()) return
     try {
-      await api.drawingSaveTableTemplate(name2.trim(), { columns: table.columns })
+      await api.drawingSaveTableTemplate(name2.trim(), {
+        columns: table.columns,
+        showGrid: table.showGrid,
+        gridColor: table.gridColor,
+        rowHeight: table.rowHeight
+      })
     } catch (e) {
       window.alert((e as Error).message)
     }
   }, [table])
+
+  const setTableCell = useCallback(
+    async (rowIdx: number, source: string, value: string) => {
+      if (!table) return
+      const oldValue = String((table.rows[rowIdx] as unknown as Record<string, unknown>)?.[source] ?? '')
+      const rows = table.rows.map((row, i) => (i === rowIdx ? { ...row, [source]: value } : row))
+      const tableId = table.id
+      const columns = table.columns
+      setTable((cur) => (cur ? { ...cur, rows } : cur))
+      try {
+        const t = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
+        setTable((cur) => (cur ? { ...cur, rows: t.rows } : cur))
+        if (String(oldValue) !== value) {
+          pushUndo({
+            undo: async () => {
+              const revertRows = rows.map((row, i) => (i === rowIdx ? { ...row, [source]: oldValue } : row))
+              const t2 = await api.drawingMakeTable(pageId, revertRows, columns, undefined, tableId)
+              setTable((cur) => (cur ? { ...cur, rows: t2.rows } : cur))
+            },
+            redo: async () => {
+              const t2 = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
+              setTable((cur) => (cur ? { ...cur, rows: t2.rows } : cur))
+            }
+          })
+        }
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [table, pageId, pushUndo]
+  )
+
+  const setTableGridStyle = useCallback((style: Partial<{ showGrid: boolean; gridColor: string; rowHeight: number }>) => {
+    setTable((cur) => (cur ? { ...cur, ...style } : cur))
+  }, [])
 
   const addNote = useCallback(
     async (viewId: string | null, p: [number, number]) => {
@@ -600,17 +1290,141 @@ export const DrawingSheet = forwardRef<
           viewId ? p : undefined
         )
         setNotes((cur) => [...cur, n])
+        const liveId = { current: n.id }
+        pushUndo({
+          undo: async () => {
+            await api.drawingRemoveNote(liveId.current)
+            setNotes((cur) => cur.filter((x) => x.id !== liveId.current))
+          },
+          redo: async () => {
+            const n2 = await api.drawingAddNote(pageId, n.text, n.x, n.y, viewId ?? undefined, viewId ? p : undefined, n.font, n.textSize)
+            liveId.current = n2.id
+            setNotes((cur) => [...cur, n2])
+          }
+        })
       } catch (e) {
         window.alert((e as Error).message)
       }
     },
-    [pageId]
+    [pageId, pushUndo]
   )
 
-  const setDimensionType = useCallback(async (dimId: string, kind: DimensionType) => {
+  const editNoteText = useCallback(async (noteId: string) => {
+    const current = notes.find((n) => n.id === noteId)
+    if (!current) return
+    const oldText = current.text
+    const text = await promptText('Note text', current.text)
+    if (text === null || text === undefined) return
     try {
-      const d = await api.drawingSetDimensionType(dimId, kind)
-      setDims((cur) => cur.map((x) => (x.id === dimId ? d : x)))
+      const n = await api.drawingSetNoteText(noteId, text)
+      setNotes((cur) => cur.map((x) => (x.id === noteId ? { ...x, ...n } : x)))
+      if (text !== oldText) {
+        pushUndo({
+          undo: async () => {
+            const n2 = await api.drawingSetNoteText(noteId, oldText)
+            setNotes((cur) => cur.map((x) => (x.id === noteId ? { ...x, ...n2 } : x)))
+          },
+          redo: async () => {
+            const n2 = await api.drawingSetNoteText(noteId, text)
+            setNotes((cur) => cur.map((x) => (x.id === noteId ? { ...x, ...n2 } : x)))
+          }
+        })
+      }
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
+  }, [notes, pushUndo])
+
+  const moveNote = useCallback(
+    async (noteId: string, x: number, y: number, from?: { x: number; y: number }) => {
+      // optimistic local move so dragging feels instant; reconciled by the
+      // RPC response (same pattern as everywhere else in this file)
+      setNotes((cur) => cur.map((n) => (n.id === noteId ? { ...n, x, y } : n)))
+      try {
+        const n = await api.drawingMoveNote(noteId, x, y)
+        setNotes((cur) => cur.map((x2) => (x2.id === noteId ? { ...x2, ...n } : x2)))
+        if (from && (from.x !== x || from.y !== y)) {
+          pushUndo({
+            undo: async () => {
+              await api.drawingMoveNote(noteId, from.x, from.y)
+              setNotes((cur) => cur.map((n2) => (n2.id === noteId ? { ...n2, x: from.x, y: from.y } : n2)))
+            },
+            redo: async () => {
+              await api.drawingMoveNote(noteId, x, y)
+              setNotes((cur) => cur.map((n2) => (n2.id === noteId ? { ...n2, x, y } : n2)))
+            }
+          })
+        }
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [pushUndo]
+  )
+
+  const setNoteStyle = useCallback(
+    async (noteId: string, style: { font?: string; textSize?: number }) => {
+      const current = notes.find((n) => n.id === noteId)
+      const oldStyle = current ? { font: current.font, textSize: current.textSize } : undefined
+      try {
+        const n = await api.drawingSetNoteStyle(noteId, style)
+        setNotes((cur) => cur.map((x) => (x.id === noteId ? { ...x, ...n } : x)))
+        if (oldStyle) {
+          pushUndo({
+            undo: async () => {
+              const n2 = await api.drawingSetNoteStyle(noteId, oldStyle)
+              setNotes((cur) => cur.map((x) => (x.id === noteId ? { ...x, ...n2 } : x)))
+            },
+            redo: async () => {
+              const n2 = await api.drawingSetNoteStyle(noteId, style)
+              setNotes((cur) => cur.map((x) => (x.id === noteId ? { ...x, ...n2 } : x)))
+            }
+          })
+        }
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [notes, pushUndo]
+  )
+
+  const setDimensionType = useCallback(
+    async (dimId: string, kind: DimensionType) => {
+      const oldKind = dims.find((x) => x.id === dimId)?.type
+      try {
+        const d = await api.drawingSetDimensionType(dimId, kind)
+        setDims((cur) => cur.map((x) => (x.id === dimId ? d : x)))
+        if (oldKind) {
+          pushUndo({
+            undo: async () => {
+              const d2 = await api.drawingSetDimensionType(dimId, oldKind)
+              setDims((cur) => cur.map((x) => (x.id === dimId ? d2 : x)))
+            },
+            redo: async () => {
+              const d2 = await api.drawingSetDimensionType(dimId, kind)
+              setDims((cur) => cur.map((x) => (x.id === dimId ? d2 : x)))
+            }
+          })
+        }
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [dims, pushUndo]
+  )
+
+  // NOT pushed onto the undo stack: DrawingDimension never retains its
+  // original edge/point refs (raw names like "Edge3", resolved once against
+  // the view at add-time and not read back anywhere - see _dimension_raw_
+  // value in drawing.py), so add_dimension has no way to recreate an
+  // equivalent one without a fresh re-pick from the user. Silently pushing
+  // a "successful-looking" undo entry that either throws (add_dimension
+  // requires at least one ref) or fabricates a wrong dimension would be
+  // worse than no undo at all for this one action.
+  const deleteDimension = useCallback(async (dimId: string) => {
+    try {
+      await api.drawingRemoveDimension(dimId)
+      setDims((cur) => cur.filter((d) => d.id !== dimId))
     } catch (e) {
       window.alert((e as Error).message)
     }
@@ -628,22 +1442,12 @@ export const DrawingSheet = forwardRef<
       insertBom,
       insertTable,
       saveAsTemplate,
+      loadSheetTemplate,
       exportPdf,
       exportDxf
     }),
-    [addView, autoLayout, setTool, sectionTool, detailTool, brokenTool, insertBom, insertTable, saveAsTemplate, exportPdf, exportDxf]
+    [addView, autoLayout, setTool, sectionTool, detailTool, brokenTool, insertBom, insertTable, saveAsTemplate, loadSheetTemplate, exportPdf, exportDxf]
   )
-
-  const bom = table
-    ? []
-    : assembly?.components.length
-      ? Object.entries(
-          assembly.components.reduce<Record<string, number>>((m, c) => {
-            m[c.label] = (m[c.label] ?? 0) + 1
-            return m
-          }, {})
-        )
-      : []
 
   return (
     <div className="drawing">
@@ -681,25 +1485,144 @@ export const DrawingSheet = forwardRef<
             Clear
           </button>
         )}
+        <span className="drawing-zoom">
+          <button title="Zoom out" onClick={() => zoomBy(1.25)}>
+            −
+          </button>
+          <button title="Zoom to fit the whole sheet" onClick={zoomFit}>
+            {Math.round((SHEET_W / viewBox.w) * 100)}%
+          </button>
+          <button title="Zoom in" onClick={() => zoomBy(1 / 1.25)}>
+            +
+          </button>
+        </span>
       </div>
 
       <div className="drawing-sheet" ref={sheetRef}>
         <svg
           className="drawing-page-svg"
-          viewBox={`0 0 ${SHEET_W} ${SHEET_H}`}
+          viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
+          onWheel={onWheel}
+          onPointerDown={(e) => {
+            // space+drag (or the middle mouse button) pans the sheet,
+            // regardless of the active tool - same modifier convention the
+            // main 3D viewport uses for its own pan gesture
+            if (spaceHeld.current || e.button === 1) {
+              e.preventDefault()
+              panRef.current = { x: e.clientX, y: e.clientY, vbx: viewBox.x, vby: viewBox.y }
+              return
+            }
+            // an empty-sheet pointerdown in select mode starts a rubber-
+            // band window-select, same left-to-right="contained" / right-
+            // to-left="touches" convention the main 3D viewport uses
+            const target = e.target as Element
+            if (tool === 'select' && !target.closest('[data-view-box]') && !target.closest('[data-note]')) {
+              const svg = e.currentTarget
+              const pt = svg.createSVGPoint()
+              pt.x = e.clientX
+              pt.y = e.clientY
+              const p = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+              setBand({ x0: p.x, y0: p.y, x1: p.x, y1: p.y })
+            }
+          }}
           onPointerMove={onPointerMove}
-          onPointerUp={() => (drag.current = null)}
+          onPointerUp={() => {
+            drag.current = null
+            panRef.current = null
+            if (band) {
+              const x0 = Math.min(band.x0, band.x1)
+              const x1 = Math.max(band.x0, band.x1)
+              const y0 = Math.min(band.y0, band.y1)
+              const y1 = Math.max(band.y0, band.y1)
+              const crossing = band.x1 < band.x0
+              const viewIds = new Set<string>()
+              for (const pl of placed) {
+                const [minX, minY, maxX, maxY] = pl.view.bbox
+                // ViewBox's own hit-rect spans (placed.x, placed.y) to
+                // (placed.x + w, placed.y + h) where w/h = (max-min)*scale
+                // are already positive magnitudes (see ViewBox render) -
+                // no sign flip needed here, unlike the polylines inside it.
+                const vx0 = pl.x
+                const vx1 = pl.x + (maxX - minX) * pl.scale
+                const vy0 = pl.y
+                const vy1 = pl.y + (maxY - minY) * pl.scale
+                const intersects = vx0 < x1 && vx1 > x0 && vy0 < y1 && vy1 > y0
+                const contained = vx0 >= x0 && vx1 <= x1 && vy0 >= y0 && vy1 <= y1
+                if (crossing ? intersects : contained) viewIds.add(pl.view.id)
+              }
+              const noteIds = new Set<string>()
+              for (const n of notes) {
+                if (n.x >= x0 && n.x <= x1 && n.y >= y0 && n.y <= y1) noteIds.add(n.id)
+              }
+              if (viewIds.size || noteIds.size) {
+                justBandSelected.current = true
+                setSelMultiViews(viewIds)
+                setSelMultiNotes(noteIds)
+                setSel(null)
+                setSelNote(null)
+              }
+              setBand(null)
+            }
+            const gd = groupDrag.current
+            if (gd) {
+              const movedViews = gd.views
+              const movedNotes = gd.notes
+              groupDrag.current = null
+              const viewMoves: Array<{ id: string; from: { x: number; y: number }; to: { x: number; y: number } }> = []
+              for (const pl of placed) {
+                const orig = movedViews.get(pl.view.id)
+                if (orig && (orig.x !== pl.x || orig.y !== pl.y)) {
+                  viewMoves.push({ id: pl.view.id, from: orig, to: { x: pl.x, y: pl.y } })
+                }
+              }
+              if (viewMoves.length) {
+                pushUndo({
+                  undo: async () => {
+                    setPlaced((cur) => cur.map((pl) => {
+                      const m = viewMoves.find((vm) => vm.id === pl.view.id)
+                      return m ? { ...pl, x: m.from.x, y: m.from.y } : pl
+                    }))
+                  },
+                  redo: async () => {
+                    setPlaced((cur) => cur.map((pl) => {
+                      const m = viewMoves.find((vm) => vm.id === pl.view.id)
+                      return m ? { ...pl, x: m.to.x, y: m.to.y } : pl
+                    }))
+                  }
+                })
+              }
+              for (const n of notes) {
+                const orig = movedNotes.get(n.id)
+                if (orig) void moveNote(n.id, n.x, n.y, orig)
+              }
+            }
+            if (noteDrag.current) {
+              const { id, origX, origY } = noteDrag.current
+              noteDrag.current = null
+              const n = notes.find((x) => x.id === id)
+              if (n) void moveNote(id, n.x, n.y, { x: origX, y: origY })
+            }
+          }}
+          style={{ cursor: spaceHeld.current ? 'grab' : undefined }}
           onClick={(e) => {
             // the sheet's own white background <rect> sits directly under
             // the root <svg> and should count as "empty sheet," same as the
-            // root itself - only a click landing inside a nested per-view
-            // <svg> (which has its own onClick for the dimension/cleanup
-            // tools) should be excluded here.
+            // root itself - only a click that landed on a placed view's own
+            // hit-test rect (data-view-box on its wrapping <g>, see ViewBox)
+            // should be excluded here, since that view's rect already
+            // handles the click itself (select/drag or a dimension/cleanup
+            // pick) and this handler must not also deselect it.
             const target = e.target as Element
-            const nestedViewSvg = target.closest('svg[viewBox]')
-            const clickedInsideView = nestedViewSvg !== null && nestedViewSvg !== e.currentTarget
+            const clickedInsideView = target.closest('[data-view-box]') !== null
+            if (justBandSelected.current) {
+              justBandSelected.current = false
+              return
+            }
             if (!clickedInsideView) {
               setSel(null)
+              setSelNote(null)
+              setSelMultiViews(new Set())
+              setSelMultiNotes(new Set())
               if (tool === 'note') {
                 const svg = e.currentTarget as SVGSVGElement
                 const pt = svg.createSVGPoint()
@@ -732,16 +1655,33 @@ export const DrawingSheet = forwardRef<
             <ViewBox
               key={pl.view.id}
               placed={pl}
-              selected={sel === i}
+              selected={sel === i || selMultiViews.has(pl.view.id)}
+              hovered={hover === i}
               tool={tool}
               snapTargets={snapTargets[pl.view.id] ?? []}
+              onHover={(over) => setHover((cur) => (over ? i : cur === i ? null : cur))}
               onDown={(e) => {
-                setSel(i)
                 const svg = (e.currentTarget as SVGElement).ownerSVGElement!
                 const pt = svg.createSVGPoint()
                 pt.x = e.clientX
                 pt.y = e.clientY
                 const p = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+                // dragging an item that's already part of a multi-select
+                // moves the WHOLE group together; otherwise this click
+                // replaces the selection with just this one item (standard
+                // click-vs-click-on-selection convention)
+                if (selMultiViews.has(pl.view.id) || selMultiNotes.size > 0) {
+                  const views = new Map<string, { x: number; y: number }>()
+                  for (const p2 of placed) if (selMultiViews.has(p2.view.id)) views.set(p2.view.id, { x: p2.x, y: p2.y })
+                  const notesMap = new Map<string, { x: number; y: number }>()
+                  for (const n of notes) if (selMultiNotes.has(n.id)) notesMap.set(n.id, { x: n.x, y: n.y })
+                  groupDrag.current = { startX: p.x, startY: p.y, views, notes: notesMap }
+                  return
+                }
+                setSel(i)
+                setSelNote(null)
+                setSelMultiViews(new Set())
+                setSelMultiNotes(new Set())
                 drag.current = { i, ox: p.x - pl.x, oy: p.y - pl.y }
               }}
               onContextMenu={(e) => {
@@ -765,6 +1705,48 @@ export const DrawingSheet = forwardRef<
                 stroke="#8ab"
                 strokeDasharray="0.8 0.8"
                 strokeWidth={0.25}
+                style={{ cursor: 'context-menu', pointerEvents: 'stroke' }}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setMenu(null)
+                  setDimMenu({
+                    x: e.clientX,
+                    y: e.clientY,
+                    items: [
+                      {
+                        label: 'Delete Cleanup Line',
+                        danger: true,
+                        onClick: () => {
+                          void (async () => {
+                            try {
+                              await api.drawingRemoveCleanupLine(pl.view.id, cl.id)
+                              setCleanupLines((cur) => ({
+                                ...cur,
+                                [pl.view.id]: (cur[pl.view.id] ?? []).filter((x) => x.id !== cl.id)
+                              }))
+                              pushUndo({
+                                undo: async () => {
+                                  const cl2 = await api.drawingAddCleanupLine(pl.view.id, cl.p1, cl.p2)
+                                  setCleanupLines((cur) => ({ ...cur, [pl.view.id]: [...(cur[pl.view.id] ?? []), cl2] }))
+                                },
+                                redo: async () => {
+                                  await api.drawingRemoveCleanupLine(pl.view.id, cl.id)
+                                  setCleanupLines((cur) => ({
+                                    ...cur,
+                                    [pl.view.id]: (cur[pl.view.id] ?? []).filter((x) => x.id !== cl.id)
+                                  }))
+                                }
+                              })
+                            } catch (e) {
+                              window.alert((e as Error).message)
+                            }
+                          })()
+                        }
+                      }
+                    ]
+                  })
+                }}
               />
             ))
           )}
@@ -822,6 +1804,8 @@ export const DrawingSheet = forwardRef<
                       })()
                     }
                   })
+                  items.push({ separator: true, label: '' })
+                  items.push({ label: 'Delete Dimension', danger: true, onClick: () => void deleteDimension(d.id) })
                   setMenu(null)
                   setDimMenu({ x: e.clientX, y: e.clientY, items })
                 }}
@@ -834,53 +1818,228 @@ export const DrawingSheet = forwardRef<
           })}
 
           {notes.map((n) => (
-            <text key={n.id} x={n.x} y={n.y} fontSize={3.4} fill="#333">
+            <text
+              key={n.id}
+              data-note={n.id}
+              x={n.x}
+              y={n.y}
+              fontSize={n.textSize ?? 3.4}
+              fontFamily={n.font || undefined}
+              fill={selNote === n.id || selMultiNotes.has(n.id) ? '#0696d7' : '#333'}
+              style={{ cursor: 'move' }}
+              onPointerDown={(e) => {
+                e.stopPropagation()
+                if (selMultiNotes.has(n.id) || selMultiViews.size > 0) {
+                  const svg = sheetRef.current?.querySelector('svg') as SVGSVGElement | null
+                  if (!svg) return
+                  const pt = svg.createSVGPoint()
+                  pt.x = e.clientX
+                  pt.y = e.clientY
+                  const p = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+                  const views = new Map<string, { x: number; y: number }>()
+                  for (const p2 of placed) if (selMultiViews.has(p2.view.id)) views.set(p2.view.id, { x: p2.x, y: p2.y })
+                  const notesMap = new Map<string, { x: number; y: number }>()
+                  for (const n2 of notes) if (selMultiNotes.has(n2.id)) notesMap.set(n2.id, { x: n2.x, y: n2.y })
+                  groupDrag.current = { startX: p.x, startY: p.y, views, notes: notesMap }
+                  return
+                }
+                setSel(null)
+                setSelNote(n.id)
+                setSelMultiViews(new Set())
+                setSelMultiNotes(new Set())
+                const svg = sheetRef.current?.querySelector('svg') as SVGSVGElement | null
+                if (!svg) return
+                const pt = svg.createSVGPoint()
+                pt.x = e.clientX
+                pt.y = e.clientY
+                const p = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+                noteDrag.current = { id: n.id, ox: p.x - n.x, oy: p.y - n.y, origX: n.x, origY: n.y }
+              }}
+              onDoubleClick={(e) => {
+                e.stopPropagation()
+                void editNoteText(n.id)
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                setSelNote(n.id)
+                setMenu(null)
+                setDimMenu({
+                  x: e.clientX,
+                  y: e.clientY,
+                  items: [
+                    { label: 'Edit Text…', onClick: () => void editNoteText(n.id) },
+                    {
+                      label: 'Font Size…',
+                      onClick: () => {
+                        void (async () => {
+                          const res = await promptForm('Note Style', [
+                            { key: 'textSize', label: 'Font size (mm)', value: String(n.textSize ?? 3.4) }
+                          ])
+                          if (!res) return
+                          void setNoteStyle(n.id, { textSize: Number(res.textSize) || 3.4 })
+                        })()
+                      }
+                    },
+                    { separator: true, label: '' },
+                    { label: 'Delete Note', danger: true, onClick: () => void deleteNote(n.id) }
+                  ]
+                })
+              }}
+            >
               {n.text}
             </text>
           ))}
 
-          {/* legacy client-only BOM block, shown only until a real table is inserted */}
-          {!table && bom.length > 0 && (
-            <g transform={`translate(${MARGIN + 4} ${MARGIN + 4})`}>
-              <text fontSize={3.6} fontWeight="bold">
-                BOM
+          {table &&
+            (() => {
+              const rowH = table.rowHeight
+              const colW = Math.max(20, 130 / table.columns.length)
+              const tableW = colW * table.columns.length
+              const tableH = rowH * (table.rows.length + 1)
+              return (
+                <g
+                  transform={`translate(${MARGIN + 4} ${MARGIN + 4})`}
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    setMenu(null)
+                    setDimMenu({
+                      x: e.clientX,
+                      y: e.clientY,
+                      items: [
+                        {
+                          label: table.showGrid ? 'Hide Grid Lines' : 'Show Grid Lines',
+                          onClick: () => setTableGridStyle({ showGrid: !table.showGrid })
+                        },
+                        {
+                          label: 'Grid Color…',
+                          onClick: () => {
+                            void (async () => {
+                              const res = await promptForm('Table Grid', [
+                                { key: 'color', label: 'Grid line color (hex)', value: table.gridColor }
+                              ])
+                              if (res) setTableGridStyle({ gridColor: res.color || '#111' })
+                            })()
+                          }
+                        },
+                        {
+                          label: 'Row Height…',
+                          onClick: () => {
+                            void (async () => {
+                              const res = await promptForm('Table Grid', [
+                                { key: 'h', label: 'Row height (mm)', value: String(table.rowHeight) }
+                              ])
+                              if (res) setTableGridStyle({ rowHeight: Number(res.h) || 5 })
+                            })()
+                          }
+                        }
+                      ]
+                    })
+                  }}
+                >
+                  {table.showGrid && (
+                    <g stroke={table.gridColor} strokeWidth={0.25} fill="none">
+                      <rect x={0} y={0} width={tableW} height={tableH} />
+                      {table.columns.slice(1).map((c, i) => (
+                        <line key={c.key} x1={colW * (i + 1)} y1={0} x2={colW * (i + 1)} y2={tableH} />
+                      ))}
+                      {table.rows.map((_row, i) => (
+                        <line key={`r${i}`} x1={0} y1={rowH * (i + 1)} x2={tableW} y2={rowH * (i + 1)} />
+                      ))}
+                    </g>
+                  )}
+                  {table.columns.map((c, ci) => (
+                    <text key={c.key} x={colW * ci + 1.5} y={rowH - 1.5} fontSize={3.2} fontWeight="bold">
+                      {c.header}
+                    </text>
+                  ))}
+                  {table.rows.map((row, ri) =>
+                    table.columns.map((c, ci) => {
+                      const isEditing = editingCell && editingCell.row === ri && editingCell.col === ci
+                      const value = String((row as unknown as Record<string, unknown>)[c.source] ?? '')
+                      return (
+                        <g key={`${ri}-${c.key}`}>
+                          <rect
+                            x={colW * ci}
+                            y={rowH * (ri + 1)}
+                            width={colW}
+                            height={rowH}
+                            fill={isEditing ? '#0696d71a' : 'transparent'}
+                            style={{ cursor: 'text' }}
+                            onDoubleClick={(e) => {
+                              e.stopPropagation()
+                              setEditingCell({ row: ri, col: ci, value })
+                            }}
+                          />
+                          {isEditing ? (
+                            <foreignObject x={colW * ci} y={rowH * (ri + 1)} width={colW} height={rowH}>
+                              <input
+                                autoFocus
+                                defaultValue={value}
+                                style={{ width: '100%', height: '100%', fontSize: '3.2px', border: 'none', outline: '1px solid #0696d7', boxSizing: 'border-box' }}
+                                onBlur={(e) => {
+                                  void setTableCell(ri, c.source, e.currentTarget.value)
+                                  setEditingCell(null)
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') e.currentTarget.blur()
+                                  if (e.key === 'Escape') {
+                                    e.currentTarget.value = value
+                                    setEditingCell(null)
+                                  }
+                                }}
+                              />
+                            </foreignObject>
+                          ) : (
+                            <text
+                              x={colW * ci + 1.5}
+                              y={rowH * (ri + 1) + rowH - 1.5}
+                              fontSize={3.2}
+                              style={{ cursor: 'text' }}
+                              onDoubleClick={(e) => {
+                                e.stopPropagation()
+                                setEditingCell({ row: ri, col: ci, value })
+                              }}
+                            >
+                              {value}
+                            </text>
+                          )}
+                        </g>
+                      )
+                    })
+                  )}
+                </g>
+              )
+            })()}
+
+          {showTitleBlock && (
+            <g transform={`translate(${SHEET_W - MARGIN - 90} ${SHEET_H - MARGIN - 26})`}>
+              <rect width={90} height={26} fill="#fff" stroke="#111" strokeWidth={0.5} />
+              <line x1={0} y1={13} x2={90} y2={13} stroke="#111" strokeWidth={0.3} />
+              <line x1={45} y1={0} x2={45} y2={13} stroke="#111" strokeWidth={0.3} />
+              <text x={3} y={9} fontSize={4} fontWeight="bold">
+                {name}
               </text>
-              {bom.map(([label, qty], i) => (
-                <text key={label} y={6 + i * 5} fontSize={3.2}>
-                  {i + 1}. {label} × {qty}
-                </text>
-              ))}
+              <text x={48} y={9} fontSize={3}>
+                {today}
+              </text>
+              <text x={3} y={21} fontSize={3}>
+                mm · 1:1 · Sheet 1/1
+              </text>
             </g>
           )}
-
-          {table && (
-            <g transform={`translate(${MARGIN + 4} ${MARGIN + 4})`}>
-              <text fontSize={3.6} fontWeight="bold">
-                {table.columns.map((c) => c.header).join('   ')}
-              </text>
-              {table.rows.map((row, i) => (
-                <text key={row.index} y={6 + i * 5} fontSize={3.2}>
-                  {table.columns.map((c) => (row as unknown as Record<string, unknown>)[c.source] ?? '').join('   ')}
-                </text>
-              ))}
-            </g>
+          {band && (
+            <rect
+              x={Math.min(band.x0, band.x1)}
+              y={Math.min(band.y0, band.y1)}
+              width={Math.abs(band.x1 - band.x0)}
+              height={Math.abs(band.y1 - band.y0)}
+              fill={band.x1 < band.x0 ? '#0696d71a' : '#0696d70d'}
+              stroke="#0696d7"
+              strokeWidth={0.3}
+              strokeDasharray={band.x1 < band.x0 ? '1.5 1' : undefined}
+            />
           )}
-
-          {/* title block */}
-          <g transform={`translate(${SHEET_W - MARGIN - 90} ${SHEET_H - MARGIN - 26})`}>
-            <rect width={90} height={26} fill="#fff" stroke="#111" strokeWidth={0.5} />
-            <line x1={0} y1={13} x2={90} y2={13} stroke="#111" strokeWidth={0.3} />
-            <line x1={45} y1={0} x2={45} y2={13} stroke="#111" strokeWidth={0.3} />
-            <text x={3} y={9} fontSize={4} fontWeight="bold">
-              {name}
-            </text>
-            <text x={48} y={9} fontSize={3}>
-              {today}
-            </text>
-            <text x={3} y={21} fontSize={3}>
-              mm · 1:1 · Sheet 1/1
-            </text>
-          </g>
         </svg>
       </div>
 
@@ -894,7 +2053,9 @@ export const DrawingSheet = forwardRef<
             { label: 'Detail View…', onClick: () => void detailTool() },
             { label: 'Broken View…', onClick: () => void brokenTool() },
             { separator: true, label: '' },
-            { label: 'Convert to Normal', onClick: () => void convertView(menu.viewId, 'part') }
+            { label: 'Convert to Normal', onClick: () => void convertView(menu.viewId, 'part') },
+            { separator: true, label: '' },
+            { label: 'Delete View', danger: true, onClick: () => void deleteView(menu.viewId) }
           ]}
         />
       )}

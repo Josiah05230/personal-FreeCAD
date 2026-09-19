@@ -115,6 +115,7 @@ export function Viewport({
   onSketchChange,
   onSketchDimensionRequest,
   onSketchSolve,
+  onSketchDrag,
   onSketchNotice,
   renderSettings,
   projection = 'orthographic',
@@ -168,6 +169,9 @@ export function Viewport({
     pts?: import('./SketchController').PtRef[]
   ) => void
   onSketchSolve?: import('./SketchController').SketchSolveFn
+  /** live-drag path: the real FreeCAD-solver-backed dragStart/Move/End RPCs -
+   *  drag renders directly off these, there is no local approximate solver. */
+  onSketchDrag?: import('./SketchController').SketchDragApi
   onSketchNotice?: (msg: string) => void
   renderSettings?: RenderSettings
   /** 'orthographic' (CAD default) or 'perspective' */
@@ -190,6 +194,8 @@ export function Viewport({
   onDimReqRef.current = onSketchDimensionRequest
   const onSketchSolveRef = useRef(onSketchSolve)
   onSketchSolveRef.current = onSketchSolve
+  const onSketchDragRef = useRef(onSketchDrag)
+  onSketchDragRef.current = onSketchDrag
   const onSketchNoticeRef = useRef(onSketchNotice)
   onSketchNoticeRef.current = onSketchNotice
   const sketchToolRef = useRef(sketchTool)
@@ -478,6 +484,7 @@ export function Viewport({
         testEntityColorHex: (idx) => stateRef.current?.sketch?.testEntityColorHex(idx) ?? null,
         testEntitySnapshot: (idx) => stateRef.current?.sketch?.testEntitySnapshot(idx) ?? null,
         testHandlePointCount: () => stateRef.current?.sketch?.testHandlePointCount() ?? 0,
+        testFillCount: () => stateRef.current?.sketch?.fillCount() ?? 0,
         testDimPicksState: () => stateRef.current?.sketch?.testDimPicksState() ?? [],
         testNudgeCamera: (delta) => {
           const s = stateRef.current
@@ -1169,11 +1176,17 @@ export function Viewport({
         () => onSketchChangeRef.current?.(),
         sketchRefGeom,
         (idx, kind) => onDimReqRef.current?.(idx, kind),
-        (ents, cons) =>
+        (ents, cons, proj) =>
           onSketchSolveRef.current
-            ? onSketchSolveRef.current(ents, cons)
+            ? onSketchSolveRef.current(ents, cons, proj)
             : Promise.resolve(null),
-        (msg) => onSketchNoticeRef.current?.(msg)
+        (msg) => onSketchNoticeRef.current?.(msg),
+        onSketchDragRef.current && {
+          start: (ents, cons, proj) => onSketchDragRef.current!.start(ents, cons, proj),
+          move: (dragId, element, sub, posId, pos) =>
+            onSketchDragRef.current!.move(dragId, element, sub, posId, pos),
+          end: (dragId) => onSketchDragRef.current!.end(dragId)
+        }
       )
       if (
         (sketchInitialEntities && sketchInitialEntities.length) ||

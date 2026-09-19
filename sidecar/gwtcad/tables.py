@@ -66,7 +66,13 @@ def _link_display_label(link):
 def bom_rows(doc, source=None):
     """Group the document's assembly App::Link components by the part they
     each link to -> [{label, qty, material, description}], same grouping
-    DrawingSheet.tsx already did client-side from assembly.tree()."""
+    DrawingSheet.tsx already did client-side from assembly.tree().
+
+    A document with no App::Link at all is not an assembly - it's a single
+    part - and a BOM is still a meaningful thing to want on its drawing (one
+    row, qty 1, same material/description convention). Fall back to listing
+    each top-level PartDesign::Body directly rather than returning an empty
+    table just because there is nothing to "link"."""
     if doc is None:
         return []
     links = [o for o in doc.Objects if o.TypeId == "App::Link"]
@@ -74,25 +80,38 @@ def bom_rows(doc, source=None):
         names = {c.Name for c in getattr(source, "Group", [])}
         links = [l for l in links if l.Name in names] or links
 
+    if links:
+        return _grouped_rows(links, _link_group_key, _link_display_label)
+
+    bodies = [o for o in doc.Objects if o.TypeId == "PartDesign::Body"]
+    if source is not None and hasattr(source, "Group"):
+        names = {c.Name for c in getattr(source, "Group", [])}
+        bodies = [b for b in bodies if b.Name in names] or bodies
+    if not bodies:
+        return []
+    return _grouped_rows(bodies, lambda b: (None, b.Name), lambda b: b.Label)
+
+
+def _grouped_rows(objs, group_key, display_label):
     counts = {}
     order = []
     meta = {}
-    for link in links:
-        key = _link_group_key(link)
+    for obj in objs:
+        key = group_key(obj)
         if key not in counts:
             counts[key] = 0
             order.append(key)
             material = ""
             try:
-                target = link.LinkedObject
+                target = getattr(obj, "LinkedObject", obj)
                 mat = getattr(target, "ShapeMaterial", None) if target is not None else None
                 if mat is not None and getattr(mat, "Name", None) and mat.Name != "Default":
                     material = mat.Name
             except Exception:
                 pass
-            extra = session.material_extra(link.Name)
+            extra = session.material_extra(obj.Name)
             meta[key] = {
-                "label": _link_display_label(link),
+                "label": display_label(obj),
                 "material": material,
                 "description": extra.get("description", ""),
             }
@@ -175,6 +194,21 @@ def make_table(doc, page_id, rows, columns=None, template=None, table_id=None):
         "id": view.Name, "sheetId": sheet.Name, "pageId": page.Name,
         "columns": columns, "rows": rows,
     }
+
+
+def remove_table(doc, table_id):
+    view = doc.getObject(table_id)
+    if view is None or view.TypeId != "TechDraw::DrawViewSpreadsheet":
+        raise RpcError(APP_ERROR, "no such table: %r" % table_id)
+    sheet = view.Source
+    doc.removeObject(view.Name)
+    if sheet is not None:
+        try:
+            doc.removeObject(sheet.Name)
+        except Exception:
+            pass
+    doc.recompute()
+    return {"ok": True}
 
 
 def _load_templates():

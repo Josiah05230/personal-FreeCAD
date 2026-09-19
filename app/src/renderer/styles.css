@@ -1976,6 +1976,28 @@ code {
   color: #fff;
 }
 
+.drawing-zoom {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.drawing-zoom button {
+  background: transparent;
+  border: 1px solid var(--line-soft);
+  color: var(--text-dim);
+  border-radius: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 10px;
+  min-width: 28px;
+}
+
+.drawing-zoom button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
 .drawing-export {
   background: var(--chrome-3);
   border: 1px solid var(--line-soft);
@@ -2926,6 +2948,102 @@ code {
   max-height: 80vh;
   display: flex;
   flex-direction: column;
+}
+
+.mcmaster-panel {
+  position: absolute;
+  left: 5%;
+  right: 5%;
+  top: 6%;
+  bottom: 6%;
+  z-index: 13;
+  background: #1b1d20f2;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 24px 64px #000b;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.mcmaster-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  background: #24272b;
+}
+.mcmaster-head button {
+  background: #2e3237;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.mcmaster-head button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.mcmaster-url {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 0 6px;
+  cursor: text;
+}
+.mcmaster-url-input {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text);
+  background: #16181b;
+  border: 1px solid var(--accent, #3d7eff);
+  border-radius: 4px;
+  padding: 3px 6px;
+  outline: none;
+}
+.mcmaster-import {
+  background: var(--accent, #3d7eff) !important;
+  color: #fff !important;
+  font-weight: 600;
+}
+.mcmaster-status {
+  padding: 4px 10px;
+  font-size: 11px;
+  border-bottom: 1px solid var(--line);
+  background: #24272b;
+}
+.mcmaster-err {
+  color: #ff6b6b;
+}
+.mcmaster-slot {
+  flex: 1;
+  background: #111;
+}
+.pn-browser-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.pn-browser-table th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  padding: 6px 8px;
+  background: #24272b;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-dim);
+}
+.pn-browser-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.pn-browser-table tr:hover td {
+  background: #ffffff08;
 }
 .materials-head {
   display: flex;

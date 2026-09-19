@@ -23,7 +23,7 @@ const RING: Row[] = []
 const MAX = 5000
 const START = Date.now()
 
-function clip(o: unknown): unknown {
+export function clip(o: unknown): unknown {
   return JSON.parse(
     JSON.stringify(o, (_k, v) => {
       if (typeof v === 'number') return Number.isFinite(v) ? Math.round(v * 1e4) / 1e4 : String(v)

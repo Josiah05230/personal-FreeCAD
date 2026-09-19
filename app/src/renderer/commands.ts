@@ -50,6 +50,7 @@ export interface CommandContext {
   drawingInsertBom: () => Promise<void>
   drawingInsertTable: () => Promise<void>
   drawingSaveAsTemplate: () => Promise<void>
+  drawingLoadSheetTemplate: () => Promise<void>
   drawingNewSheet: () => Promise<void>
   drawingRenameSheet: () => Promise<void>
   drawingDeleteSheet: () => Promise<void>
@@ -62,6 +63,7 @@ export interface CommandContext {
   centerOfMass: () => void
   toggleMaterials: () => void
   toggleAppearance: () => void
+  toggleMcMaster: () => void
   insertCanvas: () => Promise<void>
   toggleParams: () => void
   importKicad: () => Promise<void>
@@ -130,6 +132,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'ins.model', title: 'Insert 3D Model', group: 'Insert', tab: 'SOLID', icon: 'extrude', run: () => ctx.importStep() },
     { id: 'ins.kicad', title: 'Import KiCad PCB', group: 'Insert', tab: 'SOLID', icon: 'combine', run: () => ctx.importKicad() },
     { id: 'ins.kicadSync', title: 'Re-sync KiCad PCB', group: 'Insert', tab: 'SOLID', icon: 'combine', run: () => ctx.reimportKicad() },
+    { id: 'ins.mcmaster', title: 'McMaster-Carr Component', group: 'Insert', tab: 'SOLID', icon: 'combine', run: () => ctx.toggleMcMaster() },
     // --- assemble ---
     { id: 'asm.newComponent', title: 'Insert Component', group: 'Assemble', tab: 'ASSEMBLE', icon: 'combine', run: () => ctx.addComponent() },
     { id: 'asm.joint', title: 'Joint', group: 'Assemble', tab: 'ASSEMBLE', icon: 'axis', hotkey: 'j', run: () => ctx.addJoint() },
@@ -175,6 +178,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'draw.bom', title: 'Insert BOM', group: 'Tables', tab: 'DRAWING', icon: 'combine', run: () => ctx.drawingInsertBom() },
     { id: 'draw.table', title: 'Insert Table', group: 'Tables', tab: 'DRAWING', icon: 'combine', run: () => ctx.drawingInsertTable() },
     { id: 'draw.saveTemplate', title: 'Save as Template…', group: 'Tables', tab: 'DRAWING', icon: 'point', run: () => ctx.drawingSaveAsTemplate() },
+    { id: 'draw.loadTemplate', title: 'Load Template…', group: 'Sheet', tab: 'DRAWING', icon: 'sketch', run: () => ctx.drawingLoadSheetTemplate() },
     { id: 'draw.newSheet', title: 'New Sheet', group: 'Sheet', tab: 'DRAWING', icon: 'sketch', run: () => ctx.drawingNewSheet() },
     { id: 'draw.renameSheet', title: 'Rename Sheet', group: 'Sheet', tab: 'DRAWING', icon: 'point', run: () => ctx.drawingRenameSheet() },
     { id: 'draw.deleteSheet', title: 'Delete Sheet', group: 'Sheet', tab: 'DRAWING', icon: 'point', run: () => ctx.drawingDeleteSheet() },

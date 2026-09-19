@@ -384,6 +384,8 @@ def load_state(blob):
     _render_settings.update(blob.get("renderSettings", {}) or {})
     _appearance_presets.clear()
     _appearance_presets.update(blob.get("appearancePresets", {}) or {})
+    _part_number.clear()
+    _part_number.update(blob.get("partNumber", {}) or {})
     mx = 0
     for cid in _canvases:
         try:
@@ -405,7 +407,8 @@ def dump_state():
             "sections": list(_sections.values()),
             "drawings": list(_drawings.values()),
             "dimFormats": all_dim_formats(),
-            "dimFormatDefault": dim_format_default()}
+            "dimFormatDefault": dim_format_default(),
+            "partNumber": part_number()}
 
 
 def canvases():
@@ -447,6 +450,23 @@ def all_material_extra():
 
 def clear_material_extra():
     _material_extra.clear()
+
+
+# The company PN/Name/Description tag assigned to this document (if any), via
+# gwtcad.partnumbers. Also mirrored onto the real FreeCAD document (Comment +
+# custom properties) at save time so it survives outside GWT-CAD too - this
+# copy is just what round-trips through the .gwtcad.json companion.
+_part_number = {}
+
+
+def set_part_number(info):
+    _part_number.clear()
+    if info:
+        _part_number.update(info)
+
+
+def part_number():
+    return dict(_part_number)
 
 
 # Which user-library custom material preset (by id) is assigned to an object,

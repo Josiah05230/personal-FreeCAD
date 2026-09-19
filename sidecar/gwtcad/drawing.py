@@ -240,6 +240,13 @@ def page_contents(doc, page_id):
             base = _get_tag(o, "_gwt_base", "")
             if base:
                 entry["baseViewId"] = base
+            if tid == "TechDraw::DrawBrokenView":
+                brk_raw = _get_tag(o, "_gwt_breaks", "")
+                if brk_raw:
+                    try:
+                        entry["breaks"] = json.loads(brk_raw)
+                    except Exception:
+                        pass
             views.append(entry)
         elif tid == "TechDraw::DrawViewDimension":
             dimensions.append({
@@ -256,6 +263,7 @@ def page_contents(doc, page_id):
             notes.append({
                 "id": o.Name, "text": "\n".join(o.Text) if o.Text else "",
                 "x": float(o.X), "y": float(o.Y), "leaderId": leader_id,
+                "font": str(o.Font), "textSize": float(o.TextSize),
             })
         elif tid == "TechDraw::DrawViewSpreadsheet":
             sheet = o.Source
@@ -348,6 +356,13 @@ def make_view(doc, page_id, source_obj, direction="front", scale=1.0):
 
 
 def make_section(doc, page_id, base_view_id, plane="XY", offset=0.0, flip=False):
+    """`plane` is the cut plane in absolute model axes (its normal is the
+    THIRD, unlisted axis - "XY" cuts along a plane spanning X and Y, so its
+    normal is Z). A cut whose normal is parallel to the base view's own
+    Direction produces a section that looks IDENTICAL to the un-sectioned
+    view (confirmed live: the cut is then exactly the image plane, at the
+    view's own depth - no new profile is exposed) - reject that combination
+    outright instead of silently returning a no-op-looking "section"."""
     page = get_page(doc, page_id)
     base = doc.getObject(base_view_id)
     if base is None or base.TypeId not in ("TechDraw::DrawViewPart",):
@@ -358,13 +373,25 @@ def make_section(doc, page_id, base_view_id, plane="XY", offset=0.0, flip=False)
     if flip:
         n = n.negative()
 
+    view_dir = App.Vector(base.Direction).normalize()
+    if abs(n.normalize().dot(view_dir)) > 0.99:
+        raise RpcError(
+            APP_ERROR,
+            "cut plane %r is parallel to this view's own line of sight - it would "
+            "show no new geometry (the cut sits exactly at the image plane). "
+            "Pick a plane perpendicular to the view direction instead." % plane
+        )
+
     view = doc.addObject("TechDraw::DrawViewSection", "Section")
     page.addView(view)
     view.BaseView = base
     view.Source = base.Source
     view.SectionNormal = n
-    origin = base.Source[0].Shape.BoundBox.Center if base.Source else App.Vector(0, 0, 0)
-    origin = App.Vector(origin.x, origin.y, origin.z + float(offset))
+    center = base.Source[0].Shape.BoundBox.Center if base.Source else App.Vector(0, 0, 0)
+    # offset moves the cut ALONG its own normal, not always along Z - a
+    # plane="YZ" (normal X) cut with a nonzero offset previously only ever
+    # nudged origin.z, which does nothing to a plane whose normal is X.
+    origin = center + n.normalize() * float(offset)
     view.SectionOrigin = origin
     view.Direction = base.Direction
     view.Scale = base.Scale
@@ -502,6 +529,26 @@ def convert_view(doc, page_id, view_id, to_kind, **kw):
 # dimensions
 # --------------------------------------------------------------------------- #
 
+def remove_view(doc, view_id):
+    """Delete a placed view. Any TechDraw::DrawViewDimension that referenced
+    it is deleted too (a dimension with no view to measure is meaningless,
+    unlike convert_view's re-parent case where a replacement view exists a
+    moment later)."""
+    view = doc.getObject(view_id)
+    if view is None:
+        raise RpcError(APP_ERROR, "no such view: %r" % view_id)
+    removed_dims = []
+    for o in list(doc.Objects):
+        if o.TypeId == "TechDraw::DrawViewDimension":
+            refs = list(getattr(o, "References2D", []) or [])
+            if any(r[0] is view for r in refs if r):
+                removed_dims.append(o.Name)
+                doc.removeObject(o.Name)
+    doc.removeObject(view.Name)
+    doc.recompute()
+    return {"ok": True, "removedDimensions": removed_dims}
+
+
 def add_dimension(doc, page_id, view_id, refs, kind="Distance"):
     """`refs`: list of {"sub": "Edge3"} or {"sub":"Vertex1"} names on the view."""
     page = get_page(doc, page_id)
@@ -519,6 +566,15 @@ def add_dimension(doc, page_id, view_id, refs, kind="Distance"):
 
     value = _dimension_raw_value(dim)
     return {"id": dim.Name, "viewId": view.Name, "type": dim.Type, "value": value}
+
+
+def remove_dimension(doc, dim_id):
+    dim = doc.getObject(dim_id)
+    if dim is None or dim.TypeId != "TechDraw::DrawViewDimension":
+        raise RpcError(APP_ERROR, "no such dimension: %r" % dim_id)
+    doc.removeObject(dim.Name)
+    doc.recompute()
+    return {"ok": True}
 
 
 def _dimension_raw_value(dim):
@@ -686,13 +742,25 @@ def remove_cleanup_line(doc, view_id, line_id):
 # notes / leaders
 # --------------------------------------------------------------------------- #
 
-def add_note(doc, page_id, text, x, y, leader_view_id=None, leader_point=None):
+def _note_dto(ann):
+    return {
+        "id": ann.Name, "text": "\n".join(ann.Text), "x": float(ann.X), "y": float(ann.Y),
+        "font": str(ann.Font), "textSize": float(ann.TextSize),
+    }
+
+
+def add_note(doc, page_id, text, x, y, leader_view_id=None, leader_point=None,
+              font=None, textSize=None):
     page = get_page(doc, page_id)
     ann = doc.addObject("TechDraw::DrawViewAnnotation", "Note")
     page.addView(ann)
     ann.Text = [str(text)]
     ann.X = float(x)
     ann.Y = float(y)
+    if font:
+        ann.Font = str(font)
+    if textSize:
+        ann.TextSize = float(textSize)
     doc.recompute()
 
     leader_id = None
@@ -709,8 +777,9 @@ def add_note(doc, page_id, text, x, y, leader_view_id=None, leader_point=None):
             doc.recompute()
             leader_id = leader.Name
 
-    return {"id": ann.Name, "text": str(text), "x": float(ann.X), "y": float(ann.Y),
-            "leaderId": leader_id}
+    dto = _note_dto(ann)
+    dto["leaderId"] = leader_id
+    return dto
 
 
 def set_note_text(doc, note_id, text):
@@ -719,7 +788,41 @@ def set_note_text(doc, note_id, text):
         raise RpcError(APP_ERROR, "no such note: %r" % note_id)
     ann.Text = [str(text)]
     doc.recompute()
-    return {"id": ann.Name, "text": str(text)}
+    return _note_dto(ann)
+
+
+def set_note_style(doc, note_id, font=None, textSize=None):
+    ann = doc.getObject(note_id)
+    if ann is None or ann.TypeId != "TechDraw::DrawViewAnnotation":
+        raise RpcError(APP_ERROR, "no such note: %r" % note_id)
+    if font:
+        ann.Font = str(font)
+    if textSize:
+        ann.TextSize = float(textSize)
+    doc.recompute()
+    return _note_dto(ann)
+
+
+def move_note(doc, note_id, x, y):
+    ann = doc.getObject(note_id)
+    if ann is None or ann.TypeId != "TechDraw::DrawViewAnnotation":
+        raise RpcError(APP_ERROR, "no such note: %r" % note_id)
+    ann.X = float(x)
+    ann.Y = float(y)
+    doc.recompute()
+    return _note_dto(ann)
+
+
+def remove_note(doc, note_id):
+    ann = doc.getObject(note_id)
+    if ann is None or ann.TypeId != "TechDraw::DrawViewAnnotation":
+        raise RpcError(APP_ERROR, "no such note: %r" % note_id)
+    for o in list(doc.Objects):
+        if o.TypeId == "TechDraw::DrawLeaderLine" and getattr(o, "LeaderParent", None) is ann:
+            doc.removeObject(o.Name)
+    doc.removeObject(ann.Name)
+    doc.recompute()
+    return {"ok": True}
 
 
 # --------------------------------------------------------------------------- #

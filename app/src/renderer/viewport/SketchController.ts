@@ -24,7 +24,6 @@ export type SketchTool =
   | 'project'
 
 type SnapKind = 'grid' | 'origin' | 'point' | 'edge' | 'axis'
-type DragHandle = 'a' | 'b' | 'ab' | 'ba' | 'c' | 'r' | 'a0' | 'a1' | 'whole'
 
 export type SketchConstraintType =
   | 'Horizontal'
@@ -57,8 +56,50 @@ export interface SketchSolveResult {
 
 export type SketchSolveFn = (
   elements: SketchEntity[],
-  constraints: RecordedConstraint[]
+  constraints: RecordedConstraint[],
+  projected?: Array<{ geoId: number } & SketchEntity>
 ) => Promise<SketchSolveResult | null>
+
+/** Same shape sketch.solve returns, plus what a live drag needs. */
+export interface SketchDragResult extends SketchSolveResult {
+  conflicting?: number[]
+  redundant?: number[]
+  partiallyRedundant?: number[]
+  malformed?: number[]
+}
+
+export interface SketchDragStartResult extends SketchDragResult {
+  dragId: string
+}
+
+export interface SketchDragMoveResult extends SketchDragResult {
+  /** false when the sidecar's moveGeometry silently rejected a degenerate
+   *  target (e.g. a point dragged onto another point on the same geometry) -
+   *  `geometry` still holds the last valid, authoritative state either way. */
+  applied: boolean
+}
+
+/** The real FreeCAD-solver-backed drag RPCs (sketch.dragStart/Move/End),
+ *  wired straight to the sidecar - drag renders directly off these responses,
+ *  there is no local approximate solver any more. */
+export interface SketchDragApi {
+  start: (
+    elements: SketchEntity[],
+    constraints: RecordedConstraint[],
+    projected?: Array<{ geoId: number } & SketchEntity>
+  ) => Promise<SketchDragStartResult | null>
+  move: (
+    dragId: string,
+    element: number,
+    sub: number,
+    /** FreeCAD PosId: 1/2/3 match PtRef's start/end/centre convention; 0 is
+     *  "the edge itself" - a radius resize for a circle/arc, a whole-body
+     *  translate for a line/spline (confirmed live against this build). */
+    posId: 0 | 1 | 2 | 3,
+    pos: [number, number]
+  ) => Promise<SketchDragMoveResult | null>
+  end: (dragId: string) => Promise<void>
+}
 
 export interface SketchFrame {
   origin: [number, number, number]
@@ -168,6 +209,7 @@ export class SketchController {
   private onChange: () => void
   private onSolve?: SketchSolveFn
   private onNotice?: (msg: string) => void
+  private dragApi?: SketchDragApi
 
   /** entity point the cursor is currently snapped to (endpoint of another entity) */
   private snapRef: { idx: number; pt: number } | null = null
@@ -204,10 +246,27 @@ export class SketchController {
    *  dimRequestWorldPos, then cleared */
   private dimPlaceUV: [number, number] | null = null
   private hoverIdx = -1
+  /** live drag-gesture state (real FreeCAD solver, via dragApi) - no shadow
+   *  geometry: every dragMove response's `geometry` array IS the render state,
+   *  for every entity, not just the one being dragged (constraint propagation
+   *  moves other geometry too, exactly like FreeCAD's own GUI drag). */
   private drag: {
     idx: number
-    handle: DragHandle
-    last: [number, number]
+    /** FreeCAD PosId of the point being dragged: 1=start/centre-ish per
+     *  PtRef's own convention, 2=end, 3=centre (arc), 0="the edge itself" -
+     *  a whole-body translate for a line/spline, a radius resize for a
+     *  circle/arc (both confirmed live against this FreeCAD build). */
+    posId: 0 | 1 | 2 | 3
+    dragId: string | null
+    /** resolves once dragStart has landed (dragId set, possibly null on
+     *  failure) - finishDrag/abortDrag always await this first, so the
+     *  session is never left open because pointer-up raced dragStart. */
+    started: Promise<void>
+    /** rAF-throttle: the most recent target not yet sent, or null if the
+     *  in-flight call (if any) is already current */
+    pendingTarget: [number, number] | null
+    sending: boolean
+    rafId: number | null
   } | null = null
   private snapKind: SnapKind = 'grid'
   private constraints: RecordedConstraint[] = []
@@ -290,10 +349,12 @@ export class SketchController {
       pts?: PtRef[]
     ) => void,
     onSolve?: SketchSolveFn,
-    onNotice?: (msg: string) => void
+    onNotice?: (msg: string) => void,
+    onDrag?: SketchDragApi
   ) {
     this.onSolve = onSolve
     this.onNotice = onNotice
+    this.dragApi = onDrag
     this.O = new THREE.Vector3(...frame.origin)
     this.X = new THREE.Vector3(...frame.x).normalize()
     this.Y = new THREE.Vector3(...frame.y).normalize()
@@ -321,6 +382,14 @@ export class SketchController {
     this.dom.addEventListener('dblclick', this.onDblClick)
     window.addEventListener('pointerup', this.onUp)
     window.addEventListener('keydown', this.onKey)
+    window.addEventListener('blur', this.onBlur)
+  }
+
+  /** losing window focus mid-drag (e.g. an OS/alt-tab, or a devtools focus
+   *  steal) - abort rather than leave a drag session dangling with no more
+   *  pointerup coming, since a blurred window may never see one. */
+  private onBlur = (): void => {
+    this.abortDrag()
   }
 
   /** the live active camera (ortho or persp) - always current, see getCamera doc above */
@@ -469,7 +538,15 @@ export class SketchController {
       // commit(): a point that is both on-axis and coincident with real
       // geometry should only get the one meaningful constraint
       this.autoCoincident(i, [snapTo[0] ?? null, snapTo[1] ?? null])
-      this.autoAngle(i)
+      // mirrors commit()'s own bothEndpointsFixed guard - see its comment for
+      // why: Horizontal/Vertical on a line whose both endpoints are already
+      // welded to fixed (base or projected) geometry is genuinely redundant
+      // and can hard-fail the whole sketch's solve, not just this line.
+      const isFixedSnap = (s: { idx: number } | null): boolean =>
+        !!s && (s.idx < this.baseCount || s.idx >= PROJ_BASE)
+      const bothEndpointsFixed =
+        isFixedSnap(snapTo[0] ?? null) && isFixedSnap(snapTo[1] ?? null)
+      if (!bothEndpointsFixed) this.autoAngle(i)
       this.autoTangent(i, [snapTo[0] ?? null, snapTo[1] ?? null])
       this.anchorToAxes(i)
     } else if (ent.type === 'circle' || ent.type === 'arc') {
@@ -607,8 +684,8 @@ export class SketchController {
 
   /** true when two entities of the SAME type occupy the same raw geometry
    *  (position/size only - construction flag and type are compared by the
-   *  caller separately). A small epsilon absorbs float noise from the local
-   *  solver's relaxation, not genuine edits. */
+   *  caller separately). A small epsilon absorbs float noise from the real
+   *  sidecar solver's reconciliation, not genuine edits. */
   private static sameShape(a: SketchEntity, b: SketchEntity): boolean {
     if (a.type !== b.type) return false
     const eq = (x: number, y: number): boolean => Math.abs(x - y) < 1e-7
@@ -684,6 +761,14 @@ export class SketchController {
     return this.projected
   }
 
+  /** Number of closed profiles the live fill preview currently sees - the
+   *  only introspection point for lineLoops()'s detection (fillGroup is
+   *  otherwise private), used by the e2e closed-loop regression check. */
+  fillCount(): number {
+    this.rebuildFills()
+    return this.fillGroup.children.length
+  }
+
   /** Full pre-action snapshot, so one Ctrl+Z reverts one user action (a
    *  rectangle is 4 lines + its constraints, but still one undo step). Also
    *  carries the reopen-era bookkeeping (removedBaseEntities/Constraints,
@@ -719,213 +804,6 @@ export class SketchController {
     if (now - this.noticeAt < 2500) return
     this.noticeAt = now
     this.onNotice?.(msg)
-  }
-
-  /** Restrict a drag target so already-constrained directions do not move.
-   *  Returns the (possibly axis-clamped) target, or null to block the drag
-   *  entirely. This is what makes a fully-constrained sketch actually rigid and
-   *  stops a dimensioned rectangle from shearing on a corner drag. */
-  private clampDragTarget(
-    idx: number,
-    handle: DragHandle,
-    target: [number, number]
-  ): [number, number] | null {
-    const e = this.entities[idx]
-    if (!e) return target
-
-    // whole-entity / body moves: blocked only when the entity is fully
-    // solved - a PARTIALLY anchored line (one end welded/tangent, one end
-    // free) still moves, just not as a rigid whole-body translation; see
-    // applyDrag's 'whole' case, which degrades to moving only the free
-    // endpoint in that case (same per-point mechanism an a/b drag already
-    // uses safely). Only a line anchored at BOTH ends has nothing left to
-    // give - user report, 2026-09-13: "if a line... CAN move AT ALL and I am
-    // dragging it ANYWHERE along/on it, it should move but, ONLY in the
-    // way(s) it's unconstrained" (this replaces an earlier, too-strict fix
-    // that refused the whole drag the moment EITHER end was anchored).
-    if (handle === 'whole' || handle === 'ab' || handle === 'ba') {
-      if (this.constrainedSet.has(idx)) {
-        this.noticeOnce(
-          'This geometry is fully constrained - remove a dimension or constraint to move it.'
-        )
-        return null
-      }
-      if (e.type === 'line' && this.lineEndpointsAnchored(idx).every(Boolean)) {
-        this.noticeOnce(
-          'Both ends of this line are tied to another curve (tangent or coincident) - nothing left to drag.'
-        )
-        return null
-      }
-      return target
-    }
-    // an arc/circle's radius or centre handle: if the arc is tangent-joined
-    // to ANOTHER entity at BOTH of its rim endpoints (arcTangentAnchored
-    // requires 2, see its own comment): its radius is over-determined -
-    // solveLocal's tangent pass re-pivots the centre about EACH
-    // tangent-shared endpoint separately to keep the (now different) radius
-    // tangent there, and those two pivots generally cannot agree on one
-    // centre at once, fighting each other every relaxation pass and
-    // producing the flipped, self-crossing shape from the "got all crazy"
-    // report. A SINGLE tangent join is fine (one pivot, always solvable) and
-    // is deliberately allowed through here unblocked.
-    if ((handle === 'r' || handle === 'c') && e.type === 'arc' && this.arcTangentAnchored(idx)) {
-      this.noticeOnce(
-        'This arc is tangent to another curve - drag its endpoint instead, or remove the tangent constraint first.'
-      )
-      return null
-    }
-    if (handle !== 'a' && handle !== 'b') return target
-    if (e.type !== 'line' && e.type !== 'rect') return target
-    const cur: [number, number] = handle === 'a' ? [...e.a] : [...e.b]
-
-    let lockX = false
-    let lockY = false
-
-    // inside a rectangle loop: a dimension on ANY horizontal side locks the X
-    // slide, on any vertical side locks the Y slide (width / height are fixed)
-    const loop = this.rectLoopOf(idx)
-    if (loop) {
-      for (const li of loop) {
-        if (!this.entityHasDimension(li)) continue
-        if (this.lineHasHV(li, 'Horizontal')) lockX = true
-        else if (this.lineHasHV(li, 'Vertical')) lockY = true
-      }
-    }
-
-    // point-level locks: origin / axis anchors, and (outside a rect) a
-    // dimensioned H / V line through this exact endpoint
-    const key = `${idx}:${handle === 'a' ? 1 : 2}`
-    const grp = this.weldGroups().find((s) => s.has(key)) ?? new Set<string>([key])
-    for (const k of grp) {
-      for (const c of this.constraints) {
-        const r0 = c.refs[0]
-        if (!r0 || this.keyOfRef(r0) !== k) continue
-        // (see lineEndpointsAnchored's note: geo <= -3 is projected external
-        // geometry, just as fixed as the origin - entIdxOfRef aliases both
-        // to the same -1, so this must check the raw ref directly)
-        const r1geo = c.refs[1]?.geo
-        if (c.type === 'Coincident' && (r1geo === -1 || (r1geo != null && r1geo <= -3))) {
-          lockX = true
-          lockY = true
-        } else if (c.type === 'PointOnObject' && r1geo === -1) lockY = true
-        else if (c.type === 'PointOnObject' && r1geo === -2) lockX = true
-      }
-      const ei = Number(k.split(':')[0])
-      if (!loop && this.entities[ei]?.type === 'line' && this.entityHasDimension(ei)) {
-        if (this.lineHasHV(ei, 'Horizontal')) lockX = true
-        else if (this.lineHasHV(ei, 'Vertical')) lockY = true
-        else {
-          lockX = true
-          lockY = true
-        }
-      }
-    }
-
-    if (lockX && lockY) {
-      this.noticeOnce('That point is fully constrained here.')
-      return null
-    }
-    if (!lockX && !lockY) return target
-    return [lockX ? cur[0] : target[0], lockY ? cur[1] : target[1]]
-  }
-
-  /** [endpoint1Anchored, endpoint2Anchored] - true for whichever of line
-   *  `idx`'s two endpoints is axis-anchored or shares a Tangent join with
-   *  another entity (solveLocal only PIVOTS a joined arc about the shared
-   *  point - it never slides the arc to follow, so translating that
-   *  endpoint freely would tear the join apart every solve iteration
-   *  instead of moving it cleanly). Used by applyDrag's 'whole' case to
-   *  decide whether a whole-line drag can rigidly translate (neither
-   *  anchored), must degrade to moving only the free end (exactly one
-   *  anchored), or has nothing left to give (both anchored). Mirrors the
-   *  per-point checks clampDragTarget already does for a single-endpoint
-   *  (a/b) drag. */
-  private lineEndpointsAnchored(idx: number): [boolean, boolean] {
-    const groups = this.weldGroups()
-    // NOTE: a weld to a DIFFERENT entity is deliberately NOT treated as
-    // anchoring by itself - that other entity (a free line, say) can
-    // perfectly well follow this point wherever the drag takes it (that is
-    // exactly what the weld pass in solveLocal already does: "a pinned point
-    // wins, the rest of its group follows"). Only checking every member of
-    // the weld group for an axis anchor or Tangent join (below) correctly
-    // finds the case that actually cannot follow. An earlier version of this
-    // also flagged ANY cross-entity weld as anchored, which wrongly treated
-    // "welded to another perfectly free line" as stuck - the exact bug the
-    // user reported (2026-09-13, the "flag on a pole" repro: dragging the
-    // flag's free end, welded only to an unconstrained pole, refused to
-    // move at all).
-    const anchoredAt = (pt: 1 | 2): boolean => {
-      const key = `${idx}:${pt}`
-      const grp = groups.find((s) => s.has(key)) ?? new Set<string>([key])
-      for (const k of grp) {
-        for (const c of this.constraints) {
-          const r0 = c.refs[0]
-          if (!r0) continue
-          // a PLAIN edge Tangent (no pt ref at all, e.g. a line tangent to a
-          // full circle with no shared endpoint) does not pin any specific
-          // POINT position - keyOfRef defaults a missing pt to 1, which would
-          // otherwise misreport an edge tangent as anchoring point 1 even
-          // when the two entities do not share an endpoint at all (found via
-          // a failing test: an endpoint-Tangent's pre-positioning step did
-          // not land the two points within weld tolerance, so applyConstraint
-          // fell back to pushing a plain edge Tangent - r0.pt undefined -
-          // which this check must not treat as "anchors point 1"). Only an
-          // EXPLICIT pt ref on this exact key counts.
-          if (c.type === 'Tangent' && r0.pt == null) continue
-          if (this.keyOfRef(r0) !== k) continue
-          // a weld to PROJECTED (external) geometry (geo <= -3) is just as
-          // fixed as one to the origin (-1) and must anchor this point too
-          // (real user file, 2026-09-13: "the connected lines" welded to
-          // projected geometry should "only... rotate about those", not
-          // translate with a whole-body drag).
-          const g1 = c.refs[1]?.geo
-          if (c.type === 'Coincident' && (g1 === -1 || (g1 != null && g1 <= -3))) return true
-          if (
-            c.type === 'PointOnObject' &&
-            (g1 === -1 || g1 === -2 || (g1 != null && g1 <= -3))
-          )
-            return true
-          if (c.type === 'Tangent') return true
-        }
-      }
-      return false
-    }
-    return [anchoredAt(1), anchoredAt(2)]
-  }
-
-  /** true if arc `idx` has a Tangent join at BOTH of its rim endpoints (1
-   *  AND 2) - genuinely over-determined for a radius/centre drag: solveLocal's
-   *  tangent pass pivots the centre about EACH shared endpoint separately to
-   *  match a changed radius, and with joins at both ends those two pivots
-   *  generally cannot agree on one centre (see clampDragTarget's call site).
-   *  A SINGLE tangent join is fine - that one pivot always has a valid
-   *  solution at any radius, so only the anchored end needs to be respected,
-   *  not the whole drag refused (user report, 2026-09-13: "you have the
-   *  dragging WAY too strict... if a line, arc, or anything CAN move AT ALL
-   *  ... it should move but, ONLY in the way(s) it's unconstrained"). */
-  private arcTangentAnchored(idx: number): boolean {
-    let count = 0
-    for (const pt of [1, 2] as const) {
-      const key = `${idx}:${pt}`
-      for (const c of this.constraints) {
-        if (c.type !== 'Tangent') continue
-        const r0 = c.refs[0]
-        const r1 = c.refs[1]
-        // a PLAIN edge Tangent (no pt ref - e.g. a curve tangent to a full
-        // circle with no shared endpoint) does not anchor any specific rim
-        // point; keyOfRef defaults a missing pt to 1, which would otherwise
-        // misreport it as anchoring THIS arc's point 1 even when the two
-        // entities share no endpoint at all. Only an explicit pt ref counts.
-        if (r0?.pt == null && r1?.pt == null) continue
-        const k0 = r0?.pt != null ? this.keyOfRef(r0) : null
-        const k1 = r1?.pt != null ? this.keyOfRef(r1) : null
-        if (k0 === key || k1 === key) {
-          count++
-          break
-        }
-      }
-    }
-    return count >= 2
   }
 
   private static cloneEnt(e: SketchEntity): SketchEntity {
@@ -1027,11 +905,18 @@ export class SketchController {
       p: [number, number]
       ref: { idx: number; pt: number } | null
       mid?: { idx: number }
+      // this tool's OWN already-placed click points (this.pending) - purely a
+      // visual "stay near where I already clicked" convenience, never itself
+      // a thing to weld a NEW entity onto. Tagged separately (not just
+      // ref:null, which legitimately also covers refPoints/refPolys/
+      // midpoints - all real, still-wanted snap targets in their own right)
+      // so it can be deprioritized below real geometry without touching those.
+      ownPending?: boolean
     }
     const cands: Cand[] = []
     for (const p of this.refPoints) cands.push({ p, ref: null })
     for (const poly of this.refPolys) for (const p of poly) cands.push({ p, ref: null })
-    for (const p of this.pending) cands.push({ p, ref: null })
+    for (const p of this.pending) cands.push({ p, ref: null, ownPending: true })
     // projected geometry endpoints / centres are snap targets too - carry a
     // real ref (PROJ_BASE-encoded, like everywhere else that addresses
     // projected geometry) so a click that lands on one can actually record a
@@ -1093,13 +978,38 @@ export class SketchController {
       best = { p: origin, ref: null }
       kind = 'origin'
     }
+    // every real candidate (refPoints/refPolys/midpoints/entity+projected
+    // endpoints) competes on plain nearest-distance as before. A multi-click
+    // tool's OWN already-placed points (ownPending) are the one exception:
+    // they used to compete in this same scan and could win a near-tie
+    // against the actual external target a later click was aiming at - the
+    // click looked snapped (coordinates matched closely) but snapRef came
+    // back null (or a midpoint/refPoint instead of the real geometry the
+    // user meant), so autoCoincident had nothing to weld and a deliberately-
+    // snapped arc rim point silently ended up unconstrained (user report:
+    // arc endpoints need to end up MORE welded, not less). So an ownPending
+    // candidate only wins if NO other candidate is within tolerance at all.
+    let bestOwnPending: Cand | null = null
+    let bestOwnPendingD = tolMm
     for (const c of cands) {
       const d = Math.hypot(c.p[0] - uv[0], c.p[1] - uv[1])
+      if (c.ownPending) {
+        if (d < bestOwnPendingD) {
+          bestOwnPendingD = d
+          bestOwnPending = c
+        }
+        continue
+      }
       if (d < bestD) {
         bestD = d
         best = c
         kind = 'point'
       }
+    }
+    if (!best && bestOwnPending) {
+      bestD = bestOwnPendingD
+      best = bestOwnPending
+      kind = 'point'
     }
     if (best) {
       this.snapKind = kind
@@ -1308,16 +1218,6 @@ export class SketchController {
       }
     }
     return best
-  }
-
-  private ptToHandle(pr: PtRef): DragHandle {
-    if (pr.pt === 3) return 'c'
-    // an arc's pt 1/2 are its rim endpoints (angle), not a line's a/b
-    // (position) - dragging one must re-sweep the arc, not fall through
-    // applyDrag's line-only 'a'/'b' cases as a silent no-op
-    const e = this.entAt(pr.e)
-    if (e && e.type === 'arc') return pr.pt === 2 ? 'a1' : 'a0'
-    return pr.pt === 2 ? 'b' : 'a'
   }
 
   /** ref shape (geo / new + pt) for a recorded constraint */
@@ -1764,21 +1664,13 @@ export class SketchController {
         } else {
           this.selectedPts = [hitPt]
           this.selected = []
-          // keep it draggable (the centre / an endpoint) unless it is locked
+          // keep it draggable (the centre / an endpoint) unless it is locked,
+          // or read-only projected (external) geometry
           const locked =
+            hitPt.e >= PROJ_BASE ||
             this.constrainedSet.has(hitPt.e) ||
             (this.sketchFullyConstrained && !this.entities[hitPt.e]?.construction)
-          if (!locked) {
-            this.drag = { idx: hitPt.e, handle: this.ptToHandle(hitPt), last: uv }
-            this.dragMoved = false
-            this.preDragSnap = { ents: this.cloneEnts(), cons: this.cloneCons(), ...this.cloneBaseTracking() }
-            trace('sketch drag start (point)', {
-              idx: hitPt.e,
-              pt: hitPt.pt,
-              entType: this.entities[hitPt.e]?.type,
-              handle: this.drag.handle
-            })
-          }
+          if (!locked) this.startDrag(hitPt.e, hitPt.pt, uv)
         }
         this.redraw()
         this.onChange()
@@ -1813,8 +1705,10 @@ export class SketchController {
       } else {
         this.selected = [idx]
         // a fully-constrained entity (or a fully-constrained sketch) cannot be
-        // dragged at all - do not even start a drag
+        // dragged at all - do not even start a drag; read-only projected
+        // (external) geometry can't be dragged either
         const locked =
+          idx >= PROJ_BASE ||
           this.constrainedSet.has(idx) ||
           (this.sketchFullyConstrained && !this.entities[idx]?.construction)
         if (locked) {
@@ -1822,10 +1716,7 @@ export class SketchController {
             'This geometry is fully defined - delete a dimension or constraint to move it.'
           )
         } else {
-          this.drag = { idx, handle: this.grabHandle(idx, uv), last: uv }
-          this.dragMoved = false
-          this.preDragSnap = { ents: this.cloneEnts(), cons: this.cloneCons(), ...this.cloneBaseTracking() }
-          trace('sketch drag start (entity)', { idx, entType: this.entities[idx]?.type, handle: this.drag.handle })
+          this.startDrag(idx, this.grabPosId(idx, uv), uv)
         }
       }
       this.redraw()
@@ -1859,258 +1750,236 @@ export class SketchController {
     })
   }
 
-  /** Which part of an entity the cursor grabbed, for free-dragging. */
-  private grabHandle(idx: number, uv: [number, number]): DragHandle {
+  /** Which point of an entity the cursor grabbed, as a FreeCAD PosId: 1/2/3
+   *  match PtRef's own start/end/centre convention exactly (an arc's rim
+   *  endpoints included), 0 means "the edge itself" - confirmed live against
+   *  this FreeCAD build to be the generic drag-the-curve primitive:
+   *  moveGeometry(gid, 0, target) resizes a circle/arc's radius toward the
+   *  target (centre held fixed) and translates a line/spline as a whole
+   *  (see sketch.dragMove's docstring for the benchmark this replaces). */
+  private grabPosId(idx: number, uv: [number, number]): 0 | 1 | 2 | 3 {
     const e = this.entities[idx]
-    // a dimensioned entity is locked: you can slide it, not resize it
-    if (this.entityHasDimension(idx)) return 'whole'
     const tol = SNAP_PX / Math.max(this.pxPerMm(), 0.001)
     const near = (p: [number, number]): boolean => Math.hypot(p[0] - uv[0], p[1] - uv[1]) < tol
-    if (e.type === 'line' || e.type === 'rect') {
-      if (near(e.a)) return 'a'
-      if (near(e.b)) return 'b'
-      if (e.type === 'rect') {
-        if (near([e.a[0], e.b[1]])) return 'ab'
-        if (near([e.b[0], e.a[1]])) return 'ba'
-      }
-      return 'whole'
+    if (e.type === 'line') {
+      if (near(e.a)) return 1
+      if (near(e.b)) return 2
+      return 0
     }
-    if (e.type === 'spline') return 'whole'
-    if (near(e.c)) return 'c'
+    // 'rect' never actually occurs here - pushRect decomposes into 4 'line'
+    // entities at commit time, same as every other call site in this file
+    if (e.type === 'spline' || e.type === 'rect') return 0
+    if (near(e.c)) return 3
     // an arc's endpoints sit ON the radius ring, so they must be checked
-    // BEFORE the generic ring-drag ('r') or they are never reachable - a
+    // BEFORE the generic ring-drag (posId 0) or they are never reachable - a
     // click near either end changes where the sweep starts/stops, not the
     // radius uniformly
     if (e.type === 'arc') {
-      if (near(this.ptUV({ e: idx, pt: 1 }))) return 'a0'
-      if (near(this.ptUV({ e: idx, pt: 2 }))) return 'a1'
+      if (near(this.ptUV({ e: idx, pt: 1 }))) return 1
+      if (near(this.ptUV({ e: idx, pt: 2 }))) return 2
     }
-    if (Math.abs(Math.hypot(uv[0] - e.c[0], uv[1] - e.c[1]) - e.r) < tol) return 'r'
-    return 'whole'
+    return 0
   }
 
-  /** Move the dragged entity to follow the cursor. No solver - this is the
-   *  "drag whatever is still free" behaviour; the sidecar re-solves on finish. */
-  private applyDrag(raw: [number, number]): void {
-    if (!this.drag) return
-    const e = this.entities[this.drag.idx]
-    // drop movement along directions the constraints already pin down
-    const clamped = this.clampDragTarget(this.drag.idx, this.drag.handle, raw)
-    if (!clamped) {
-      this.drag.last = raw
-      return
+  /** Begin a live drag gesture: snapshot for undo, then open a sidecar drag
+   *  session on the sketch's CURRENT elements/constraints (same payload
+   *  shape runSolve already builds) so every subsequent move is a cheap
+   *  moveGeometry()+solve() on the real FreeCAD sketch, not a client-side
+   *  approximation. If dragStart fails (RPC error / no dragApi wired), no
+   *  drag starts at all - same "just don't do it" convention runSolve's own
+   *  try/catch already uses for a failed solve. */
+  private startDrag(idx: number, posId: 0 | 1 | 2 | 3, uv: [number, number]): void {
+    if (!this.dragApi) return
+    this.dragMoved = false
+    this.preDragSnap = { ents: this.cloneEnts(), cons: this.cloneCons(), ...this.cloneBaseTracking() }
+    trace('sketch drag start', { idx, posId, entType: this.entities[idx]?.type })
+    const { allEnts, cons, proj } = this.dragPayload()
+    const startCall = this.dragApi.start(allEnts, cons, proj)
+    // declared before `started` is built so its .then/.catch can close over
+    // THIS specific drag object (identity, not just idx) - comparing idx
+    // alone would misattribute a stale dragStart's result to a brand-new
+    // drag session on the SAME entity started right after a fast
+    // click-release-click before the first call resolved
+    const d: NonNullable<SketchController['drag']> = {
+      idx,
+      posId,
+      dragId: null,
+      started: undefined as unknown as Promise<void>,
+      // queue the pointer-down position itself as the first move, so even a
+      // click-and-release-without-moving still exercises one real dragMove
+      // (matches the old behaviour of snapping the point exactly onto the
+      // clicked/snapped uv)
+      pendingTarget: uv,
+      sending: false,
+      rafId: null
     }
-    const uv = clamped
-    const dx = uv[0] - this.drag.last[0]
-    const dy = uv[1] - this.drag.last[1]
-    const move = (p: [number, number]): [number, number] => [p[0] + dx, p[1] + dy]
+    d.started = startCall
+      .then((res) => {
+        // the gesture may already be over (fast click-and-release, or
+        // aborted), or a brand-new drag on the same entity already replaced
+        // this one, by the time this resolves
+        if (this.drag !== d) {
+          if (res) void this.dragApi?.end(res.dragId)
+          return
+        }
+        d.dragId = res ? res.dragId : null
+        if (res) {
+          this.adoptDragResult(res)
+          // a target already queued while dragStart was in flight (the user
+          // kept moving the mouse) - send it now that a session exists
+          if (d.pendingTarget) void this.flushDragMove()
+        }
+      })
+      .catch(() => {
+        if (this.drag === d) d.dragId = null
+      })
+    this.drag = d
+  }
 
-    // dragging a dimensioned rectangle edge should translate the WHOLE rectangle
-    // rigidly (dimensions preserved), not stretch it against a pinned far side
-    if (this.drag.handle === 'whole' && e.type === 'line') {
-      const loop = this.rectLoopOf(this.drag.idx)
-      const sized =
-        loop &&
-        loop.some((li) => this.entityHasDimension(li) && this.lineHasHV(li, 'Horizontal')) &&
-        loop.some((li) => this.entityHasDimension(li) && this.lineHasHV(li, 'Vertical'))
-      if (loop && sized) {
-        for (const li of loop) {
-          const le = this.entities[li]
-          if (le && le.type === 'line') {
-            le.a = move(le.a)
-            le.b = move(le.b)
-          }
-        }
-        this.dragMoved = true
-        this.drag.last = uv
-        this.geomV++
-        this.redraw()
-        return
-      }
-      // a line anchored at exactly ONE end (welded/tangent to a fixed
-      // neighbour) cannot rigidly translate - that end genuinely cannot
-      // move - but it is NOT fully stuck either: degrade to moving just the
-      // free endpoint, exactly like an a/b drag on that same point (the
-      // mechanism already proven safe: solveLocal's weld/tangent pass holds
-      // the anchored end and pivots the neighbour to match). Previously this
-      // either force-translated both ends regardless (corrupting the
-      // anchored join) or refused the whole drag outright the moment either
-      // end was anchored (too strict - user report, 2026-09-13: "if a line
-      // ... CAN move AT ALL ... it should move but, ONLY in the way(s) it's
-      // unconstrained").
-      const [aAnchored, bAnchored] = this.lineEndpointsAnchored(this.drag.idx)
-      if (aAnchored !== bAnchored) {
-        const i = this.drag.idx
-        if (aAnchored) {
-          e.b = [uv[0], uv[1]]
-          this.solveLocal(new Set([`${i}:2`]), this.rectHoldKeys())
-        } else {
-          e.a = [uv[0], uv[1]]
-          this.solveLocal(new Set([`${i}:1`]), this.rectHoldKeys())
-        }
-        this.dragMoved = true
-        this.drag.last = aAnchored ? [...e.b] : [...e.a]
-        this.geomV++
-        this.redraw()
-        return
-      }
-    }
+/** Flattened `{geoId} & SketchEntity` DTO shape the sidecar's
+ *  _add_projected_geometry expects - so a Coincident referencing a projected
+ *  point's negative geoId actually welds to real, locked geometry during
+ *  solve/drag instead of a dangling reference the solver silently treats as
+ *  redundant (real user report: an arc whose centre AND start rim were both
+ *  Coincident-welded to fixed projected points could still be dragged
+ *  through a wide range of radii - the radius was mathematically fixed by
+ *  those two welds, but the scratch sketch used for solve/drag never
+ *  actually contained the projected geometry those refs pointed at). */
+  private projectedPayload(): Array<{ geoId: number } & SketchEntity> {
+    return this.projected.map(({ geoId, ent }) => ({ ...ent, geoId }))
+  }
 
-    switch (this.drag.handle) {
-      case 'whole':
-        if (e.type === 'line' || e.type === 'rect') {
-          e.a = move(e.a)
-          e.b = move(e.b)
-        } else if (e.type === 'spline') {
-          e.pts = e.pts.map(move)
-        } else e.c = move(e.c)
-        break
-      case 'a':
-        if (e.type === 'line' || e.type === 'rect') e.a = [uv[0], uv[1]]
-        break
-      case 'b':
-        if (e.type === 'line' || e.type === 'rect') e.b = [uv[0], uv[1]]
-        break
-      case 'ab':
-        if (e.type === 'rect') {
-          e.a = [uv[0], e.a[1]]
-          e.b = [e.b[0], uv[1]]
+  /** Same elements/constraints payload shape runSolve sends to sketch.solve -
+   *  every ref resolved to an absolute geo index, 1:1 with `entities`. */
+  private dragPayload(): {
+    allEnts: SketchEntity[]
+    cons: RecordedConstraint[]
+    proj: Array<{ geoId: number } & SketchEntity>
+  } {
+    const allEnts = this.entities.slice()
+    const cons = this.constraints.map((c) => ({
+      ...c,
+      refs: c.refs.map((r) =>
+        r.new != null
+          ? { geo: r.new + this.baseCount, ...(r.pt != null ? { pt: r.pt } : {}) }
+          : r
+      )
+    }))
+    return { allEnts, cons, proj: this.projectedPayload() }
+  }
+
+  /** Adopt a dragStart/dragMove response as the render state - the response
+   *  IS the sketch, for every entity, not just the one being dragged
+   *  (constraint propagation moves other geometry too, exactly like
+   *  FreeCAD's own GUI drag - there is no shadow copy to reconcile any
+   *  more). Splines are not solver-round-tripped (geometry[i] is null for
+   *  one, same as sketch.solve already returns) so they are left alone here,
+   *  same as runSolve's own reconciliation already does. */
+  private adoptDragResult(res: SketchDragResult): void {
+    res.geometry.forEach((g, i) => {
+      const ent = this.entities[i]
+      if (!ent || !g || ent.type !== g.type) return
+      if (g.type === 'line' && ent.type === 'line') {
+        ent.a = [g.a[0], g.a[1]]
+        ent.b = [g.b[0], g.b[1]]
+      } else if ((g.type === 'circle' || g.type === 'arc') && (ent.type === 'circle' || ent.type === 'arc')) {
+        ent.c = [g.c[0], g.c[1]]
+        ;(ent as { r: number }).r = g.r
+        if (g.type === 'arc' && ent.type === 'arc') {
+          ent.a0 = g.a0
+          ent.a1 = g.a1
         }
-        break
-      case 'ba':
-        if (e.type === 'rect') {
-          e.b = [uv[0], e.b[1]]
-          e.a = [e.a[0], uv[1]]
-        }
-        break
-      case 'c':
-        if (e.type === 'circle' || e.type === 'arc') e.c = [uv[0], uv[1]]
-        break
-      case 'r':
-        if (e.type === 'circle' || e.type === 'arc')
-          (e as { r: number }).r = Math.max(0.1, Math.hypot(uv[0] - e.c[0], uv[1] - e.c[1]))
-        break
-      case 'a0':
-        if (e.type === 'arc') e.a0 = Math.atan2(uv[1] - e.c[1], uv[0] - e.c[0])
-        break
-      case 'a1':
-        if (e.type === 'arc') e.a1 = Math.atan2(uv[1] - e.c[1], uv[0] - e.c[0])
-        break
-    }
-    // keep coincident corners welded and honour H / V while dragging - a
-    // rectangle side stays a rectangle side (the sidecar still re-solves later)
-    this.solveLocal(this.draggedKeys(), this.rectHoldKeys())
-    this.dragMoved = true
-    // Anchor the next delta to where the dragged handle ACTUALLY ended up after
-    // the local solve, not where the cursor is. Without this, dragging against a
-    // constraint lets the cursor run away from the geometry (it snaps back on
-    // release) - misleading. Now the handle stays glued to the constrained
-    // position and the drag simply resists.
-    const dh = this.drag.handle
-    if (dh === 'a' && (e.type === 'line' || e.type === 'rect')) this.drag.last = [...e.a]
-    else if (dh === 'b' && (e.type === 'line' || e.type === 'rect')) this.drag.last = [...e.b]
-    else if (dh === 'c' && (e.type === 'circle' || e.type === 'arc')) this.drag.last = [...e.c]
-    else if (dh === 'a0' && e.type === 'arc') this.drag.last = this.ptUV({ e: this.drag.idx, pt: 1 })
-    else if (dh === 'a1' && e.type === 'arc') this.drag.last = this.ptUV({ e: this.drag.idx, pt: 2 })
-    else this.drag.last = uv
+      }
+    })
+    const free = new Set(res.free)
+    this.constrainedSet = new Set()
+    for (let i = 0; i < this.entities.length; i++) if (!free.has(i)) this.constrainedSet.add(i)
+    this.sketchFullyConstrained = !!res.fullyConstrained
     this.geomV++
     this.redraw()
   }
 
-  /** The 4 line-entity indices of a closed rectangle-ish loop through `startIdx`,
-   *  in loop order, or null. Uses the recorded Coincident welds. */
-  private rectLoopOf(startIdx: number): number[] | null {
-    const e0 = this.entities[startIdx]
-    if (!e0 || e0.type !== 'line') return null
-    const groups = this.weldGroups()
-    const at = (ent: number, pt: number): { ent: number; pt: number } | null => {
-      const g = groups.find((s) => s.has(`${ent}:${pt}`))
-      if (!g) return null
-      for (const k of g) {
-        const [ei, p] = k.split(':').map(Number)
-        if (ei !== ent && this.entities[ei]?.type === 'line') return { ent: ei, pt: p }
-      }
-      return null
-    }
-    const loop = [startIdx]
-    let cur = startIdx
-    let enterPt = 1
-    for (let i = 0; i < 4; i++) {
-      const nx = at(cur, enterPt === 1 ? 2 : 1)
-      if (!nx) return null
-      if (nx.ent === startIdx) return loop.length === 4 ? loop : null
-      if (loop.includes(nx.ent)) return null
-      loop.push(nx.ent)
-      cur = nx.ent
-      enterPt = nx.pt
-    }
-    return null
+  /** rAF-throttled pointer-move target for the active drag - never fires
+   *  faster than one sidecar round trip per frame, but always keeps the
+   *  LATEST target (never a stale one) once the in-flight call returns. */
+  private queueDragMove(uv: [number, number]): void {
+    if (!this.drag) return
+    this.drag.pendingTarget = uv
+    if (this.drag.rafId != null) return
+    this.drag.rafId = requestAnimationFrame(() => {
+      if (this.drag) this.drag.rafId = null
+      void this.flushDragMove()
+    })
   }
 
-  /** While dragging inside a rectangle loop, pin the far side so it resizes
-   *  cleanly rather than shearing: opposite edge for an edge drag, opposite
-   *  corner for a corner drag. */
-  private rectHoldKeys(): Set<string> {
-    const out = new Set<string>()
-    if (!this.drag) return out
-    const loop = this.rectLoopOf(this.drag.idx)
-    if (!loop) return out
-    const opp = loop[(loop.indexOf(this.drag.idx) + 2) % 4]
-    const oe = this.entities[opp]
-    if (!oe || oe.type !== 'line') return out
-    const de = this.entities[this.drag.idx] as { a: [number, number]; b: [number, number] }
-    if (this.drag.handle === 'a' || this.drag.handle === 'b') {
-      const dp = this.drag.handle === 'a' ? de.a : de.b
-      const d1 = Math.hypot(oe.a[0] - dp[0], oe.a[1] - dp[1])
-      const d2 = Math.hypot(oe.b[0] - dp[0], oe.b[1] - dp[1])
-      out.add(d1 >= d2 ? `${opp}:1` : `${opp}:2`)
-    } else {
-      out.add(`${opp}:1`)
-      out.add(`${opp}:2`)
-    }
-    return out
+  /** Send the latest queued target, if any and if nothing is already in
+   *  flight. Called from the rAF tick, and again once an in-flight call
+   *  resolves (so a target queued mid-flight is never silently dropped),
+   *  and awaited once more on pointer-up (via finishDrag) so the final
+   *  position is never left stranded behind a throttled frame. */
+  private flushDragMove(): Promise<void> {
+    const d = this.drag
+    if (!d || d.sending || !d.pendingTarget) return Promise.resolve()
+    if (!d.dragId) return Promise.resolve() // no session (never started, or dragStart failed)
+    const target = d.pendingTarget
+    d.pendingTarget = null
+    d.sending = true
+    return this.dragApi!.move(d.dragId, d.idx, 0, d.posId, target)
+      .then((res) => {
+        d.sending = false
+        // the gesture may have moved to a different entity/ended already
+        if (this.drag !== d) return
+        if (res) {
+          this.adoptDragResult(res)
+          if (!res.applied) {
+            // moveGeometry silently rejected a degenerate target (e.g. onto
+            // another point of the same geometry) - render stays at the
+            // solver's own last-good geometry (already adopted above), the
+            // cursor is simply not glued to `target`. A console note is the
+            // agreed-minimal cue here (no dedicated toast plumbing for this).
+            // eslint-disable-next-line no-console
+            console.info('[sketch] drag target rejected (degenerate geometry) - holding last valid position')
+          }
+        }
+        this.dragMoved = true
+        // a newer target arrived while this call was in flight - send it now
+        if (d.pendingTarget) void this.flushDragMove()
+      })
+      .catch(() => {
+        d.sending = false
+        // a mid-drag network hiccup: keep the drag at its last good position
+        // and keep trying on the NEXT move rather than aborting the gesture
+        if (this.drag === d && d.pendingTarget) void this.flushDragMove()
+      })
   }
 
-  /** point keys ("idx:pt") the current drag handle directly controls */
-  private draggedKeys(): Set<string> {
-    const out = new Set<string>()
-    if (!this.drag) return out
-    const i = this.drag.idx
-    switch (this.drag.handle) {
-      case 'a':
-        out.add(`${i}:1`)
-        break
-      case 'b':
-        out.add(`${i}:2`)
-        break
-      case 'c':
-      case 'r':
-        // dragging either handle moves the WHOLE arc (both rim points move
-        // too - 'r' changes their distance from centre, 'c' translates them
-        // with it), so anything welded/tangent to a rim point must follow
-        // the new rim position, not get averaged against it by the weld
-        // pass in solveLocal. Previously only the centre (pt 3) was pinned
-        // here, so a line coincident-welded to the arc's rim visually tore
-        // away from it while radius-dragging - most visibly when the arc's
-        // centre was ALSO independently welded to something else (a real
-        // user file: "the arc became disconnected from the lines... why is
-        // there the original version viewable, unchanged", 2026-09-13).
-        out.add(`${i}:1`)
-        out.add(`${i}:2`)
-        out.add(`${i}:3`)
-        break
-      case 'a0':
-        out.add(`${i}:1`)
-        break
-      case 'a1':
-        out.add(`${i}:2`)
-        break
-      default:
-        out.add(`${i}:1`)
-        out.add(`${i}:2`)
-        out.add(`${i}:3`)
+  /** Wait for a drag gesture to settle (dragStart landed, and no move still
+   *  in flight or queued) - shared by finishDrag and abortDrag so neither
+   *  one can close a session out from under a dragMove that is still on the
+   *  wire, and neither leaves a session dangling because dragStart simply
+   *  had not resolved yet when the gesture ended. */
+  private async settleDrag(d: NonNullable<SketchController['drag']>): Promise<void> {
+    await d.started
+    while (this.drag === d && (d.sending || d.pendingTarget)) {
+      if (d.pendingTarget && !d.sending) await this.flushDragMove()
+      else await new Promise<void>((r) => requestAnimationFrame(() => r()))
     }
-    return out
+  }
+
+  /** Abort the active drag gesture without committing anything (Escape,
+   *  blur, or teardown mid-drag) - closes the sidecar session if one was
+   *  opened; the live document was never touched either way. */
+  private abortDrag(): void {
+    if (!this.drag) return
+    const d = this.drag
+    if (d.rafId != null) cancelAnimationFrame(d.rafId)
+    d.pendingTarget = null
+    void this.settleDrag(d).then(() => {
+      if (this.drag === d) this.drag = null
+      if (d.dragId) void this.dragApi?.end(d.dragId)
+    })
+    this.dragMoved = false
+    this.preDragSnap = null
   }
 
   private onUp = (ev: PointerEvent): void => {
@@ -2130,8 +1999,32 @@ export class SketchController {
       return
     }
     if (!this.drag) return
-    const idx = this.drag.idx
-    this.drag = null
+    void this.finishDrag()
+    ev.stopPropagation()
+    this.onChange()
+  }
+
+  /** End the active drag gesture: flush any not-yet-sent move so the final
+   *  pointer position is never left stranded behind a throttled rAF frame,
+   *  close the sidecar session, then run the SAME undo / axis-anchor
+   *  bookkeeping the old synchronous onUp did. The real solver already drove
+   *  every intermediate frame, so there is nothing left to reconcile here -
+   *  no snap, no redundant sketch.solve call (the last dragMove response's
+   *  own free/fullyConstrained/conflicting/... is reused as-is). */
+  private async finishDrag(): Promise<void> {
+    const d = this.drag
+    if (!d) return
+    if (d.rafId != null) {
+      cancelAnimationFrame(d.rafId)
+      d.rafId = null
+    }
+    // wait for dragStart to land and every queued/in-flight move to finish,
+    // so the final pointer position is never left stranded behind a
+    // throttled frame and the session is never closed out from under a call
+    // still on the wire
+    await this.settleDrag(d)
+    if (this.drag === d) this.drag = null
+    if (d.dragId) void this.dragApi?.end(d.dragId)
     // only a drag that actually moved something is an undo step
     if (this.dragMoved && this.preDragSnap) {
       this.undoStack.push(this.preDragSnap)
@@ -2140,17 +2033,13 @@ export class SketchController {
     this.preDragSnap = null
     this.dragMoved = false
     // a point dropped on the origin / an axis gets auto-constrained (snapping
-    // already put the coordinate exactly on it)
-    this.anchorToAxes(idx)
-    this.solveLocal(new Set())
+    // already put the coordinate exactly on it) - this can add a NEW
+    // constraint the drag session's solve never saw, so it still needs the
+    // debounced non-drag solve path to pick it up
+    this.anchorToAxes(d.idx)
     this.geomV++
     this.redraw()
-    // snap to the EXACT constrained shape now, not 240 ms later - the local
-    // relaxation is only an approximation, the real solver honours every
-    // dimension. Without this a dimensioned rectangle stays visibly off.
-    void this.runSolve()
     this.scheduleSolve()
-    ev.stopPropagation()
     this.onChange()
   }
 
@@ -2230,7 +2119,7 @@ export class SketchController {
       return
     }
     if (this.drag && (ev.buttons & 1) === 1) {
-      this.applyDrag(this.pointerUV(ev))
+      this.queueDragMove(this.pointerUV(ev))
       return
     }
     // constraint-symbol hover works in any tool mode; it lights the symbol,
@@ -2272,6 +2161,7 @@ export class SketchController {
     const t = ev.target as HTMLElement | null
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return
     if (ev.key === 'Escape') {
+      this.abortDrag()
       this.pending = []
       this.pendingSnaps = []
       this.pendingMids = []
@@ -2427,7 +2317,24 @@ export class SketchController {
       // redundant/over-constraining PointOnObject onto the axis as well
       this.autoCoincident(li, [snaps[0] ?? null, snaps[1] ?? null])
       this.autoMidpoint(li, [mids[0] ?? null, mids[1] ?? null])
-      this.autoAngle(li) // near-horizontal / near-vertical -> real H/V constraint
+      // If BOTH endpoints just got Coincident-welded (above) to truly FIXED
+      // geometry - base entities (idx < baseCount) or projected/external refs
+      // (idx >= PROJ_BASE) - the line's direction is already fully implied by
+      // those two independent point-pins, so also asserting Horizontal/
+      // Vertical here is genuinely redundant. FreeCAD's solver hard-fails
+      // (-2, the WHOLE sketch rejected, not just this one constraint) on that
+      // redundancy rather than gracefully ignoring it - confirmed via headless
+      // testing this broke an unrelated arc elsewhere in the same real user's
+      // sketch (2026-09-18: two projected points shared an X coordinate, this
+      // line's auto-Vertical was redundant with the two Coincidents, and that
+      // alone silently blocked the entire sketch's solve, not just this line).
+      // A snap onto another freshly-drawn, still-unconstrained line does NOT
+      // count as fixed - that line can still move, so H/V is not redundant.
+      const isFixedSnap = (s: { idx: number } | null): boolean =>
+        !!s && (s.idx < this.baseCount || s.idx >= PROJ_BASE)
+      const bothEndpointsFixed =
+        isFixedSnap(snaps[0] ?? null) && isFixedSnap(snaps[1] ?? null)
+      if (!bothEndpointsFixed) this.autoAngle(li) // near-horizontal / near-vertical -> real H/V constraint
       this.autoTangent(li, [snaps[0] ?? null, snaps[1] ?? null])
       this.anchorToAxes(li)
       this.pending = [p[1]] // chain
@@ -2522,6 +2429,16 @@ export class SketchController {
       // myPtsOverride [1, 2] maps snaps[1]->pt 1 (arc start) and
       // snaps[2]->pt 2 (arc end); pass a matching 2-slot snap array since
       // autoCoincident indexes its own snaps positionally against myPts.
+      // ALWAYS weld a rim point that snapped to something, even if the raw
+      // click coords (used only to seed the initial r/a0/a1 guess) aren't
+      // perfectly on that target's circle - the snap() picker already
+      // returned the target's exact coordinates for p[1]/p[2] (see snap(),
+      // it snaps the returned point itself, not just a screen position), and
+      // the constraint solver's job is to reconcile shape from constraints;
+      // silently dropping the weld here just because our own seed geometry
+      // hadn't converged yet was too conservative and left real, intended
+      // joints unconstrained (user report: arc endpoints need to end up MORE
+      // welded when placed on existing geometry, not less).
       this.autoCoincident(ai, [snaps[1] ?? null, snaps[2] ?? null], [1, 2])
       this.anchorToAxes(ai)
       this.pending = []
@@ -2631,12 +2548,20 @@ export class SketchController {
     if (nw < 0) return
     for (const s of snaps) {
       if (!s || s.idx === entIdx) continue
-      const t = this.entities[s.idx]
-      if (!t || t.construction) continue
+      // this.entities[s.idx] only ever resolves a REAL entity - a 3-point
+      // circle/arc snapped onto a PROJECTED point (s.idx >= PROJ_BASE, a
+      // synthetic index into `this.projected`, not `this.entities`) silently
+      // dropped its constraint here (`t` came back undefined), even though
+      // autoCoincident just above already handles this exact PROJ_BASE case
+      // correctly - entAt() resolves either kind uniformly.
+      const t = this.entAt(s.idx)
+      if (!t || (t as { construction?: boolean }).construction) continue
       const pref =
-        s.idx < this.baseCount
-          ? { geo: s.idx, pt: s.pt }
-          : { new: s.idx - this.baseCount, sub: 0, pt: s.pt }
+        s.idx >= PROJ_BASE
+          ? { geo: this.projected[s.idx - PROJ_BASE].geoId, pt: s.pt }
+          : s.idx < this.baseCount
+            ? { geo: s.idx, pt: s.pt }
+            : { new: s.idx - this.baseCount, sub: 0, pt: s.pt }
       this.constraints.push({ type: 'PointOnObject', refs: [pref, { new: nw, sub: 0 }] })
     }
   }
@@ -2763,11 +2688,17 @@ export class SketchController {
     }
   }
 
-  /** If a freshly drawn line's endpoint snapped to a circle / arc, add an
-   *  ENDPOINT tangent (line.end <-> curve endpoint). FreeCAD's endpoint-tangent
-   *  already implies coincidence, so this must NOT be paired with a separate
-   *  Coincident (that over-constrains: DoF goes negative and the sketch shows
-   *  "conflicting"). `autoCoincident` skips the same rim snap for that reason. */
+  /** If a freshly drawn line's endpoint snapped to a circle / arc AND the line
+   *  was actually drawn close to tangent there (within TANGENT_SNAP_DEG of the
+   *  curve's tangent direction at that point), add an ENDPOINT tangent
+   *  (line.end <-> curve endpoint). FreeCAD's endpoint-tangent already implies
+   *  coincidence, so this must NOT be paired with a separate Coincident (that
+   *  over-constrains: DoF goes negative and the sketch shows "conflicting").
+   *  `autoCoincident` skips the same rim snap and defers to this function
+   *  entirely - so when the angle check fails below, THIS function pushes the
+   *  plain Coincident itself (an arbitrary-angle line ending on an arc's rim
+   *  is a real, common case - e.g. tracing a profile against a projected
+   *  edge - and must not silently gain a tangency it was never drawn with). */
   private autoTangent(
     entIdx: number,
     snaps: Array<{ idx: number; pt: number } | null>
@@ -2776,6 +2707,10 @@ export class SketchController {
     if (!e || e.type !== 'line') return
     const nw = entIdx - this.baseCount
     if (nw < 0) return
+    const TANGENT_SNAP_DEG = 5
+    const dx = e.b[0] - e.a[0]
+    const dy = e.b[1] - e.a[1]
+    const lineLen = Math.hypot(dx, dy)
     // snaps[0] -> our start (pt 1), snaps[1] -> our end (pt 2)
     snaps.forEach((s, k) => {
       if (!s || s.idx === entIdx) return
@@ -2800,11 +2735,32 @@ export class SketchController {
             : { new: s.idx - this.baseCount, sub: 0 }
       const dup = this.constraints.some(
         (c) =>
-          c.type === 'Tangent' &&
+          (c.type === 'Tangent' || c.type === 'Coincident') &&
           c.refs.some((r) => r.new === nw || r.geo === entIdx) &&
           c.refs.some((r) => (r.new ?? r.geo) === (tref.new ?? tref.geo))
       )
       if (dup) return
+      // near-tangent check (arc endpoints only - a circle has no fixed
+      // endpoint direction to compare against, so it always gets the edge
+      // Tangent + PointOnObject fallback below, matching prior behaviour)
+      if (curveIsArc && lineLen > 1e-6) {
+        const arc = t as { c: [number, number]; r: number; a0: number; a1: number }
+        const ang = curvePt === 1 ? arc.a0 : arc.a1
+        const tanDir: [number, number] = [-Math.sin(ang), Math.cos(ang)]
+        const lineDir: [number, number] = [dx / lineLen, dy / lineLen]
+        const cos = Math.abs(lineDir[0] * tanDir[0] + lineDir[1] * tanDir[1])
+        const cosThreshold = Math.cos((TANGENT_SNAP_DEG * Math.PI) / 180)
+        if (cos < cosThreshold) {
+          // not close enough to tangent - just weld the endpoints together,
+          // same Coincident autoCoincident would have added for any other
+          // curve-rim snap
+          this.constraints.push({
+            type: 'Coincident',
+            refs: [{ new: nw, sub: 0, pt: myPt }, { ...tref, pt: curvePt }]
+          })
+          return
+        }
+      }
       if (curveIsArc) {
         // endpoint tangent - line.end <-> arc endpoint, implies coincidence
         this.constraints.push({
@@ -2878,446 +2834,10 @@ export class SketchController {
     }
   }
 
-  // --- local relaxation (keeps drags looking right; sidecar has the real solve) //
-
   /** entity index a ref points at, or -1 for datum geometry */
   private entIdxOfRef(r: { new?: number; geo?: number }): number {
     if (r.geo != null) return r.geo >= 0 ? r.geo : -1
     return r.new != null ? r.new + this.baseCount : -1
-  }
-
-  private keyOfRef(r: { new?: number; geo?: number; pt?: number }): string | null {
-    // entIdxOfRef collapses EVERY negative geo (origin -1, axes -2, and
-    // projected/external geometry <= -3) down to the same -1 - fine for
-    // "is this the same REAL entity" comparisons elsewhere, but fatal here:
-    // keyOfRef's string is used as a weldGroups() union-find key, and two
-    // DIFFERENT datum/projected refs (e.g. two different projected edges, or
-    // the origin vs. a projected edge) would incorrectly union into the same
-    // pseudo-point "-1:pt", pulling in whatever OTHER constraint happens to
-    // reference that same collapsed key (found via a real cross-entity false
-    // positive: a Tangent constraint on an unrelated entity's point, with no
-    // connection at all to the line actually being dragged, got treated as
-    // anchoring it purely because both aliased to "-1:2"). Preserve the RAW
-    // geo value in the key for anything negative, so distinct datums never
-    // collide with each other or with a real entity index.
-    if (r.geo != null && r.geo < 0) return `g${r.geo}:${r.pt ?? 1}`
-    const i = this.entIdxOfRef(r)
-    if (i < 0) return null
-    return `${i}:${r.pt ?? 1}`
-  }
-
-  /** the live world position of a point on PROJECTED (external) geometry,
-   *  addressed by its raw negative `geo` id (<= -3; -1/-2 are the origin and
-   *  axes, not projected geometry) - or null if `geo` does not match any
-   *  projected entity. entIdxOfRef has no entry for projected geometry (it
-   *  is not one of `this.entities`), so this looks the raw ref up directly
-   *  in `this.projected` instead. */
-  private projectedPtByGeo(geo: number, pt: number): [number, number] | null {
-    if (geo > -3) return null
-    const p = this.projected.find((pp) => pp.geoId === geo)
-    if (!p) return null
-    if (pt === 3) return p.ent.type === 'circle' || p.ent.type === 'arc' ? [...p.ent.c] : this.endpointOf(p.ent, 1)
-    if (p.ent.type === 'arc') {
-      const a = pt === 1 ? p.ent.a0 : p.ent.a1
-      return [p.ent.c[0] + Math.cos(a) * p.ent.r, p.ent.c[1] + Math.sin(a) * p.ent.r]
-    }
-    return this.endpointOf(p.ent, pt)
-  }
-
-  private ptOf(key: string): [number, number] {
-    const [i, p] = key.split(':').map(Number)
-    const e = this.entities[i]
-    if (!e) return [0, 0]
-    if (e.type === 'line') return p === 2 ? [...e.b] : [...e.a]
-    if (e.type === 'circle') return [...e.c]
-    if (e.type === 'arc') {
-      // pt 1/2 are the rim endpoints (a0/a1); pt 3 (or anything else) is the
-      // centre - matches ptUV's convention for the same entity/pt pair
-      if (p === 1 || p === 2) return this.ptUV({ e: i, pt: p as 1 | 2 })
-      return [...e.c]
-    }
-    if (e.type === 'rect') return p === 2 ? [...e.b] : [...e.a]
-    return [0, 0]
-  }
-
-  private setPtOf(key: string, uv: [number, number]): void {
-    const [i, p] = key.split(':').map(Number)
-    const e = this.entities[i]
-    if (!e) return
-    if (e.type === 'line') {
-      if (p === 2) e.b = [uv[0], uv[1]]
-      else e.a = [uv[0], uv[1]]
-    } else if (e.type === 'circle') {
-      e.c = [uv[0], uv[1]]
-    } else if (e.type === 'arc') {
-      // pt 1/2: re-angle that endpoint about the (unchanged) centre, so a
-      // weld to a rim point drags the arc's SWEEP, not the whole arc
-      if (p === 1) e.a0 = Math.atan2(uv[1] - e.c[1], uv[0] - e.c[0])
-      else if (p === 2) e.a1 = Math.atan2(uv[1] - e.c[1], uv[0] - e.c[0])
-      else e.c = [uv[0], uv[1]]
-    }
-  }
-
-  /** groups of point keys tied together by Coincident constraints */
-  private weldGroups(): Array<Set<string>> {
-    const parent = new Map<string, string>()
-    const find = (a: string): string => {
-      let r = a
-      while (parent.get(r) && parent.get(r) !== r) r = parent.get(r)!
-      return r
-    }
-    const union = (a: string, b: string): void => {
-      if (!parent.has(a)) parent.set(a, a)
-      if (!parent.has(b)) parent.set(b, b)
-      parent.set(find(a), find(b))
-    }
-    for (const c of this.constraints) {
-      if (c.type !== 'Coincident' || c.refs.length < 2) continue
-      const ka = this.keyOfRef(c.refs[0])
-      const kb = this.keyOfRef(c.refs[1])
-      if (ka && kb) union(ka, kb)
-    }
-    const groups = new Map<string, Set<string>>()
-    for (const k of parent.keys()) {
-      const root = find(k)
-      ;(groups.get(root) ?? groups.set(root, new Set()).get(root)!).add(k)
-    }
-    return [...groups.values()].filter((g) => g.size > 1)
-  }
-
-  private lineHasHV(i: number, type: 'Horizontal' | 'Vertical'): boolean {
-    return this.constraints.some(
-      (c) => c.type === type && this.entIdxOfRef(c.refs[0] ?? {}) === i
-    )
-  }
-
-  /** Gauss-Seidel relaxation so a drag looks rigid: snap axis anchors, weld
-   *  coincident points (a directly-dragged point wins), hold H / V lines flat,
-   *  keep midpoints centred and length dims exact. `held` points stay where
-   *  they are (used to pin the far side of a rectangle so it resizes cleanly
-   *  instead of shearing). The headless solver still runs the exact solve. */
-  private solveLocal(pinned: Set<string>, held: Set<string> = new Set()): void {
-    const groups = this.weldGroups()
-
-    // points hard-anchored to the origin / an axis / projected (external)
-    // geometry, plus caller-held points. entIdxOfRef/keyOfRef alias every
-    // negative geo (origin -1, axes -2, projected <= -3) to the same -1, so
-    // a plain `refs[1]?.geo === -1` check alone would only ever catch a
-    // literal origin ref - a Coincident/PointOnObject onto PROJECTED
-    // geometry (geo <= -3) needs its own check via projectedPtByGeo (real
-    // user file, 2026-09-13: "there should've been coincidents on the
-    // projected geometry, allowing the connected lines only to rotate about
-    // those" - they were not being held fixed at all).
-    const anchored = new Set<string>(held)
-    for (const c of this.constraints) {
-      const g1 = c.refs[1]?.geo
-      if (c.type === 'Coincident' && (g1 === -1 || (g1 != null && g1 <= -3))) {
-        const k = this.keyOfRef(c.refs[0])
-        if (k) anchored.add(k)
-      } else if (
-        c.type === 'PointOnObject' &&
-        (g1 === -1 || g1 === -2 || (g1 != null && g1 <= -3))
-      ) {
-        const k = this.keyOfRef(c.refs[0])
-        if (k) anchored.add(k)
-      }
-    }
-
-    // "fixed" = do not move this in the H / V and dim passes
-    const fixed = new Set([...pinned, ...anchored])
-    for (const g of groups)
-      if ([...g].some((k) => pinned.has(k) || anchored.has(k)))
-        for (const k of g) fixed.add(k)
-
-    for (let it = 0; it < 30; it++) {
-      // 1. origin / axis / projected-geometry anchors first, so welds can
-      // lock onto them
-      for (const c of this.constraints) {
-        const g1 = c.refs[1]?.geo
-        if (c.type === 'Coincident' && g1 === -1) {
-          const k = this.keyOfRef(c.refs[0])
-          if (k) this.setPtOf(k, [0, 0])
-        } else if (c.type === 'Coincident' && g1 != null && g1 <= -3) {
-          const k = this.keyOfRef(c.refs[0])
-          const pp = this.projectedPtByGeo(g1, c.refs[1]?.pt ?? 1)
-          if (k && pp) this.setPtOf(k, pp)
-        } else if (c.type === 'PointOnObject') {
-          const k = this.keyOfRef(c.refs[0])
-          if (!k) continue
-          const p = this.ptOf(k)
-          if (g1 === -1) this.setPtOf(k, [p[0], 0])
-          else if (g1 === -2) this.setPtOf(k, [0, p[1]])
-          else if (g1 != null && g1 <= -3) {
-            // point-on-projected-CURVE: no general projection here (would
-            // need the curve's own nearest-point math); leave it to the weld
-            // pass / real sidecar solve. Only the Coincident (exact point)
-            // case above is fixed-position enough to snap directly.
-          }
-        }
-      }
-      // 2. coincident welds - a pinned (directly dragged) key wins, then an
-      //    axis-anchored key, otherwise the group average
-      for (const g of groups) {
-        const keys = [...g]
-        const anchor =
-          keys.find((k) => pinned.has(k)) ?? keys.find((k) => anchored.has(k))
-        let pos: [number, number]
-        if (anchor) pos = this.ptOf(anchor)
-        else {
-          let sx = 0
-          let sy = 0
-          for (const k of keys) {
-            const p = this.ptOf(k)
-            sx += p[0]
-            sy += p[1]
-          }
-          pos = [sx / keys.length, sy / keys.length]
-        }
-        for (const k of keys) if (k !== anchor) this.setPtOf(k, pos)
-      }
-      // 3. tangent joins (line-arc or arc-arc, sharing a welded endpoint) -
-      // pivot the NON-dragged side's arc about the shared point, at its
-      // current radius, so its tangent direction there matches the other
-      // side's. Without this an arc kept its old centre/radius while its
-      // endpoint got welded to wherever the drag moved it, breaking
-      // tangency and swinging the arc into a visibly wrong, self-crossing
-      // shape (a stadium/slot profile dragged by one side - user report +
-      // screenshot, 2026-09-12: "it got all crazy"). The real sidecar solve
-      // on release still produces the exact, correct shape - this only
-      // fixes what the drag looks like WHILE held down.
-      for (const c of this.constraints) {
-        if (c.type !== 'Tangent') continue
-        const r0 = c.refs[0]
-        const r1 = c.refs[1]
-        if (!r0 || !r1) continue
-        const i0 = this.entIdxOfRef(r0)
-        const i1 = this.entIdxOfRef(r1)
-        const e0 = this.entities[i0]
-        const e1 = this.entities[i1]
-        if (!e0 || !e1) continue
-        // only the endpoint-tangent form (both refs carry pt 1/2) has a
-        // definite shared point to pivot about - a bare edge-tangent (full
-        // circle case) has no single point and is left alone here
-        if (r0.pt !== 1 && r0.pt !== 2) continue
-        if (r1.pt !== 1 && r1.pt !== 2) continue
-        const k0 = `${i0}:${r0.pt}`
-        const k1 = `${i1}:${r1.pt}`
-        const p0 = this.ptOf(k0)
-        const p1 = this.ptOf(k1)
-        // A tangent-at-endpoint join has NO Coincident constraint of its own
-        // enforcing the two points share a position - that coincidence is
-        // only ever an emergent RESULT of FreeCAD's real solve, never
-        // guaranteed here mid-drag. Previously this pass required the two
-        // points to ALREADY be within 1e-6 before doing anything ("only
-        // meaningful once welded"), which is backwards: the exact moment a
-        // drag perturbs one side without the other is precisely when this
-        // join needs to be pulled back together, not skipped. Skipping left
-        // the gap only free to grow, iteration after iteration, with
-        // nothing ever closing it for the rest of the drag (real user file,
-        // 2026-09-14: arc3's rim tore away from line0 by a visibly growing
-        // gap while dragging arc3's own centre/radius handles - confirmed
-        // via live instrumentation that this exact early-exit fired on
-        // EVERY iteration of EVERY frame of the drag, the pass never ran
-        // even once). Use whichever point is the more strongly anchored
-        // side (pinned > merely fixed > neither) as the point to close the
-        // gap TOWARD, so a drag on one side still pulls the other into
-        // place instead of leaving both to drift.
-        const k0Anchored = pinned.has(k0) ? 2 : fixed.has(k0) ? 1 : 0
-        const k1Anchored = pinned.has(k1) ? 2 : fixed.has(k1) ? 1 : 0
-        const shared = k1Anchored > k0Anchored ? p1 : p0
-        // prefer adjusting an arc whose OTHER endpoint is not itself fixed
-        // (so a fully-pinned arc is left alone); if both are arcs, adjust
-        // whichever side is not "fixed" (closer to the drag anchor logic
-        // used elsewhere in this function)
-        const pivotArc = (idx: number, e: SketchEntity, ownPt: 1 | 2, otherDir: [number, number]): void => {
-          if (e.type !== 'arc') return
-          // current radius vector centre->shared point
-          const rx = shared[0] - e.c[0]
-          const ry = shared[1] - e.c[1]
-          const r = Math.hypot(rx, ry)
-          if (r < 1e-9) return
-          // tangent direction at the rim point is perpendicular to the
-          // radius; align it with otherDir by rotating the centre about the
-          // FIXED shared point (radius length preserved), choosing whichever
-          // of the two perpendicular candidates keeps the centre on the same
-          // side it already was (does not flip the arc's bulge direction
-          // every iteration)
-          const ux = otherDir[0]
-          const uy = otherDir[1]
-          const nx = -uy
-          const ny = ux
-          const same = rx * nx + ry * ny >= 0 ? 1 : -1
-          const newCx = shared[0] - nx * r * same
-          const newCy = shared[1] - ny * r * same
-          e.c = [newCx, newCy]
-          // re-angle both rim endpoints about the new centre so the OTHER
-          // end (not this shared one) keeps its own world position exactly -
-          // only this join's endpoint is meant to move with the drag; the
-          // arc's far end is whatever the next weld/tangent pass pins
-          const otherPt = ownPt === 1 ? 2 : 1
-          const farKey = `${idx}:${otherPt}`
-          const farPos = fixed.has(farKey) ? this.ptOf(farKey) : null
-          if (ownPt === 1) e.a0 = Math.atan2(shared[1] - e.c[1], shared[0] - e.c[0])
-          else e.a1 = Math.atan2(shared[1] - e.c[1], shared[0] - e.c[0])
-          if (farPos) {
-            if (otherPt === 1) e.a0 = Math.atan2(farPos[1] - e.c[1], farPos[0] - e.c[0])
-            else e.a1 = Math.atan2(farPos[1] - e.c[1], farPos[0] - e.c[0])
-          }
-        }
-        const dirOf = (e: SketchEntity): [number, number] | null => {
-          if (e.type === 'line') {
-            const dx = e.b[0] - e.a[0]
-            const dy = e.b[1] - e.a[1]
-            const L = Math.hypot(dx, dy) || 1
-            return [dx / L, dy / L]
-          }
-          if (e.type === 'arc') {
-            const rx = shared[0] - e.c[0]
-            const ry = shared[1] - e.c[1]
-            const L = Math.hypot(rx, ry) || 1
-            return [-ry / L, rx / L]
-          }
-          return null
-        }
-        // rotate a LINE about the shared (fixed) endpoint so it stays
-        // tangent to a fixed/pinned ARC there - the mirror of pivotArc, for
-        // when the arc side cannot be moved (it is what is actually being
-        // dragged: see the pinned-side note below). A line has no
-        // radius/centre to preserve - only its direction needs to change,
-        // to whatever is perpendicular to the arc's own radius vector at
-        // the shared point. The line's OWN far endpoint keeps its distance
-        // from the shared point (the line's length is preserved, only its
-        // angle changes) - never its far endpoint's absolute position,
-        // which would silently change the line's length instead.
-        const pivotLine = (e: SketchEntity, ownPt: 1 | 2, arcDir: [number, number]): void => {
-          if (e.type !== 'line') return
-          const far = ownPt === 1 ? e.b : e.a
-          // this join's OWN endpoint is not guaranteed to already sit at
-          // `shared` - a Tangent-at-endpoint constraint has no Coincident of
-          // its own enforcing that (see the "no Coincident of its own" note
-          // above the gap-tolerant `shared` pick); measure the line's length
-          // from its CURRENT own-endpoint position before moving it, so a
-          // drag that has pulled the two points apart still preserves the
-          // line's real length when it snaps back together, rather than
-          // silently stretching/shrinking it by whatever the gap happened
-          // to be (real user file, 2026-09-14: fixing the gap-skip above
-          // alone was not enough - this pass rotated the FAR end around an
-          // assumed-already-coincident own end that was, in fact, still
-          // sitting wherever the weld pass had separately left it, so the
-          // shared vertex never actually closed).
-          const own = ownPt === 1 ? e.a : e.b
-          const len = Math.hypot(far[0] - own[0], far[1] - own[1])
-          if (len < 1e-9) return
-          // two perpendicular candidates to the arc's radius vector;
-          // keep whichever one the far point already leans toward, so the
-          // line does not flip to point the opposite way every iteration
-          const same = (far[0] - shared[0]) * arcDir[0] + (far[1] - shared[1]) * arcDir[1] >= 0 ? 1 : -1
-          const newFar: [number, number] = [
-            shared[0] + arcDir[0] * len * same,
-            shared[1] + arcDir[1] * len * same
-          ]
-          if (ownPt === 1) {
-            e.a = [...shared]
-            e.b = newFar
-          } else {
-            e.b = [...shared]
-            e.a = newFar
-          }
-        }
-        // PINNED (the entity actually being dragged this frame, e.g. its own
-        // radius/centre handle) is a stronger claim than merely "fixed"
-        // (which also includes axis/projected anchors and other entities'
-        // pinned points reached through a weld chain) - a pinned side must
-        // never be pivoted here, or this pass fights the very drag that is
-        // pinning it, undoing part of it every relaxation iteration (found
-        // via a real user file: dragging arc3's OWN radius handle, with the
-        // rim-pin fix correctly pinning arc3's points, still re-pivoted
-        // arc3's centre back to match its tangent neighbour's stale
-        // direction, because this pass only ever asked "is the OTHER side
-        // fixed", never "is THIS side the one being actively dragged").
-        const e0Pinned = pinned.has(k0)
-        const e1Pinned = pinned.has(k1)
-        const e0Fixed = fixed.has(k0)
-        const e1Fixed = fixed.has(k1)
-        // adjust whichever side is NOT fixed (and never the pinned/dragged
-        // side); if neither/both are fixed, prefer adjusting an arc over a
-        // line (a dragged line stays put, its tangent arc follows - matches
-        // how the weld pass already lets a pinned point win)
-        if (e1Fixed && !e0Fixed && !e0Pinned && e0.type === 'arc') {
-          const dir = dirOf(e1)
-          if (dir) pivotArc(i0, e0, r0.pt as 1 | 2, dir)
-        } else if (e0Fixed && !e1Fixed && !e1Pinned && e1.type === 'arc') {
-          const dir = dirOf(e0)
-          if (dir) pivotArc(i1, e1, r1.pt as 1 | 2, dir)
-        } else if (e1.type === 'arc' && !e1Pinned && e0.type !== 'arc') {
-          const dir = dirOf(e0)
-          if (dir) pivotArc(i1, e1, r1.pt as 1 | 2, dir)
-        } else if (e0.type === 'arc' && !e0Pinned) {
-          const dir = dirOf(e1)
-          if (dir) pivotArc(i0, e0, r0.pt as 1 | 2, dir)
-        } else if (e0.type === 'arc' && e0Pinned && e1.type === 'line' && !e1Pinned) {
-          // the arc side is the one being dragged (radius/centre handle) and
-          // cannot be pivoted - rotate the LINE instead so tangency still
-          // holds at the new radius, rather than silently dropping tangency
-          // for the rest of the drag (found via code inspection after a
-          // real user file's report of a live detached-looking shape: this
-          // pass previously only ever asked "is the OTHER side fixed", never
-          // "is THIS side the one being actively dragged", so a pinned arc
-          // could still get re-pivoted back toward its neighbour's stale
-          // direction, fighting the drag).
-          const dir = dirOf(e0)
-          if (dir) pivotLine(e1, r1.pt as 1 | 2, dir)
-        } else if (e1.type === 'arc' && e1Pinned && e0.type === 'line' && !e0Pinned) {
-          const dir = dirOf(e1)
-          if (dir) pivotLine(e0, r0.pt as 1 | 2, dir)
-        }
-      }
-      // 4. horizontal / vertical
-      for (let i = 0; i < this.entities.length; i++) {
-        const e = this.entities[i]
-        if (e.type !== 'line') continue
-        const hasH = this.lineHasHV(i, 'Horizontal')
-        const hasV = this.lineHasHV(i, 'Vertical')
-        if (!hasH && !hasV) continue
-        const fa = fixed.has(`${i}:1`)
-        const fb = fixed.has(`${i}:2`)
-        if (hasH) {
-          const y = fa && !fb ? e.a[1] : fb && !fa ? e.b[1] : (e.a[1] + e.b[1]) / 2
-          if (!fa) e.a = [e.a[0], y]
-          if (!fb) e.b = [e.b[0], y]
-        }
-        if (hasV) {
-          const x = fa && !fb ? e.a[0] : fb && !fa ? e.b[0] : (e.a[0] + e.b[0]) / 2
-          if (!fa) e.a = [x, e.a[1]]
-          if (!fb) e.b = [x, e.b[1]]
-        }
-      }
-      // 5. midpoints (Symmetric about a line's two endpoints)
-      for (const c of this.constraints) {
-        if (c.type !== 'Symmetric' || c.refs.length < 3) continue
-        const ka = this.keyOfRef(c.refs[0])
-        const kb = this.keyOfRef(c.refs[1])
-        const kc = this.keyOfRef(c.refs[2])
-        if (!ka || !kb || !kc) continue
-        const a = this.ptOf(ka)
-        const b = this.ptOf(kb)
-        if (!fixed.has(kc)) this.setPtOf(kc, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2])
-      }
-      // 6. length dimensions - keep the length, pivot on the fixed end
-      for (const c of this.constraints) {
-        if (c.type !== 'Distance' || c.value == null) continue
-        const i = this.entIdxOfRef(c.refs[0] ?? {})
-        const e = this.entities[i]
-        if (!e || e.type !== 'line') continue
-        const dx = e.b[0] - e.a[0]
-        const dy = e.b[1] - e.a[1]
-        const L = Math.hypot(dx, dy) || 1
-        const s = c.value / L
-        if (fixed.has(`${i}:1`) || !fixed.has(`${i}:2`))
-          e.b = [e.a[0] + dx * s, e.a[1] + dy * s]
-        else e.a = [e.b[0] - dx * s, e.b[1] - dy * s]
-      }
-    }
   }
 
   // --- headless constraint solve (fully-constrained colouring + reconcile) --- //
@@ -3347,7 +2867,7 @@ export class SketchController {
     }))
     let res: SketchSolveResult | null = null
     try {
-      res = await this.onSolve(allEnts, cons)
+      res = await this.onSolve(allEnts, cons, this.projectedPayload())
     } catch {
       return
     }
@@ -3912,6 +3432,34 @@ export class SketchController {
         const D = Math.hypot(dx, dy) || 1
         const target = ca.r + cb.r // external tangency
         cb.c = [ca.c[0] + (dx / D) * target, ca.c[1] + (dy / D) * target]
+      }
+      // an endpoint Tangent already implies Coincident at that shared point
+      // (see autoTangent's own comment above) - if a Coincident already sits
+      // on this exact point pair (e.g. from the arc tool's own auto-weld when
+      // drawing onto another curve's rim), adding the Tangent on top makes
+      // that Coincident genuinely redundant. autoTangent/autoCoincident both
+      // dedupe against their OWN constraint type before pushing, but this is
+      // the one user-facing path that pushes a brand-new Tangent with no
+      // check against an EXISTING Coincident on the same refs - a real user
+      // sketch hit this (Coincident{geo:4,pt:1}<->{geo:3,pt:2}} sitting next
+      // to a later Tangent{geo:3,pt:2}<->{geo:4,pt:1}}, both on the identical
+      // point pair, solver-flagged redundant on every subsequent solve).
+      if (endpointPair) {
+        const r0 = ref(idxs[0], endpointPair.pa)
+        const r1 = ref(idxs[1], endpointPair.pb)
+        const sameRef = (
+          x: { new?: number; geo?: number; pt?: number },
+          y: { new?: number; geo?: number; pt?: number }
+        ): boolean => (x.new ?? x.geo) === (y.new ?? y.geo) && x.pt === y.pt
+        this.constraints = this.constraints.filter(
+          (c) =>
+            !(
+              c.type === 'Coincident' &&
+              c.refs.length === 2 &&
+              ((sameRef(c.refs[0], r0) && sameRef(c.refs[1], r1)) ||
+                (sameRef(c.refs[0], r1) && sameRef(c.refs[1], r0)))
+            )
+        )
       }
       this.constraints.push({
         type,
@@ -4831,28 +4379,65 @@ export class SketchController {
   }
 
   /** Closed polygons made of the current line entities (for the fill). */
+  /** Closed-loop detection for the live fill preview. Walks lines AND arcs
+   *  (an arc contributes its two rim endpoints, same as a line's a/b) from
+   *  BOTH `this.entities` and `this.projected` - a profile that closes
+   *  through a projected edge, or uses an arc as one of its sides, is just
+   *  as "closed" as one made purely of freshly-drawn lines, but the
+   *  original version of this only ever looked at plain-line entities, so
+   *  it silently never filled/highlighted those profiles while sketching
+   *  even when they genuinely were (or would become, after Finish) closed.
+   *  Each segment is approximated by its two ENDPOINTS for the walk/fill
+   *  (an arc's fill triangulates as a straight chord across it, same
+   *  simplification the existing circle-fill path already accepts) -
+   *  correct topology, approximate shape, which is enough for a live
+   *  "is this closed" indicator. */
   private lineLoops(): [number, number][][] {
-    const segs = this.entities.filter(
-      (e) => !e.construction && e.type === 'line'
-    ) as { a: [number, number]; b: [number, number] }[]
-    const adj = new Map<string, { to: [number, number]; seg: number }[]>()
+    // `pts` is the segment's real path from a to b - a straight chord for a
+    // line, but the actual tessellated curve (via circleUVs, same helper the
+    // visible-line render path already uses for arcs) for an arc. Adjacency/
+    // walk matching still only ever compares the true endpoints (a/b), so
+    // the topology detection is unchanged - only the POINTS the final loop
+    // is built from change, fixing a real visible bug: the fill mesh used to
+    // triangulate straight chords across every arc, cutting the curved area
+    // off entirely instead of filling it (the walk itself was always
+    // correct; only what got handed to the triangulator was wrong).
+    type Seg = { a: [number, number]; b: [number, number]; pts: [number, number][] }
+    const arcPts = (e: { c: [number, number]; r: number; a0: number; a1: number }): [number, number][] =>
+      this.circleUVs(e.c, e.r, e.a0, e.a1)
+    const segs: Seg[] = []
+    for (const e of this.entities) {
+      if (e.construction) continue
+      if (e.type === 'line') {
+        segs.push({ a: e.a, b: e.b, pts: [e.a, e.b] })
+      } else if (e.type === 'arc') {
+        segs.push({ a: entPoint(e, 1), b: entPoint(e, 2), pts: arcPts(e) })
+      }
+    }
+    for (const { ent } of this.projected) {
+      if (ent.type === 'line') {
+        segs.push({ a: ent.a, b: ent.b, pts: [ent.a, ent.b] })
+      } else if (ent.type === 'arc') {
+        segs.push({ a: entPoint(ent, 1), b: entPoint(ent, 2), pts: arcPts(ent) })
+      }
+    }
+    const adj = new Map<string, { to: [number, number]; seg: number; forward: boolean }[]>()
     segs.forEach((s, i) => {
-      for (const [p, q] of [
-        [s.a, s.b],
-        [s.b, s.a]
-      ] as [[number, number], [number, number]][]) {
+      for (const [p, q, forward] of [
+        [s.a, s.b, true],
+        [s.b, s.a, false]
+      ] as [[number, number], [number, number], boolean][]) {
         const k = SketchController.ptKey(p)
-        ;(adj.get(k) ?? adj.set(k, []).get(k)!).push({ to: q, seg: i })
+        ;(adj.get(k) ?? adj.set(k, []).get(k)!).push({ to: q, seg: i, forward })
       }
     })
     const used = new Set<number>()
     const loops: [number, number][][] = []
     for (let start = 0; start < segs.length; start++) {
       if (used.has(start)) continue
-      const loop: [number, number][] = [segs[start].a]
+      const loop: [number, number][] = [...segs[start].pts]
       let cur = segs[start].b
       used.add(start)
-      loop.push(cur)
       let ok = true
       for (let guard = 0; guard <= segs.length; guard++) {
         if (SketchController.ptKey(cur) === SketchController.ptKey(loop[0])) break
@@ -4862,10 +4447,18 @@ export class SketchController {
           break
         }
         used.add(cand.seg)
+        const segPts = segs[cand.seg].pts
+        // append the segment's real path in the direction actually walked,
+        // skipping its first point (already the loop's current last point)
+        const ordered = cand.forward ? segPts : [...segPts].reverse()
+        loop.push(...ordered.slice(1))
         cur = cand.to
-        loop.push(cur)
       }
-      if (ok && loop.length >= 4 && SketchController.ptKey(cur) === SketchController.ptKey(loop[0])) {
+      if (
+        ok &&
+        loop.length >= 4 &&
+        SketchController.ptKey(cur) === SketchController.ptKey(loop[0])
+      ) {
         loops.push(loop.slice(0, -1))
       }
     }
@@ -5087,12 +4680,14 @@ export class SketchController {
 
   dispose(): void {
     this.dom.style.cursor = ''
+    this.abortDrag()
     if (this.solveTimer != null) window.clearTimeout(this.solveTimer)
     this.dom.removeEventListener('pointerdown', this.onDown)
     this.dom.removeEventListener('pointermove', this.onMove)
     this.dom.removeEventListener('dblclick', this.onDblClick)
     window.removeEventListener('pointerup', this.onUp)
     window.removeEventListener('keydown', this.onKey)
+    window.removeEventListener('blur', this.onBlur)
     for (const c of this.symGroup.children) (c as THREE.Sprite).material.dispose()
     for (const t of this.symTexCache.values()) t.dispose()
     this.symTexCache.clear()

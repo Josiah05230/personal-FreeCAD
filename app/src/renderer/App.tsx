@@ -40,6 +40,10 @@ import { DimensionEditor, type DimensionEditorRequest } from './ui/DimensionEdit
 import { ParametersPanel } from './ui/ParametersPanel'
 import { SettingsPanel } from './ui/SettingsPanel'
 import { MaterialsPanel } from './ui/MaterialsPanel'
+import { McMasterPanel } from './ui/McMasterPanel'
+import { NewPartDialog } from './ui/NewPartDialog'
+import { PNBrowserPanel } from './ui/PNBrowserPanel'
+import { CompanySettingsPanel } from './ui/CompanySettingsPanel'
 import { AppearancePanel } from './ui/AppearancePanel'
 import { FirstRun, firstRunDone } from './ui/FirstRun'
 import {
@@ -251,7 +255,13 @@ export function App(): JSX.Element {
   const [drawingTool, setDrawingTool] = useState<DrawingTool>('select')
   const [paramsOpen, setParamsOpen] = useState(false)
   const [materialsOpen, setMaterialsOpen] = useState(false)
+  const [mcmasterOpen, setMcMasterOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [newPartOpen, setNewPartOpen] = useState(false)
+  const [newPartProject, setNewPartProject] = useState<string | undefined>(undefined)
+  const [pnBrowserOpen, setPnBrowserOpen] = useState(false)
+  const [companySettingsOpen, setCompanySettingsOpen] = useState(false)
+  const [currentPn, setCurrentPn] = useState<string | null>(null)
   const [canUndo, setCanUndo] = useState(false)
   const [canRedo, setCanRedo] = useState(false)
   const [pins, setPins] = useState<PinMap>(() => loadPinned())
@@ -2775,13 +2785,22 @@ export function App(): JSX.Element {
   const saveAs = useCallback(async () => {
     const p = await window.cad.saveDialog(docPath ?? undefined)
     if (!p) return
+    if (!currentPn) {
+      const dir = p.slice(0, p.length - basename(p).length - 1)
+      const owner = await api.pnRepoForPath(dir).catch(() => ({ project: null }))
+      if (owner.project) {
+        setNewPartProject(owner.project)
+        setNewPartOpen(true)
+        return
+      }
+    }
     await api.saveAs(p)
     setDocPath(p)
     setTabs((t) =>
       t.map((x) => (x.id === activeTab ? { ...x, name: basename(p), dirty: false } : x))
     )
     void window.cad.captureThumb(p).catch(() => undefined)
-  }, [docPath, activeTab])
+  }, [docPath, activeTab, currentPn])
 
   const save = useCallback(async () => {
     if (!docPath) return saveAs()
@@ -2796,12 +2815,30 @@ export function App(): JSX.Element {
       if (!p) return
       // the sidecar holds one document: opening replaces it. Reflect that as a
       // fresh tab rather than mutating whatever tab is in front.
-      await api.open(p)
+      const opened = await api.open(p)
       const id = `d${Date.now()}`
       setTabs((t) => [...t.filter((x) => x.name !== 'Untitled' || x.dirty), { id, name: basename(p), dirty: false }])
       setActiveTab(id)
       setDocPath(p)
       setDrawingPageId(null)
+      setCurrentPn(opened.partNumber?.pn ?? null)
+      if (opened.partNumber?.pn) {
+        const pnSeq = opened.partNumber.pn.slice(0, -1)
+        void api
+          .pnCheckLocation(pnSeq, p)
+          .then((check) => {
+            if (check.matches) return
+            if (
+              window.confirm(
+                `${opened.partNumber?.pn} was opened from a different location than the registry ` +
+                  `expects (expected ${check.expectedPath}). Update the registry to point here instead?`
+              )
+            ) {
+              void api.pnRelocate(pnSeq, p).catch((e) => window.alert((e as Error).message))
+            }
+          })
+          .catch(() => undefined)
+      }
       await refreshScene()
     },
     [refreshScene]
@@ -3011,6 +3048,59 @@ export function App(): JSX.Element {
       await refreshScene()
     })()
   }, [refreshScene])
+
+  // A PN was just reserved (registry row committed) - reset to a clean
+  // document, save it at the reserved path, tag the session with the PN so
+  // it gets mirrored onto real FreeCAD document properties on every save,
+  // then open the New Part dialog's result as the active tab.
+  const createPart = useCallback(
+    async (info: { pn: string; path: string; name: string; description: string }) => {
+      setNewPartOpen(false)
+      try {
+        await api.resetDocument()
+        await api.pnTagDocument(info.pn, info.name, info.description)
+        await api.saveAs(info.path)
+        const id = `d${Date.now()}`
+        setTabs((t) => [...t, { id, name: basename(info.path), dirty: false }])
+        setActiveTab(id)
+        setDocPath(info.path)
+        setDrawingPageId(null)
+        setCurrentPn(info.pn)
+        await refreshScene()
+      } catch (e) {
+        window.alert(
+          `${info.pn} was reserved in the registry but the file could not be saved: ` +
+            `${(e as Error).message}. The PN is still reserved - use Save As to retry at the same path.`
+        )
+      }
+    },
+    [refreshScene]
+  )
+
+  const newRevision = useCallback(async () => {
+    if (!currentPn || !docPath) return
+    const pnSeq = currentPn.slice(0, -1)
+    try {
+      const res = await api.pnNewRevision(pnSeq)
+      await api.pnTagDocument(res.pn, res.name, res.description)
+      await api.saveAs(res.path ?? docPath)
+      setTabs((t) =>
+        t.map((x) => (x.id === activeTab ? { ...x, name: basename(res.path ?? docPath), dirty: false } : x))
+      )
+      setDocPath(res.path ?? docPath)
+      setCurrentPn(res.pn)
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
+  }, [currentPn, docPath, activeTab])
+
+  const openPnFile = useCallback(
+    async (path: string) => {
+      setPnBrowserOpen(false)
+      await openDesign(path)
+    },
+    [openDesign]
+  )
 
   const fitView = useCallback(() => vpApi.current?.fit(), [])
 
@@ -3506,6 +3596,7 @@ export function App(): JSX.Element {
         entityColorHex: (idx: number) => vpApi.current?.testEntityColorHex(idx) ?? null,
         entitySnapshot: (idx: number) => vpApi.current?.testEntitySnapshot(idx) ?? null,
         handlePointCount: () => vpApi.current?.testHandlePointCount() ?? 0,
+        fillCount: () => vpApi.current?.testFillCount() ?? 0,
         dimPicksState: () => vpApi.current?.testDimPicksState() ?? []
       },
 
@@ -3659,6 +3750,7 @@ export function App(): JSX.Element {
         drawingInsertBom: () => drawApi.current?.insertBom() ?? Promise.resolve(),
         drawingInsertTable: () => drawApi.current?.insertTable() ?? Promise.resolve(),
         drawingSaveAsTemplate: () => drawApi.current?.saveAsTemplate() ?? Promise.resolve(),
+        drawingLoadSheetTemplate: () => drawApi.current?.loadSheetTemplate() ?? Promise.resolve(),
         drawingNewSheet: startDrawing,
         drawingRenameSheet: async () => {
           if (!drawingPageId) return
@@ -3680,6 +3772,7 @@ export function App(): JSX.Element {
         toggleParams: () => setParamsOpen((v) => !v),
         toggleMaterials: () => setMaterialsOpen((v) => !v),
         toggleAppearance: () => setShowAppearance((v) => !v),
+        toggleMcMaster: () => setMcMasterOpen((v) => !v),
         importKicad,
         reimportKicad,
         surfaceRuled,
@@ -3766,15 +3859,23 @@ export function App(): JSX.Element {
         newDesign()
         return
       }
-      if (ctrl && e.key.toLowerCase() === 'z' && !e.shiftKey) {
-        e.preventDefault()
-        void doUndo()
-        return
-      }
-      if (ctrl && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) {
-        e.preventDefault()
-        void doRedo()
-        return
+      // while a drawing is open, its own keydown handler owns Ctrl+Z/Y (a
+      // separate undo/redo stack over drawing edits, not model history) -
+      // this global handler must not also fire and undo an unrelated 3D
+      // feature out from under the user (confirmed report: Ctrl+Z did
+      // nothing useful while editing a drawing, because model history had
+      // nothing to undo there in the first place).
+      if (!drawingPageId) {
+        if (ctrl && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+          e.preventDefault()
+          void doUndo()
+          return
+        }
+        if (ctrl && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) {
+          e.preventDefault()
+          void doRedo()
+          return
+        }
       }
       if (!ctrl && (e.key === 's' || e.key === 'S')) {
         e.preventDefault()
@@ -3801,7 +3902,7 @@ export function App(): JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [sketchSession, sketchConstruction, save, openDesign, newDesign, doUndo, doRedo, commands, hotkeys, openOp])
+  }, [sketchSession, sketchConstruction, save, openDesign, newDesign, doUndo, doRedo, commands, hotkeys, openOp, drawingPageId])
 
   const activeName = tabs.find((t) => t.id === activeTab)?.name ?? 'Untitled'
   const activeDirty = tabs.find((t) => t.id === activeTab)?.dirty ?? false
@@ -4141,7 +4242,11 @@ export function App(): JSX.Element {
           onSave: save,
           onSaveAs: saveAs,
           onExport: exportModel,
-          onImport: importStep
+          onImport: importStep,
+          onNewPart: () => setNewPartOpen(true),
+          onNewRevision: currentPn ? newRevision : undefined,
+          onPnBrowser: () => setPnBrowserOpen(true),
+          onCompanySettings: () => setCompanySettingsOpen(true)
         }}
         history={{
           onUndo: () => void doUndo(),
@@ -4157,6 +4262,16 @@ export function App(): JSX.Element {
           onOpenFile={(p) => void openDesign(p)}
           onNewDesignAt={(p) => {
             void (async () => {
+              const dir = p.slice(0, p.length - basename(p).length - 1)
+              const owner = await api.pnRepoForPath(dir).catch(() => ({ project: null }))
+              if (owner.project) {
+                // This folder lives inside a configured company repo - a
+                // plain untracked filename isn't allowed here, route through
+                // PN assignment instead (pre-selected to this project).
+                setNewPartProject(owner.project)
+                setNewPartOpen(true)
+                return
+              }
               await api.resetDocument()
               await api.saveAs(p)
               setDocPath(p)
@@ -4256,6 +4371,7 @@ export function App(): JSX.Element {
 
               {drawingPageId ? (
                 <DrawingSheet
+                  key={drawingPageId}
                   ref={drawApi}
                   pageId={drawingPageId}
                   makeView={makeView}
@@ -4303,14 +4419,43 @@ export function App(): JSX.Element {
                     sketchTool={sketchTool}
                     onSketchChange={onSketchChange}
                     onSketchDimensionRequest={(i, k) => void onSketchDimensionRequest(i, k)}
-                    onSketchSolve={async (ents, cons) => {
+                    onSketchSolve={async (ents, cons, proj) => {
                       try {
                         return await apiQuiet.sketchSolve(
                           ents as unknown[],
-                          cons as unknown as SketchConstraint[]
+                          cons as unknown as SketchConstraint[],
+                          proj as unknown as import('./rpc').ProjectedEntity[]
                         )
                       } catch {
                         return null
+                      }
+                    }}
+                    onSketchDrag={{
+                      start: async (ents, cons, proj) => {
+                        try {
+                          return await apiQuiet.sketchDragStart(
+                            ents as unknown[],
+                            cons as unknown as SketchConstraint[],
+                            proj as unknown as import('./rpc').ProjectedEntity[]
+                          )
+                        } catch {
+                          return null
+                        }
+                      },
+                      move: async (dragId, element, sub, posId, pos) => {
+                        try {
+                          return await apiQuiet.sketchDragMove(dragId, element, sub, posId, pos)
+                        } catch {
+                          return null
+                        }
+                      },
+                      end: async (dragId) => {
+                        try {
+                          await apiQuiet.sketchDragEnd(dragId)
+                        } catch {
+                          // best-effort - the sidecar's own 30s GC net closes
+                          // an abandoned scratch document either way
+                        }
                       }
                     }}
                     onSketchNotice={flashSketchNotice}
@@ -4489,6 +4634,37 @@ export function App(): JSX.Element {
                         />
                       )
                     })()}
+                  {mcmasterOpen && (
+                    <McMasterPanel
+                      onClose={() => setMcMasterOpen(false)}
+                      onImported={() => {
+                        rollCacheRef.current.clear()
+                        void refreshScene()
+                      }}
+                    />
+                  )}
+                  {newPartOpen && (
+                    <NewPartDialog
+                      initialProject={newPartProject}
+                      onClose={() => {
+                        setNewPartOpen(false)
+                        setNewPartProject(undefined)
+                      }}
+                      onCreated={(info) => {
+                        setNewPartProject(undefined)
+                        void createPart(info)
+                      }}
+                    />
+                  )}
+                  {pnBrowserOpen && (
+                    <PNBrowserPanel
+                      onClose={() => setPnBrowserOpen(false)}
+                      onOpen={(p) => void openPnFile(p)}
+                    />
+                  )}
+                  {companySettingsOpen && (
+                    <CompanySettingsPanel onClose={() => setCompanySettingsOpen(false)} />
+                  )}
                   {showAppearance &&
                     (() => {
                       const selBody = selection.find(

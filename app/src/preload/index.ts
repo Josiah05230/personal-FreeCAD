@@ -83,6 +83,8 @@ const cad = {
     ipcRenderer.invoke('dialog:save', defaultPath) as Promise<string | null>,
   openDialog: (filters?: { name: string; extensions: string[] }[]) =>
     ipcRenderer.invoke('dialog:open', filters) as Promise<string | null>,
+  openDirectoryDialog: () =>
+    ipcRenderer.invoke('dialog:openDirectory') as Promise<string | null>,
   exportDialog: (defaultPath?: string) =>
     ipcRenderer.invoke('dialog:export', defaultPath) as Promise<string | null>,
   saveRender: (dataUrl: string, defaultPath?: string, format?: 'png' | 'jpeg') =>
@@ -159,7 +161,22 @@ const cad = {
   siblingDirs: (path: string) => ipcRenderer.invoke('fs:siblingDirs', path) as Promise<string[]>,
   captureThumb: (design: string) =>
     ipcRenderer.invoke('win:captureThumb', design) as Promise<{ path: string | null }>,
-  thumb: (design: string) => ipcRenderer.invoke('fs:thumb', design) as Promise<string | null>
+  thumb: (design: string) => ipcRenderer.invoke('fs:thumb', design) as Promise<string | null>,
+
+  mcmasterShow: (bounds: { x: number; y: number; width: number; height: number }) =>
+    ipcRenderer.invoke('mcmaster:show', bounds) as Promise<void>,
+  mcmasterSetBounds: (bounds: { x: number; y: number; width: number; height: number }) =>
+    ipcRenderer.invoke('mcmaster:setBounds', bounds) as Promise<void>,
+  mcmasterHide: () => ipcRenderer.invoke('mcmaster:hide') as Promise<void>,
+  mcmasterCurrentUrl: () => ipcRenderer.invoke('mcmaster:currentUrl') as Promise<string>,
+  mcmasterGoBack: () => ipcRenderer.invoke('mcmaster:goBack') as Promise<void>,
+  mcmasterGoForward: () => ipcRenderer.invoke('mcmaster:goForward') as Promise<void>,
+  mcmasterGoHome: () => ipcRenderer.invoke('mcmaster:goHome') as Promise<void>,
+  mcmasterNavigate: (input: string) => ipcRenderer.invoke('mcmaster:navigate', input) as Promise<void>,
+  mcmasterDownloadCad: (format?: 'STEP' | 'IGES') =>
+    ipcRenderer.invoke('mcmaster:downloadCad', format) as Promise<string>,
+  mcmasterScrapeCurrentPart: () =>
+    ipcRenderer.invoke('mcmaster:scrapeCurrentPart') as Promise<Record<string, unknown> | null>
 }
 
 contextBridge.exposeInMainWorld('cad', cad)

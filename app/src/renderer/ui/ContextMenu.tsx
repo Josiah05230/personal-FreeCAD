@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 export interface MenuItem {
   label: string
@@ -44,7 +45,19 @@ export function ContextMenu({
     }
   }, [onClose])
 
-  return (
+  // Rendered via a portal straight to <body>, NOT as a normal child of
+  // whatever panel opened it. A `position: fixed` element is only viewport-
+  // relative if none of its ancestors set filter/backdrop-filter/transform/
+  // perspective - any of those establishes a new containing block per spec,
+  // silently turning "fixed" into "relative to that ancestor" instead
+  // (confirmed live: the model tree's `.browser` has `backdrop-filter:
+  // blur(8px)`, which broke this exact menu - it rendered inside the tree's
+  // own scrollable box, inflating its scrollHeight and forcing unwanted
+  // scrollbars around the tree every time a context menu opened, and could
+  // even trigger the outside-click auto-close before the user saw it).
+  // Portaling to `document.body` sidesteps the whole containing-block
+  // question for good, regardless of what CSS any future host panel adds.
+  return createPortal(
     <div
       ref={ref}
       className="ctxmenu"
@@ -71,6 +84,7 @@ export function ContextMenu({
           </div>
         )
       )}
-    </div>
+    </div>,
+    document.body
   )
 }

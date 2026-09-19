@@ -64,6 +64,7 @@ export const DEFAULT_PINNED = new Set<string>([
   'draw.bom',
   'draw.table',
   'draw.saveTemplate',
+  'draw.loadTemplate',
   'draw.newSheet',
   'draw.renameSheet',
   'draw.deleteSheet',

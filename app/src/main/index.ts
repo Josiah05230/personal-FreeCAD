@@ -5,6 +5,7 @@ import { homedir } from 'os'
 import { Sidecar, loadConfig } from './sidecar'
 import * as gitw from './git'
 import * as asmPin from './assemblyPin'
+import * as mcmaster from './mcmaster'
 
 // repo root is one level above app/ in dev; in a packaged build this is
 // remapped by the installer (Milestone 5).
@@ -136,6 +137,12 @@ app.whenReady().then(async () => {
     return r.canceled || !r.filePaths.length ? null : r.filePaths[0]
   })
 
+  ipcMain.handle('dialog:openDirectory', async () => {
+    if (E2E) return null
+    const r = await dialog.showOpenDialog(win!, { properties: ['openDirectory'] })
+    return r.canceled || !r.filePaths.length ? null : r.filePaths[0]
+  })
+
   ipcMain.handle('dialog:export', async (_e, defaultPath?: string) => {
     if (E2E) return null
     const r = await dialog.showSaveDialog(win!, {
@@ -239,6 +246,25 @@ app.whenReady().then(async () => {
     asmPin.resolveRefToCommit(filePath, ref)
   )
   ipcMain.handle('asmPin:currentCommit', (_e, filePath: string) => asmPin.currentCommitFor(filePath))
+
+  // --- McMaster-Carr embedded browser panel ---
+  ipcMain.handle(
+    'mcmaster:show',
+    (_e, bounds: { x: number; y: number; width: number; height: number }) => {
+      if (win) mcmaster.show(win, bounds)
+    }
+  )
+  ipcMain.handle('mcmaster:setBounds', (_e, bounds: { x: number; y: number; width: number; height: number }) =>
+    mcmaster.setBounds(bounds)
+  )
+  ipcMain.handle('mcmaster:hide', () => mcmaster.hide())
+  ipcMain.handle('mcmaster:currentUrl', () => mcmaster.currentUrl())
+  ipcMain.handle('mcmaster:goBack', () => mcmaster.goBack())
+  ipcMain.handle('mcmaster:goForward', () => mcmaster.goForward())
+  ipcMain.handle('mcmaster:goHome', () => mcmaster.goHome())
+  ipcMain.handle('mcmaster:navigate', (_e, input: string) => mcmaster.navigate(input))
+  ipcMain.handle('mcmaster:downloadCad', (_e, format?: 'STEP' | 'IGES') => mcmaster.downloadCad(format))
+  ipcMain.handle('mcmaster:scrapeCurrentPart', () => mcmaster.scrapeCurrentPart())
 
   ipcMain.handle('drawing:exportPdf', async (_e, html: string, outPath: string) => {
     const w = new BrowserWindow({ show: false, webPreferences: { offscreen: true } })
@@ -480,4 +506,7 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => sidecar?.stop())
+app.on('before-quit', () => {
+  sidecar?.stop()
+  void mcmaster.cleanup()
+})

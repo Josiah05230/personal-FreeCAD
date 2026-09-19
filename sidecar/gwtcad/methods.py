@@ -16,6 +16,7 @@ from . import session
 from . import build
 from . import drawing as _drawing
 from . import tables as _tables
+from . import sheet_templates as _sheet_templates
 from . import assembly as _assembly
 from .tessellate import tessellate_shape
 from .vocab import op_name, next_label
@@ -660,6 +661,27 @@ def feature_sweep(profileId, pathId=None, pathRef=None, cut=False, operation=Non
             raise RpcError(APP_ERROR, "sweep needs a path sketch or edge")
 
     _check_sweep_path_angle(prof, spine_ref, path_obj)
+
+    # AdditivePipe/SubtractivePipe need a genuinely closed profile wire to
+    # produce a solid - an open profile silently fails deep inside OCCT with
+    # the same generic "invalid shape" error as every other sweep failure,
+    # giving no hint the profile itself (not the path) is the problem. Catch
+    # it here with a message the user can act on, same as the path-angle
+    # check above. sketch.finish already reports this as its own "closed"
+    # flag - re-derive it the same way (Shape.Wires / isClosed) rather than
+    # trust a possibly-stale value from whenever the sketch was last finished.
+    try:
+        prof_wires = prof.Shape.Wires
+        prof_closed = any(w.isClosed() for w in prof_wires) if prof_wires else False
+    except Exception:
+        prof_closed = True  # can't tell - don't block on an inspection failure
+    if not prof_closed:
+        raise RpcError(
+            APP_ERROR,
+            "This profile isn't a closed loop, so a sweep can't turn it into "
+            "a solid - check every segment connects end-to-end (a gap or an "
+            "unconnected construction line will leave it open)."
+        )
 
     tid = "PartDesign::SubtractivePipe" if op == "cut" else "PartDesign::AdditivePipe"
     pipe = body.newObject(tid, "Sweep")
@@ -2975,15 +2997,94 @@ _POINT_CONSTRAINTS = {"Coincident"}
 _LINE_PAIR_CONSTRAINTS = {"Parallel", "Perpendicular", "Equal", "Tangent"}
 
 
-def _apply_sketch_constraints(sk, constraints, emap):
+def _add_projected_geometry(sk, projected):
+    """Add the editor's PROJECTED (external) geometry to a throwaway scratch
+    sketch as real, immovable geometry, so Coincident/PointOnObject constraints
+    that reference it (by its negative geoId, e.g. -3, -4...) actually bind
+    during sketch.solve / sketch.dragStart / sketch.dragMove instead of pointing
+    at nothing.
+
+    This scratch sketch has no live body to addExternal() against (it lives in
+    a disposable throwaway document, not the real one) - so instead of true
+    FreeCAD external geometry, each projected entry's already-resolved 2D
+    shape is added as ordinary construction geometry, then locked in place.
+    That is sufficient for solve purposes: the point only needs to be a real,
+    non-moving vertex the solver can weld other geometry to, which is exactly
+    what the live sketch's real external geometry already behaves like from
+    every OTHER constraint's point of view.
+
+    A "line" entry whose a==b (a model edge perpendicular to the sketch plane
+    projects to a single point, per sketch.project - see sketch_closed_loop.js's
+    "an edge perpendicular to the sketch plane projects to a point on it")
+    is added as Part.Point + DistanceX/DistanceY instead of a degenerate
+    LineSegment: Part.LineSegment(p, p) raises OCCError("Both points are
+    equal"), and separately, a Block constraint on a Part.Point geometry
+    crashes this FreeCAD build's solver outright (confirmed via isolated
+    headless repro, 2026-09-18) - DistanceX/DistanceY locks a point cleanly
+    with neither problem. Ordinary (non-degenerate) line/circle/arc entries
+    keep using Block, which is stable for those geometry types.
+
+    Returns {negativeGeoId: realPositiveGeoId} for gid() to resolve through.
+    """
+    import Part
+    import Sketcher
+    from FreeCAD import Vector
+    gmap = {}
+    for p in projected or []:
+        try:
+            neg = int(p["geoId"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        t = p.get("type")
+        gid_real = None
+        is_point = False
+        try:
+            if t == "line":
+                a, b = p["a"], p["b"]
+                if abs(a[0] - b[0]) < 1e-7 and abs(a[1] - b[1]) < 1e-7:
+                    is_point = True
+                    gid_real = sk.addGeometry(Part.Point(Vector(a[0], a[1], 0)), True)
+                else:
+                    gid_real = sk.addGeometry(
+                        Part.LineSegment(Vector(a[0], a[1], 0), Vector(b[0], b[1], 0)), True)
+            elif t == "circle":
+                c = p["c"]
+                gid_real = sk.addGeometry(
+                    Part.Circle(Vector(c[0], c[1], 0), Vector(0, 0, 1), float(p["r"])), True)
+            elif t == "arc":
+                c = p["c"]
+                circ = Part.Circle(Vector(c[0], c[1], 0), Vector(0, 0, 1), float(p["r"]))
+                gid_real = sk.addGeometry(
+                    Part.ArcOfCircle(circ, float(p["a0"]), float(p["a1"])), True)
+            else:
+                continue
+        except Exception:
+            continue
+        try:
+            if is_point:
+                sk.addConstraint(Sketcher.Constraint("DistanceX", gid_real, 1, float(a[0])))
+                sk.addConstraint(Sketcher.Constraint("DistanceY", gid_real, 1, float(a[1])))
+            else:
+                sk.addConstraint(Sketcher.Constraint("Block", gid_real))
+        except Exception:
+            pass
+        gmap[neg] = gid_real
+    return gmap
+
+
+def _apply_sketch_constraints(sk, constraints, emap, projmap=None):
     """constraints: [{type, refs:[{new:i, sub:0, pt:1} | {geo:<id>, pt:1}]}].
     `new` indexes into the elements just added (emap); `geo` is a raw geoId of
-    pre-existing geometry."""
+    pre-existing geometry, OR (if <= -3 and present in `projmap`) a projected
+    entity added via _add_projected_geometry - resolved through projmap to its
+    real geoId in THIS scratch sketch."""
     import Sketcher
+    projmap = projmap or {}
 
     def gid(ref):
         if "geo" in ref:
-            return int(ref["geo"])
+            g = int(ref["geo"])
+            return projmap.get(g, g)
         return emap[int(ref.get("new", 0))][int(ref.get("sub", 0))]
 
     # per client constraint: the sketch ConstraintIndex it became, or None if it
@@ -3704,20 +3805,229 @@ def _auto_constrain(sk):
             pass
 
 
+# --------------------------------------------------------------------------- #
+# live drag: one scratch sketch kept alive for the duration of a drag gesture,
+# so every mouse-move is a cheap moveGeometry()+solve() instead of a full
+# rebuild-and-replay (measured ~30x cheaper - see sketch.dragStart docstring).
+# --------------------------------------------------------------------------- #
+_drag_sessions = {}
+_drag_seq = [0]
+_DRAG_SESSION_MAX_AGE = 30.0  # seconds; a session outlives this only if abandoned
+
+
+def _drag_gc():
+    import time
+    now = time.time()
+    stale = [sid for sid, s in _drag_sessions.items() if now - s["touched"] > _DRAG_SESSION_MAX_AGE]
+    for sid in stale:
+        _drag_session_close(sid)
+
+
+def _drag_session_close(sid):
+    s = _drag_sessions.pop(sid, None)
+    if s is None:
+        return
+    try:
+        App.closeDocument(s["doc"].Name)
+    except Exception:
+        pass
+
+
+@method("sketch.dragStart")
+def sketch_drag_start(elements=None, constraints=None, sketchId=None, projected=None):
+    """Begin a live-drag gesture: build the scratch sketch ONCE (same shape as
+    sketch.solve's throwaway document) and keep it alive in memory so the
+    following sketch.dragMove calls are a direct moveGeometry()+solve() on the
+    already-built sketch, not a rebuild-from-scratch on every mouse-move.
+
+    Benchmarked: full rebuild+replay (what sketch.solve does today) costs
+    ~9ms/call; keeping the sketch alive and nudging a point costs ~0.3ms/call
+    - a ~30x difference that has nothing to do with RPC transport (~1ms) and
+    everything to do with re-adding every geometry element and replaying every
+    constraint on each call. This is what makes per-mouse-move real-solver
+    calls affordable instead of the interactive editor needing its own
+    approximate local relaxation solver that can disagree with FreeCAD's real
+    one and produce a visible snap when they're reconciled.
+
+    `projected`: see sketch.solve's docstring - same fix, same reason (a drag
+    on geometry welded to projected/external geometry was free to swing the
+    shape because the referenced point never existed in this scratch sketch)."""
+    import time
+    _drag_gc()
+    prev = App.ActiveDocument.Name if App.ActiveDocument else None
+    _drag_seq[0] += 1
+    sd = App.newDocument("gwtcad_drag_scratch_%d" % _drag_seq[0])
+    try:
+        sk = sd.addObject("Sketcher::SketchObject", "S")
+        emap = _add_sketch_elements(sk, elements or [])
+        projmap = _add_projected_geometry(sk, projected or [])
+        clist = constraints or []
+        applied = _apply_sketch_constraints(sk, clist, emap, projmap) if clist else []
+        sd.recompute()
+    finally:
+        if prev and App.getDocument(prev) is not None:
+            App.setActiveDocument(prev)
+    sid = sd.Name
+    _drag_sessions[sid] = {
+        "doc": sd, "sketch": sk, "emap": emap, "applied": applied,
+        "touched": time.time(),
+    }
+    return {"dragId": sid, **_drag_solve_result(sk, emap, applied)}
+
+
+@method("sketch.dragMove")
+def sketch_drag_move(dragId, element, sub, posId, pos):
+    """Move one point of the drag session's sketch and re-solve, using
+    FreeCAD's own SketchObject.moveGeometry - the same primitive FreeCAD's own
+    docstring says is "used to allow the user to drag some portions of the
+    sketch in real time by e.g. the mouse" (adds temporary weak constraints
+    and solves). That "pull other points along" behavior is exactly what made
+    it the WRONG choice for sketch.finish's exact-final-position replace, per
+    _move_matching_elements' docstring above - but it is the RIGHT one here,
+    since this IS an interactive drag.
+
+    element/sub: which geoId (elements[element]'s sub-th id, e.g. a rect's
+    4 sides). posId: FreeCAD PosId (1=start/center, 2=end, 3=mid for arcs).
+    pos: [x, y] target in sketch-plane mm. Returns the same shape as
+    dragStart/sketch.solve so the caller can render it directly, every
+    frame."""
+    import time
+    s = _drag_sessions.get(dragId)
+    if s is None:
+        raise RpcError(APP_ERROR, "no drag session %r (expired or never started)" % dragId)
+    s["touched"] = time.time()
+    sk, emap, applied = s["sketch"], s["emap"], s["applied"]
+    ids = emap[int(element)] if 0 <= int(element) < len(emap) else []
+    gid = ids[int(sub)] if 0 <= int(sub) < len(ids) else None
+    if gid is None:
+        raise RpcError(APP_ERROR, "no such element/sub %r/%r" % (element, sub))
+    # moveGeometry usually never raises and never reports failure on the
+    # object - a degenerate target (e.g. dragging a line's endpoint onto its
+    # own other endpoint, zero-length) just gets silently ignored, logged to
+    # FreeCAD's console only (confirmed live: "Error build geometry: Both
+    # points are equal", geometry unchanged, no Python-visible signal).
+    # Compare before/after so the caller can tell a rejected move from a real
+    # one instead of trusting the echoed pos and drifting out of sync with
+    # what's on screen.
+    #
+    # It CAN also genuinely raise: confirmed live (real user session,
+    # 2026-09-18) posId 0 (the whole-curve/radius-resize grab) on an arc threw
+    # ValueError("Not able to move point with the id and type: (N, 0)")
+    # mid-drag, most likely when the drag pushed the arc toward a near-
+    # degenerate radius. Treat that exactly like the silent-reject case
+    # (nothing moved this frame) rather than letting it propagate and abort
+    # the whole drag gesture - the frontend just tries the next mouse-move
+    # target, same as it already does for any other rejected move.
+    before = _geo_snapshot(sk, gid)
+    try:
+        sk.moveGeometry(gid, int(posId), Vector(float(pos[0]), float(pos[1]), 0))
+        s["doc"].recompute()
+    except Exception:
+        pass
+    result = _drag_solve_result(sk, emap, applied)
+    result["applied"] = _geo_snapshot(sk, gid) != before
+    return result
+
+
+def _geo_snapshot(sk, gid):
+    """Cheap equality probe for _drag_move's before/after check."""
+    try:
+        g = sk.Geometry[gid]
+        return tuple(round(c, 9) for c in (
+            g.StartPoint.x, g.StartPoint.y, g.EndPoint.x, g.EndPoint.y
+        )) if hasattr(g, "StartPoint") else (
+            round(g.Center.x, 9), round(g.Center.y, 9), round(g.Radius, 9)
+        )
+    except Exception:
+        return None
+
+
+@method("sketch.dragEnd")
+def sketch_drag_end(dragId):
+    """Close out a drag session's scratch document. Call on pointer-up
+    (success or abort - the live document was never touched)."""
+    _drag_session_close(dragId)
+    return {"ok": True}
+
+
+def _drag_solve_result(sk, emap, applied):
+    """Same response shape sketch.solve returns, factored out so dragStart/
+    dragMove don't duplicate the geometry/diagnostics readback."""
+    try:
+        free_pairs = sk.getGeometryWithDependentParameters()
+        free_geo = set(int(p[0]) for p in free_pairs)
+    except Exception:
+        free_geo = None
+    _sk_to_client = {si: ci for ci, si in enumerate(applied) if si is not None}
+
+    def _client_idx(names):
+        out = []
+        for si in names or []:
+            ci = _sk_to_client.get(int(si))
+            if ci is not None:
+                out.append(ci)
+        return out
+
+    conflicting = _client_idx(getattr(sk, "ConflictingConstraints", ()))
+    redundant = _client_idx(getattr(sk, "RedundantConstraints", ()))
+    partial = _client_idx(getattr(sk, "PartiallyRedundantConstraints", ()))
+    malformed = _client_idx(getattr(sk, "MalformedConstraints", ()))
+    geom = []
+    free_elems = []
+    for i, ids in enumerate(emap):
+        gid0 = ids[0] if ids else None
+        g = sk.Geometry[gid0] if gid0 is not None and gid0 < sk.GeometryCount else None
+        t = g.TypeId if g is not None else None
+        if t == "Part::GeomLineSegment":
+            geom.append({"type": "line",
+                         "a": [g.StartPoint.x, g.StartPoint.y],
+                         "b": [g.EndPoint.x, g.EndPoint.y]})
+        elif t == "Part::GeomCircle":
+            geom.append({"type": "circle",
+                         "c": [g.Center.x, g.Center.y], "r": g.Radius})
+        elif t == "Part::GeomArcOfCircle":
+            geom.append({"type": "arc",
+                         "c": [g.Center.x, g.Center.y], "r": g.Radius,
+                         "a0": g.FirstParameter, "a1": g.LastParameter})
+        else:
+            geom.append(None)
+        if free_geo is None or any(x in free_geo for x in ids):
+            free_elems.append(i)
+    return {
+        "geometry": geom,
+        "free": free_elems,
+        "fullyConstrained": bool(sk.FullyConstrained),
+        "conflicting": conflicting,
+        "redundant": redundant,
+        "partiallyRedundant": partial,
+        "malformed": malformed,
+    }
+
+
 @method("sketch.solve")
-def sketch_solve(elements=None, constraints=None, sketchId=None):
+def sketch_solve(elements=None, constraints=None, sketchId=None, projected=None):
     """Run the editor's current geometry + constraints through the real solver
     in a throwaway document. Returns the solved coordinates plus which elements
     still have free degrees of freedom (so the editor can grey out the rest).
-    Never touches the live document."""
+    Never touches the live document.
+
+    `projected`: the editor's live projected/external geometry (each entry
+    {geoId, type, ...}), added here as real, Block-locked geometry in the
+    scratch sketch so a Coincident/PointOnObject referencing its negative
+    geoId is a genuine weld, not a dangling reference the solver silently
+    contributes nothing for (see _add_projected_geometry's docstring - this
+    was why an arc/line "welded" to projected geometry could still be dragged
+    freely: the referenced point never actually existed in the scratch sketch
+    the drag/solve ran against)."""
     prev = App.ActiveDocument.Name if App.ActiveDocument else None
     sd = App.newDocument("gwtcad_solve_scratch")
     try:
         sk = sd.addObject("Sketcher::SketchObject", "S")
         emap = _add_sketch_elements(sk, elements or [])
+        projmap = _add_projected_geometry(sk, projected or [])
         pre = int(sk.ConstraintCount)          # constraints the rect set etc. added
         clist = constraints or []
-        applied = _apply_sketch_constraints(sk, clist, emap) if clist else []
+        applied = _apply_sketch_constraints(sk, clist, emap, projmap) if clist else []
         sd.recompute()
         try:
             free_pairs = sk.getGeometryWithDependentParameters()
@@ -4537,12 +4847,30 @@ def _write_sidecar(path):
         pass
 
 
+def _apply_part_number_props(d):
+    """Mirror the session's PN/Name/Description onto real FreeCAD document
+    properties (group "GWT") so they're visible to anyone opening the raw
+    .FCStd, not just GWT-CAD. Called just before every save."""
+    pn = session.part_number()
+    if not pn:
+        return
+    for prop, val in (("GwtPartNumber", pn.get("pn", "")),
+                       ("GwtPartName", pn.get("name", "")),
+                       ("GwtPartDescription", pn.get("description", ""))):
+        if not hasattr(d, prop):
+            d.addProperty("App::PropertyString", prop, "GWT")
+        setattr(d, prop, val or "")
+    if pn.get("description"):
+        d.Comment = pn["description"]
+
+
 @method("document.saveAs")
 def document_save_as(path):
     d = session.doc(create=False)
     if d is None:
         raise RpcError(APP_ERROR, "no document")
     path = os.path.abspath(os.path.expanduser(path))
+    _apply_part_number_props(d)
     d.saveAs(path)
     session.set_path(path)
     _write_sidecar(path)
@@ -4557,6 +4885,7 @@ def document_save():
     p = session.path()
     if not p:
         raise RpcError(APP_ERROR, "document has no path yet - use saveAs")
+    _apply_part_number_props(d)
     d.save()
     _write_sidecar(p)
     return {"path": p}
@@ -4583,7 +4912,7 @@ def document_open(path):
         _materials.reapply_custom_materials()
     except Exception:
         pass
-    return {"path": path, "name": d.Name}
+    return {"path": path, "name": d.Name, "partNumber": session.part_number() or None}
 
 
 @method("document.info")
@@ -4892,10 +5221,22 @@ def drawing_convert_view(pageId, viewId, toKind, **kw):
     return _drawing.convert_view(d, pageId, viewId, toKind, **kw)
 
 
+@method("drawing.removeView")
+def drawing_remove_view(viewId):
+    d = session.doc()
+    return _drawing.remove_view(d, viewId)
+
+
 @method("drawing.addDimension")
 def drawing_add_dimension(pageId, viewId, refs, kind="Distance"):
     d = session.doc()
     return _drawing.add_dimension(d, pageId, viewId, refs, kind=kind)
+
+
+@method("drawing.removeDimension")
+def drawing_remove_dimension(dimId):
+    d = session.doc()
+    return _drawing.remove_dimension(d, dimId)
 
 
 @method("drawing.setDimensionType")
@@ -4939,16 +5280,35 @@ def drawing_remove_cleanup_line(viewId, lineId):
 
 
 @method("drawing.addNote")
-def drawing_add_note(pageId, text, x, y, leaderViewId=None, leaderPoint=None):
+def drawing_add_note(pageId, text, x, y, leaderViewId=None, leaderPoint=None, font=None, textSize=None):
     d = session.doc()
     return _drawing.add_note(d, pageId, text, float(x), float(y),
-                              leader_view_id=leaderViewId, leader_point=leaderPoint)
+                              leader_view_id=leaderViewId, leader_point=leaderPoint,
+                              font=font, textSize=textSize)
 
 
 @method("drawing.setNoteText")
 def drawing_set_note_text(noteId, text):
     d = session.doc()
     return _drawing.set_note_text(d, noteId, text)
+
+
+@method("drawing.setNoteStyle")
+def drawing_set_note_style(noteId, font=None, textSize=None):
+    d = session.doc()
+    return _drawing.set_note_style(d, noteId, font=font, textSize=textSize)
+
+
+@method("drawing.moveNote")
+def drawing_move_note(noteId, x, y):
+    d = session.doc()
+    return _drawing.move_note(d, noteId, float(x), float(y))
+
+
+@method("drawing.removeNote")
+def drawing_remove_note(noteId):
+    d = session.doc()
+    return _drawing.remove_note(d, noteId)
 
 
 @method("drawing.snapTargets")
@@ -4975,6 +5335,12 @@ def drawing_make_table(pageId, tableId=None, rows=None, columns=None, template=N
                                table_id=tableId)
 
 
+@method("drawing.removeTable")
+def drawing_remove_table(tableId):
+    d = session.doc()
+    return _tables.remove_table(d, tableId)
+
+
 @method("drawing.saveTableTemplate")
 def drawing_save_table_template(name, spec):
     return _tables.save_table_template(name, spec)
@@ -4988,6 +5354,29 @@ def drawing_list_table_templates():
 @method("drawing.loadTableTemplate")
 def drawing_load_table_template(name):
     return _tables.load_table_template(name)
+
+
+@method("drawing.listSheetTemplates")
+def drawing_list_sheet_templates():
+    return {"templates": _sheet_templates.list_sheet_templates()}
+
+
+@method("drawing.saveSheetTemplate")
+def drawing_save_sheet_template(name, spec):
+    return _sheet_templates.save_sheet_template(name, spec)
+
+
+@method("drawing.applySheetTemplate")
+def drawing_apply_sheet_template(name):
+    """Look up a named sheet template's spec: whether to show a title block,
+    and which default view directions to auto-add. A brand-new page from
+    drawing.pageCreate is never auto-populated - the frontend calls this
+    ONLY when the user opts in via "Load Template", then adds the returned
+    view directions itself through the same makeView path "Add View" and
+    "Auto-layout" already use (no need to duplicate that view-creation
+    logic here against a raw source-object name)."""
+    tpl = _sheet_templates.load_sheet_template(name)["spec"]
+    return {"titleBlock": bool(tpl.get("titleBlock", False)), "views": list(tpl.get("views", []))}
 
 
 # --------------------------------------------------------------------------- #
@@ -5344,6 +5733,45 @@ def io_import_model(path, facetCap=0, autoSimplify=True):
             "simplified": simplified}
 
 
+@method("io.tagMcMaster")
+def io_tag_mcmaster(id, partNumber, meta=None):
+    """Stamp a just-imported object with its McMaster-Carr part number + the
+    full scraped page data (spec table, price, description, images - whatever
+    the embedded-browser scrape found), so it shows in the browser tree/BOM
+    and survives save/reopen. `meta` is passed through verbatim as JSON - one
+    string property rather than one FreeCAD property per spec field, since
+    the field set differs per part family and isn't meant to be edited here.
+    """
+    import json
+    d = session.doc(create=False)
+    if d is None:
+        raise RpcError(APP_ERROR, "no document")
+    obj = d.getObject(id)
+    if obj is None:
+        raise RpcError(APP_ERROR, "no such object: %s" % id)
+    if not hasattr(obj, "McMasterPN"):
+        obj.addProperty("App::PropertyString", "McMasterPN", "McMaster",
+                         "McMaster-Carr part number").McMasterPN = partNumber
+    else:
+        obj.McMasterPN = partNumber
+    if meta is not None:
+        blob = json.dumps(meta)
+        if not hasattr(obj, "McMasterData"):
+            p = obj.addProperty("App::PropertyString", "McMasterData", "McMaster",
+                                 "Full scraped mcmaster.com product data (JSON)")
+            p.setEditorMode("McMasterData", 2)  # hidden in the property panel - raw JSON
+            obj.McMasterData = blob
+        else:
+            obj.McMasterData = blob
+    title = (meta or {}).get("title") if isinstance(meta, dict) else None
+    try:
+        obj.Label = "%s %s" % (partNumber, title) if title else partNumber
+    except Exception:
+        pass
+    d.recompute()
+    return tree_get()
+
+
 def _export_targets(d):
     return [o for o in d.Objects
             if o.TypeId in ("PartDesign::Body", "Part::Feature", "Mesh::Feature",
@@ -5435,7 +5863,7 @@ from gwtcad import kicad as _kicad_methods  # noqa: E402,F401
 
 # Fusion-parity feature modules. Each registers its own @method RPCs on import.
 # Guarded so a problem in one module cannot take the whole sidecar down.
-for _mod in ("primitives", "xform", "meshtools", "materials", "appearance"):
+for _mod in ("primitives", "xform", "meshtools", "materials", "appearance", "partnumbers"):
     try:
         __import__("gwtcad." + _mod)
     except Exception as _e:  # pragma: no cover - surfaced in the sidecar log

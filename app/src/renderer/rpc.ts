@@ -278,6 +278,27 @@ export interface SketchSolveDTO {
   fullyConstrained: boolean
 }
 
+/** Response shape shared by sketch.dragStart / sketch.dragMove - same as
+ *  SketchSolveDTO plus the diagnostics dragMove needs to reconcile drag-time
+ *  DoF colouring without a redundant sketch.solve call right after. */
+export interface SketchDragResultDTO extends SketchSolveDTO {
+  conflicting?: number[]
+  redundant?: number[]
+  partiallyRedundant?: number[]
+  malformed?: number[]
+}
+
+export interface SketchDragStartDTO extends SketchDragResultDTO {
+  dragId: string
+}
+
+export interface SketchDragMoveDTO extends SketchDragResultDTO {
+  /** false when moveGeometry silently rejected a degenerate target (e.g. a
+   *  point dragged onto another point on the same geometry) - the returned
+   *  `geometry` still holds the last valid, authoritative state either way. */
+  applied: boolean
+}
+
 export type Selection =
   | {
       kind: 'face'
@@ -361,6 +382,13 @@ export interface MeasureResult {
   angle?: number
 }
 
+export interface DrawingBreak {
+  sketch: string | null
+  axis: 'x' | 'y'
+  position: number
+  gap: number
+}
+
 export interface DrawingView {
   id: string
   label: string
@@ -372,6 +400,13 @@ export interface DrawingView {
   hidden: number[][][]
   bbox: [number, number, number, number]
   orphanedDimensions?: string[]
+  /** Client-side-only visual break glyphs for a 'broken' view - FreeCAD's
+   *  own DrawBrokenView.Breaks needs real 3D break-line geometry objects
+   *  with an undocumented internals contract (no Python reference
+   *  available), so the sidecar's broken-view geometry is unmodified from
+   *  its base view and this field is drawn as a purely visual jagged-line
+   *  overlay instead - honest about not being a real TechDraw crop. */
+  breaks?: DrawingBreak[]
 }
 
 export interface DrawingPage {
@@ -409,6 +444,8 @@ export interface DrawingNote {
   x: number
   y: number
   leaderId?: string | null
+  font?: string
+  textSize?: number
 }
 
 export interface CleanupLine {
@@ -445,7 +482,20 @@ export interface TableTemplate {
     font?: string
     textSize?: number
     columns?: TableColumn[]
+    /** grid/border style - the sidecar stores these as plain JSON, same
+     *  as font/textSize; a table with showGrid:false or omitted draws no
+     *  border/separator lines at all. */
+    showGrid?: boolean
+    gridColor?: string
+    rowHeight?: number
+    colWidths?: number[]
   }
+}
+
+export interface SheetTemplate {
+  name: string
+  spec: { titleBlock: boolean; views: string[] }
+  builtin: boolean
 }
 
 export interface DrawingTable {
@@ -497,33 +547,22 @@ function bumpBusy(delta: number): void {
 }
 
 let _rpcSeq = 0
-const _pickParams = (p: Record<string, unknown>): Record<string, unknown> => {
-  const out: Record<string, unknown> = {}
-  for (const k of [
-    'sketchId',
-    'featureId',
-    'id',
-    'bodyId',
-    'length',
-    'angle',
-    'operation',
-    'cut',
-    'props',
-    'faceRef'
-  ]) {
-    if (k in p) out[k] = p[k]
-  }
-  return out
-}
-
+// Previously an allowlist of ~10 param keys (sketchId/featureId/id/bodyId/
+// length/angle/operation/cut/props/faceRef) - every call outside that list
+// (sketch.dragMove, sketch.project, drawing.*, dimension refs, snap
+// indices...) traced as bare "p":{}}, which is exactly what made a real bug
+// report's trace log useless for seeing what was actually clicked/dragged.
+// Log the whole (clip()-truncated/rounded) params object instead - `clip`
+// already bounds string length and rounds floats, so this can't blow up the
+// trace ring buffer or the log file the way an unclipped dump could.
 const rpc = async <T,>(m: string, p: Record<string, unknown> = {}): Promise<T> => {
   const n = ++_rpcSeq
   bumpBusy(1)
-  trace(`rpc #${n} ${m}`, { busy: _busy, p: _pickParams(p) })
+  trace(`rpc #${n} ${m}`, { busy: _busy, p })
   const t = Date.now()
   try {
     const r = await window.cad.rpc<T>(m, p)
-    trace(`rpc #${n} ${m} ok`, { ms: Date.now() - t })
+    trace(`rpc #${n} ${m} ok`, { ms: Date.now() - t, r })
     return r
   } catch (e) {
     trace(`rpc #${n} ${m} ERR`, { ms: Date.now() - t, msg: (e as Error)?.message ?? String(e) })
@@ -536,11 +575,11 @@ const rpc = async <T,>(m: string, p: Record<string, unknown> = {}): Promise<T> =
 /** Background calls that must not light the busy indicator (timeline prefetch). */
 const rpcQuiet = async <T,>(m: string, p: Record<string, unknown> = {}): Promise<T> => {
   const n = ++_rpcSeq
-  trace(`rpcQ #${n} ${m}`, { busy: _busy, p: _pickParams(p) })
+  trace(`rpcQ #${n} ${m}`, { busy: _busy, p })
   const t = Date.now()
   try {
     const r = await window.cad.rpc<T>(m, p)
-    trace(`rpcQ #${n} ${m} ok`, { ms: Date.now() - t })
+    trace(`rpcQ #${n} ${m} ok`, { ms: Date.now() - t, r })
     return r
   } catch (e) {
     trace(`rpcQ #${n} ${m} ERR`, { ms: Date.now() - t, msg: (e as Error)?.message ?? String(e) })
@@ -571,8 +610,33 @@ export const apiQuiet = {
       'sketch.finish',
       { sketchId, elements, constraints, removedConstraints, removedElements, convertedElements, movedElements }
     ),
-  sketchSolve: (elements: unknown[], constraints: unknown[]) =>
-    rpcQuiet<SketchSolveDTO>('sketch.solve', { elements, constraints }),
+  sketchSolve: (elements: unknown[], constraints: unknown[], projected?: ProjectedEntity[]) =>
+    rpcQuiet<SketchSolveDTO>('sketch.solve', { elements, constraints, projected }),
+  /** Live-drag path: build one scratch sketch kept alive server-side for the
+   *  duration of a drag gesture (see sidecar sketch.dragStart docstring) so
+   *  every mouse-move is a cheap moveGeometry()+solve() instead of a full
+   *  rebuild. Call once on pointer-down. `projected` is added to the scratch
+   *  sketch as real, Block-locked geometry so a Coincident/PointOnObject
+   *  referencing it is a genuine weld, not a dangling ref the solver treats
+   *  as redundant (see sidecar _add_projected_geometry's docstring). */
+  sketchDragStart: (elements: unknown[], constraints: unknown[], projected?: ProjectedEntity[]) =>
+    rpcQuiet<SketchDragStartDTO>('sketch.dragStart', { elements, constraints, projected }),
+  /** Move one point of an already-open drag session and re-solve - call on
+   *  every (throttled) pointer-move. `posId`: FreeCAD PosId - 1=start (line)
+   *  or an arc's start rim point, 2=end/end rim point, 3=centre (circle/arc),
+   *  0="the edge itself" (resizes a circle/arc's radius, or translates a
+   *  line/spline as a whole - confirmed live against this FreeCAD build). */
+  sketchDragMove: (
+    dragId: string,
+    element: number,
+    sub: number,
+    posId: number,
+    pos: [number, number]
+  ) =>
+    rpcQuiet<SketchDragMoveDTO>('sketch.dragMove', { dragId, element, sub, posId, pos }),
+  /** Close a drag session's scratch document - call on pointer-up, success or
+   *  abort alike (Escape, blur, ...). */
+  sketchDragEnd: (dragId: string) => rpcQuiet<{ ok: true }>('sketch.dragEnd', { dragId }),
   sketchProject: (sketchId: string, refs: { bodyId: string; sub: string }[]) =>
     rpcQuiet<{ sketchId: string; added: number; projected: ProjectedEntity[] }>(
       'sketch.project',
@@ -703,6 +767,8 @@ export const api = {
       bodies: BodyTree[]
       kicad: { path: string; thickness: number; components: number; size: [number, number, number] }
     }>('kicad.import', { path }),
+  tagMcMaster: (id: string, partNumber: string, meta?: Record<string, unknown> | null) =>
+    rpc<{ bodies: BodyTree[]; path: string | null }>('io.tagMcMaster', { id, partNumber, meta }),
   kicadReimport: () =>
     rpc<{ kicad: { path: string; components: number } }>('kicad.reimport', {}),
   kicadStatus: () =>
@@ -886,8 +952,8 @@ export const api = {
       'sketch.finish',
       { sketchId, elements, constraints, removedConstraints }
     ),
-  sketchSolve: (elements: unknown[], constraints: SketchConstraint[]) =>
-    rpc<SketchSolveDTO>('sketch.solve', { elements, constraints }),
+  sketchSolve: (elements: unknown[], constraints: SketchConstraint[], projected?: ProjectedEntity[]) =>
+    rpc<SketchSolveDTO>('sketch.solve', { elements, constraints, projected }),
   revolve: (
     sketchId: string | null,
     angle: number,
@@ -1148,6 +1214,8 @@ export const api = {
     toKind: 'part' | 'section',
     extra?: Record<string, unknown>
   ) => rpc<DrawingView>('drawing.convertView', { pageId, viewId, toKind, ...extra }),
+  drawingRemoveView: (viewId: string) =>
+    rpc<{ ok: boolean; removedDimensions: string[] }>('drawing.removeView', { viewId }),
 
   drawingAddDimension: (
     pageId: string,
@@ -1155,6 +1223,7 @@ export const api = {
     refs: Array<{ sub: string }>,
     kind: DimensionType = 'Distance'
   ) => rpc<DrawingDimension>('drawing.addDimension', { pageId, viewId, refs, kind }),
+  drawingRemoveDimension: (dimId: string) => rpc<{ ok: boolean }>('drawing.removeDimension', { dimId }),
   drawingSetDimensionType: (dimId: string, kind: DimensionType) =>
     rpc<DrawingDimension>('drawing.setDimensionType', { dimId, kind }),
   drawingSetDimensionFormat: (dimId: string, fmt: DimensionFormat | null) =>
@@ -1179,29 +1248,50 @@ export const api = {
     x: number,
     y: number,
     leaderViewId?: string,
-    leaderPoint?: [number, number]
-  ) => rpc<DrawingNote>('drawing.addNote', { pageId, text, x, y, leaderViewId, leaderPoint }),
+    leaderPoint?: [number, number],
+    font?: string,
+    textSize?: number
+  ) => rpc<DrawingNote>('drawing.addNote', { pageId, text, x, y, leaderViewId, leaderPoint, font, textSize }),
   drawingSetNoteText: (noteId: string, text: string) =>
     rpc<DrawingNote>('drawing.setNoteText', { noteId, text }),
+  drawingSetNoteStyle: (noteId: string, style: { font?: string; textSize?: number }) =>
+    rpc<DrawingNote>('drawing.setNoteStyle', { noteId, ...style }),
+  drawingMoveNote: (noteId: string, x: number, y: number) =>
+    rpc<DrawingNote>('drawing.moveNote', { noteId, x, y }),
+  drawingRemoveNote: (noteId: string) =>
+    rpc<{ ok: boolean }>('drawing.removeNote', { noteId }),
 
   drawingSnapTargets: (viewId: string) =>
     rpc<{ targets: SnapTarget[] }>('drawing.snapTargets', { viewId }),
 
   drawingBomRows: (sourceId?: string) => rpc<{ rows: BomRow[] }>('drawing.bomRows', { sourceId }),
+  /** rows: BomRow[] for "Insert BOM" (auto-filled from the model), or a
+   *  plain Record<string, string | number>[] for "Insert Table" (a blank
+   *  manual grid the user fills in themselves) - the sidecar's make_table
+   *  reads columns generically by key (tables.py _cell_value), it never
+   *  actually requires the BOM shape. */
   drawingMakeTable: (
     pageId: string,
-    rows: BomRow[],
+    rows: Array<BomRow | Record<string, string | number>>,
     columns?: TableColumn[],
     template?: TableTemplate['spec'],
     tableId?: string
   ) =>
     rpc<DrawingTable>('drawing.makeTable', { pageId, rows, columns, template, tableId }),
+  drawingRemoveTable: (tableId: string) => rpc<{ ok: boolean }>('drawing.removeTable', { tableId }),
   drawingSaveTableTemplate: (name: string, spec: TableTemplate['spec']) =>
     rpc<TableTemplate>('drawing.saveTableTemplate', { name, spec }),
   drawingListTableTemplates: () =>
     rpc<{ templates: TableTemplate[] }>('drawing.listTableTemplates'),
   drawingLoadTableTemplate: (name: string) =>
     rpc<TableTemplate>('drawing.loadTableTemplate', { name }),
+
+  drawingListSheetTemplates: () =>
+    rpc<{ templates: SheetTemplate[] }>('drawing.listSheetTemplates'),
+  drawingSaveSheetTemplate: (name: string, spec: SheetTemplate['spec']) =>
+    rpc<SheetTemplate>('drawing.saveSheetTemplate', { name, spec }),
+  drawingApplySheetTemplate: (name: string) =>
+    rpc<{ titleBlock: boolean; views: string[] }>('drawing.applySheetTemplate', { name }),
 
   assemblyCreate: () => rpc<{ assembly: string }>('assembly.create'),
   assemblyAddComponent: (path: string, name?: string) =>
@@ -1244,7 +1334,11 @@ export const api = {
 
   save: () => rpc<{ path: string }>('document.save'),
   saveAs: (path: string) => rpc<{ path: string }>('document.saveAs', { path }),
-  open: (path: string) => rpc<{ path: string; name: string }>('document.open', { path }),
+  open: (path: string) =>
+    rpc<{ path: string; name: string; partNumber: { pn: string; name: string; description: string } | null }>(
+      'document.open',
+      { path }
+    ),
 
   exportStep: (path: string) => rpc<{ path: string; bodies: number }>('io.exportStep', { path }),
   exportStl: (path: string) => rpc<{ path: string; bodies: number }>('io.exportStl', { path }),
@@ -1313,7 +1407,63 @@ export const api = {
   ) =>
     rpc<AppearancePreset>('appearance.presetSave', { name, appearance, render, scope, id }),
   appearancePresetDelete: (id: string) =>
-    rpc<{ deleted: string }>('appearance.presetDelete', { id })
+    rpc<{ deleted: string }>('appearance.presetDelete', { id }),
+
+  // --- Company PN registry ---
+  pnGetCompanyConfig: () => rpc<CompanyConfig>('pn.getCompanyConfig'),
+  pnSetCompanyConfig: (cfg: Partial<CompanyConfig>) =>
+    rpc<CompanyConfig>('pn.setCompanyConfig', { ...cfg }),
+  pnListTypes: () => rpc<{ types: Record<string, string> }>('pn.listTypes'),
+  pnListAvailableSeq: (project: string, type: string, count = 20) =>
+    rpc<{ available: number[] }>('pn.listAvailableSeq', { project, type, count }),
+  pnListAll: (project?: string, status?: string) =>
+    rpc<{ parts: PartRecord[] }>('pn.listAll', { project, status }),
+  pnReserve: (project: string, type: string, seq: number, name: string, description: string) =>
+    rpc<PnAssignment>('pn.reserve', { project, type, seq, name, description }),
+  pnNewRevision: (pnSeq: string) => rpc<PnAssignment>('pn.newRevision', { pnSeq }),
+  pnResolve: (pnSeqOrFull: string) =>
+    rpc<{ path: string; row: PartRecord }>('pn.resolve', { pnSeqOrFull }),
+  pnTagDocument: (pn: string, name: string, description: string) =>
+    rpc<{ ok: boolean }>('pn.tagDocument', { pn, name, description }),
+  pnRepoForPath: (path: string) =>
+    rpc<{ project: string | null; repoPath?: string }>('pn.repoForPath', { path }),
+  pnCheckLocation: (pnSeq: string, openedPath: string) =>
+    rpc<{ matches: boolean; expectedPath?: string; openedPath?: string }>('pn.checkLocation', {
+      pnSeq,
+      openedPath
+    }),
+  pnRelocate: (pnSeq: string, newPath: string) =>
+    rpc<{ ok: boolean; unchanged?: boolean }>('pn.relocate', { pnSeq, newPath })
+}
+
+export interface CompanyConfig {
+  registryPath: string | null
+  projects: Record<string, { name: string; repoPath: string }>
+  hardware: { repoPath: string } | null
+}
+
+export interface PartRecord {
+  pn_seq: string
+  project: string
+  type: string
+  seq: string
+  current_rev: string
+  name: string
+  description: string
+  repo_relpath: string
+  status: string
+  created: string
+  modified: string
+}
+
+export interface PnAssignment {
+  pn: string
+  pnSeq: string
+  rev: number
+  repoRelpath: string
+  name: string
+  description: string
+  path?: string
 }
 
 export interface MaterialFamily {
