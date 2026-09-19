@@ -51,6 +51,8 @@ export interface CommandContext {
   drawingInsertTable: () => Promise<void>
   drawingSaveAsTemplate: () => Promise<void>
   drawingLoadSheetTemplate: () => Promise<void>
+  drawingToggleTitleBlock: () => void
+  drawingSaveSheetTemplate: () => Promise<void>
   drawingNewSheet: () => Promise<void>
   drawingRenameSheet: () => Promise<void>
   drawingDeleteSheet: () => Promise<void>
@@ -191,6 +193,12 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'draw.table', title: 'Insert Table', group: 'Tables', tab: 'DRAWING', icon: 'combine', run: () => ctx.drawingInsertTable() },
     { id: 'draw.saveTemplate', title: 'Save as Template…', group: 'Tables', tab: 'DRAWING', icon: 'point', run: () => ctx.drawingSaveAsTemplate() },
     { id: 'draw.loadTemplate', title: 'Load Template…', group: 'Sheet', tab: 'DRAWING', icon: 'sketch', run: () => ctx.drawingLoadSheetTemplate() },
+    // "Load Template…" was the ONLY way to ever turn a title block on, and
+    // nothing ever called drawing.saveSheetTemplate to create one beyond the
+    // built-in "Blank" - a fresh drawing had no title block and no way to
+    // add one (user feedback, 2026-09-19). Direct toggle + a real save path.
+    { id: 'draw.toggleTitleBlock', title: 'Title Block', group: 'Sheet', tab: 'DRAWING', icon: 'point', run: () => ctx.drawingToggleTitleBlock() },
+    { id: 'draw.saveSheetTemplate', title: 'Save Sheet as Template…', group: 'Sheet', tab: 'DRAWING', icon: 'sketch', run: () => ctx.drawingSaveSheetTemplate() },
     { id: 'draw.newSheet', title: 'New Sheet', group: 'Sheet', tab: 'DRAWING', icon: 'sketch', run: () => ctx.drawingNewSheet() },
     { id: 'draw.renameSheet', title: 'Rename Sheet', group: 'Sheet', tab: 'DRAWING', icon: 'point', run: () => ctx.drawingRenameSheet() },
     { id: 'draw.deleteSheet', title: 'Delete Sheet', group: 'Sheet', tab: 'DRAWING', icon: 'point', run: () => ctx.drawingDeleteSheet() },

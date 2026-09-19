@@ -37,7 +37,45 @@ clear it as you go.
 
 ## Recently addressed (this session)
 
-- **Export / import / KiCad / mesh / parametric-expression pass, all
+- **Clicking an inactive document tab silently did nothing to the actual
+  open document - a real correctness bug, not cosmetic.** The FreeCAD
+  sidecar holds exactly one document at a time (by design - see the comment
+  on `openDesign`); "tabs" were meant as a history list, but `onActivate`
+  was wired to bare `setActiveTab`, which only ever relabelled the title bar
+  and highlighted a different tab - it never told the sidecar to reopen that
+  file. Reproduced live end-to-end: opened assembly A (2 real components),
+  created a new blank document, then clicked back to A's tab - the title bar
+  said "A", the tab strip highlighted "A", but the status bar, the assembly
+  panel, and every RPC call were still operating on the *other* document.
+  A user acting on what the title bar told them would silently edit the
+  wrong file. Fixed by giving each `DocTab` its real saved `path` and making
+  `onActivate` actually call `openDesign(path)` (with tab de-duplication) to
+  genuinely reopen the target file; a tab with no path (a never-saved
+  "Untitled" you've navigated away from - its state is already gone) is
+  dropped instead of pretending to reactivate a document that doesn't exist
+  anywhere. Verified live: switching tabs now keeps the title bar, status
+  bar, and every panel in agreement, and a stale "Untitled" tab is cleanly
+  removed rather than silently mis-activated.
+- **Full realistic company workflow, run end-to-end against a throwaway
+  registry (never touched the real one - see below), found the tab bug
+  above.** New Part -> PN reserve -> model -> drawing -> assembly -> BOM ->
+  lifecycle, for a fake PCB + enclosure with real part numbers: `ZZF0010`
+  (PCB, type F), `ZZI0010` (enclosure, type I, real Shell feature), `ZZA0010`
+  (assembly linking both as real `App::Link` components), `ZZZ0010` (a
+  genuinely-purchased McMaster-Carr screw kit with real mfg/mfg_pn/
+  purchasing_link). Each part got a real drawing (iso view + BOM table +
+  the new title-block toggle, see above) and was promoted `in_work` ->
+  `active` via the File-menu Lifecycle control - real registry.csv rows the
+  whole way. Also exercised `assembly.bomPns` -> `pn.saveBom`, which wrote a
+  real per-assembly kit snapshot to the registry's `bom.csv` keyed by PN -
+  the closest existing mechanism to a company "order guide" (there is no
+  feature by that name; it doesn't exist anywhere in the codebase - the
+  registry's `purchasing_link` field plus this BOM snapshot are the real
+  primitives). Isolated entirely in a throwaway registry + project
+  (`~/gwtcad-test-company/`) via a temporary `~/.gwtcad/company.json`
+  swap - the user's real 99-part registry (`~/projects/pn-registry`, a
+  real pushed GitHub repo) was never opened or modified; config was
+  restored and verified byte-identical afterward.
   verified live** (screenshot-driven, same Playwright driver): Export to
   STEP and STL both produce real, valid files (checked STEP header + a
   real binary STL). Import brings an STL back in as a genuine mesh object.

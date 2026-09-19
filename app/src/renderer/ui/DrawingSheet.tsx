@@ -155,6 +155,8 @@ export interface DrawingSheetApi {
   insertTable: (template?: TableTemplate) => Promise<void>
   saveAsTemplate: () => Promise<void>
   loadSheetTemplate: () => Promise<void>
+  toggleTitleBlock: () => void
+  saveSheetTemplate: () => Promise<void>
   exportPdf: () => Promise<void>
   exportDxf: () => Promise<void>
 }
@@ -691,6 +693,35 @@ export const DrawingSheet = forwardRef<
       window.alert((e as Error).message)
     }
   }, [makeView, refreshSnapTargets])
+
+  // direct on/off, independent of templates - "Load Template" was the ONLY
+  // way to ever turn a title block on, which meant a brand-new drawing (no
+  // template saved yet, since nothing ever called drawing.saveSheetTemplate
+  // either) had no title block and no way to add one at all (user feedback,
+  // 2026-09-19).
+  const toggleTitleBlock = useCallback(() => {
+    setShowTitleBlock((v) => !v)
+  }, [])
+
+  // persists the CURRENT sheet's title-block on/off + its placed view
+  // directions as a reusable named template via drawing.saveSheetTemplate -
+  // previously defined on the RPC surface (rpc.ts) but never called from
+  // anywhere, so "Load Template" could never offer more than the built-in
+  // "Blank" entry.
+  const saveSheetTemplate = useCallback(async (): Promise<void> => {
+    const res = await promptForm('Save as Sheet Template', [
+      { key: 'name', label: 'Template name', value: '' }
+    ])
+    if (!res?.name.trim()) return
+    try {
+      await api.drawingSaveSheetTemplate(res.name.trim(), {
+        titleBlock: showTitleBlock,
+        views: placed.map((p) => p.view.direction).filter((d): d is string => !!d)
+      })
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
+  }, [showTitleBlock, placed])
 
   // wheel-to-zoom, centred on the cursor: convert the pointer's CLIENT
   // position to sheet-space BEFORE resizing viewBox, then re-anchor so that
@@ -1841,10 +1872,27 @@ export const DrawingSheet = forwardRef<
       insertTable,
       saveAsTemplate,
       loadSheetTemplate,
+      toggleTitleBlock,
+      saveSheetTemplate,
       exportPdf,
       exportDxf
     }),
-    [addView, autoLayout, setTool, sectionTool, detailTool, brokenTool, insertBom, insertTable, saveAsTemplate, loadSheetTemplate, exportPdf, exportDxf]
+    [
+      addView,
+      autoLayout,
+      setTool,
+      sectionTool,
+      detailTool,
+      brokenTool,
+      insertBom,
+      insertTable,
+      saveAsTemplate,
+      loadSheetTemplate,
+      toggleTitleBlock,
+      saveSheetTemplate,
+      exportPdf,
+      exportDxf
+    ]
   )
 
   return (

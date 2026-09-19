@@ -361,7 +361,7 @@ export function App(): JSX.Element {
   // wedging the app. Wired to the notice + spinner just below refreshScene.
   const cmdRef = useRef<CmdQueue>(new CmdQueue())
 
-  const [tabs, setTabs] = useState<DocTab[]>([{ id: 'd1', name: 'Untitled', dirty: false }])
+  const [tabs, setTabs] = useState<DocTab[]>([{ id: 'd1', name: 'Untitled', dirty: false, path: null }])
   const [activeTab, setActiveTab] = useState('d1')
 
   const vpApi = useRef<ViewportApi | null>(null)
@@ -2804,7 +2804,7 @@ export function App(): JSX.Element {
     await api.saveAs(p)
     setDocPath(p)
     setTabs((t) =>
-      t.map((x) => (x.id === activeTab ? { ...x, name: basename(p), dirty: false } : x))
+      t.map((x) => (x.id === activeTab ? { ...x, name: basename(p), dirty: false, path: p } : x))
     )
     void window.cad.captureThumb(p).catch(() => undefined)
   }, [docPath, activeTab, currentPn])
@@ -2823,8 +2823,15 @@ export function App(): JSX.Element {
       // the sidecar holds one document: opening replaces it. Reflect that as a
       // fresh tab rather than mutating whatever tab is in front.
       const opened = await api.open(p)
-      const id = `d${Date.now()}`
-      setTabs((t) => [...t.filter((x) => x.name !== 'Untitled' || x.dirty), { id, name: basename(p), dirty: false }])
+      // if this file is already a tab (e.g. re-activating it, see onActivate
+      // below), reuse that tab instead of piling up a duplicate
+      const existing = tabs.find((x) => x.path === p)
+      const id = existing?.id ?? `d${Date.now()}`
+      setTabs((t) =>
+        existing
+          ? t
+          : [...t.filter((x) => x.name !== 'Untitled' || x.dirty), { id, name: basename(p), dirty: false, path: p }]
+      )
       setActiveTab(id)
       setDocPath(p)
       setDrawingPageId(null)
@@ -2853,7 +2860,7 @@ export function App(): JSX.Element {
       }
       await refreshScene()
     },
-    [refreshScene]
+    [refreshScene, tabs]
   )
 
   const exportModel = useCallback(async () => {
@@ -3051,7 +3058,7 @@ export function App(): JSX.Element {
 
   const newDesign = useCallback(() => {
     const id = `d${Date.now()}`
-    setTabs((t) => [...t, { id, name: 'Untitled', dirty: false }])
+    setTabs((t) => [...t, { id, name: 'Untitled', dirty: false, path: null }])
     setActiveTab(id)
     setDocPath(null)
     setDrawingPageId(null)
@@ -3088,7 +3095,7 @@ export function App(): JSX.Element {
           await api.save()
         }
         const id = `d${Date.now()}`
-        setTabs((t) => [...t, { id, name: basename(info.path), dirty: false }])
+        setTabs((t) => [...t, { id, name: basename(info.path), dirty: false, path: info.path }])
         setActiveTab(id)
         setDocPath(info.path)
         setDrawingPageId(null)
@@ -3115,7 +3122,11 @@ export function App(): JSX.Element {
       await api.pnTagDocument(res.pn, res.name, res.description)
       await api.saveAs(res.path ?? docPath)
       setTabs((t) =>
-        t.map((x) => (x.id === activeTab ? { ...x, name: basename(res.path ?? docPath), dirty: false } : x))
+        t.map((x) =>
+          x.id === activeTab
+            ? { ...x, name: basename(res.path ?? docPath), dirty: false, path: res.path ?? docPath }
+            : x
+        )
       )
       setDocPath(res.path ?? docPath)
       setCurrentPn(res.pn)
@@ -3821,6 +3832,8 @@ export function App(): JSX.Element {
         drawingInsertTable: () => drawApi.current?.insertTable() ?? Promise.resolve(),
         drawingSaveAsTemplate: () => drawApi.current?.saveAsTemplate() ?? Promise.resolve(),
         drawingLoadSheetTemplate: () => drawApi.current?.loadSheetTemplate() ?? Promise.resolve(),
+        drawingToggleTitleBlock: () => drawApi.current?.toggleTitleBlock(),
+        drawingSaveSheetTemplate: () => drawApi.current?.saveSheetTemplate() ?? Promise.resolve(),
         drawingNewSheet: startDrawing,
         drawingRenameSheet: async () => {
           if (!drawingPageId) return
@@ -4355,7 +4368,7 @@ export function App(): JSX.Element {
               await api.saveAs(p)
               setDocPath(p)
               const id = `d${Date.now()}`
-              setTabs((t) => [...t, { id, name: basename(p), dirty: false }])
+              setTabs((t) => [...t, { id, name: basename(p), dirty: false, path: p }])
               setActiveTab(id)
               await refreshScene()
             })()
@@ -4430,7 +4443,23 @@ export function App(): JSX.Element {
           <DocTabs
             tabs={tabs}
             activeId={activeTab}
-            onActivate={setActiveTab}
+            onActivate={(id) => {
+              if (id === activeTab) return
+              const target = tabs.find((t) => t.id === id)
+              if (!target) return
+              // The sidecar holds exactly one document - switching tabs must
+              // actually reopen that file, not just relabel the UI. A tab
+              // with no saved path (a never-saved "Untitled") has nothing on
+              // disk to reopen; its in-memory state was already replaced the
+              // moment the user navigated away from it, so it can't be
+              // switched back to - drop it rather than pretend to activate a
+              // document that no longer exists anywhere.
+              if (!target.path) {
+                setTabs((t) => t.filter((x) => x.id !== id))
+                return
+              }
+              void openDesign(target.path)
+            }}
             onClose={(id) => setTabs((t) => (t.length > 1 ? t.filter((x) => x.id !== id) : t))}
             onNew={newDesign}
           />
