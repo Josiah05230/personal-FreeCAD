@@ -14,7 +14,8 @@ const REPO_ROOT = resolve(app.getAppPath(), '..')
 let win: BrowserWindow | null = null
 let sidecar: Sidecar | null = null
 
-/** Does this directory contain any .FCStd within `depth` levels? (bounded) */
+/** Does this directory contain any .FCStd within `depth` levels? (bounded) -
+ * used only to badge a folder row, never to hide it. */
 async function hasDesign(dir: string, depth: number): Promise<boolean> {
   let entries
   try {
@@ -105,13 +106,19 @@ app.whenReady().then(async () => {
         return { name: e.name, path: join(target, e.name), isDir, ext }
       })
 
-    // files: only designs. dirs: only those with a design within a few levels.
+    // files: only designs (this is a design browser, not a general file
+    // manager). dirs: ALL of them, like a normal file browser - a folder with
+    // no .FCStd in it yet (a fresh company/project folder, a folder full of
+    // other file types) must still be navigable, or the user has no way to
+    // reach it to create a design there. hasDesign only decides the badge.
     const files = raw.filter((it) => !it.isDir && it.ext === 'fcstd')
-    const dirs = []
-    for (const it of raw.filter((r) => r.isDir)) {
-      if (await hasDesign(it.path, 3)) dirs.push(it)
-    }
-    const items = [...dirs.sort((a, b) => a.name.localeCompare(b.name)), ...files.sort((a, b) => a.name.localeCompare(b.name))]
+    const dirs = raw.filter((r) => r.isDir)
+    const hasDesignFlags = await Promise.all(dirs.map((d) => hasDesign(d.path, 3)))
+    const dirsBadged = dirs.map((d, i) => ({ ...d, hasDesign: hasDesignFlags[i] }))
+    const items = [
+      ...dirsBadged.sort((a, b) => a.name.localeCompare(b.name)),
+      ...files.sort((a, b) => a.name.localeCompare(b.name))
+    ]
     return { dir: target, parent: resolve(target, '..'), items }
   })
 

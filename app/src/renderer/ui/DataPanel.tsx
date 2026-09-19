@@ -171,10 +171,14 @@ export function DataPanel({
             ) : (
               <span className="dp-ic">{it.isDir ? '▸' : '◈'}</span>
             )}
-            <span className="dp-name">{it.name}</span>
+            <span className={it.isDir && !it.hasDesign ? 'dp-name dp-name-dim' : 'dp-name'}>
+              {it.name}
+            </span>
           </div>
         ))}
-        {dir && !items.length && !error && <div className="dp-empty">No designs here</div>}
+        {dir && !items.length && !error && (
+          <div className="dp-empty">No folders or designs here</div>
+        )}
       </div>
 
       {open && (

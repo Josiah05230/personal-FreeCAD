@@ -2579,11 +2579,42 @@ export const DrawingSheet = forwardRef<
             }
             const selTable = selTableId === table.id
             return (
-              <g key={table.id} data-table={table.id} transform={`translate(${table.x} ${table.y})`}>
+              <g
+                key={table.id}
+                data-table={table.id}
+                transform={`translate(${table.x} ${table.y})`}
+                // pointerdown on the WHOLE group (not just the background
+                // rect below) so a drag started on a cell - which has its own
+                // rect on top, for double-click-to-rename / right-click - still
+                // bubbles up and moves the table. A per-cell rect only claims
+                // double-click/context-menu, never plain click/drag, so this
+                // is the sole place a drag can start from.
+                onPointerDown={(e) => {
+                  if (editingCell) return
+                  // still let a cell's own right-click / double-click context
+                  // menus win when the pointer is literally on the border
+                  // padding, which has no cell rect of its own to bubble from
+                  setSel(null)
+                  setSelNote(null)
+                  setSelMultiViews(new Set())
+                  setSelMultiNotes(new Set())
+                  setSelTableId(table.id)
+                  if (!sheetRef.current) return
+                  const svg = sheetRef.current.querySelector('svg') as SVGSVGElement
+                  const pt = svg.createSVGPoint()
+                  pt.x = e.clientX
+                  pt.y = e.clientY
+                  const p = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+                  tableDrag.current = { id: table.id, ox: p.x - table.x, oy: p.y - table.y, origX: table.x, origY: table.y }
+                }}
+              >
                 {/* selection/drag hit area - covers the full table so it's
                     grabbable anywhere, same "whole bbox is live" fix already
                     applied to views (see ViewBox's own comment) rather than
-                    needing pixel-perfect border clicks */}
+                    needing pixel-perfect border clicks. The actual drag-start
+                    lives on the parent <g> above so cell rects (rendered on
+                    top, below) don't shadow it; this rect still supplies the
+                    selection outline and the table-wide context menu. */}
                 <rect
                   x={-1}
                   y={-1}
@@ -2593,22 +2624,6 @@ export const DrawingSheet = forwardRef<
                   stroke={selTable ? '#0696d7' : 'transparent'}
                   strokeWidth={0.6}
                   style={{ cursor: 'move' }}
-                  onPointerDown={(e) => {
-                    e.stopPropagation()
-                    if (editingCell) return
-                    setSel(null)
-                    setSelNote(null)
-                    setSelMultiViews(new Set())
-                    setSelMultiNotes(new Set())
-                    setSelTableId(table.id)
-                    if (!sheetRef.current) return
-                    const svg = sheetRef.current.querySelector('svg') as SVGSVGElement
-                    const pt = svg.createSVGPoint()
-                    pt.x = e.clientX
-                    pt.y = e.clientY
-                    const p = pt.matrixTransform(svg.getScreenCTM()!.inverse())
-                    tableDrag.current = { id: table.id, ox: p.x - table.x, oy: p.y - table.y, origX: table.x, origY: table.y }
-                  }}
                   onContextMenu={tableContextMenu}
                 />
                 {table.showGrid && (

@@ -37,6 +37,25 @@ clear it as you go.
 
 ## Recently addressed (this session)
 
+- **Data Panel hid every folder with no .FCStd in it.** `fs:listDir` used
+  "does this dir contain a design within 3 levels" as a hard filter on
+  DIRECTORIES, not just files - so a fresh/non-CAD folder (a company folder
+  before its first design, Documents, Downloads, ...) silently never appeared,
+  with no indication anything was hidden. Found by cold-launching the app and
+  browsing `~` for real: only 2 of ~20 real folders showed up. Fixed: all
+  folders now list, like a normal file browser; only files are filtered to
+  `.FCStd`; "has a design nearby" is now a dim/bold visual cue on the folder
+  name, not a gate. `docs/... index.ts` `fs:listDir` + `DataPanel.tsx`.
+- **Drawing tables were effectively undraggable.** Each cell has its own
+  full-size hit-rect on top (for double-click-to-rename / right-click), and
+  in SVG a later sibling fully occludes pointer events to an earlier one at
+  the same point - so a plain click-drag on ANY cell (i.e. anywhere a user
+  would naturally grab the table) never reached the table's own whole-bbox
+  drag-rect underneath. Reproduced live: dragging from a cell moved nothing,
+  slow 40-step drag included, ruling out a timing race. Fixed by moving the
+  drag-start `onPointerDown` to the table's parent `<g>` so it receives the
+  bubbled event from any cell; verified live (create drawing -> Insert Table
+  -> drag from a data cell -> table actually moves). `DrawingSheet.tsx`.
 - **Materials panel** (new, user-requested): assign a real FreeCAD material
   (appearance + physical properties) from ~200 built-in presets or a custom
   one to a body; custom presets can override colour/glossiness/density and

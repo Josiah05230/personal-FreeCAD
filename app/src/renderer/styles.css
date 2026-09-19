@@ -758,6 +758,12 @@ code {
   white-space: nowrap;
 }
 
+/* a folder with no .FCStd in it yet - still fully navigable, just visually
+   quieter so folders that actually hold designs stand out */
+.dp-name-dim {
+  color: var(--text-dim);
+}
+
 .dp-empty,
 .dp-error {
   padding: 8px 12px;

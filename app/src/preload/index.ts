@@ -5,6 +5,8 @@ export interface DirEntry {
   path: string
   isDir: boolean
   ext: string
+  /** dirs only: does this folder contain a .FCStd within a few levels? */
+  hasDesign?: boolean
 }
 export interface DirListing {
   dir: string
