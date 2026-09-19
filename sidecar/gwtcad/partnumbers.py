@@ -52,11 +52,24 @@ _CONFIG_PATH = os.path.expanduser("~/.gwtcad/company.json")
 # the hint still exists on disk and falls back to a recursive filename search
 # (self-healing the hint) rather than trusting it blindly. See
 # _find_part_file below.
+#
+# `status` (active/obsolete) is auto-computed PER ROW by pn_new_revision - it
+# only ever means "is this the current revision of its sequence." `lifecycle`
+# is a different axis entirely: a deliberate, human-set PER SEQUENCE (pn_seq)
+# state that carries forward across revisions unless explicitly changed (see
+# pn_set_lifecycle / pn_new_revision below) - whether this PART, across all
+# its revisions, is still a going concern at all.
 _REGISTRY_FIELDS = [
     "pn", "pn_seq", "project", "type", "seq", "rev", "name", "description",
-    "reason", "mfg", "mfg_pn", "purchasing_link", "status", "rev_date", "created",
-    "repo_relpath",
+    "reason", "mfg", "mfg_pn", "purchasing_link", "status", "lifecycle",
+    "rev_date", "created", "repo_relpath",
 ]
+
+# in_work: just reserved or just revised, not yet validated - can't be
+#          published in any downstream ordering system.
+# active: validated and a going concern - publishable.
+# discontinued: dead - downstream systems should prompt to unpublish/flag it.
+_LIFECYCLE_STATES = ("in_work", "active", "discontinued")
 
 _MAX_PUSH_RETRIES = 5
 
@@ -365,7 +378,8 @@ def pn_reserve(project, type, seq, name, description, mfg=None, mfgPn=None, purc
             "seq": "%03d" % seq, "rev": "0", "name": name or "",
             "description": description, "reason": "Initial revision",
             "mfg": mfg or "", "mfg_pn": mfgPn or "", "purchasing_link": purchasingLink or "",
-            "status": "active", "rev_date": _now_iso(), "created": _now_iso(),
+            "status": "active", "lifecycle": "in_work",
+            "rev_date": _now_iso(), "created": _now_iso(),
             "repo_relpath": relpath,
         })
         _write_registry(cfg, rows)
@@ -390,7 +404,12 @@ def pn_new_revision(pnSeq, reason, mfg=None, mfgPn=None, purchasingLink=None):
     reason is required - it's the per-revision changelog note the sheet this
     replaced always carried ('Updated LDO REG...', 'Switched to ESP', ...).
     The OLD rev file is left in place on disk and in git history - this
-    never overwrites or deletes it."""
+    never overwrites or deletes it.
+
+    The new row's lifecycle always resets to "in_work" regardless of the
+    prior revision's lifecycle (including reviving a "discontinued" part
+    with a redesign) - a bumped revision hasn't been validated yet and can't
+    be published downstream until pn.setLifecycle marks it "active"."""
     if not reason or not reason.strip():
         raise RpcError(APP_ERROR, "a revision reason is required")
     cfg = _load_config()
@@ -450,7 +469,8 @@ def pn_new_revision(pnSeq, reason, mfg=None, mfgPn=None, purchasingLink=None):
             "mfg": mfg if mfg is not None else cur2.get("mfg", ""),
             "mfg_pn": mfgPn if mfgPn is not None else cur2.get("mfg_pn", ""),
             "purchasing_link": purchasingLink if purchasingLink is not None else cur2.get("purchasing_link", ""),
-            "status": "active", "rev_date": _now_iso(), "created": _now_iso(),
+            "status": "active", "lifecycle": "in_work",
+            "rev_date": _now_iso(), "created": _now_iso(),
             "repo_relpath": new_relpath,
         })
         _write_registry(cfg, rows2)
@@ -463,6 +483,39 @@ def pn_new_revision(pnSeq, reason, mfg=None, mfgPn=None, purchasingLink=None):
     return {"pn": _fmt_pn(project, type, seq, new_rev), "pnSeq": pnSeq,
             "rev": new_rev, "repoRelpath": new_relpath, "path": new_abspath,
             "name": cur.get("name", ""), "description": cur.get("description", "")}
+
+
+@method("pn.setLifecycle")
+def pn_set_lifecycle(pnSeq, lifecycle):
+    """Set a part sequence's lifecycle (in_work / active / discontinued) on
+    its CURRENT revision row, without requiring a revision bump - e.g.
+    marking a just-validated in_work part active, or a part discontinued.
+    Only ever touches the current row; past revisions keep whatever
+    lifecycle value they were synced/committed with (a historical snapshot,
+    not something that changes retroactively) - pn_new_revision is what
+    carries the value forward onto each new row."""
+    if lifecycle not in _LIFECYCLE_STATES:
+        raise RpcError(APP_ERROR,
+                        "lifecycle must be one of %s, got %r" % (_LIFECYCLE_STATES, lifecycle))
+    cfg = _load_config()
+    reg_repo = _registry_path(cfg)
+
+    def attempt():
+        rows = _read_registry(cfg)
+        cur = _current_row(rows, pnSeq)
+        if cur is None:
+            raise RpcError(APP_ERROR, "unknown PN sequence: %s" % pnSeq)
+        if cur.get("lifecycle") == lifecycle:
+            return False
+        cur["lifecycle"] = lifecycle
+        _write_registry(cfg, rows)
+        return True
+
+    _sync_pull(reg_repo)
+    if not attempt():
+        return {"pnSeq": pnSeq, "lifecycle": lifecycle, "unchanged": True}
+    _commit_and_push(reg_repo, "%s: lifecycle -> %s" % (pnSeq, lifecycle), attempt)
+    return {"pnSeq": pnSeq, "lifecycle": lifecycle}
 
 
 @method("pn.tagDocument")

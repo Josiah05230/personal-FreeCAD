@@ -37,8 +37,8 @@ import openpyxl
 
 _REGISTRY_FIELDS = [
     "pn", "pn_seq", "project", "type", "seq", "rev", "name", "description",
-    "reason", "mfg", "mfg_pn", "purchasing_link", "status", "rev_date", "created",
-    "repo_relpath",
+    "reason", "mfg", "mfg_pn", "purchasing_link", "status", "lifecycle",
+    "rev_date", "created", "repo_relpath",
 ]
 
 
@@ -95,6 +95,10 @@ def import_part_numbers(ws):
             "type": ptype, "seq": seq, "rev": rev, "name": "",
             "description": _cell(name), "reason": reason, "mfg": mfg,
             "mfg_pn": mfg_pn, "purchasing_link": link, "status": status,
+            # The source spreadsheet has no lifecycle concept - these are all
+            # pre-existing, already-in-use parts, not fresh reservations, so
+            # they import as "active" rather than "in_work".
+            "lifecycle": "active",
             "rev_date": rev_date, "created": rev_date, "repo_relpath": "%s.FCStd" % pn,
         })
     return rows
