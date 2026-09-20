@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { BodyTree, CanvasDTO, Selection } from '../rpc'
+import type { BodyTree, CanvasDTO, ImportedNode, Selection } from '../rpc'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 
 export interface SectionNode {
@@ -126,6 +126,7 @@ function Row({
 /** Floating browser panel over the top-left of the canvas. Not a docked sidebar. */
 export function Browser({
   bodies,
+  imported = [],
   canvases = [],
   sections = [],
   drawings = [],
@@ -134,6 +135,7 @@ export function Browser({
   selection
 }: {
   bodies: BodyTree[]
+  imported?: ImportedNode[]
   canvases?: CanvasDTO[]
   sections?: SectionNode[]
   drawings?: DrawingNode[]
@@ -227,6 +229,39 @@ export function Browser({
                 selected={isSel((s) => s.kind === 'body' && s.bodyId === b.id)}
                 menu={featMenu(b.id)}
                 onEditDbl={() => handlers.onEdit(b.id)}
+              />
+            ))}
+          </Row>
+        )}
+
+        {imported.length > 0 && (
+          <Row
+            depth={1}
+            label="Imported"
+            glyph="⬡"
+            visible={anyOn(
+              imported.map((o) => o.id),
+              (id) => imported.find((o) => o.id === id)?.visible ?? true
+            )}
+            onToggle={(v) => {
+              for (const o of imported) handlers.onToggleVisibility(o.id, v)
+            }}
+          >
+            {imported.map((o) => (
+              <Row
+                key={o.id}
+                depth={2}
+                label={o.label}
+                glyph={o.kind === 'mesh' ? '◆' : o.kind === 'link' ? '⛓' : '⬡'}
+                visible={vis(o.id, o.visible)}
+                onToggle={(v) => handlers.onToggleVisibility(o.id, v)}
+                onPick={(add) => handlers.onSelect({ kind: 'body', bodyId: o.id }, add)}
+                selected={isSel((s) => s.kind === 'body' && s.bodyId === o.id)}
+                menu={[
+                  { label: 'Rename…', onClick: () => handlers.onRename(o.id) },
+                  { separator: true, label: '' },
+                  { label: 'Delete', danger: true, onClick: () => handlers.onDelete(o.id) }
+                ]}
               />
             ))}
           </Row>

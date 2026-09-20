@@ -35,6 +35,18 @@ export interface BodyTree {
   marker?: string | null
 }
 
+/** A top-level object that never lands in a PartDesign::Body - KiCad boards/
+ *  placeholders, STEP/IGES/BREP or mesh imports, McMaster parts, assembly
+ *  links. Without a place in the tree these were unmanageable: visible and
+ *  selectable in the viewport but impossible to rename, hide, or delete by
+ *  name (found live testing a KiCad import, 2026-09-19). */
+export interface ImportedNode {
+  id: string
+  label: string
+  visible: boolean
+  kind: 'solid' | 'mesh' | 'link'
+}
+
 export interface DatumDTO {
   id: string
   label: string
@@ -693,7 +705,8 @@ export const apiQuiet = {
       renderSettings?: RenderSettings
       sections?: SectionDTO[]
     }>('scene.get'),
-  treeGet: () => rpcQuiet<{ bodies: BodyTree[]; path: string | null }>('tree.get'),
+  treeGet: () =>
+    rpcQuiet<{ bodies: BodyTree[]; imported: ImportedNode[]; path: string | null }>('tree.get'),
   sectionCreate: (plane: string, offset: number, flip: boolean) =>
     rpcQuiet<SectionDTO>('section.create', { plane, offset, flip }),
   sectionSet: (
@@ -740,17 +753,31 @@ export const api = {
       sections?: SectionDTO[]
     }>('scene.get'),
   treeGet: () =>
-    rpc<{ bodies: BodyTree[]; path: string | null; canUndo?: boolean; canRedo?: boolean }>(
-      'tree.get'
-    ),
+    rpc<{
+      bodies: BodyTree[]
+      imported: ImportedNode[]
+      path: string | null
+      canUndo?: boolean
+      canRedo?: boolean
+    }>('tree.get'),
   undo: () =>
-    rpc<{ bodies: BodyTree[]; path: string | null; undone: boolean; canUndo: boolean; canRedo: boolean }>(
-      'history.undo'
-    ),
+    rpc<{
+      bodies: BodyTree[]
+      imported: ImportedNode[]
+      path: string | null
+      undone: boolean
+      canUndo: boolean
+      canRedo: boolean
+    }>('history.undo'),
   redo: () =>
-    rpc<{ bodies: BodyTree[]; path: string | null; redone: boolean; canUndo: boolean; canRedo: boolean }>(
-      'history.redo'
-    ),
+    rpc<{
+      bodies: BodyTree[]
+      imported: ImportedNode[]
+      path: string | null
+      redone: boolean
+      canUndo: boolean
+      canRedo: boolean
+    }>('history.redo'),
 
   sketchOn: (ref: SketchRef) =>
     rpc<{

@@ -41,16 +41,42 @@ def add_component(doc, path, name=None):
 
     asm = get_or_make_assembly(doc)
 
-    src = None
-    for d in App.listDocuments().values():
-        if getattr(d, "FileName", "") == path:
-            src = d
-            break
-    if src is None:
-        src = App.openDocument(path, hidden=True)
+    # FreeCAD auto-opens a component's document as a dependency the moment the
+    # CONTAINER document (doc) is opened, to resolve whatever App::Link target
+    # was saved last time - but that auto-open is a partial restore keyed to
+    # the stale saved link, not a full read of the file. Found live: an
+    # enclosure file with two bodies (an empty starter "Body" plus the real
+    # "Body001" with actual geometry) auto-loaded via the container's own
+    # links showed ONLY "Body" - the real body was simply missing from
+    # src.Objects, even though opening that same file directly (no container
+    # involved) shows both. Re-opening the already-open doc in place isn't
+    # safe either: any EXISTING App::Link elsewhere in this process still
+    # holds direct references into the old in-memory objects, and closing
+    # that document invalidates them (their Shape silently goes null even
+    # though LinkedObject still reports a name) - confirmed by reproducing it
+    # standalone, 2026-09-19. So: read the target from a private, freshly
+    # opened handle on the same path (never touching whatever FreeCAD already
+    # auto-loaded), then point the new link at the SAME live document by
+    # object name - by the time this returns, App.listDocuments() only has
+    # one document for that path (FreeCAD collapses re-opens of an
+    # already-open path onto the existing Document object rather than
+    # creating a second one), so the name-based lookup lands on a fully
+    # populated document without disturbing any link that already depends on
+    # it.
+    src = App.openDocument(path, hidden=True)
+
+    def _has_solid(body):
+        tip = getattr(body, "Tip", None)
+        return tip is not None and tip.TypeId != "App::Origin"
 
     bodies = [o for o in src.Objects if o.TypeId == "PartDesign::Body"]
-    target = bodies[0] if bodies else (src.Objects[0] if src.Objects else None)
+    solid_bodies = [b for b in bodies if _has_solid(b)]
+    loose_shapes = [o for o in src.Objects
+                    if o.TypeId in ("Part::Feature", "Mesh::Feature", "App::Link")]
+    target = (solid_bodies[0] if solid_bodies else
+              loose_shapes[0] if loose_shapes else
+              bodies[0] if bodies else
+              src.Objects[0] if src.Objects else None)
     if target is None:
         raise RpcError(APP_ERROR, "%s has nothing to link" % os.path.basename(path))
 

@@ -4560,6 +4560,7 @@ def tree_get():
     d = session.doc()
     _ensure_starter_body(d)
     bodies = []
+    imported = []
     if d is not None:
         # a create/edit advances body.Tip past where it was at rollback; when that
         # happens the marker follows the tip forward (build resumes from here)
@@ -4625,8 +4626,28 @@ def tree_get():
                 "origin": origin,
                 "marker": session.marker(o.Name),
             })
+
+        # top-level imported geometry (KiCad boards/placeholders, STEP/IGES/
+        # BREP, mesh imports, McMaster parts, assembly links) never lands in a
+        # PartDesign::Body - without this, it renders in the 3D view but is
+        # unmanageable: no way to select it by name, rename, hide, or delete
+        # it from the tree (found live: a KiCad-imported board was completely
+        # absent from the browser panel despite being visible and selectable
+        # in the viewport - user feedback, 2026-09-19)
+        imported_tids = ("Part::Feature", "Mesh::Feature", "App::Link")
+        for o in d.Objects:
+            if o.TypeId not in imported_tids:
+                continue
+            imported.append({
+                "id": o.Name,
+                "label": o.Label,
+                "visible": bool(getattr(o, "Visibility", True)),
+                "kind": "mesh" if o.TypeId == "Mesh::Feature" else
+                        "link" if o.TypeId == "App::Link" else "solid",
+            })
     return {
         "bodies": bodies,
+        "imported": imported,
         "path": session.path(),
         "canUndo": d is not None and int(getattr(d, "UndoCount", 0)) > 0,
         "canRedo": d is not None and int(getattr(d, "RedoCount", 0)) > 0,
@@ -5816,7 +5837,22 @@ def _export_targets(d):
 
 @method("io.export")
 def io_export(path):
-    """Export by extension: STEP/IGES/BREP (B-rep) or STL/OBJ/3MF/PLY (mesh)."""
+    """Export by extension: STEP/IGES/BREP (B-rep) or STL/OBJ/3MF/PLY (mesh).
+
+    Part.export() silently drops App::Link objects instead of raising - it
+    prints "'<label>' is not a shape, export will be ignored." to stderr and
+    writes a STEP file with only the header/context skeleton, no geometry at
+    all. Since an assembly's components ARE App::Link objects (that's what
+    assembly.addComponent creates), exporting an assembly to STEP produced a
+    ~20-entity file with zero MANIFOLD_SOLID_BREP - a silent, total failure
+    of the one export a real assembly workflow needs most (found live testing
+    a 3-component assembly export, 2026-09-19). Each link's placed shape is
+    pulled out via Part.getShape(..., transform=True) - which does resolve
+    App::Link correctly - and re-hosted on a scratch Part::Feature so
+    Part.export will actually touch it. One holder per link (not one
+    compound) so each component stays a distinct PRODUCT/solid in the STEP
+    rather than fusing into a single nameless blob - a mechanical engineer
+    opening the file needs to still see and select individual parts. """
     d = session.doc(create=False)
     if d is None:
         raise RpcError(APP_ERROR, "no document")
@@ -5826,7 +5862,24 @@ def io_export(path):
     if not objs:
         raise RpcError(APP_ERROR, "nothing to export")
     if ext in _BREP_EXT:
-        Part.export(objs, path)
+        direct = []
+        holders = []
+        try:
+            for o in objs:
+                if o.TypeId == "App::Link":
+                    shape = Part.getShape(o, transform=True)
+                    holder = d.addObject("Part::Feature", "_ExportLinkHolder")
+                    holder.Label = o.Label
+                    holder.Shape = shape
+                    holders.append(holder)
+                else:
+                    direct.append(o)
+            if holders:
+                d.recompute()
+            Part.export(direct + holders, path)
+        finally:
+            for holder in holders:
+                d.removeObject(holder.Name)
     elif ext in _MESH_EXT:
         import Mesh
         Mesh.export(objs, path)

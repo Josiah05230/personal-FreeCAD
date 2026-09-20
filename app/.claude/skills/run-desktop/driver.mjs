@@ -107,6 +107,20 @@ const COMMANDS = {
     console.log(`clicked (${x},${y})`);
   },
 
+  // additive viewport selection (second face for a joint, multi-select, etc)
+  // is Ctrl-click in this app's own convention (see Viewport.tsx) - a plain
+  // JS-dispatched PointerEvent doesn't reach three.js's raycaster/selection
+  // wiring the way a real trusted OS-level click does, so this holds a real
+  // Playwright keyboard modifier around a real mouse click instead.
+  async 'ctrl-click'(argstr) {
+    if (!page) return console.log('ERROR: launch first');
+    const [x, y] = (argstr || '').split(/\s+/).map(Number);
+    await page.keyboard.down('Control');
+    await page.mouse.click(x, y);
+    await page.keyboard.up('Control');
+    console.log(`ctrl-clicked (${x},${y})`);
+  },
+
   // pause between chained commands sent in one tmux send-keys batch, so a
   // whole multi-step flow can be queued at once without each step racing the
   // previous one's async completion

@@ -4,6 +4,7 @@ import {
   apiQuiet,
   onBusyChange,
   type BodyTree,
+  type ImportedNode,
   type RenderMesh,
   type SketchRender,
   type Selection,
@@ -211,6 +212,7 @@ export function App(): JSX.Element {
   const [sketches, setSketches] = useState<SketchRender[]>([])
   const [datums, setDatums] = useState<DatumDTO[]>([])
   const [bodies, setBodies] = useState<BodyTree[]>([])
+  const [imported, setImported] = useState<ImportedNode[]>([])
   // vertex is OFF by default - enable it in the Select dropdown when you
   // actually need to snap to corners (Fusion-style). Faces / edges / bodies
   // are what you click normally.
@@ -393,6 +395,7 @@ export function App(): JSX.Element {
       setSections((scene.sections ?? []) as SectionState[])
       if (scene.renderSettings) setRenderSettings(scene.renderSettings)
       setBodies(tree.bodies)
+      setImported(tree.imported ?? [])
       setDocPath(tree.path)
       if ('canUndo' in tree) setCanUndo(!!tree.canUndo)
       if ('canRedo' in tree) setCanRedo(!!tree.canRedo)
@@ -452,6 +455,7 @@ export function App(): JSX.Element {
     setPickPlanes(scene.pickPlanes ?? [])
     setSections((scene.sections ?? []) as SectionState[])
     setBodies(tree.bodies)
+    setImported(tree.imported ?? [])
     done()
     // keep the user's client-side hide/show across a mesh refresh
   }, [])
@@ -588,7 +592,16 @@ export function App(): JSX.Element {
         // multi-face pick: once one face is chosen, only add coplanar faces
         // (clear the selection to start on a different plane). Only for extrude
         // / no dialog - shell, draft, etc. legitimately want faces on many planes.
-        const coplanarLock = opRef.current == null || opRef.current === 'extrude'
+        // The Assembly panel's joint picker needs the opposite: it always wants
+        // "one face on each of two DIFFERENT components", which are almost
+        // never coplanar/parallel by construction (a hinge face and the face
+        // it hinges against typically point different directions) - this lock
+        // made "Add joint" nearly impossible to use, since the second
+        // ctrl-click on the other component's face was silently dropped
+        // (found live: picking an enclosure interior face after a PCB top
+        // face left the selection at 1, "Add joint" stayed disabled - user
+        // asked specifically whether joints work, 2026-09-19).
+        const coplanarLock = (opRef.current == null && !asmTree) || opRef.current === 'extrude'
         if (coplanarLock && sel.kind === 'face' && sel.normal) {
           const first = cur.find((s) => s.kind === 'face' && s.normal) as
             | Extract<Selection, { kind: 'face' }>
@@ -607,7 +620,7 @@ export function App(): JSX.Element {
         return [...cur, sel]
       })
     },
-    [selFilter]
+    [selFilter, asmTree]
   )
 
   // shift-click "select the loop": for an edge pick, resolve the whole
@@ -864,6 +877,7 @@ export function App(): JSX.Element {
       setSketches(scene.sketches ?? [])
       setDatums(scene.datums ?? [])
       setBodies(tree.bodies)
+      setImported(tree.imported ?? [])
       // A feature downstream of this sketch (Sweep, Pad, ...) can fail to
       // regenerate on recompute with NO exception thrown - FreeCAD just
       // leaves it in an error state holding its last-good shape, silently.
@@ -1255,6 +1269,7 @@ export function App(): JSX.Element {
           rollCacheRef.current.clear() // history changed - drop stale roll snapshots
           const tree = await api.treeGet()
           setBodies(tree.bodies)
+          setImported(tree.imported ?? [])
           if ('canUndo' in tree) setCanUndo(!!tree.canUndo)
           if ('canRedo' in tree) setCanRedo(!!tree.canRedo)
           setSketches((ss) =>
@@ -4623,6 +4638,7 @@ export function App(): JSX.Element {
                   )}
                   <Browser
                     bodies={bodies}
+                    imported={imported}
                     canvases={canvases}
                     sections={sections.map((s) => ({
                       id: s.id!,
