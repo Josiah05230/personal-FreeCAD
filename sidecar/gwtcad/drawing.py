@@ -15,6 +15,7 @@ page's actual contents are these objects themselves.
 """
 import json
 import math
+import os
 import time
 
 import FreeCAD as App
@@ -245,10 +246,12 @@ def page_contents(doc, page_id):
     state (see module docstring), so this just re-derives the same payload
     shapes make_view/add_dimension/add_note/make_table already return."""
     page = get_page(doc, page_id)
-    views, dimensions, notes, tables = [], [], [], []
+    views, dimensions, notes, tables, images = [], [], [], [], []
     for o in page.Views:
         tid = o.TypeId
-        if tid in ("TechDraw::DrawViewPart", "TechDraw::DrawViewSection",
+        if tid == "TechDraw::DrawViewImage":
+            images.append(_image_dto(o))
+        elif tid in ("TechDraw::DrawViewPart", "TechDraw::DrawViewSection",
                    "TechDraw::DrawViewDetail", "TechDraw::DrawBrokenView"):
             try:
                 vis, hid = _part_view_payload(o)
@@ -410,7 +413,7 @@ def page_contents(doc, page_id):
         if cl:
             cleanup_lines[v["id"]] = cl
     return {"views": views, "dimensions": dimensions, "notes": notes,
-            "tables": tables, "cleanupLines": cleanup_lines}
+            "tables": tables, "images": images, "cleanupLines": cleanup_lines}
 
 
 # --------------------------------------------------------------------------- #
@@ -1189,6 +1192,73 @@ def _note_dto(ann):
         "font": str(ann.Font), "textSize": float(ann.TextSize),
         "textStyle": str(ann.TextStyle), "color": _rgb_to_hex(ann.TextColor),
     }
+
+
+# --------------------------------------------------------------------------- #
+# images
+# --------------------------------------------------------------------------- #
+
+def _image_dto(img):
+    return {
+        "id": img.Name, "x": float(img.X), "y": float(img.Y),
+        "width": float(img.Width), "height": float(img.Height),
+        "rotation": float(str(img.Rotation).split()[0]) if img.Rotation else 0.0,
+        "path": str(img.ImageFile),
+    }
+
+
+def add_image(doc, page_id, path, x=0.0, y=0.0, width=None, height=None):
+    """A real TechDraw::DrawViewImage - FreeCAD embeds the source file into
+    the .FCStd on save (ImageFile is only the ORIGINAL path; the actual
+    bytes get copied into the document's own cache the moment the property
+    is set, confirmed live via the object's own ImageIncluded property, so
+    this is a genuinely portable embed, not a dangling external reference
+    that breaks if the source file later moves or is deleted)."""
+    if not os.path.isfile(path):
+        raise RpcError(APP_ERROR, "no such file: %r" % path)
+    page = get_page(doc, page_id)
+    img = doc.addObject("TechDraw::DrawViewImage", "Image")
+    page.addView(img)
+    img.ImageFile = str(path)
+    doc.recompute()
+    img.X = float(x)
+    img.Y = float(y)
+    # Width/Height default to the image's own native pixel size (already
+    # set by FreeCAD itself from the file) unless the caller asks for a
+    # specific placed size - only overridden when explicitly given so a
+    # plain "insert this image" keeps its natural aspect ratio.
+    if width is not None:
+        img.Width = float(width)
+    if height is not None:
+        img.Height = float(height)
+    doc.recompute()
+    return _image_dto(img)
+
+
+def set_image_transform(doc, image_id, x=None, y=None, width=None, height=None):
+    """Persist a drag (x/y) and/or resize (width/height) of a placed image."""
+    img = doc.getObject(image_id)
+    if img is None or img.TypeId != "TechDraw::DrawViewImage":
+        raise RpcError(APP_ERROR, "no such image: %r" % image_id)
+    if x is not None:
+        img.X = float(x)
+    if y is not None:
+        img.Y = float(y)
+    if width is not None:
+        img.Width = float(width)
+    if height is not None:
+        img.Height = float(height)
+    doc.recompute()
+    return _image_dto(img)
+
+
+def remove_image(doc, image_id):
+    img = doc.getObject(image_id)
+    if img is None or img.TypeId != "TechDraw::DrawViewImage":
+        raise RpcError(APP_ERROR, "no such image: %r" % image_id)
+    doc.removeObject(img.Name)
+    doc.recompute()
+    return {"ok": True}
 
 
 def add_note(doc, page_id, text, x, y, leader_view_id=None, leader_point=None,

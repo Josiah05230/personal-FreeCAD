@@ -606,11 +606,24 @@ export interface DrawingTable {
   style?: TableStyle
 }
 
+export interface DrawingImage {
+  id: string
+  x: number
+  y: number
+  width: number
+  height: number
+  rotation: number
+  /** the original source file path (FreeCAD embeds the bytes into the
+   *  .FCStd itself, but keeps this for reference/re-insertion). */
+  path: string
+}
+
 export interface DrawingPageContents {
   views: DrawingView[]
   dimensions: DrawingDimension[]
   notes: DrawingNote[]
   tables: DrawingTable[]
+  images: DrawingImage[]
   cleanupLines: Record<string, CleanupLine[]>
 }
 
@@ -1390,6 +1403,13 @@ export const api = {
       textStyle,
       color
     }),
+  drawingAddImage: (pageId: string, path: string, x = 0, y = 0, width?: number, height?: number) =>
+    rpc<DrawingImage>('drawing.addImage', { pageId, path, x, y, width, height }),
+  drawingSetImageTransform: (
+    imageId: string,
+    transform: { x?: number; y?: number; width?: number; height?: number }
+  ) => rpcQuiet<DrawingImage>('drawing.setImageTransform', { imageId, ...transform }),
+  drawingRemoveImage: (imageId: string) => rpc<{ ok: boolean }>('drawing.removeImage', { imageId }),
   drawingSetNoteText: (noteId: string, text: string) =>
     rpc<DrawingNote>('drawing.setNoteText', { noteId, text }),
   drawingSetNoteStyle: (

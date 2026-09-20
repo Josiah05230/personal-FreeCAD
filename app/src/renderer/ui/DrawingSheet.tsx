@@ -9,6 +9,7 @@ import {
   type DimensionType,
   type DrawingDimension,
   type DrawingNote,
+  type DrawingImage,
   type DrawingView,
   type DrawingPageContents,
   type NoteTextStyle,
@@ -176,6 +177,7 @@ export interface DrawingSheetApi {
   brokenTool: () => void
   insertBom: () => Promise<void>
   insertTable: (template?: TableTemplate) => Promise<void>
+  insertImage: () => Promise<void>
   saveAsTemplate: () => Promise<void>
   loadSheetTemplate: () => Promise<void>
   toggleTitleBlock: () => void
@@ -451,6 +453,15 @@ export const DrawingSheet = forwardRef<
   const [hover, setHover] = useState<number | null>(null)
   const [dims, setDims] = useState<DrawingDimension[]>([])
   const [notes, setNotes] = useState<DrawingNote[]>([])
+  const [images, setImages] = useState<DrawingImage[]>([])
+  const [selImage, setSelImage] = useState<string | null>(null)
+  // resolved data: URLs for each image's own source file - SVG <image>
+  // needs a real URL, not a bare filesystem path, and the sidecar only
+  // ever hands back that path (it embeds the actual bytes into the .FCStd
+  // itself, but this app's own renderer still needs to read the file to
+  // show it). Keyed by path (not image id) so two images sharing the same
+  // source file only fetch it once.
+  const [imageData, setImageData] = useState<Record<string, string>>({})
   const [selNote, setSelNote] = useState<string | null>(null)
   // rubber-band window-select: everything ELSE selected alongside sel/
   // selNote (which stay the "primary" selection - the one a context menu
@@ -475,6 +486,18 @@ export const DrawingSheet = forwardRef<
   } | null>(null)
   const noteDrag = useRef<{ id: string; ox: number; oy: number; origX: number; origY: number } | null>(null)
   const tableDrag = useRef<{ id: string; ox: number; oy: number; origX: number; origY: number } | null>(null)
+  const imageDrag = useRef<{ id: string; ox: number; oy: number; origX: number; origY: number } | null>(null)
+  // corner-handle resize, aspect-ratio locked (dragging any corner scales
+  // both width and height together, the expected behavior for a photo/
+  // logo/reference image rather than letting it stretch out of proportion).
+  const imageResize = useRef<{
+    id: string
+    origX: number
+    origY: number
+    origW: number
+    origH: number
+    corner: 'nw' | 'ne' | 'sw' | 'se'
+  } | null>(null)
   // dimension label/leader/arc drag - like noteDrag/tableDrag, but the
   // dropped point is stored as view-UV (via localToUV) since that's the
   // frame drawingMoveDimension persists in, not raw sheet coordinates.
@@ -684,6 +707,7 @@ export const DrawingSheet = forwardRef<
         )
         setDims(c.dimensions)
         setNotes(c.notes)
+        setImages(c.images)
         setCleanupLines(c.cleanupLines)
         // position/rowHeight/showGrid/gridColor round-trip through the
         // sidecar now (view.X/Y + a _gwt_style tag - fixed 2026-09-20: a
@@ -717,6 +741,29 @@ export const DrawingSheet = forwardRef<
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageId])
+
+  // fetch each placed image's own bytes (as a data: URL) once per distinct
+  // source path - SVG <image href> needs a real URL, the sidecar only ever
+  // hands back the filesystem path (see imageData's own comment above).
+  useEffect(() => {
+    const missing = images.map((im) => im.path).filter((p) => p && !(p in imageData))
+    if (!missing.length) return
+    let cancelled = false
+    void (async () => {
+      const entries = await Promise.all(
+        missing.map(async (p) => [p, await window.cad.readImage(p).catch(() => '')] as const)
+      )
+      if (cancelled) return
+      setImageData((cur) => {
+        const next = { ...cur }
+        for (const [p, data] of entries) if (data) next[p] = data
+        return next
+      })
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [images, imageData])
 
   const addView = useCallback(
     async (dir: string): Promise<void> => {
@@ -952,6 +999,40 @@ export const DrawingSheet = forwardRef<
       setTables((cur) => cur.map((t) => (t.id === dragId ? { ...t, x: p.x - ox, y: p.y - oy } : t)))
       return
     }
+    if (imageDrag.current && sheetRef.current) {
+      const svg = sheetRef.current.querySelector('svg') as SVGSVGElement
+      const pt = svg.createSVGPoint()
+      pt.x = e.clientX
+      pt.y = e.clientY
+      const p = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+      const { id: dragId, ox, oy } = imageDrag.current
+      setImages((cur) => cur.map((im) => (im.id === dragId ? { ...im, x: p.x - ox, y: p.y - oy } : im)))
+      return
+    }
+    if (imageResize.current && sheetRef.current) {
+      const svg = sheetRef.current.querySelector('svg') as SVGSVGElement
+      const pt = svg.createSVGPoint()
+      pt.x = e.clientX
+      pt.y = e.clientY
+      const p = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+      const { id: resizeId, origX, origY, origW, origH, corner } = imageResize.current
+      // aspect-ratio-locked resize: the dragged corner's distance from the
+      // OPPOSITE (anchor) corner sets the new width, height follows from
+      // the original aspect ratio - a photo/logo/reference image should
+      // never distort, unlike a plain rectangle.
+      const anchorX = corner.includes('w') ? origX + origW : origX
+      const anchorY = corner.includes('n') ? origY + origH : origY
+      const aspect = origH / (origW || 1)
+      const rawW = Math.abs(p.x - anchorX)
+      const newW = Math.max(4, rawW)
+      const newH = newW * aspect
+      const newX = corner.includes('w') ? anchorX - newW : anchorX
+      const newY = corner.includes('n') ? anchorY - newH : anchorY
+      setImages((cur) =>
+        cur.map((im) => (im.id === resizeId ? { ...im, x: newX, y: newY, width: newW, height: newH } : im))
+      )
+      return
+    }
     if (!drag.current || !sheetRef.current) return
     const svg = sheetRef.current.querySelector('svg') as SVGSVGElement
     const pt = svg.createSVGPoint()
@@ -1118,6 +1199,109 @@ export const DrawingSheet = forwardRef<
       }
     },
     [pageId, pushUndo]
+  )
+
+  const insertImage = useCallback(async () => {
+    const path = await window.cad.openDialog([{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'bmp'] }])
+    if (!path) return
+    try {
+      // width/height are left unset - the sidecar (add_image) defaults them
+      // from the file's own native size, so a freshly-inserted image keeps
+      // its real aspect ratio instead of an arbitrary placeholder box.
+      const placeX = MARGIN + 20
+      const placeY = MARGIN + 20
+      const img = await api.drawingAddImage(pageId, path, placeX, placeY)
+      setImages((cur) => [...cur, img])
+      setSelImage(img.id)
+      const liveId = { current: img.id }
+      pushUndo({
+        undo: async () => {
+          await api.drawingRemoveImage(liveId.current)
+          setImages((cur) => cur.filter((x) => x.id !== liveId.current))
+        },
+        redo: async () => {
+          const img2 = await api.drawingAddImage(pageId, path, img.x, img.y, img.width, img.height)
+          liveId.current = img2.id
+          setImages((cur) => [...cur, img2])
+        }
+      })
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
+  }, [pageId, pushUndo])
+
+  const moveImage = useCallback(
+    (imageId: string, x: number, y: number, orig?: { x: number; y: number }) => {
+      setImages((cur) => cur.map((im) => (im.id === imageId ? { ...im, x, y } : im)))
+      void api.drawingSetImageTransform(imageId, { x, y })
+      if (orig) {
+        pushUndo({
+          undo: async () => {
+            setImages((cur) => cur.map((im) => (im.id === imageId ? { ...im, x: orig.x, y: orig.y } : im)))
+            void api.drawingSetImageTransform(imageId, { x: orig.x, y: orig.y })
+          },
+          redo: async () => {
+            setImages((cur) => cur.map((im) => (im.id === imageId ? { ...im, x, y } : im)))
+            void api.drawingSetImageTransform(imageId, { x, y })
+          }
+        })
+      }
+    },
+    [pushUndo]
+  )
+
+  const resizeImage = useCallback(
+    (
+      imageId: string,
+      x: number,
+      y: number,
+      width: number,
+      height: number,
+      orig?: { x: number; y: number; width: number; height: number }
+    ) => {
+      setImages((cur) => cur.map((im) => (im.id === imageId ? { ...im, x, y, width, height } : im)))
+      void api.drawingSetImageTransform(imageId, { x, y, width, height })
+      if (orig) {
+        pushUndo({
+          undo: async () => {
+            setImages((cur) => cur.map((im) => (im.id === imageId ? { ...im, ...orig } : im)))
+            void api.drawingSetImageTransform(imageId, orig)
+          },
+          redo: async () => {
+            setImages((cur) => cur.map((im) => (im.id === imageId ? { ...im, x, y, width, height } : im)))
+            void api.drawingSetImageTransform(imageId, { x, y, width, height })
+          }
+        })
+      }
+    },
+    [pushUndo]
+  )
+
+  const deleteImage = useCallback(
+    async (imageId: string) => {
+      const doomed = images.find((im) => im.id === imageId)
+      if (!doomed) return
+      try {
+        await api.drawingRemoveImage(imageId)
+        setImages((cur) => cur.filter((im) => im.id !== imageId))
+        setSelImage((cur) => (cur === imageId ? null : cur))
+        const liveId = { current: imageId }
+        pushUndo({
+          undo: async () => {
+            const img2 = await api.drawingAddImage(pageId, doomed.path, doomed.x, doomed.y, doomed.width, doomed.height)
+            liveId.current = img2.id
+            setImages((cur) => [...cur, img2])
+          },
+          redo: async () => {
+            await api.drawingRemoveImage(liveId.current)
+            setImages((cur) => cur.filter((im) => im.id !== liveId.current))
+          }
+        })
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [images, pageId, pushUndo]
   )
 
   const onViewPickPoint = useCallback(
@@ -1987,6 +2171,19 @@ export const DrawingSheet = forwardRef<
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [selTableId, deleteTable])
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return
+      if (!selImage) return
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      e.preventDefault()
+      void deleteImage(selImage)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [selImage, deleteImage])
+
   const applyNoteText = useCallback(
     async (noteId: string, oldText: string, text: string) => {
       if (text === oldText) return
@@ -2196,6 +2393,7 @@ export const DrawingSheet = forwardRef<
       brokenTool,
       insertBom,
       insertTable,
+      insertImage,
       saveAsTemplate,
       loadSheetTemplate,
       toggleTitleBlock,
@@ -2212,6 +2410,7 @@ export const DrawingSheet = forwardRef<
       brokenTool,
       insertBom,
       insertTable,
+      insertImage,
       saveAsTemplate,
       loadSheetTemplate,
       toggleTitleBlock,
@@ -2539,6 +2738,27 @@ export const DrawingSheet = forwardRef<
                 moveTable(dragId, t.x, t.y, { x: origX, y: origY })
               }
             }
+            if (imageDrag.current) {
+              const { id: dragId, origX, origY } = imageDrag.current
+              imageDrag.current = null
+              const im = images.find((x) => x.id === dragId)
+              if (im && (im.x !== origX || im.y !== origY)) {
+                moveImage(dragId, im.x, im.y, { x: origX, y: origY })
+              }
+            }
+            if (imageResize.current) {
+              const { id: resizeId, origX, origY, origW, origH } = imageResize.current
+              imageResize.current = null
+              const im = images.find((x) => x.id === resizeId)
+              if (im && (im.x !== origX || im.y !== origY || im.width !== origW || im.height !== origH)) {
+                resizeImage(resizeId, im.x, im.y, im.width, im.height, {
+                  x: origX,
+                  y: origY,
+                  width: origW,
+                  height: origH
+                })
+              }
+            }
           }}
           style={{ cursor: spaceHeld.current ? 'grab' : undefined }}
           onClick={(e) => {
@@ -2559,7 +2779,8 @@ export const DrawingSheet = forwardRef<
             const clickedInsideView =
               target.closest('[data-view-box]') !== null ||
               target.closest('[data-table]') !== null ||
-              target.closest('[data-note]') !== null
+              target.closest('[data-note]') !== null ||
+              target.closest('[data-image]') !== null
             if (justBandSelected.current) {
               justBandSelected.current = false
               return
@@ -2571,6 +2792,7 @@ export const DrawingSheet = forwardRef<
               setSelMultiNotes(new Set())
               setSelTableId(null)
               setSelCells(null)
+              setSelImage(null)
               if (tool === 'note') {
                 const svg = e.currentTarget as SVGSVGElement
                 const pt = svg.createSVGPoint()
@@ -3585,6 +3807,134 @@ export const DrawingSheet = forwardRef<
                       </g>
                     )
                   })
+                )}
+              </g>
+            )
+          })}
+
+          {images.map((im) => {
+            const data = imageData[im.path]
+            const selected = selImage === im.id
+            const startResize = (corner: 'nw' | 'ne' | 'sw' | 'se') => (e: React.PointerEvent) => {
+              e.stopPropagation()
+              e.preventDefault()
+              const svg = (e.currentTarget as SVGGraphicsElement).ownerSVGElement
+              try {
+                svg?.setPointerCapture(e.pointerId)
+              } catch {
+                /* not supported / already released - drag still works via bubbling */
+              }
+              imageResize.current = { id: im.id, origX: im.x, origY: im.y, origW: im.width, origH: im.height, corner }
+            }
+            const startDrag = (e: React.PointerEvent): void => {
+              e.stopPropagation()
+              // an SVG <image> is a "replaced element" like <img> - without
+              // preventDefault() the browser's native drag-and-drop gesture
+              // can claim the pointer sequence instead of ordinary pointer
+              // events, which silently swallows this element's own
+              // pointerup (and the bubbled one on the root svg) - confirmed
+              // live: only <image>-originated drags lost their pointerup
+              // (via mouse.move/down/move/up), notes/tables (plain
+              // <text>/<rect>, not "replaced" elements) never had this
+              // problem with the exact same drag-commit wiring. Attached to
+              // BOTH the real <image> and its loading-placeholder <rect> (a
+              // drag started in the brief window before the async data: URL
+              // fetch resolves must work too, not just once it has).
+              e.preventDefault()
+              setSel(null)
+              setSelNote(null)
+              setSelTableId(null)
+              setSelImage(im.id)
+              // e.currentTarget.ownerSVGElement, not
+              // sheetRef.current?.querySelector('svg') - the latter can
+              // return null on the very first pointer interaction right
+              // after a document reopen (before the ref/DOM has fully
+              // settled), which silently skipped setting imageDrag.current
+              // altogether while everything else in this handler still ran
+              // - confirmed live: the exact same drag at the exact same
+              // coordinates failed only the first time post-reload, then
+              // worked every time after. ownerSVGElement resolves directly
+              // from the element the event actually fired on, so it can't
+              // be affected by ref timing at all (same pattern the view-
+              // drag handler above already uses successfully).
+              const svg = (e.currentTarget as SVGGraphicsElement).ownerSVGElement
+              if (!svg) return
+              try {
+                svg.setPointerCapture(e.pointerId)
+              } catch {
+                /* not supported / already released - drag still works via bubbling */
+              }
+              const pt = svg.createSVGPoint()
+              pt.x = e.clientX
+              pt.y = e.clientY
+              const p = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+              imageDrag.current = { id: im.id, ox: p.x - im.x, oy: p.y - im.y, origX: im.x, origY: im.y }
+            }
+            const openImageMenu = (e: React.MouseEvent): void => {
+              e.preventDefault()
+              e.stopPropagation()
+              setSelImage(im.id)
+              setMenu(null)
+              setDimMenu({
+                x: e.clientX,
+                y: e.clientY,
+                items: [{ label: 'Delete Image', danger: true, onClick: () => void deleteImage(im.id) }]
+              })
+            }
+            return (
+              <g key={im.id} data-image={im.id}>
+                {data ? (
+                  <image
+                    href={data}
+                    x={im.x}
+                    y={im.y}
+                    width={im.width}
+                    height={im.height}
+                    style={{ cursor: 'move' }}
+                    onPointerDown={startDrag}
+                    onContextMenu={openImageMenu}
+                  />
+                ) : (
+                  // still reserve the placed footprint while the data: URL
+                  // fetch is in flight, so drag/resize/select all work
+                  // immediately rather than only once the image has loaded.
+                  <rect
+                    x={im.x}
+                    y={im.y}
+                    width={im.width}
+                    height={im.height}
+                    fill="#0000000d"
+                    stroke="#999"
+                    strokeDasharray="1.5 1"
+                    strokeWidth={0.3}
+                    style={{ cursor: 'move' }}
+                    onPointerDown={startDrag}
+                    onContextMenu={openImageMenu}
+                  />
+                )}
+                {selected && (
+                  <>
+                    <rect x={im.x} y={im.y} width={im.width} height={im.height} fill="none" stroke="#0696d7" strokeWidth={0.4} style={{ pointerEvents: 'none' }} />
+                    {(
+                      [
+                        ['nw', im.x, im.y],
+                        ['ne', im.x + im.width, im.y],
+                        ['sw', im.x, im.y + im.height],
+                        ['se', im.x + im.width, im.y + im.height]
+                      ] as const
+                    ).map(([corner, hx, hy]) => (
+                      <rect
+                        key={corner}
+                        x={hx - 1.5}
+                        y={hy - 1.5}
+                        width={3}
+                        height={3}
+                        fill="#0696d7"
+                        style={{ cursor: corner === 'nw' || corner === 'se' ? 'nwse-resize' : 'nesw-resize' }}
+                        onPointerDown={startResize(corner)}
+                      />
+                    ))}
+                  </>
                 )}
               </g>
             )

@@ -49,6 +49,7 @@ export interface CommandContext {
   drawingCleanupTool: () => void
   drawingInsertBom: () => Promise<void>
   drawingInsertTable: () => Promise<void>
+  drawingInsertImage: () => Promise<void>
   drawingSaveAsTemplate: () => Promise<void>
   drawingLoadSheetTemplate: () => Promise<void>
   drawingToggleTitleBlock: () => void
@@ -189,6 +190,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'draw.dimension', title: 'Dimension', group: 'Annotate', tab: 'DRAWING', icon: 'axis', hotkey: 'd', run: () => ctx.drawingDimensionTool() },
     { id: 'draw.note', title: 'Note', group: 'Annotate', tab: 'DRAWING', icon: 'sketch', hotkey: 'n', run: () => ctx.drawingNoteTool() },
     { id: 'draw.cleanup', title: 'Cleanup Line', group: 'Annotate', tab: 'DRAWING', icon: 'draft', run: () => ctx.drawingCleanupTool() },
+    { id: 'draw.image', title: 'Image', group: 'Annotate', tab: 'DRAWING', icon: 'sketch', run: () => ctx.drawingInsertImage() },
     { id: 'draw.bom', title: 'Insert BOM', group: 'Tables', tab: 'DRAWING', icon: 'combine', run: () => ctx.drawingInsertBom() },
     { id: 'draw.table', title: 'Insert Table', group: 'Tables', tab: 'DRAWING', icon: 'combine', run: () => ctx.drawingInsertTable() },
     { id: 'draw.saveTemplate', title: 'Save as Template…', group: 'Tables', tab: 'DRAWING', icon: 'point', run: () => ctx.drawingSaveAsTemplate() },

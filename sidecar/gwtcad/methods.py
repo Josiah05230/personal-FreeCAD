@@ -5207,7 +5207,7 @@ def drawing_page_rename(pageId, label):
 def drawing_page_contents(pageId):
     d = session.doc(create=False)
     if d is None:
-        return {"views": [], "dimensions": [], "notes": [], "tables": [], "cleanupLines": {}}
+        return {"views": [], "dimensions": [], "notes": [], "tables": [], "images": [], "cleanupLines": {}}
     return _drawing.page_contents(d, pageId)
 
 
@@ -5337,6 +5337,24 @@ def drawing_remove_cleanup_line(viewId, lineId):
     d = session.doc()
     _drawing.remove_cleanup_line(d, viewId, lineId)
     return {"ok": True}
+
+
+@method("drawing.addImage")
+def drawing_add_image(pageId, path, x=0.0, y=0.0, width=None, height=None):
+    d = session.doc()
+    return _drawing.add_image(d, pageId, path, x=x, y=y, width=width, height=height)
+
+
+@method("drawing.setImageTransform")
+def drawing_set_image_transform(imageId, x=None, y=None, width=None, height=None):
+    d = session.doc()
+    return _drawing.set_image_transform(d, imageId, x=x, y=y, width=width, height=height)
+
+
+@method("drawing.removeImage")
+def drawing_remove_image(imageId):
+    d = session.doc()
+    return _drawing.remove_image(d, imageId)
 
 
 @method("drawing.addNote")

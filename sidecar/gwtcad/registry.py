@@ -97,6 +97,7 @@ _NO_TXN = {
     "drawing.listCleanupLines", "drawing.removeCleanupLine",
     "drawing.addNote", "drawing.setNoteText", "drawing.setNoteStyle",
     "drawing.moveNote", "drawing.removeNote", "drawing.snapTargets",
+    "drawing.addImage", "drawing.setImageTransform", "drawing.removeImage",
     "drawing.bomRows", "drawing.makeTable", "drawing.removeTable", "drawing.updateTableStyle",
     "drawing.mergeTableCells", "drawing.unmergeTableCells",
     "drawing.saveTableTemplate",

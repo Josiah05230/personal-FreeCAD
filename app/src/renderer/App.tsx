@@ -3924,6 +3924,7 @@ export function App(): JSX.Element {
         drawingCleanupTool: () => setDrawingTool((t) => (t === 'cleanup' ? 'select' : 'cleanup')),
         drawingInsertBom: () => drawApi.current?.insertBom() ?? Promise.resolve(),
         drawingInsertTable: () => drawApi.current?.insertTable() ?? Promise.resolve(),
+        drawingInsertImage: () => drawApi.current?.insertImage() ?? Promise.resolve(),
         drawingSaveAsTemplate: () => drawApi.current?.saveAsTemplate() ?? Promise.resolve(),
         drawingLoadSheetTemplate: () => drawApi.current?.loadSheetTemplate() ?? Promise.resolve(),
         drawingToggleTitleBlock: () => drawApi.current?.toggleTitleBlock(),
