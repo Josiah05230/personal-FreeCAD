@@ -19,7 +19,7 @@ import {
 import { basename } from '../util'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { promptText, promptForm, promptMultiline } from './PromptDialog'
-import { formatDimension, DEFAULT_DIM_FORMAT } from '../dimensionFormat'
+import { formatDimension, formatDimensionTolerance, DEFAULT_DIM_FORMAT } from '../dimensionFormat'
 
 interface Placed {
   view: DrawingView
@@ -60,6 +60,18 @@ interface TableState {
 function uvToLocal(pl: Placed, uv: [number, number]): [number, number] {
   const [minX, , , maxY] = pl.view.bbox
   return [(uv[0] - minX) * pl.scale, (maxY - uv[1]) * pl.scale]
+}
+
+/** Inverse of uvToLocal - a point in the placed view's own local sheet
+ *  space (i.e. sheet-absolute minus the view's placed x/y, which callers
+ *  already subtract via the drag point minus pl.x/pl.y) back to view-UV, so
+ *  a dimension label's drag position (tracked in sheet coordinates like
+ *  every other draggable element) can be sent to drawingMoveDimension,
+ *  which persists labelUV in the same UV frame the sidecar computes p1/p2/
+ *  center/etc in. */
+function localToUV(pl: Placed, local: [number, number]): [number, number] {
+  const [minX, , , maxY] = pl.view.bbox
+  return [local[0] / pl.scale + minX, maxY - local[1] / pl.scale]
 }
 
 /** a placed view's on-sheet footprint, derived from its own bbox + scale -
@@ -427,6 +439,20 @@ export const DrawingSheet = forwardRef<
   } | null>(null)
   const noteDrag = useRef<{ id: string; ox: number; oy: number; origX: number; origY: number } | null>(null)
   const tableDrag = useRef<{ id: string; ox: number; oy: number; origX: number; origY: number } | null>(null)
+  // dimension label/leader/arc drag - like noteDrag/tableDrag, but the
+  // dropped point is stored as view-UV (via localToUV) since that's the
+  // frame drawingMoveDimension persists in, not raw sheet coordinates.
+  const dimDrag = useRef<{
+    id: string
+    viewId: string
+    ox: number
+    oy: number
+    origUV: [number, number]
+    /** live drag position in view-UV, updated every pointermove - kept on
+     *  the ref (not dimGeom, which for an Angle dimension has no labelUV
+     *  field to hold it) so pointerup always has the final drop point. */
+    liveUV: [number, number]
+  } | null>(null)
   const [cleanupLines, setCleanupLines] = useState<Record<string, CleanupLine[]>>({})
   const [snapTargets, setSnapTargets] = useState<Record<string, SnapTarget[]>>({})
   const [tables, setTables] = useState<TableState[]>([])
@@ -523,7 +549,12 @@ export const DrawingSheet = forwardRef<
   // three needed to draw real witness/extension lines, not just floating
   // text (see uvToLocal below for the UV -> sheet-local conversion).
   const [dimGeom, setDimGeom] = useState<
-    Record<string, { p1: [number, number]; p2: [number, number]; labelUV: [number, number] }>
+    Record<
+      string,
+      | { p1: [number, number]; p2: [number, number]; labelUV: [number, number] }
+      | { center: [number, number]; rim: [number, number]; labelUV: [number, number] }
+      | { center: [number, number]; dir1: [number, number]; dir2: [number, number]; arcRadius: number }
+    >
   >({})
   const [menu, setMenu] = useState<{ x: number; y: number; viewId: string } | null>(null)
   const [dimMenu, setDimMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
@@ -795,6 +826,33 @@ export const DrawingSheet = forwardRef<
           return orig ? { ...n, x: orig.x + dx, y: orig.y + dy } : n
         })
       )
+      return
+    }
+    if (dimDrag.current && sheetRef.current) {
+      const svg = sheetRef.current.querySelector('svg') as SVGSVGElement
+      const pt = svg.createSVGPoint()
+      pt.x = e.clientX
+      pt.y = e.clientY
+      const p = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+      const { id, viewId, ox, oy } = dimDrag.current
+      const pl = placed.find((p2) => p2.view.id === viewId)
+      if (pl) {
+        const labelUV = localToUV(pl, [p.x - pl.x - ox, p.y - pl.y - oy])
+        dimDrag.current.liveUV = labelUV
+        setDimGeom((cur) => {
+          const g = cur[id]
+          if (!g) return cur
+          if ('arcRadius' in g) {
+            // Angle: the live degree of freedom is how far the arc sits
+            // from the vertex, not a raw labelUV (Angle geometry has no
+            // such field) - re-derive it from the drag point's distance to
+            // centre, same formula set_dimension_geom uses server-side.
+            const arcRadius = Math.hypot(labelUV[0] - g.center[0], labelUV[1] - g.center[1])
+            return { ...cur, [id]: { ...g, arcRadius } }
+          }
+          return { ...cur, [id]: { ...g, labelUV } }
+        })
+      }
       return
     }
     if (noteDrag.current && sheetRef.current) {
@@ -1760,6 +1818,52 @@ export const DrawingSheet = forwardRef<
     [notes, applyNoteText]
   )
 
+  const applyDimGeomResponse = useCallback(
+    (dimId: string, res: Awaited<ReturnType<typeof api.drawingMoveDimension>>) => {
+      if (!res) return
+      if ('p1' in res && res.p1 && res.p2 && res.labelUV) {
+        setDimGeom((cur) => ({ ...cur, [dimId]: { p1: res.p1!, p2: res.p2!, labelUV: res.labelUV! } }))
+      } else if ('rim' in res && res.center && res.rim && res.labelUV) {
+        setDimGeom((cur) => ({ ...cur, [dimId]: { center: res.center!, rim: res.rim!, labelUV: res.labelUV! } }))
+      } else if ('arcRadius' in res && res.center && res.dir1 && res.dir2 && res.arcRadius !== undefined) {
+        setDimGeom((cur) => ({
+          ...cur,
+          [dimId]: { center: res.center!, dir1: res.dir1!, dir2: res.dir2!, arcRadius: res.arcRadius! }
+        }))
+      }
+    },
+    []
+  )
+
+  const moveDimension = useCallback(
+    async (dimId: string, labelUV: [number, number], from?: [number, number]) => {
+      // optimistic local move, same pattern as moveNote/moveTable - dimGeom
+      // is what the render code actually reads (falling back to the DTO's
+      // own geometry fields only when there's no local override), so this
+      // takes effect immediately without waiting on the round trip. Only the
+      // labelUV-shaped fields are optimistically nudged here; the RPC
+      // response (whichever of the three geometry shapes this dimension
+      // actually has) reconciles the rest right after.
+      setDimGeom((cur) => {
+        const g = cur[dimId]
+        return g ? { ...cur, [dimId]: { ...g, labelUV } } : cur
+      })
+      try {
+        const res = await api.drawingMoveDimension(dimId, labelUV)
+        applyDimGeomResponse(dimId, res)
+        if (from && (from[0] !== labelUV[0] || from[1] !== labelUV[1])) {
+          pushUndo({
+            undo: async () => applyDimGeomResponse(dimId, await api.drawingMoveDimension(dimId, from)),
+            redo: async () => applyDimGeomResponse(dimId, await api.drawingMoveDimension(dimId, labelUV))
+          })
+        }
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [pushUndo, applyDimGeomResponse]
+  )
+
   const moveNote = useCallback(
     async (noteId: string, x: number, y: number, from?: { x: number; y: number }) => {
       // optimistic local move so dragging feels instant; reconciled by the
@@ -2165,6 +2269,13 @@ export const DrawingSheet = forwardRef<
                 if (orig) void moveNote(n.id, n.x, n.y, orig)
               }
             }
+            if (dimDrag.current) {
+              const { id, origUV, liveUV } = dimDrag.current
+              dimDrag.current = null
+              if (liveUV[0] !== origUV[0] || liveUV[1] !== origUV[1]) {
+                void moveDimension(id, liveUV, origUV)
+              }
+            }
             if (noteDrag.current) {
               const { id, origX, origY } = noteDrag.current
               noteDrag.current = null
@@ -2348,6 +2459,32 @@ export const DrawingSheet = forwardRef<
             if (!pl || d.value === null) return null
             const fmt = { ...dimFormats.default, ...(dimFormats.overrides[d.id] ?? {}) }
             const text = formatDimension(d.value, d.type, fmt || DEFAULT_DIM_FORMAT)
+            const tol = formatDimensionTolerance(fmt)
+            // Rendered as a standalone <text> block, offset from the main
+            // value's own (x, y) by a fixed local-space amount - simpler and
+            // more robust than chaining <tspan dx> off a parent whose x/
+            // textAnchor already vary per dimension type. Single line for
+            // symmetric "±0.05"; two vertically-stacked lines ("+0.10" over
+            // "-0.05") for a deviation band, the standard drawing convention.
+            // Only rendered when toleranceMode is actually set (user
+            // question, 2026-09-20: "add various tolerances to them").
+            const renderTolerance = (
+              anchorX: number,
+              anchorY: number,
+              textAnchor: 'start' | 'middle' | 'end'
+            ): React.ReactNode => {
+              if (!tol) return null
+              const tx = anchorX + (textAnchor === 'end' ? -8 : 8)
+              return (
+                <text x={tx} y={anchorY} fontSize={2.2} textAnchor={textAnchor === 'middle' ? 'start' : textAnchor} stroke="none">
+                  {tol.lines.map((line, i) => (
+                    <tspan key={i} x={tx} dy={i === 0 ? (tol.lines.length > 1 ? '-0.35em' : 0) : '1.1em'}>
+                      {line}
+                    </tspan>
+                  ))}
+                </text>
+              )
+            }
             // dimGeom (an in-session drag not yet saved) wins; otherwise the
             // server-persisted p1/p2/labelUV on the DTO itself - computed by
             // the sidecar from the dimension's own References2D, so real
@@ -2358,15 +2495,17 @@ export const DrawingSheet = forwardRef<
             // through the normal two-click UI flow - the geometry only ever
             // lived in this React state, never round-tripped through the
             // sidecar).
-            const geom = dimGeom[d.id] ?? (d.p1 && d.p2 && d.labelUV
-              ? { p1: d.p1, p2: d.p2, labelUV: d.labelUV }
-              : undefined)
-            const radialGeom = RADIAL_TYPES.includes(d.type) && d.center && d.rim && d.labelUV
-              ? { center: d.center, rim: d.rim, labelUV: d.labelUV }
-              : undefined
-            const angleGeom = ANGLE_TYPES.includes(d.type) && d.center && d.dir1 && d.dir2 && d.arcRadius
-              ? { center: d.center, dir1: d.dir1, dir2: d.dir2, arcRadius: d.arcRadius }
-              : undefined
+            const localGeom = dimGeom[d.id]
+            const geom = (localGeom && 'p1' in localGeom ? localGeom : undefined) ??
+              (d.p1 && d.p2 && d.labelUV ? { p1: d.p1, p2: d.p2, labelUV: d.labelUV } : undefined)
+            const radialGeom = (localGeom && 'rim' in localGeom ? localGeom : undefined) ??
+              (RADIAL_TYPES.includes(d.type) && d.center && d.rim && d.labelUV
+                ? { center: d.center, rim: d.rim, labelUV: d.labelUV }
+                : undefined)
+            const angleGeom = (localGeom && 'arcRadius' in localGeom ? localGeom : undefined) ??
+              (ANGLE_TYPES.includes(d.type) && d.center && d.dir1 && d.dir2 && d.arcRadius
+                ? { center: d.center, dir1: d.dir1, dir2: d.dir2, arcRadius: d.arcRadius }
+                : undefined)
             const dimContextMenu = (e: React.MouseEvent): void => {
               e.preventDefault()
               const items: MenuItem[] = []
@@ -2393,13 +2532,33 @@ export const DrawingSheet = forwardRef<
                         label: 'Trailing zeros (1.20 vs 1.2)',
                         value: fmt.trailingZeros === false ? 'no' : 'yes',
                         options: ['yes', 'no']
+                      },
+                      {
+                        key: 'toleranceMode',
+                        label: 'Tolerance',
+                        value: fmt.toleranceMode ?? 'off',
+                        options: ['off', 'symmetric', 'deviation']
+                      },
+                      {
+                        key: 'tolerancePlus',
+                        label: 'Tolerance + (symmetric: ± value)',
+                        value: fmt.tolerancePlus !== undefined && fmt.tolerancePlus !== null ? String(fmt.tolerancePlus) : ''
+                      },
+                      {
+                        key: 'toleranceMinus',
+                        label: 'Tolerance - (deviation mode only)',
+                        value: fmt.toleranceMinus !== undefined && fmt.toleranceMinus !== null ? String(fmt.toleranceMinus) : ''
                       }
                     ])
                     if (!res) return
+                    const toleranceMode = (res.toleranceMode as DimensionFormat['toleranceMode']) ?? 'off'
                     const newFmt: DimensionFormat = {
                       precision: Number(res.precision) || 0,
                       leadingZero: res.leadingZero !== 'no',
-                      trailingZeros: res.trailingZeros !== 'no'
+                      trailingZeros: res.trailingZeros !== 'no',
+                      toleranceMode,
+                      tolerancePlus: res.tolerancePlus.trim() === '' ? undefined : Number(res.tolerancePlus),
+                      toleranceMinus: res.toleranceMinus.trim() === '' ? undefined : Number(res.toleranceMinus)
                     }
                     await api.drawingSetDimensionFormat(d.id, newFmt)
                     void refreshDimFormats()
@@ -2419,10 +2578,52 @@ export const DrawingSheet = forwardRef<
               const ny = dirx * s * 0.35
               return `${x},${y} ${backx + nx},${backy + ny} ${backx - nx},${backy - ny}`
             }
+            // drag the label/leader/arc to reposition the whole dimension -
+            // there was previously no way to move a placed dimension at all
+            // (user report, 2026-09-20: "it doesn't look like I can drag
+            // dimensions after they are placed"). origUV is read from
+            // whatever geom is already showing (local override if mid-drag-
+            // undo, else the DTO) so a drag started right after load still
+            // has a correct starting point to diff against.
+            const currentLabelUV: [number, number] | null =
+              geom?.labelUV ?? radialGeom?.labelUV ??
+              (angleGeom
+                ? [
+                    angleGeom.center[0] +
+                      (angleGeom.dir1[0] + angleGeom.dir2[0]) * angleGeom.arcRadius * 0.5,
+                    angleGeom.center[1] +
+                      (angleGeom.dir1[1] + angleGeom.dir2[1]) * angleGeom.arcRadius * 0.5
+                  ]
+                : null)
+            const onDimPointerDown = (e: React.PointerEvent): void => {
+              e.stopPropagation()
+              if (!currentLabelUV) return
+              setMenu(null)
+              setDimMenu(null)
+              // seed dimGeom with whatever geometry is already showing (DTO
+              // or a prior local override) so the pointermove handler always
+              // has a full shape to spread {...g, labelUV} onto, even for a
+              // dimension that has never been dragged before.
+              if (geom) setDimGeom((cur) => ({ ...cur, [d.id]: cur[d.id] ?? geom }))
+              else if (radialGeom) setDimGeom((cur) => ({ ...cur, [d.id]: cur[d.id] ?? radialGeom }))
+              else if (angleGeom) setDimGeom((cur) => ({ ...cur, [d.id]: cur[d.id] ?? angleGeom }))
+              const svg = sheetRef.current?.querySelector('svg') as SVGSVGElement | null
+              if (!svg) return
+              const pt = svg.createSVGPoint()
+              pt.x = e.clientX
+              pt.y = e.clientY
+              const p = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+              const [lx, ly] = uvToLocal(pl, currentLabelUV)
+              dimDrag.current = {
+                id: d.id,
+                viewId: pl.view.id,
+                ox: p.x - pl.x - lx,
+                oy: p.y - pl.y - ly,
+                origUV: currentLabelUV,
+                liveUV: currentLabelUV
+              }
+            }
             if (radialGeom) {
-              // leader: a line from the circle's centre out through the rim
-              // to the label - real technical-drawing radial dimension, not
-              // a straight line between two arbitrary points.
               const [cx, cy] = uvToLocal(pl, radialGeom.center)
               const [rx, ry] = uvToLocal(pl, radialGeom.rim)
               const [lx, ly] = uvToLocal(pl, radialGeom.labelUV)
@@ -2431,10 +2632,50 @@ export const DrawingSheet = forwardRef<
               const rlen = Math.hypot(dirx0, diry0) || 1
               const dirx = dirx0 / rlen
               const diry = diry0 / rlen
-              // Radius: leader starts at the centre. Diameter: starts on the
-              // far rim so the leader visibly crosses the whole circle.
-              const startx = d.type === 'Diameter' ? cx - dirx0 : cx
-              const starty = d.type === 'Diameter' ? cy - diry0 : cy
+              const labelAnchor: 'start' | 'end' = lx >= cx ? 'start' : 'end'
+              const labelDx = lx >= cx ? 1.5 : -1.5
+              if (d.type === 'Diameter') {
+                // a real diameter dimension is a single line straight through
+                // the centre, rim to opposite rim, with an arrowhead at BOTH
+                // ends - not a one-sided leader like Radius (user report,
+                // 2026-09-20: "radius dimensions should only have a leader to
+                // the outer circle but ... diameter ... should have a leader
+                // to a line going all the way through the center ... arrows
+                // on both sides").
+                const farx = cx - dirx0
+                const fary = cy - diry0
+                return (
+                  <g
+                    key={d.id}
+                    transform={`translate(${pl.x} ${pl.y})`}
+                    stroke="#c47f16"
+                    fill="#c47f16"
+                    strokeWidth={0.25}
+                    style={{ cursor: 'move' }}
+                    onPointerDown={onDimPointerDown}
+                    onContextMenu={dimContextMenu}
+                  >
+                    <line x1={farx} y1={fary} x2={rx} y2={ry} />
+                    <polygon points={arrow(rx, ry, dirx, diry)} stroke="none" />
+                    <polygon points={arrow(farx, fary, -dirx, -diry)} stroke="none" />
+                    {/* label sits on an extension of the same line, past the near rim */}
+                    <line x1={rx} y1={ry} x2={lx} y2={ly} strokeWidth={0.2} />
+                    <text
+                      x={lx + labelDx}
+                      y={ly}
+                      fontSize={3.4}
+                      textAnchor={labelAnchor}
+                      dominantBaseline="middle"
+                      stroke="none"
+                    >
+                      {text}
+                    </text>
+                    {renderTolerance(lx + labelDx, ly, labelAnchor)}
+                  </g>
+                )
+              }
+              // Radius: a one-sided leader from the centre out through the
+              // rim to the label - only ever touches the outer circle once.
               return (
                 <g
                   key={d.id}
@@ -2442,21 +2683,24 @@ export const DrawingSheet = forwardRef<
                   stroke="#c47f16"
                   fill="#c47f16"
                   strokeWidth={0.25}
+                  style={{ cursor: 'move' }}
+                  onPointerDown={onDimPointerDown}
                   onContextMenu={dimContextMenu}
                 >
-                  <line x1={startx} y1={starty} x2={lx} y2={ly} />
-                  {d.type === 'Radius' && <circle cx={cx} cy={cy} r={0.5} stroke="none" />}
+                  <line x1={cx} y1={cy} x2={lx} y2={ly} />
+                  <circle cx={cx} cy={cy} r={0.5} stroke="none" />
                   <polygon points={arrow(rx, ry, dirx, diry)} stroke="none" />
                   <text
-                    x={lx + (lx >= cx ? 1.5 : -1.5)}
+                    x={lx + labelDx}
                     y={ly}
                     fontSize={3.4}
-                    textAnchor={lx >= cx ? 'start' : 'end'}
+                    textAnchor={labelAnchor}
                     dominantBaseline="middle"
                     stroke="none"
                   >
                     {text}
                   </text>
+                  {renderTolerance(lx + labelDx, ly, labelAnchor)}
                 </g>
               )
             }
@@ -2491,6 +2735,8 @@ export const DrawingSheet = forwardRef<
                   stroke="#c47f16"
                   fill="#c47f16"
                   strokeWidth={0.25}
+                  style={{ cursor: 'move' }}
+                  onPointerDown={onDimPointerDown}
                   onContextMenu={dimContextMenu}
                 >
                   {/* extension lines from the vertex out along each edge direction to the arc */}
@@ -2505,6 +2751,7 @@ export const DrawingSheet = forwardRef<
                   <text x={labelx} y={labely} fontSize={3.4} textAnchor="middle" stroke="none">
                     {text}
                   </text>
+                  {renderTolerance(labelx, labely + 4, 'middle')}
                 </g>
               )
             }
@@ -2512,17 +2759,19 @@ export const DrawingSheet = forwardRef<
             // dimension whose geometry genuinely can't be resolved.
             if (!geom) {
               return (
-                <text
-                  key={d.id}
-                  x={pl.x + 2}
-                  y={pl.y - 2}
-                  fontSize={3.4}
-                  textAnchor="middle"
-                  fill="#c47f16"
-                  onContextMenu={dimContextMenu}
-                >
-                  {text}
-                </text>
+                <g key={d.id}>
+                  <text
+                    x={pl.x + 2}
+                    y={pl.y - 2}
+                    fontSize={3.4}
+                    textAnchor="middle"
+                    fill="#c47f16"
+                    onContextMenu={dimContextMenu}
+                  >
+                    {text}
+                  </text>
+                  {renderTolerance(pl.x + 2, pl.y - 2, 'middle')}
+                </g>
               )
             }
             const [p1x, p1y] = uvToLocal(pl, geom.p1)
@@ -2554,6 +2803,8 @@ export const DrawingSheet = forwardRef<
                 stroke="#c47f16"
                 fill="#c47f16"
                 strokeWidth={0.25}
+                style={{ cursor: 'move' }}
+                onPointerDown={onDimPointerDown}
                 onContextMenu={dimContextMenu}
               >
                 {/* extension (witness) lines: from each measured point out to the dimension line */}
@@ -2567,6 +2818,7 @@ export const DrawingSheet = forwardRef<
                 <text x={labelX} y={labelY} fontSize={3.4} textAnchor="middle" stroke="none">
                   {text}
                 </text>
+                {renderTolerance(labelX, labelY + 4, 'middle')}
               </g>
             )
           })}

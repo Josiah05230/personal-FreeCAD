@@ -467,6 +467,23 @@ export interface DimensionFormat {
   leadingZero?: boolean
   trailingZeros?: boolean
   unitSuffix?: boolean
+  /** Tolerance display, real and rendered (not just stored) - 'symmetric'
+   *  shows "value ±tolerancePlus"; 'deviation' shows separate +/- lines
+   *  using tolerancePlus/toleranceMinus (toleranceMinus is a positive
+   *  magnitude - the renderer prints it with a leading minus); 'off' (or
+   *  omitted) shows no tolerance at all, unchanged from before. */
+  toleranceMode?: 'off' | 'symmetric' | 'deviation'
+  tolerancePlus?: number
+  toleranceMinus?: number
+}
+
+/** A named ISO 286 hole/shaft fit class (e.g. "H7", "g6") resolved to a
+ *  numeric +/- tolerance band for a given nominal size - lets a user pick
+ *  "H7" instead of typing raw tolerance numbers, same as a real drawing
+ *  tool would offer. See fitTolerance.ts for the lookup table and resolver. */
+export interface FitClass {
+  letter: string
+  grade: number
 }
 
 export type NoteTextStyle = 'Normal' | 'Bold' | 'Italic' | 'Bold-Italic'
@@ -1279,10 +1296,10 @@ export const api = {
   /** Persist a drag of the dimension line/label so it survives a reopen -
    *  see drawing.moveDimension's sidecar docstring. */
   drawingMoveDimension: (dimId: string, labelUV: [number, number]) =>
-    rpcQuiet<{ p1: [number, number]; p2: [number, number]; labelUV: [number, number] } | null>(
-      'drawing.moveDimension',
-      { dimId, labelUV }
-    ),
+    rpcQuiet<Pick<
+      DrawingDimension,
+      'p1' | 'p2' | 'labelUV' | 'center' | 'rim' | 'dir1' | 'dir2' | 'arcRadius'
+    > | null>('drawing.moveDimension', { dimId, labelUV }),
   drawingSetDimensionFormat: (dimId: string, fmt: DimensionFormat | null) =>
     rpc<DimensionFormat | null>('drawing.setDimensionFormat', { dimId, fmt }),
   drawingSetDefaultDimensionFormat: (fmt: DimensionFormat | null) =>
