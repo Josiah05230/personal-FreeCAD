@@ -293,7 +293,8 @@ def _apply_table_style(view, style):
         except Exception:
             pass
     rest = {k: v for k, v in style.items()
-            if k in ("showGrid", "gridColor", "rowHeight", "colWidths", "rowHeights", "merges")}
+            if k in ("showGrid", "gridColor", "rowHeight", "colWidths", "rowHeights", "merges",
+                     "font", "textSize", "bold", "italic")}
     if rest:
         cur = table_style(view)
         cur.update(rest)
@@ -321,6 +322,13 @@ def table_style(view):
     style.setdefault("colWidths", [])
     style.setdefault("rowHeights", [])
     style.setdefault("merges", [])
+    # whole-table text style, same convention as a note's font/textSize/
+    # textStyle - per-cell rich formatting isn't supported yet, only a
+    # single style for every cell in the table.
+    style.setdefault("font", "osifont")
+    style.setdefault("textSize", 3.2)
+    style.setdefault("bold", False)
+    style.setdefault("italic", False)
     try:
         style["x"] = float(view.X)
         style["y"] = float(view.Y)

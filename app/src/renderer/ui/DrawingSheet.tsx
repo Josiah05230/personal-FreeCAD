@@ -55,6 +55,13 @@ interface TableState {
    *  derived colW for that index," same convention as the sidecar. */
   colWidths: number[]
   merges: TableMerge[]
+  /** whole-table text style, same "one style for the whole object"
+   *  convention a note's font/textSize/bold/italic already uses - no
+   *  per-cell rich formatting yet. */
+  font: string
+  textSize: number
+  bold: boolean
+  italic: boolean
 }
 
 /** A view's own nested <svg> uses viewBox="minX -maxY (maxX-minX) (maxY-minY)"
@@ -544,6 +551,10 @@ export const DrawingSheet = forwardRef<
   // than one.
   const [selTableId, setSelTableId] = useState<string | null>(null)
   const [editingCell, setEditingCell] = useState<{ tableId: string; row: number; col: number; value: string } | null>(null)
+  // in-place note text editing, same convention as editingCell above (user
+  // report, 2026-09-20: table cells already edit in place but notes still
+  // open a popup prompt - the two should behave the same way).
+  const [editingNote, setEditingNote] = useState<{ id: string; value: string } | null>(null)
   // per-table column-width override (mm) - colW is otherwise always derived
   // from column count (130 / columns.length); "Column Width…" in the
   // table's right-click menu lets the user pin an explicit width instead
@@ -748,7 +759,11 @@ export const DrawingSheet = forwardRef<
             x: t.style?.x ?? MARGIN + 4 + i * 8,
             y: t.style?.y ?? MARGIN + 4 + i * 8,
             colWidths: t.style?.colWidths ?? [],
-            merges: t.style?.merges ?? []
+            merges: t.style?.merges ?? [],
+            font: t.style?.font ?? 'osifont',
+            textSize: t.style?.textSize ?? 3.2,
+            bold: t.style?.bold ?? false,
+            italic: t.style?.italic ?? false
           }))
         )
         for (const v of c.views) void refreshSnapTargets(v.id)
@@ -1732,7 +1747,11 @@ export const DrawingSheet = forwardRef<
           x,
           y,
           colWidths: [],
-          merges: []
+          merges: [],
+          font: template?.spec.font ?? 'osifont',
+          textSize: template?.spec.textSize ?? 3.2,
+          bold: false,
+          italic: false
         }
         setTables((cur) => [...cur, next])
         void api.drawingUpdateTableStyle(t.id, {
@@ -1803,7 +1822,11 @@ export const DrawingSheet = forwardRef<
           x,
           y,
           colWidths: [],
-          merges: []
+          merges: [],
+          font: template?.spec.font ?? 'osifont',
+          textSize: template?.spec.textSize ?? 3.2,
+          bold: false,
+          italic: false
         }
         setTables((cur) => [...cur, next])
         void api.drawingUpdateTableStyle(t.id, {
@@ -1904,7 +1927,18 @@ export const DrawingSheet = forwardRef<
   )
 
   const setTableGridStyle = useCallback(
-    (tableId: string, style: Partial<{ showGrid: boolean; gridColor: string; rowHeight: number }>) => {
+    (
+      tableId: string,
+      style: Partial<{
+        showGrid: boolean
+        gridColor: string
+        rowHeight: number
+        font: string
+        textSize: number
+        bold: boolean
+        italic: boolean
+      }>
+    ) => {
       // persisted server-side now (view.X/Y + a _gwt_style tag - previously
       // pure client state, silently reverting to defaults on every reopen).
       updateTable(tableId, style)
@@ -2225,17 +2259,6 @@ export const DrawingSheet = forwardRef<
       }
     },
     [pushUndo]
-  )
-
-  const editNoteText = useCallback(
-    async (noteId: string) => {
-      const current = notes.find((n) => n.id === noteId)
-      if (!current) return
-      const text = await promptMultiline('Note text', current.text)
-      if (text === null || text === undefined) return
-      void applyNoteText(noteId, current.text, text)
-    },
-    [notes, applyNoteText]
   )
 
   // symbol buttons in the Text toolbar append directly to the note's
@@ -2569,6 +2592,44 @@ export const DrawingSheet = forwardRef<
             if (!t) return null
             return (
               <span className="drawing-text-toolbar">
+                <select
+                  title="Font"
+                  value={t.font}
+                  onChange={(e) => setTableGridStyle(t.id, { font: e.target.value })}
+                >
+                  {['osifont', 'sans-serif', 'serif', 'monospace'].map((f) => (
+                    <option key={f} value={f}>
+                      {f}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  title="Font size (mm)"
+                  type="number"
+                  min={1}
+                  step={0.5}
+                  value={t.textSize}
+                  onChange={(e) => setTableGridStyle(t.id, { textSize: Number(e.target.value) || 3.2 })}
+                  style={{ width: '3.5em' }}
+                />
+                <button
+                  title="Bold"
+                  aria-pressed={t.bold}
+                  className={t.bold ? 'active' : undefined}
+                  onClick={() => setTableGridStyle(t.id, { bold: !t.bold })}
+                  style={{ fontWeight: 'bold' }}
+                >
+                  B
+                </button>
+                <button
+                  title="Italic"
+                  aria-pressed={t.italic}
+                  className={t.italic ? 'active' : undefined}
+                  onClick={() => setTableGridStyle(t.id, { italic: !t.italic })}
+                  style={{ fontStyle: 'italic' }}
+                >
+                  I
+                </button>
                 <button title={t.showGrid ? 'Hide Grid Lines' : 'Show Grid Lines'} onClick={() => setTableGridStyle(t.id, { showGrid: !t.showGrid })}>
                   Grid
                 </button>
@@ -3465,6 +3526,48 @@ export const DrawingSheet = forwardRef<
                   style={{ pointerEvents: 'none' }}
                 />
               )}
+              {editingNote && editingNote.id === n.id ? (
+                (() => {
+                  const fs = n.textSize ?? 3.4
+                  const lines = editingNote.value.split('\n')
+                  const w = Math.max(30, ...lines.map((l) => measureText(l, fs) + 4))
+                  const h = Math.max(fs * 1.6, lines.length * fs * 1.35 + 3)
+                  return (
+                    <foreignObject x={n.x} y={n.y - fs} width={w} height={h}>
+                      <textarea
+                        autoFocus
+                        defaultValue={editingNote.value}
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          fontSize: `${fs}px`,
+                          fontFamily: n.font || undefined,
+                          fontWeight: n.textStyle === 'Bold' || n.textStyle === 'Bold-Italic' ? 'bold' : undefined,
+                          fontStyle: n.textStyle === 'Italic' || n.textStyle === 'Bold-Italic' ? 'italic' : undefined,
+                          border: 'none',
+                          outline: '1px solid #0696d7',
+                          resize: 'both',
+                          boxSizing: 'border-box',
+                          padding: 0,
+                          margin: 0
+                        }}
+                        onBlur={(e) => {
+                          const next = e.currentTarget.value
+                          setEditingNote(null)
+                          if (next !== n.text) void applyNoteText(n.id, n.text, next)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') {
+                            e.currentTarget.value = editingNote.value
+                            setEditingNote(null)
+                          }
+                          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) e.currentTarget.blur()
+                        }}
+                      />
+                    </foreignObject>
+                  )
+                })()
+              ) : (
               <text
                 data-note={n.id}
                 x={n.x}
@@ -3506,7 +3609,7 @@ export const DrawingSheet = forwardRef<
               }}
               onDoubleClick={(e) => {
                 e.stopPropagation()
-                void editNoteText(n.id)
+                setEditingNote({ id: n.id, value: n.text })
               }}
               onContextMenu={(e) => {
                 e.preventDefault()
@@ -3517,7 +3620,7 @@ export const DrawingSheet = forwardRef<
                   x: e.clientX,
                   y: e.clientY,
                   items: [
-                    { label: 'Edit Text…', onClick: () => void editNoteText(n.id) },
+                    { label: 'Edit Text…', onClick: () => setEditingNote({ id: n.id, value: n.text }) },
                     {
                       label: 'Font Size…',
                       onClick: () => {
@@ -3548,6 +3651,7 @@ export const DrawingSheet = forwardRef<
                 </tspan>
               ))}
               </text>
+              )}
             </g>
             )
           })}
@@ -3744,7 +3848,15 @@ export const DrawingSheet = forwardRef<
                         })
                       }}
                     />
-                    <text x={colX(ci) + 1.5} y={rowH - 1.5} fontSize={3.2} fontWeight="bold" style={{ pointerEvents: 'none' }}>
+                    <text
+                      x={colX(ci) + 1.5}
+                      y={rowH - 1.5}
+                      fontSize={table.textSize}
+                      fontFamily={table.font}
+                      fontWeight="bold"
+                      fontStyle={table.italic ? 'italic' : undefined}
+                      style={{ pointerEvents: 'none' }}
+                    >
                       {c.header}
                     </text>
                   </g>
@@ -3805,13 +3917,18 @@ export const DrawingSheet = forwardRef<
                             setDimMenu({ x: e.clientX, y: e.clientY, items })
                           }}
                           onPointerDown={(e) => {
-                            // shift-click extends a rectangular selection
-                            // anchored at the first click - the only UI this
-                            // needs, since "select a range, right-click,
-                            // Merge Cells" is the standard spreadsheet flow
-                            // (no drag-select yet, but shift+click covers the
-                            // common case without new drag-state plumbing).
-                            if (e.shiftKey && selCells && selCells.tableId === table.id) {
+                            // shift-click OR ctrl/cmd-click extends a
+                            // rectangular selection anchored at the first
+                            // click (user report, 2026-09-20: tried
+                            // ctrl-click for a second cell and nothing
+                            // happened - only shift-click was wired up).
+                            // There is no disjoint multi-cell selection yet
+                            // (the model is a single r0,c0-r1,c1 rectangle),
+                            // so ctrl-click extends the same rectangle
+                            // rather than adding a separate cell - still
+                            // covers "select a range, right-click, Merge
+                            // Cells", the flow this exists for.
+                            if ((e.shiftKey || e.ctrlKey || e.metaKey) && selCells && selCells.tableId === table.id) {
                               e.stopPropagation()
                               setSelCells({ ...selCells, r1: ri, c1: ci })
                             } else {
@@ -3825,29 +3942,67 @@ export const DrawingSheet = forwardRef<
                           ri <= Math.max(selCells.r0, selCells.r1) &&
                           ci >= Math.min(selCells.c0, selCells.c1) &&
                           ci <= Math.max(selCells.c0, selCells.c1) &&
-                          !(selCells.r0 === selCells.r1 && selCells.c0 === selCells.c1) && (
-                            <rect
-                              x={colX(ci)}
-                              y={rowH * (ri + 1)}
-                              width={cellW}
-                              height={cellH}
-                              fill="#0696d71a"
-                              stroke="none"
-                              style={{ pointerEvents: 'none' }}
-                            />
-                          )}
+                          (() => {
+                            // a single selected cell gets a visible border
+                            // (not just a fill, which read as "nothing
+                            // happened" - user report, 2026-09-20: "it
+                            // needs to highlight blue so that I know. It
+                            // certainly wasn't doing that" - the fill-only
+                            // highlight below WAS there but only for a
+                            // genuine multi-cell range) while a real range
+                            // keeps the plain translucent fill.
+                            const single = selCells.r0 === selCells.r1 && selCells.c0 === selCells.c1
+                            return (
+                              <rect
+                                x={colX(ci)}
+                                y={rowH * (ri + 1)}
+                                width={cellW}
+                                height={cellH}
+                                fill={single ? '#0696d733' : '#0696d71a'}
+                                stroke={single ? '#0696d7' : 'none'}
+                                strokeWidth={single ? 0.3 : 0}
+                                style={{ pointerEvents: 'none' }}
+                              />
+                            )
+                          })()}
                         {isEditing ? (
                           <foreignObject x={colX(ci)} y={rowH * (ri + 1)} width={cellW} height={cellH}>
-                            <input
+                            {/* a real <textarea> so long text wraps inside the
+                                cell as it's typed instead of scrolling off a
+                                single-line <input> (user report, 2026-09-20:
+                                "You need to handle test wrapping and stuff
+                                too") - Enter still commits (a table cell is a
+                                single value, unlike a note), Shift+Enter
+                                inserts a literal newline for a cell that
+                                really wants one. */}
+                            <textarea
                               autoFocus
                               defaultValue={editingCell.value}
-                              style={{ width: '100%', height: '100%', fontSize: '3.2px', border: 'none', outline: '1px solid #0696d7', boxSizing: 'border-box' }}
+                              wrap="soft"
+                              style={{
+                                width: '100%',
+                                height: '100%',
+                                fontSize: `${table.textSize}px`,
+                                fontFamily: table.font,
+                                fontWeight: table.bold ? 'bold' : undefined,
+                                fontStyle: table.italic ? 'italic' : undefined,
+                                border: 'none',
+                                outline: '1px solid #0696d7',
+                                resize: 'none',
+                                overflow: 'hidden',
+                                boxSizing: 'border-box',
+                                padding: 0,
+                                margin: 0
+                              }}
                               onBlur={(e) => {
                                 void setTableCell(table.id, ri, c.source, e.currentTarget.value)
                                 setEditingCell(null)
                               }}
                               onKeyDown={(e) => {
-                                if (e.key === 'Enter') e.currentTarget.blur()
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                  e.preventDefault()
+                                  e.currentTarget.blur()
+                                }
                                 if (e.key === 'Escape') {
                                   e.currentTarget.value = editingCell.value
                                   setEditingCell(null)
@@ -3859,10 +4014,20 @@ export const DrawingSheet = forwardRef<
                           <text
                             x={colX(ci) + 1.5}
                             y={rowH * (ri + 1) + rowH - 1.5}
-                            fontSize={3.2}
+                            fontSize={table.textSize}
+                            fontFamily={table.font}
+                            fontWeight={table.bold ? 'bold' : undefined}
+                            fontStyle={table.italic ? 'italic' : undefined}
                             style={{ cursor: 'text', pointerEvents: 'none' }}
                           >
-                            {value}
+                            {/* same real-newline convention notes use - a
+                                Shift+Enter typed in the editor above renders
+                                as an actual line break, not literal \n text. */}
+                            {value.split('\n').map((line, i, arr) => (
+                              <tspan key={i} x={colX(ci) + 1.5} dy={i === 0 ? -(arr.length - 1) * 1.2 + 'em' : '1.2em'}>
+                                {line || ' '}
+                              </tspan>
+                            ))}
                           </text>
                         )}
                       </g>

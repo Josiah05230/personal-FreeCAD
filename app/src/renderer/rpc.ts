@@ -596,6 +596,13 @@ export interface TableStyle {
   colWidths?: number[]
   rowHeights?: number[]
   merges?: TableMerge[]
+  /** whole-table text style (every cell) - no per-cell rich formatting yet,
+   *  same "one style for the whole object" convention a note's own
+   *  font/textSize/textStyle already uses. */
+  font?: string
+  textSize?: number
+  bold?: boolean
+  italic?: boolean
 }
 
 export interface DrawingTable {
