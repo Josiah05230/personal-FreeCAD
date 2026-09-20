@@ -1490,11 +1490,20 @@ export const api = {
     comp1: string,
     sub1: string,
     comp2: string,
-    sub2: string
+    sub2: string,
+    params?: Record<string, number>
   ) =>
     rpc<AssemblyTree & { solved: boolean; engine: string; solveRc: number | null }>(
       'assembly.addJoint',
-      { jointType, comp1, sub1, comp2, sub2 }
+      { jointType, comp1, sub1, comp2, sub2, params }
+    ),
+  /** Creo-style "Automatic" placement guess: classifies the two picked
+   *  references' surface geometry and returns a suggested user-facing
+   *  constraint name + the real underlying JointObject type to create. */
+  assemblySuggestConstraint: (comp1: string, sub1: string, comp2: string, sub2: string) =>
+    rpc<{ type: string; jointType: string; confidence: 'high' | 'low'; note: string }>(
+      'assembly.suggestConstraint',
+      { comp1, sub1, comp2, sub2 }
     ),
   assemblyTree: () => rpc<AssemblyTree>('assembly.tree'),
   assemblyRemoveComponent: (componentId: string) =>

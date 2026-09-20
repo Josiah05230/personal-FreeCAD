@@ -234,6 +234,32 @@ export class Picker {
       }
       return out.children.length ? out : null
     }
+    if (sel.kind === 'body') {
+      // whole-body overlay: every face's triangles, one thin translucent
+      // shell over the entire mesh - previously there was no 'body' branch
+      // at all here, so picking a body row in the tree set real selection
+      // state (the tree row itself highlighted fine) but painted nothing in
+      // the viewport (user report, 2026-09-20: "when I select a body/model
+      // in the model tree, it doesn't highlight in the viewport").
+      const mesh = content.children.find(
+        (c) => c.userData.pick === 'face' && c.userData.bodyId === sel.bodyId
+      ) as THREE.Mesh | undefined
+      if (!mesh) return null
+      const ov = new THREE.Mesh(
+        mesh.geometry,
+        new THREE.MeshBasicMaterial({
+          color,
+          transparent: true,
+          opacity: 0.22,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+          polygonOffset: true,
+          polygonOffsetFactor: -1
+        })
+      )
+      ov.renderOrder = 9
+      return ov
+    }
     if (sel.kind !== 'face') return null
     // face overlay: slice the body geometry to that face group's triangles
     const mesh = content.children.find(

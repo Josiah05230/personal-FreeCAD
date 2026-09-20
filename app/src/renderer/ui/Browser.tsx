@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { BodyTree, CanvasDTO, ImportedNode, Selection } from '../rpc'
 import { ContextMenu, type MenuItem } from './ContextMenu'
+import { AssemblyPanel } from './AssemblyPanel'
 
 export interface SectionNode {
   id: string
@@ -130,6 +131,7 @@ export function Browser({
   canvases = [],
   sections = [],
   drawings = [],
+  assembly,
   handlers,
   visibility,
   selection
@@ -139,6 +141,12 @@ export function Browser({
   canvases?: CanvasDTO[]
   sections?: SectionNode[]
   drawings?: DrawingNode[]
+  /** Present only once an assembly exists in the document - renders an
+   *  "Assembly" tree section (components/grounding/pins/joints list/explode)
+   *  in place of what used to be a permanent floating viewport panel. */
+  assembly?: Omit<Parameters<typeof AssemblyPanel>[0], 'tree'> & {
+    tree: import('../rpc').AssemblyTree | null
+  }
   handlers: BrowserHandlers
   visibility: Record<string, boolean>
   selection: Selection[]
@@ -146,6 +154,18 @@ export function Browser({
   const vis = (id: string, fallback: boolean): boolean =>
     id in visibility ? visibility[id] : fallback
   const isSel = (pred: (s: Selection) => boolean): boolean => selection.some(pred)
+  // a body row should read as selected for a face/edge/vertex pick ON that
+  // body too, not only a bare {kind:'body'} selection - previously picking
+  // a face in the viewport set real selection state but the tree gave no
+  // feedback at all about which body it belonged to (user report,
+  // 2026-09-20: "It also should highlight in the model tree when I select
+  // a part of it in the viewer").
+  const isBodySel = (bodyId: string): boolean =>
+    isSel(
+      (s) =>
+        (s.kind === 'body' && s.bodyId === bodyId) ||
+        ((s.kind === 'face' || s.kind === 'edge' || s.kind === 'vertex') && s.bodyId === bodyId)
+    )
 
   const b0 = bodies[0]
   const origin = b0?.origin ?? []
@@ -226,7 +246,7 @@ export function Browser({
                 visible={vis(b.id, b.visible)}
                 onToggle={(v) => handlers.onToggleVisibility(b.id, v)}
                 onPick={(add) => handlers.onSelect({ kind: 'body', bodyId: b.id }, add)}
-                selected={isSel((s) => s.kind === 'body' && s.bodyId === b.id)}
+                selected={isBodySel(b.id)}
                 menu={featMenu(b.id)}
                 onEditDbl={() => handlers.onEdit(b.id)}
               />
@@ -256,7 +276,7 @@ export function Browser({
                 visible={vis(o.id, o.visible)}
                 onToggle={(v) => handlers.onToggleVisibility(o.id, v)}
                 onPick={(add) => handlers.onSelect({ kind: 'body', bodyId: o.id }, add)}
-                selected={isSel((s) => s.kind === 'body' && s.bodyId === o.id)}
+                selected={isBodySel(o.id)}
                 menu={[
                   { label: 'Rename…', onClick: () => handlers.onRename(o.id) },
                   { separator: true, label: '' },
@@ -378,6 +398,12 @@ export function Browser({
                 ]}
               />
             ))}
+          </Row>
+        )}
+
+        {assembly && (
+          <Row depth={1} label="Assembly" glyph="⚙">
+            <AssemblyPanel {...assembly} />
           </Row>
         )}
 

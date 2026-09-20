@@ -248,6 +248,119 @@ def _write_bom(cfg, rows):
     os.replace(tmp, path)
 
 
+# --------------------------------------------------------------------------- #
+# Purchased-parts inventory - inventory_batches.csv + inventory_log.csv
+# --------------------------------------------------------------------------- #
+#
+# Tracked per EXACT pn (with rev digit), not pn_seq - a revision bump often
+# means a different physical part was substituted (a supplier switch is
+# exactly what pn.newRevision's `reason` captures), so silently carrying
+# stock forward across a revision would misrepresent what's actually on the
+# shelf. A revision bump starts that new pn's stock at zero; the OLD pn's
+# batches/history stay exactly as they were - nothing here rewrites the past.
+#
+# FIFO costing: inventory_batches.csv holds one row per purchase, with
+# qty_remaining depleting as consumption eats the OLDEST unconsumed batch(es)
+# first (see _consume_pn_fifo). qty_on_hand and avg_cost are NEVER stored -
+# always derived by summing/averaging whatever batches still have
+# qty_remaining > 0, so they can't drift out of sync with the ledger the way
+# a separately-cached running total could.
+#
+# inventory_log.csv is a pure audit trail (append-only, never mutated) of
+# every purchase/consumption/adjustment event - "why does this number look
+# wrong" should always be answerable by reading it, same spirit as
+# registry.csv keeping every revision instead of only the current one.
+_INVENTORY_BATCH_FIELDS = [
+    "id", "pn", "qty_purchased", "qty_remaining", "unit_cost",
+    "purchase_date", "source",
+]
+_INVENTORY_LOG_FIELDS = [
+    "date", "pn", "delta_qty", "unit_cost", "reason", "batch_id",
+]
+
+
+def _inventory_batches_csv(cfg):
+    return os.path.join(_registry_path(cfg), "inventory_batches.csv")
+
+
+def _inventory_log_csv(cfg):
+    return os.path.join(_registry_path(cfg), "inventory_log.csv")
+
+
+def _read_inventory_batches(cfg):
+    path = _inventory_batches_csv(cfg)
+    if not os.path.exists(path):
+        return []
+    with open(path, newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def _write_inventory_batches(cfg, rows):
+    path = _inventory_batches_csv(cfg)
+    tmp = path + ".tmp"
+    with open(tmp, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=_INVENTORY_BATCH_FIELDS)
+        w.writeheader()
+        for row in rows:
+            w.writerow({k: row.get(k, "") for k in _INVENTORY_BATCH_FIELDS})
+    os.replace(tmp, path)
+
+
+def _append_inventory_log(cfg, entries):
+    path = _inventory_log_csv(cfg)
+    is_new = not os.path.exists(path)
+    with open(path, "a", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=_INVENTORY_LOG_FIELDS)
+        if is_new:
+            w.writeheader()
+        for entry in entries:
+            w.writerow({k: entry.get(k, "") for k in _INVENTORY_LOG_FIELDS})
+
+
+def _inventory_summary(batches_for_pn):
+    """{qtyOnHand, avgCost} derived fresh from a pn's batches - never stored.
+    avgCost is the qty_remaining-weighted average unit_cost across batches
+    that still have stock; 0 once qty_on_hand hits 0 (nothing left to
+    average, not a stale leftover number)."""
+    qty_on_hand = sum(int(b.get("qty_remaining") or 0) for b in batches_for_pn)
+    if qty_on_hand <= 0:
+        return {"qtyOnHand": 0, "avgCost": 0.0}
+    total_value = sum(
+        int(b.get("qty_remaining") or 0) * float(b.get("unit_cost") or 0)
+        for b in batches_for_pn
+    )
+    return {"qtyOnHand": qty_on_hand, "avgCost": round(total_value / qty_on_hand, 4)}
+
+
+def _deplete_fifo(all_batch_rows, pn, qty_needed):
+    """Mutates all_batch_rows in place, depleting pn's OLDEST (by
+    purchase_date) batches with remaining stock first. Returns
+    (qty_actually_deducted, log_entries) - qty_actually_deducted may be less
+    than qty_needed if this pn doesn't have enough stock (never goes
+    negative; the caller decides whether a shortfall is an error or just
+    "consumed however much was on hand"). log_entries is one dict per batch
+    touched, ready to append to inventory_log.csv."""
+    remaining_need = qty_needed
+    log_entries = []
+    pn_batches = sorted(
+        (b for b in all_batch_rows if b.get("pn") == pn and int(b.get("qty_remaining") or 0) > 0),
+        key=lambda b: b.get("purchase_date") or "",
+    )
+    for batch in pn_batches:
+        if remaining_need <= 0:
+            break
+        available = int(batch.get("qty_remaining") or 0)
+        take = min(available, remaining_need)
+        batch["qty_remaining"] = str(available - take)
+        remaining_need -= take
+        log_entries.append({
+            "date": _now_iso(), "pn": pn, "delta_qty": str(-take),
+            "unit_cost": batch.get("unit_cost", ""), "reason": "consumed",
+            "batch_id": batch.get("id", ""),
+        })
+    return qty_needed - remaining_need, log_entries
+
+
 def _write_registry(cfg, rows):
     path = _registry_csv(cfg)
     tmp = path + ".tmp"
@@ -703,6 +816,188 @@ def pn_bom_for(pn):
          "qty": int(r.get("qty") or 1)}
         for r in rows
     ]}
+
+
+@method("pn.getInventory")
+def pn_get_inventory(pn):
+    """Current derived stock/cost for an exact pn - {qtyOnHand, avgCost}.
+    A pn with no purchase batches at all (or fully depleted) returns
+    qtyOnHand 0, avgCost 0 - "never purchased" and "purchased then fully
+    used up" look the same here on purpose; the log is where you'd go to
+    tell those apart."""
+    cfg = _load_config()
+    _sync_pull(_registry_path(cfg))
+    batches = [b for b in _read_inventory_batches(cfg) if b.get("pn") == pn]
+    return _inventory_summary(batches)
+
+
+@method("pn.listInventory")
+def pn_list_inventory():
+    """Derived {pn, qtyOnHand, avgCost} for every pn that has ever had a
+    purchase batch recorded (including ones now fully depleted, so a part
+    that's run out still shows up at qtyOnHand 0 rather than disappearing)."""
+    cfg = _load_config()
+    _sync_pull(_registry_path(cfg))
+    batches = _read_inventory_batches(cfg)
+    by_pn = {}
+    for b in batches:
+        by_pn.setdefault(b.get("pn"), []).append(b)
+    return {"items": [
+        {"pn": pn, **_inventory_summary(pn_batches)}
+        for pn, pn_batches in by_pn.items()
+    ]}
+
+
+@method("pn.recordPurchase")
+def pn_record_purchase(pn, qty, unitCost, source=None, purchaseDate=None):
+    """Add a new purchase batch for an exact pn - the ONLY way stock or the
+    weighted average cost increases. qty/unitCost are exactly what's on the
+    invoice/receipt; source is a free-text note (e.g. "CSV upload:
+    digikey_order.csv" or "MMC PDF: order 12345") for the audit trail.
+    Returns the new derived {qtyOnHand, avgCost} for this pn after the
+    purchase."""
+    import uuid
+    qty = int(qty)
+    unit_cost = float(unitCost)
+    if qty <= 0:
+        raise RpcError(APP_ERROR, "purchase qty must be positive")
+    cfg = _load_config()
+    repo = _registry_path(cfg)
+    date = purchaseDate or _now_iso()
+    batch_id = uuid.uuid4().hex[:12]
+
+    def attempt():
+        rows = _read_inventory_batches(cfg)
+        rows.append({
+            "id": batch_id, "pn": pn, "qty_purchased": str(qty),
+            "qty_remaining": str(qty), "unit_cost": str(unit_cost),
+            "purchase_date": date, "source": source or "",
+        })
+        _write_inventory_batches(cfg, rows)
+        _append_inventory_log(cfg, [{
+            "date": _now_iso(), "pn": pn, "delta_qty": str(qty),
+            "unit_cost": str(unit_cost), "reason": "purchase: %s" % (source or "manual"),
+            "batch_id": batch_id,
+        }])
+        return True
+
+    _sync_pull(repo)
+    attempt()
+    _commit_and_push(repo, "%s: +%d purchased @ %.4f (%s)" % (pn, qty, unit_cost, source or "manual"), attempt)
+
+    batches = [r for r in _read_inventory_batches(cfg) if r.get("pn") == pn]
+    return {"pn": pn, **_inventory_summary(batches)}
+
+
+@method("pn.adjustInventory")
+def pn_adjust_inventory(pn, deltaQty, reason):
+    """Manual +/- adjustment that does NOT touch cost (found stock, scrap,
+    a physical count correction - not a purchase, so there's no unit cost
+    to record). Positive deltaQty adds a new zero-cost batch (so found
+    stock doesn't silently drag the average cost toward $0 - see below);
+    negative deltaQty depletes existing batches FIFO, same as consumption.
+
+    A positive adjustment's zero cost DOES pull the weighted average down
+    - there's no honest alternative (we don't know what a "found" part is
+    actually worth), so this is deliberately visible in the derived
+    avgCost rather than hidden. Prefer pn.recordPurchase whenever a real
+    cost is known, even a corrected/estimated one."""
+    if not reason or not reason.strip():
+        raise RpcError(APP_ERROR, "a reason is required for a manual adjustment")
+    delta_qty = int(deltaQty)
+    if delta_qty == 0:
+        raise RpcError(APP_ERROR, "deltaQty must be nonzero")
+    cfg = _load_config()
+    repo = _registry_path(cfg)
+
+    def attempt():
+        rows = _read_inventory_batches(cfg)
+        if delta_qty > 0:
+            import uuid
+            rows.append({
+                "id": uuid.uuid4().hex[:12], "pn": pn, "qty_purchased": str(delta_qty),
+                "qty_remaining": str(delta_qty), "unit_cost": "0",
+                "purchase_date": _now_iso(), "source": "adjustment: %s" % reason.strip(),
+            })
+            log_entries = [{
+                "date": _now_iso(), "pn": pn, "delta_qty": str(delta_qty),
+                "unit_cost": "0", "reason": "adjustment: %s" % reason.strip(), "batch_id": "",
+            }]
+        else:
+            deducted, log_entries = _deplete_fifo(rows, pn, -delta_qty)
+            for entry in log_entries:
+                entry["reason"] = "adjustment: %s" % reason.strip()
+            if deducted < -delta_qty:
+                raise RpcError(APP_ERROR,
+                                "cannot remove %d units of %s - only %d on hand" %
+                                (-delta_qty, pn, deducted))
+        _write_inventory_batches(cfg, rows)
+        _append_inventory_log(cfg, log_entries)
+        return True
+
+    _sync_pull(repo)
+    attempt()
+    _commit_and_push(repo, "%s: inventory adjustment %+d (%s)" % (pn, delta_qty, reason.strip()), attempt)
+
+    batches = [r for r in _read_inventory_batches(cfg) if r.get("pn") == pn]
+    return {"pn": pn, **_inventory_summary(batches)}
+
+
+@method("pn.consumeAssembly")
+def pn_consume_assembly(pn, qty, reason=None):
+    """Consume qty of pn, walking its BOM to cover any shortfall: first
+    deplete pn's OWN stock (a pre-built assembly sitting on a shelf is used
+    as-is, no effect on its sub-parts); for whatever remainder isn't
+    covered by pn's own stock, recurse into pn.bomFor(pn) and apply the
+    SAME rule to each sub-part (its own stock absorbs first, cascading
+    further down only for its own shortfall). Bottoms out at leaf parts
+    (no BOM of their own), which have no stock of their own "assembly" to
+    check - only their raw stock is depleted, going negative-tolerant (see
+    _deplete_fifo) if none is on hand rather than blocking the whole
+    operation on a single missing screw.
+
+    This is the ONLY consumption path that understands assemblies - use
+    pn.adjustInventory directly for a raw part with no BOM."""
+    qty = int(qty)
+    if qty <= 0:
+        raise RpcError(APP_ERROR, "consume qty must be positive")
+    cfg = _load_config()
+    repo = _registry_path(cfg)
+    reason_note = "consumed (assembly)%s" % (": %s" % reason.strip() if reason else "")
+
+    def deplete_recursive(rows, target_pn, target_qty, all_log_entries, visited):
+        # visited guards against a malformed/circular BOM (should never
+        # happen from real CAD data, but a corrupted bom.csv row shouldn't
+        # be able to infinite-loop this) rather than assuming good data.
+        if target_pn in visited or target_qty <= 0:
+            return
+        visited = visited | {target_pn}
+        deducted, log_entries = _deplete_fifo(rows, target_pn, target_qty)
+        all_log_entries.extend(log_entries)
+        shortfall = target_qty - deducted
+        if shortfall <= 0:
+            return
+        bom_rows = [r for r in _read_bom(cfg) if r.get("pn") == target_pn]
+        for item in bom_rows:
+            item_pn = item.get("item_pn")
+            item_qty = int(item.get("qty") or 1)
+            if item_pn:
+                deplete_recursive(rows, item_pn, shortfall * item_qty, all_log_entries, visited)
+
+    def attempt():
+        rows = _read_inventory_batches(cfg)
+        all_log_entries = []
+        deplete_recursive(rows, pn, qty, all_log_entries, frozenset())
+        for entry in all_log_entries:
+            entry["reason"] = reason_note
+        _write_inventory_batches(cfg, rows)
+        _append_inventory_log(cfg, all_log_entries)
+        return True
+
+    _sync_pull(repo)
+    attempt()
+    _commit_and_push(repo, "%s: consumed %d (assembly walk)" % (pn, qty), attempt)
+    return {"pn": pn, "qty": qty}
 
 
 @method("pn.tagDocument")

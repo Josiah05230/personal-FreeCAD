@@ -2217,33 +2217,19 @@ code {
 }
 
 /* ---------- assembly panel ---------- */
-.asmpanel {
-  position: absolute;
-  right: 10px;
-  top: 10px;
-  z-index: 3;
-  width: 240px;
-  max-height: 60%;
-  overflow-y: auto;
-  background: #26262ae8;
-  backdrop-filter: blur(8px);
-  border: 1px solid #00000055;
-  border-radius: 6px;
-  box-shadow: 0 6px 20px #00000066;
+/* Embedded in the left Browser tree's "Assembly" section (moved 2026-09-20
+ * off a floating viewport overlay that permanently covered the ViewCube -
+ * see AssemblyPanel.tsx's own comment). No absolute positioning, no
+ * backdrop - it's just tree content now, same as Bodies/Sketches/Drawings. */
+.asmpanel-tree {
+  padding-bottom: 4px;
 }
 
 .asmpanel-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--line);
-}
-
-.asmpanel-title {
-  font-size: 11px;
-  letter-spacing: 1px;
-  color: var(--text-dim);
+  justify-content: flex-end;
+  padding: 4px 10px;
 }
 
 .asmpanel-add {

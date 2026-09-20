@@ -76,7 +76,7 @@ export interface CommandContext {
   surfaceStitch: () => Promise<void>
   surfaceOffset: () => Promise<void>
   addComponent: () => Promise<void>
-  addJoint: () => Promise<void>
+  addJoint: () => void
   selectFilterNode: ReactNode
   selectFilterMenuNode: ReactNode
 }

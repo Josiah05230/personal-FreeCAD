@@ -170,6 +170,97 @@ def ground(doc, link_name):
         return {"grounded": link_name, "via": "flag", "note": str(e)}
 
 
+def _classify_sub(doc, comp, sub):
+    """What kind of surface/curve a picked (component, sub) reference is, for
+    the Creo-style "pick two references, suggest a constraint" flow (user
+    request, 2026-09-20: match Creo's auto-suggest behaviour rather than
+    always making the user pick a type from a blind dropdown). Returns
+    {"kind": "plane"|"cylinder"|"sphere"|"line"|"point"|"other",
+    "normal"|"axis": [x,y,z] (unit vector, planes/cylinders only),
+    "point": [x,y,z]} or None if the reference can't be resolved - the
+    caller falls back to no suggestion (still fully usable, just no
+    pre-picked type) rather than failing the whole pick.
+    """
+    obj = doc.getObject(comp)
+    if obj is None:
+        return None
+    try:
+        el = obj.getSubObject(sub, retType=1)
+    except Exception:
+        el = None
+    if el is None:
+        try:
+            sh = obj.Shape
+            el = sh.getElement(sub) if sh else None
+        except Exception:
+            el = None
+    if el is None:
+        return None
+    try:
+        if hasattr(el, "Surface"):
+            surf = el.Surface
+            center = el.CenterOfMass
+            tname = type(surf).__name__
+            if tname == "Plane":
+                n = surf.Axis
+                return {"kind": "plane", "normal": [n.x, n.y, n.z], "point": [center.x, center.y, center.z]}
+            if tname in ("Cylinder", "Cone"):
+                ax = surf.Axis
+                return {"kind": "cylinder", "axis": [ax.x, ax.y, ax.z], "point": [center.x, center.y, center.z]}
+            if tname == "Sphere":
+                return {"kind": "sphere", "point": [center.x, center.y, center.z]}
+            return {"kind": "other", "point": [center.x, center.y, center.z]}
+        if hasattr(el, "Curve"):
+            curve = el.Curve
+            mid = el.valueAt((el.FirstParameter + el.LastParameter) / 2.0)
+            if type(curve).__name__ == "Line":
+                d = curve.Direction
+                return {"kind": "line", "normal": [d.x, d.y, d.z], "point": [mid.x, mid.y, mid.z]}
+            return {"kind": "other", "point": [mid.x, mid.y, mid.z]}
+        if hasattr(el, "Point"):
+            p = el.Point
+            return {"kind": "point", "point": [p.x, p.y, p.z]}
+    except Exception:
+        return None
+    return None
+
+
+def suggest_constraint(doc, comp1, sub1, comp2, sub2):
+    """Creo's "Automatic" placement behaviour: infer a constraint type from
+    the geometry of the two picked references, so the user only overrides
+    it when the guess is wrong instead of always picking blind. Returns
+    {"type": <user-facing friendly name>, "jointType": <real FreeCAD
+    JointObject type>, "confidence": "high"|"low", "note": str} - "low"
+    confidence still pre-selects the guess but the caller should invite a
+    change; a wholly unrecognised pair returns jointType "Distance" (the
+    safest generic default - Coincident-with-an-offset-field) at "low".
+    """
+    a = _classify_sub(doc, comp1, sub1)
+    b = _classify_sub(doc, comp2, sub2)
+    if not a or not b:
+        return {"type": "Distance", "jointType": "Distance", "confidence": "low",
+                "note": "Could not read this reference's geometry - pick a type manually."}
+    ka, kb = a["kind"], b["kind"]
+    pair = {ka, kb}
+    if pair == {"plane"}:
+        return {"type": "Coincident", "jointType": "Distance", "confidence": "high",
+                "note": "Two flat faces - Coincident (0mm) is the common case; use Distance for an offset."}
+    if pair == {"cylinder"}:
+        return {"type": "Concentric", "jointType": "Cylindrical", "confidence": "high",
+                "note": "Two round faces - Concentric shares their axis."}
+    if pair == {"plane", "cylinder"} or pair == {"plane", "sphere"} or pair == {"cylinder", "sphere"} or pair == {"sphere"}:
+        return {"type": "Tangent", "jointType": "Distance", "confidence": "high",
+                "note": "A curved face against another - Tangent (0mm along the contact normal)."}
+    if pair == {"line"}:
+        return {"type": "Parallel", "jointType": "Parallel", "confidence": "low",
+                "note": "Two edges - Parallel is a common guess; Angle is the other likely choice."}
+    if pair == {"point"} or "point" in pair:
+        return {"type": "Coincident", "jointType": "Distance", "confidence": "low",
+                "note": "A point reference - Coincident (0mm) is the usual choice."}
+    return {"type": "Distance", "jointType": "Distance", "confidence": "low",
+            "note": "Unrecognised reference pair - pick a type manually."}
+
+
 def add_joint(doc, jtype, comp1, sub1, comp2, sub2, **params):
     if jtype not in JOINT_TYPES:
         raise RpcError(APP_ERROR, "unknown joint type %r" % jtype)

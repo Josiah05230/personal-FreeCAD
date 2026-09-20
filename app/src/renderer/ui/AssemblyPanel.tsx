@@ -1,12 +1,21 @@
 import { useState } from 'react'
-import type { AssemblyTree, Selection } from '../rpc'
-
-const JOINT_TYPES = ['Fixed', 'Revolute', 'Cylindrical', 'Slider', 'Ball'] as const
+import type { AssemblyTree } from '../rpc'
 
 /**
- * Assembly panel - components and joints. Component linking, placement and
- * grounding are live; joint solving is experimental headless (joints are
- * recorded and round-trip, the MbD solve needs a GUI session for now).
+ * Assembly panel content - components (with grounding + git pinning) and a
+ * read-only joints list. Rendered INSIDE the left Browser tree as an
+ * "Assembly" section (moved 2026-09-20: this used to be its own floating
+ * panel permanently covering the ViewCube in the top-right of the viewport
+ * whenever any assembly existed - user report: "It's covering/blocking the
+ * view cube" and "It's so confusing, what am I looking at" - matching how
+ * Fusion 360 keeps components/joints in its left browser tree instead of a
+ * viewport overlay). Joint CREATION now happens through the ASSEMBLE ribbon
+ * tab's guided pick flow (see App.tsx's jointFlow state), not from here -
+ * this panel only lists existing joints.
+ *
+ * Component linking, placement and grounding are live; joint solving is
+ * experimental headless (joints are recorded and round-trip, the MbD solve
+ * needs a GUI session for now).
  *
  * Each component can also be git-pinned: locked to a specific commit (never
  * moves) or tracking a branch's tip (re-resolved on reopen / manual refresh).
@@ -15,12 +24,8 @@ const JOINT_TYPES = ['Fixed', 'Revolute', 'Cylindrical', 'Slider', 'Ball'] as co
  */
 export function AssemblyPanel({
   tree,
-  selection,
-  jointType,
-  onSetJointType,
   onAddComponent,
   onGround,
-  onAddJoint,
   pins,
   onSetPin,
   tool,
@@ -31,21 +36,18 @@ export function AssemblyPanel({
   onExplodeDistanceChange
 }: {
   tree: AssemblyTree | null
-  selection: Selection[]
-  jointType: string
-  onSetJointType: (t: string) => void
   onAddComponent: () => void
   onGround: (id: string) => void
-  onAddJoint: () => void
   pins: AsmPinFile
   onSetPin: (
     componentId: string,
     sourcePath: string,
     pin: { mode: PinMode; ref: string } | null
   ) => Promise<void>
-  /** 'select' (default): click faces to build joint references. 'move':
-   *  drag a whole component, live-solved against whatever joints touch it -
-   *  a separate mode so dragging never fights face-picking. */
+  /** 'select' (default): a plain click picks a face/edge/component, same as
+   *  anywhere else in the viewport. 'move': drag a whole component,
+   *  live-solved against whatever joints touch it - a separate mode so
+   *  dragging never fights a normal pick click. */
   tool: 'select' | 'move'
   onSetTool: (t: 'select' | 'move') => void
   /** Exploded view: on/off, and the spread distance multiplier (1 = the
@@ -56,14 +58,11 @@ export function AssemblyPanel({
   onExplodeToggle: (on: boolean) => void
   onExplodeDistanceChange: (d: number) => void
 }): JSX.Element {
-  const faceSel = selection.filter((s) => s.kind === 'face')
-  const canJoint = faceSel.length === 2 && faceSel[0].bodyId !== faceSel[1].bodyId
   const [pinEditFor, setPinEditFor] = useState<string | null>(null)
 
   return (
-    <div className="asmpanel">
+    <div className="asmpanel-tree">
       <div className="asmpanel-head">
-        <span className="asmpanel-title">ASSEMBLY</span>
         <button className="asmpanel-add" onClick={onAddComponent}>
           + Component
         </button>
@@ -72,7 +71,7 @@ export function AssemblyPanel({
       <div className="asm-toolbar">
         <button
           className={tool === 'select' ? 'asm-tool on' : 'asm-tool'}
-          title="Select - click faces to pick joint references"
+          title="Select - plain click picks a face/edge/component"
           onClick={() => onSetTool('select')}
         >
           Select
@@ -161,25 +160,9 @@ export function AssemblyPanel({
           </span>
         </div>
       ))}
-      {(!tree || tree.joints.length === 0) && <div className="asm-hint">No joints yet.</div>}
-
-      <div className="asm-jointbar">
-        <select value={jointType} onChange={(e) => onSetJointType(e.target.value)}>
-          {JOINT_TYPES.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </select>
-        <button disabled={!canJoint} onClick={onAddJoint}>
-          Add joint
-        </button>
-      </div>
-      <div className="asm-hint small">
-        {canJoint
-          ? 'Ready: 2 faces on 2 components selected'
-          : 'Select one face on each of two components'}
-      </div>
+      {(!tree || tree.joints.length === 0) && (
+        <div className="asm-hint">No joints yet - use Joint on the ASSEMBLE ribbon tab.</div>
+      )}
 
       <div className="asm-section">Exploded View</div>
       <div className="asm-explode">

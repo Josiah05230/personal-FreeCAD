@@ -5517,6 +5517,12 @@ def assembly_ground(componentId):
     return r
 
 
+@method("assembly.suggestConstraint")
+def assembly_suggest_constraint(comp1, sub1, comp2, sub2):
+    d = session.doc()
+    return _assembly.suggest_constraint(d, comp1, sub1, comp2, sub2)
+
+
 @method("assembly.addJoint")
 def assembly_add_joint(jointType, comp1, sub1="", comp2="", sub2="", params=None):
     d = session.doc()

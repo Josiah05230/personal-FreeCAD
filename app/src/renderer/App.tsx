@@ -33,7 +33,6 @@ import { Timeline } from './ui/Timeline'
 import { CommandPalette } from './ui/CommandPalette'
 import { OperationDialog, type OpKind, type OpValues } from './ui/OperationDialog'
 import { DrawingSheet, type DrawingSheetApi, type DrawingTool } from './ui/DrawingSheet'
-import { AssemblyPanel } from './ui/AssemblyPanel'
 import { SketchRibbon } from './ui/SketchRibbon'
 import { MeasurePanel, SectionPanel, MassPropsPanel, type SectionState } from './ui/InspectPanels'
 import { PromptHost, promptText, promptForm } from './ui/PromptDialog'
@@ -293,8 +292,71 @@ export function App(): JSX.Element {
   }, [])
 
   const [asmTree, setAsmTree] = useState<AssemblyTree | null>(null)
-  const [jointType, setJointType] = useState('Revolute')
   const [asmPins, setAsmPins] = useState<AsmPinFile>({})
+  // Guided joint placement (Creo "User Defined" style, researched and
+  // requested 2026-09-20 to replace the old always-visible floating panel +
+  // pre-select-two-faces-then-click-Joint flow, which blocked the ViewCube
+  // and gave no feedback about what state you were in): pick a reference on
+  // the first component, then a reference on the second, then the sidecar
+  // classifies the geometry and suggests a constraint type (Coincident/
+  // Concentric/Tangent/Parallel/Distance) the same way Creo's "Automatic"
+  // placement does - the user confirms or overrides before it's created.
+  interface JointRefPick {
+    bodyId: string
+    sub: string
+    kind: 'face' | 'edge' | 'vertex'
+  }
+  const [jointFlow, setJointFlow] = useState<{
+    ref1?: JointRefPick
+    ref2?: JointRefPick
+    suggestion?: { type: string; jointType: string; confidence: 'high' | 'low'; note: string }
+    chosenType: string
+    offset: number
+  } | null>(null)
+  const JOINT_FRIENDLY_TYPES = [
+    { label: 'Coincident', jointType: 'Distance', needsOffset: false },
+    { label: 'Distance', jointType: 'Distance', needsOffset: true },
+    { label: 'Concentric', jointType: 'Cylindrical', needsOffset: false },
+    { label: 'Tangent', jointType: 'Distance', needsOffset: false },
+    { label: 'Parallel', jointType: 'Parallel', needsOffset: false },
+    { label: 'Perpendicular', jointType: 'Perpendicular', needsOffset: false },
+    { label: 'Angle', jointType: 'Angle', needsOffset: true },
+    { label: 'Rigid (Fixed)', jointType: 'Fixed', needsOffset: false },
+    { label: 'Revolute', jointType: 'Revolute', needsOffset: false },
+    { label: 'Slider', jointType: 'Slider', needsOffset: false },
+    { label: 'Ball', jointType: 'Ball', needsOffset: false }
+  ] as const
+
+  const startJointFlow = useCallback(() => {
+    setJointFlow({ chosenType: 'Coincident', offset: 0 })
+    setSelection([])
+  }, [])
+
+  const cancelJointFlow = useCallback(() => {
+    setJointFlow(null)
+  }, [])
+
+  const onJointPickRef = useCallback(
+    (sel: Selection) => {
+      if (sel.kind !== 'face' && sel.kind !== 'edge' && sel.kind !== 'vertex') return
+      const pick: JointRefPick = { bodyId: sel.bodyId, sub: sel.sub, kind: sel.kind }
+      setJointFlow((cur) => {
+        if (!cur) return cur
+        if (!cur.ref1) return { ...cur, ref1: pick }
+        if (cur.ref1.bodyId === pick.bodyId) return cur // same component twice - ignore, needs a DIFFERENT component
+        if (!cur.ref2) {
+          void api
+            .assemblySuggestConstraint(cur.ref1!.bodyId, cur.ref1!.sub, pick.bodyId, pick.sub)
+            .then((sug) => setJointFlow((c) => (c ? { ...c, suggestion: sug, chosenType: sug.type } : c)))
+            .catch(() => undefined)
+          return { ...cur, ref2: pick }
+        }
+        return cur
+      })
+    },
+    []
+  )
+
   // Assembly panel has two mouse modes, like a sketch's tool palette: 'select'
   // (default - click faces to build joint references, exactly as before) and
   // 'move' (drag a whole component around, live-solved against whatever
@@ -445,6 +507,33 @@ export function App(): JSX.Element {
     }
     done()
   }, [applySceneTree, docPath])
+
+  const confirmJointFlow = useCallback(async () => {
+    if (!jointFlow?.ref1 || !jointFlow.ref2) return
+    const picked = JOINT_FRIENDLY_TYPES.find((t) => t.label === jointFlow.chosenType)
+    const jt = picked?.jointType ?? 'Distance'
+    const params = picked?.needsOffset ? { Offset: jointFlow.offset } : undefined
+    try {
+      const r = await api.assemblyAddJoint(
+        jt,
+        jointFlow.ref1.bodyId,
+        jointFlow.ref1.sub,
+        jointFlow.ref2.bodyId,
+        jointFlow.ref2.sub,
+        params
+      )
+      await refreshScene()
+      if (!r.solved) {
+        window.alert(
+          `"${jointFlow.chosenType}" was added (${r.engine}) but did not fully solve (rc ${r.solveRc ?? '?'}). ` +
+            `The two references may not be a sensible pair for this constraint - it's still recorded and editable.`
+        )
+      }
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
+    setJointFlow(null)
+  }, [jointFlow, refreshScene])
 
   // route every queued-command failure to a notice + a resync from engine truth,
   // so a rejected op leaves the UI consistent instead of half-applied
@@ -3524,24 +3613,6 @@ export function App(): JSX.Element {
     [refreshScene]
   )
 
-  const addJoint = useCallback(async () => {
-    const fs = selection.filter((s) => s.kind === 'face') as Array<{ bodyId: string; sub: string }>
-    if (fs.length !== 2) {
-      window.alert(
-        'Select two faces (one on each component) to mate, then run Joint. Joint type is set in the Assembly panel.'
-      )
-      return
-    }
-    const r = await api.assemblyAddJoint(jointType, fs[0].bodyId, fs[0].sub, fs[1].bodyId, fs[1].sub)
-    await refreshScene()
-    setSelection([])
-    if (!r.solved)
-      window.alert(
-        `Joint "${jointType}" added (${r.engine}) but did not solve (rc ${r.solveRc ?? '?'}). ` +
-          `Check the two faces actually make sense for a ${jointType} joint (e.g. two roughly-facing planar faces for Revolute) - a bad reference pair can leave the joint recorded but unconstrained.`
-      )
-  }, [selection, jointType, refreshScene])
-
   // --- assembly component drag (real solver-backed, per-frame RPC - see
   // assembly.dragStart/Move/End's docstrings in sidecar/gwtcad/assembly.py).
   // Only armed while asmTool === 'move' (Viewport gates onDown on this), so
@@ -3958,7 +4029,7 @@ export function App(): JSX.Element {
         surfaceStitch,
         surfaceOffset,
         addComponent,
-        addJoint,
+        addJoint: startJointFlow,
         selectFilterNode: <SelectModeToggle mode={selectMode} onMode={setSelectMode} />,
         selectFilterMenuNode: <SelectKindList active={selFilter} onActive={setSelFilter} />
       }),
@@ -3980,7 +4051,7 @@ export function App(): JSX.Element {
       surfaceStitch,
       surfaceOffset,
       addComponent,
-      addJoint,
+      startJointFlow,
       fitView,
       projection,
       setProjection,
@@ -4695,6 +4766,8 @@ export function App(): JSX.Element {
                         return drop ? cur.filter((s) => s !== drop) : cur
                       })
                     }}
+                    refPickMode={!!jointFlow}
+                    onPickRef={onJointPickRef}
                     asmTool={asmTree ? asmTool : undefined}
                     onAssemblyDrag={{
                       start: async (componentId) => {
@@ -4728,6 +4801,47 @@ export function App(): JSX.Element {
                       <button onClick={() => setCalibrateId(null)}>Cancel</button>
                     </div>
                   )}
+                  {jointFlow && !jointFlow.ref2 && (
+                    <div className="hintbar">
+                      {!jointFlow.ref1
+                        ? 'Joint: click a face or edge on the FIRST component'
+                        : 'Joint: click a face or edge on a DIFFERENT (second) component'}
+                      <button onClick={cancelJointFlow}>Cancel</button>
+                    </div>
+                  )}
+                  {jointFlow?.ref1 && jointFlow.ref2 && (
+                    <div className="hintbar asm-jointconfirm">
+                      <span>
+                        {jointFlow.suggestion
+                          ? jointFlow.suggestion.note
+                          : 'Resolving a suggestion…'}
+                      </span>
+                      <select
+                        value={jointFlow.chosenType}
+                        onChange={(e) => setJointFlow((c) => (c ? { ...c, chosenType: e.target.value } : c))}
+                      >
+                        {JOINT_FRIENDLY_TYPES.map((t) => (
+                          <option key={t.label} value={t.label}>
+                            {t.label}
+                          </option>
+                        ))}
+                      </select>
+                      {JOINT_FRIENDLY_TYPES.find((t) => t.label === jointFlow.chosenType)?.needsOffset && (
+                        <input
+                          type="number"
+                          step={0.5}
+                          value={jointFlow.offset}
+                          onChange={(e) =>
+                            setJointFlow((c) => (c ? { ...c, offset: Number(e.target.value) || 0 } : c))
+                          }
+                          style={{ width: '4.5em' }}
+                          title="Offset / angle"
+                        />
+                      )}
+                      <button onClick={() => void confirmJointFlow()}>Create</button>
+                      <button onClick={cancelJointFlow}>Cancel</button>
+                    </div>
+                  )}
                   <Browser
                     bodies={bodies}
                     imported={imported}
@@ -4738,6 +4852,23 @@ export function App(): JSX.Element {
                       visible: s.visible ?? true
                     }))}
                     drawings={drawingPages}
+                    assembly={
+                      asmTree
+                        ? {
+                            tree: asmTree,
+                            onAddComponent: addComponent,
+                            onGround: groundComponent,
+                            pins: asmPins,
+                            onSetPin: setComponentPin,
+                            tool: asmTool,
+                            onSetTool: setAsmTool,
+                            exploded: asmExploded,
+                            explodeDistance: asmExplodeDistance,
+                            onExplodeToggle: (on) => void asmExplodeToggle(on),
+                            onExplodeDistanceChange: (d) => void asmExplodeDistanceChange(d)
+                          }
+                        : undefined
+                    }
                     visibility={visOverride}
                     selection={selection}
                     handlers={{
@@ -4762,25 +4893,6 @@ export function App(): JSX.Element {
                       onDeleteDrawing: (id) => void deleteDrawing(id)
                     }}
                   />
-                  {asmTree && (
-                    <AssemblyPanel
-                      tree={asmTree}
-                      selection={selection}
-                      jointType={jointType}
-                      onSetJointType={setJointType}
-                      onAddComponent={addComponent}
-                      onGround={groundComponent}
-                      onAddJoint={addJoint}
-                      pins={asmPins}
-                      onSetPin={setComponentPin}
-                      tool={asmTool}
-                      onSetTool={setAsmTool}
-                      exploded={asmExploded}
-                      explodeDistance={asmExplodeDistance}
-                      onExplodeToggle={(on) => void asmExplodeToggle(on)}
-                      onExplodeDistanceChange={(d) => void asmExplodeDistanceChange(d)}
-                    />
-                  )}
                   {op && (
                     <OperationDialog
                       kind={op}

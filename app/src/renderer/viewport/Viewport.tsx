@@ -124,6 +124,8 @@ export function Viewport({
   onDressUpGhostToggle,
   asmTool,
   onAssemblyDrag,
+  refPickMode = false,
+  onPickRef,
   apiRef
 }: {
   meshes: RenderMesh[]
@@ -199,6 +201,14 @@ export function Viewport({
     end: () => Promise<void>
   }
   apiRef?: { current: ViewportApi | null }
+  /** Guided cross-body reference picking (currently: the Assembly ribbon's
+   *  Joint flow) - a plain click while active resolves to a face/edge/
+   *  vertex Selection (like planePickMode, but not restricted to planes)
+   *  and is reported via onPickRef instead of the normal onSelect/select-
+   *  state path, so it doesn't disturb whatever the user had selected
+   *  before starting the pick. */
+  refPickMode?: boolean
+  onPickRef?: (sel: Selection) => void
 }): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   const cubeRef = useRef<HTMLDivElement>(null)
@@ -242,6 +252,8 @@ export function Viewport({
   const planePickRef = useRef<{ mode: boolean; cb?: (r: SketchRef) => void }>({ mode: false })
   planePickRef.current = { mode: planePickMode, cb: onPickPlane }
   void pickPlanes // retained as a prop for compatibility; planes are real datums now
+  const refPickRef = useRef<{ mode: boolean; cb?: (sel: Selection) => void }>({ mode: false })
+  refPickRef.current = { mode: refPickMode, cb: onPickRef }
   const winSelRef = useRef<{ mode: string; cb?: (s: Selection[], additive: boolean) => void }>({
     mode: 'paint'
   })
@@ -760,7 +772,8 @@ export function Viewport({
         e.button === 0 &&
         winSelRef.current.mode === 'window' &&
         !st?.sketch &&
-        !planePickRef.current.mode
+        !planePickRef.current.mode &&
+        !refPickRef.current.mode
       ) {
         banding = true
         const b = bandRef.current
@@ -879,6 +892,20 @@ export function Viewport({
           )
           cal.line.renderOrder = 30
           st.overlay.add(cal.line)
+        }
+        return
+      }
+
+      // guided reference pick (Assembly ribbon's Joint flow): any face/edge/
+      // vertex hit is reported through onPickRef instead of the normal
+      // selection path, so starting a joint pick doesn't clobber whatever
+      // was selected before.
+      if (refPickRef.current.mode) {
+        if (st.content) {
+          const hit = st.picker.pick(e, st.content)
+          if (hit && (hit.kind === 'face' || hit.kind === 'edge' || hit.kind === 'vertex')) {
+            refPickRef.current.cb?.(hit)
+          }
         }
         return
       }
@@ -1046,6 +1073,17 @@ export function Viewport({
       }
 
       if (!st.content) return
+      // guided reference pick: highlight the face/edge/vertex under the
+      // cursor, same feedback style as sketch-plane pick just below.
+      if (refPickRef.current.mode) {
+        const rh = st.picker.pick(e, st.content)
+        st.picker.setHover(
+          rh && (rh.kind === 'face' || rh.kind === 'edge' || rh.kind === 'vertex') ? rh : null,
+          st.content
+        )
+        renderer.domElement.style.cursor = rh ? 'pointer' : ''
+        return
+      }
       // sketch-plane pick: highlight the plane / face under the cursor
       if (planePickRef.current.mode) {
         const ph = st.picker.pick(e, st.content)
