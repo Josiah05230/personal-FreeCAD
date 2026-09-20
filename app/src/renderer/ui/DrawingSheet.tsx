@@ -617,7 +617,7 @@ export const DrawingSheet = forwardRef<
     overrides: Record<string, DimensionFormat>
   }>({ default: {}, overrides: {} })
   const sheetRef = useRef<HTMLDivElement>(null)
-  const drag = useRef<{ i: number; ox: number; oy: number } | null>(null)
+  const drag = useRef<{ i: number; ox: number; oy: number; origX: number; origY: number } | null>(null)
 
   const name = docPath ? basename(docPath).replace(/\.FCStd$/i, '') : 'Untitled'
   const today = useMemo(() => new Date().toISOString().slice(0, 10), [])
@@ -667,8 +667,17 @@ export const DrawingSheet = forwardRef<
           c.views.map((v, i) => {
             const [minX, minY, maxX, maxY] = v.bbox
             const fit = Math.min(120 / Math.max(maxX - minX, 1), 90 / Math.max(maxY - minY, 1), 2)
-            const [, x, y] = specs[i % specs.length]
-            return { view: v, x: x - 24 + (i * 12) % 60, y: y - 40 + (i * 12) % 60, scale: fit }
+            const [, defX, defY] = specs[i % specs.length]
+            // x/y round-trip through the sidecar now (view.X/Y - fixed
+            // 2026-09-20: dragging a view visibly moved it within the
+            // session, but the position was never actually persisted, so
+            // it silently snapped back to this same cascade default on
+            // every reopen, same class of bug as the table-position one).
+            // v.x/y is only absent for a view never explicitly placed -
+            // the cascade default still covers that case exactly as before.
+            const x = v.x ?? defX - 24 + (i * 12) % 60
+            const y = v.y ?? defY - 40 + (i * 12) % 60
+            return { view: v, x, y, scale: fit }
           })
         )
         setDims(c.dimensions)
@@ -1754,6 +1763,28 @@ export const DrawingSheet = forwardRef<
     [pushUndo, updateTable]
   )
 
+  const moveView = useCallback(
+    (viewId: string, x: number, y: number, orig?: { x: number; y: number }) => {
+      // persisted server-side now (view.X/Y - previously pure client
+      // layout state, silently reverting to the cascade default on every
+      // reopen, same class of bug already fixed for tables).
+      void api.drawingSetViewPosition(viewId, x, y)
+      if (orig) {
+        pushUndo({
+          undo: async () => {
+            setPlaced((cur) => cur.map((pl) => (pl.view.id === viewId ? { ...pl, x: orig.x, y: orig.y } : pl)))
+            void api.drawingSetViewPosition(viewId, orig.x, orig.y)
+          },
+          redo: async () => {
+            setPlaced((cur) => cur.map((pl) => (pl.view.id === viewId ? { ...pl, x, y } : pl)))
+            void api.drawingSetViewPosition(viewId, x, y)
+          }
+        })
+      }
+    },
+    [pushUndo]
+  )
+
   const deleteTable = useCallback(
     async (tableId: string) => {
       const doomed = tables.find((t) => t.id === tableId)
@@ -2400,7 +2431,14 @@ export const DrawingSheet = forwardRef<
           }}
           onPointerMove={onPointerMove}
           onPointerUp={() => {
-            drag.current = null
+            if (drag.current) {
+              const { i, origX, origY } = drag.current
+              drag.current = null
+              const pl = placed[i]
+              if (pl && (pl.x !== origX || pl.y !== origY)) {
+                moveView(pl.view.id, pl.x, pl.y, { x: origX, y: origY })
+              }
+            }
             panRef.current = null
             if (band) {
               const x0 = Math.min(band.x0, band.x1)
@@ -2450,18 +2488,21 @@ export const DrawingSheet = forwardRef<
                 }
               }
               if (viewMoves.length) {
+                for (const vm of viewMoves) void api.drawingSetViewPosition(vm.id, vm.to.x, vm.to.y)
                 pushUndo({
                   undo: async () => {
                     setPlaced((cur) => cur.map((pl) => {
                       const m = viewMoves.find((vm) => vm.id === pl.view.id)
                       return m ? { ...pl, x: m.from.x, y: m.from.y } : pl
                     }))
+                    for (const vm of viewMoves) void api.drawingSetViewPosition(vm.id, vm.from.x, vm.from.y)
                   },
                   redo: async () => {
                     setPlaced((cur) => cur.map((pl) => {
                       const m = viewMoves.find((vm) => vm.id === pl.view.id)
                       return m ? { ...pl, x: m.to.x, y: m.to.y } : pl
                     }))
+                    for (const vm of viewMoves) void api.drawingSetViewPosition(vm.id, vm.to.x, vm.to.y)
                   }
                 })
               }
@@ -2587,7 +2628,7 @@ export const DrawingSheet = forwardRef<
                 setSelMultiViews(new Set())
                 setSelMultiNotes(new Set())
                 setSelTableId(null)
-                drag.current = { i, ox: p.x - pl.x, oy: p.y - pl.y }
+                drag.current = { i, ox: p.x - pl.x, oy: p.y - pl.y, origX: pl.x, origY: pl.y }
               }}
               onContextMenu={(e) => {
                 e.preventDefault()

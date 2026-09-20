@@ -5271,6 +5271,12 @@ def drawing_remove_view(viewId):
     return _drawing.remove_view(d, viewId)
 
 
+@method("drawing.setViewPosition")
+def drawing_set_view_position(viewId, x, y):
+    d = session.doc()
+    return _drawing.set_view_position(d, viewId, x, y)
+
+
 @method("drawing.addDimension")
 def drawing_add_dimension(pageId, viewId, refs, kind="Distance"):
     d = session.doc()

@@ -89,7 +89,7 @@ _NO_TXN = {
     "drawing.pageList", "drawing.pageCreate", "drawing.pageDelete",
     "drawing.pageRename", "drawing.pageContents", "drawing.addView", "drawing.addSectionView",
     "drawing.addDetailView", "drawing.addBrokenView", "drawing.convertView",
-    "drawing.removeView",
+    "drawing.removeView", "drawing.setViewPosition",
     "drawing.addDimension", "drawing.removeDimension", "drawing.setDimensionType",
     "drawing.moveDimension",
     "drawing.setDimensionFormat", "drawing.setDefaultDimensionFormat",

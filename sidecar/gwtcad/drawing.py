@@ -261,6 +261,19 @@ def page_contents(doc, page_id):
                 "kind": kind, "scale": float(o.Scale),
                 "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid),
             }
+            # view.X/Y round-trip now (fixed 2026-09-20: a view's on-sheet
+            # position was pure client-side layout state - dragging one
+            # visibly moved it within the session, but view.X/Y was never
+            # actually set on the FreeCAD object, so it silently snapped
+            # back to the same hardcoded cascade default on every reopen,
+            # same class of bug as the table-position one already fixed).
+            # Zero is a legitimate placed position, not "never set" - only
+            # omit x/y when the tag confirming an explicit placement is
+            # itself absent, so an old file predating this fix still falls
+            # back to the frontend's own cascade default exactly as before.
+            if _get_tag(o, "_gwt_placed", ""):
+                entry["x"] = float(o.X)
+                entry["y"] = float(o.Y)
             base = _get_tag(o, "_gwt_base", "")
             if base:
                 entry["baseViewId"] = base
@@ -639,6 +652,22 @@ def remove_view(doc, view_id):
     doc.removeObject(view.Name)
     doc.recompute()
     return {"ok": True, "removedDimensions": removed_dims}
+
+
+def set_view_position(doc, view_id, x, y):
+    """Persist a drag of a placed view - see page_contents' comment on
+    view.X/Y (_gwt_placed marks that an explicit position has actually been
+    set, distinguishing a real (0, 0) placement from an old file that
+    predates this and should still fall back to the frontend's own
+    default cascade)."""
+    view = doc.getObject(view_id)
+    if view is None:
+        raise RpcError(APP_ERROR, "no such view: %r" % view_id)
+    view.X = float(x)
+    view.Y = float(y)
+    _tag(view, "_gwt_placed", "1")
+    doc.recompute()
+    return {"id": view.Name, "x": float(view.X), "y": float(view.Y)}
 
 
 def add_dimension(doc, page_id, view_id, refs, kind="Distance"):

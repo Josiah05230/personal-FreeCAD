@@ -419,6 +419,12 @@ export interface DrawingView {
    *  its base view and this field is drawn as a purely visual jagged-line
    *  overlay instead - honest about not being a real TechDraw crop. */
   breaks?: DrawingBreak[]
+  /** on-sheet placement (mm), present once this view has been explicitly
+   *  positioned (view.X/Y persisted server-side) - absent for a view from
+   *  before that existed, or one never dragged, so the frontend's own
+   *  cascade default still applies in that case. */
+  x?: number
+  y?: number
 }
 
 export interface DrawingPage {
@@ -1320,6 +1326,8 @@ export const api = {
   ) => rpc<DrawingView>('drawing.convertView', { pageId, viewId, toKind, ...extra }),
   drawingRemoveView: (viewId: string) =>
     rpc<{ ok: boolean; removedDimensions: string[] }>('drawing.removeView', { viewId }),
+  drawingSetViewPosition: (viewId: string, x: number, y: number) =>
+    rpcQuiet<{ id: string; x: number; y: number }>('drawing.setViewPosition', { viewId, x, y }),
 
   drawingAddDimension: (
     pageId: string,
