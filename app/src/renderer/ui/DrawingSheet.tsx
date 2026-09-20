@@ -597,7 +597,9 @@ export const DrawingSheet = forwardRef<
   // there a way to... add various tolerances" implied full dimension
   // support, and Angle/ordinate markings were separately called out as a
   // requirement). Distance stays the default since it's the common case.
-  const [dimMode, setDimMode] = useState<'Distance' | 'Radius' | 'Diameter' | 'Angle'>('Distance')
+  const [dimMode, setDimMode] = useState<'Distance' | 'DistanceX' | 'DistanceY' | 'Radius' | 'Diameter' | 'Angle'>(
+    'Distance'
+  )
   // p1/p2 are the two picked points (view-UV space) a dimension measures
   // between, and labelUV is where its value text sits (also view-UV) - all
   // three needed to draw real witness/extension lines, not just floating
@@ -605,7 +607,7 @@ export const DrawingSheet = forwardRef<
   const [dimGeom, setDimGeom] = useState<
     Record<
       string,
-      | { p1: [number, number]; p2: [number, number]; labelUV: [number, number] }
+      | { p1: [number, number]; p2: [number, number]; labelUV: [number, number]; ordinate?: boolean }
       | { center: [number, number]; rim: [number, number]; labelUV: [number, number] }
       | { center: [number, number]; dir1: [number, number]; dir2: [number, number]; arcRadius: number }
     >
@@ -1068,7 +1070,7 @@ export const DrawingSheet = forwardRef<
               window.alert('Pick a different point for the second end of the dimension.')
               return
             }
-            void addDimension(viewId, [{ sub: dimPending.sub }, { sub }], 'Distance', {
+            void addDimension(viewId, [{ sub: dimPending.sub }, { sub }], dimMode as DimensionType, {
               p1: dimPending.p,
               p2: p
             })
@@ -2038,7 +2040,10 @@ export const DrawingSheet = forwardRef<
     (dimId: string, res: Awaited<ReturnType<typeof api.drawingMoveDimension>>) => {
       if (!res) return
       if ('p1' in res && res.p1 && res.p2 && res.labelUV) {
-        setDimGeom((cur) => ({ ...cur, [dimId]: { p1: res.p1!, p2: res.p2!, labelUV: res.labelUV! } }))
+        setDimGeom((cur) => ({
+          ...cur,
+          [dimId]: { p1: res.p1!, p2: res.p2!, labelUV: res.labelUV!, ordinate: res.ordinate }
+        }))
       } else if ('rim' in res && res.center && res.rim && res.labelUV) {
         setDimGeom((cur) => ({ ...cur, [dimId]: { center: res.center!, rim: res.rim!, labelUV: res.labelUV! } }))
       } else if ('arcRadius' in res && res.center && res.dir1 && res.dir2 && res.arcRadius !== undefined) {
@@ -2229,7 +2234,7 @@ export const DrawingSheet = forwardRef<
             {tool === 'dimension' && (
               <select
                 value={dimMode}
-                title="Dimension type - Distance needs two points, Radius/Diameter needs one circle edge, Angle needs two edges"
+                title="Dimension type - Distance/Ordinate X/Ordinate Y need two points (the first is the datum for ordinate), Radius/Diameter needs one circle edge, Angle needs two edges"
                 onChange={(e) => {
                   setDimMode(e.target.value as typeof dimMode)
                   setDimPending(null)
@@ -2237,6 +2242,8 @@ export const DrawingSheet = forwardRef<
                 style={{ marginLeft: 8 }}
               >
                 <option value="Distance">Distance</option>
+                <option value="DistanceX">Ordinate X</option>
+                <option value="DistanceY">Ordinate Y</option>
                 <option value="Radius">Radius</option>
                 <option value="Diameter">Diameter</option>
                 <option value="Angle">Angle</option>
@@ -3051,6 +3058,52 @@ export const DrawingSheet = forwardRef<
             const [p1x, p1y] = uvToLocal(pl, geom.p1)
             const [p2x, p2y] = uvToLocal(pl, geom.p2)
             const [labelX, labelY] = uvToLocal(pl, geom.labelUV)
+            if (geom.ordinate) {
+              // ordinate convention (DistanceX/DistanceY): from the
+              // measured point (p2, already axis-locked to the datum p1 by
+              // _dimension_geom's DistanceX/Y branch) a short extension
+              // line runs perpendicular to the baseline, then the
+              // dimension line itself runs along the axis out to the
+              // label - no arrowheads, no witness line back at the datum
+              // (the datum is implied by every ordinate dim on the same
+              // view sharing it, not re-marked on each one).
+              const dx = p2x - p1x
+              const dy = p2y - p1y
+              const len = Math.hypot(dx, dy) || 1
+              const ux = dx / len
+              const uy = dy / len
+              const perpx = -uy
+              const perpy = ux
+              // signed offset of the label off the p1-p2 axis (same
+              // decomposition set_dimension_geom's DistanceX/Y branch
+              // solves a drag against)
+              const offX = labelX - p2x
+              const offY = labelY - p2y
+              const perpOff = offX * perpx + offY * perpy
+              const baseX = p2x + perpx * perpOff
+              const baseY = p2y + perpy * perpOff
+              return (
+                <g
+                  key={d.id}
+                  transform={`translate(${pl.x} ${pl.y})`}
+                  stroke="#c47f16"
+                  fill="#c47f16"
+                  strokeWidth={0.25}
+                  style={{ cursor: 'move' }}
+                  onPointerDown={onDimPointerDown}
+                  onContextMenu={dimContextMenu}
+                >
+                  {/* extension line: measured point out to the offset baseline */}
+                  <line x1={p2x} y1={p2y} x2={baseX} y2={baseY} strokeWidth={0.2} />
+                  {/* dimension line: along the axis, datum-side to the label */}
+                  <line x1={p1x + perpx * perpOff} y1={p1y + perpy * perpOff} x2={baseX} y2={baseY} strokeWidth={0.2} />
+                  <text x={labelX} y={labelY} fontSize={3.4} textAnchor="middle" dominantBaseline="middle" stroke="none">
+                    {text}
+                  </text>
+                  {renderTolerance(labelX, labelY + 4, 'middle')}
+                </g>
+              )
+            }
             // the dimension line runs through the label, parallel to p1->p2;
             // each witness (extension) line runs from its measured point out
             // to that dimension line, standard technical-drawing convention.

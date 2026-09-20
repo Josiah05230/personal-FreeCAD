@@ -962,6 +962,35 @@ def _dimension_geom(dim):
     if not pts:
         return None
     p1, p2 = pts
+    if dim.Type in ("DistanceX", "DistanceY"):
+        # ordinate-style: the dimension/witness lines are locked to the
+        # sheet X or Y axis regardless of where p1/p2 actually sit (that's
+        # the whole point of DistanceX/DistanceY vs plain Distance) -
+        # previously this fell through to the generic branch below, which
+        # draws along the raw p1->p2 direction, wrong for anything not
+        # already axis-aligned (confirmed: _dimension_geom had no special
+        # case for these two types at all, despite _dimension_raw_value
+        # already computing the axis-locked VALUE correctly).
+        is_x = dim.Type == "DistanceX"
+        perp = (0.0, 1.0) if is_x else (1.0, 0.0)
+        perp_off = _get_tag(dim, _DIM_PERP_TAG, "")
+        try:
+            perp_off = float(perp_off)
+        except ValueError:
+            perp_off = 8.0
+        # p2 projected onto the axis through p1 - the dimension line runs
+        # from p1 to this axis-locked point, not to the raw (possibly
+        # off-axis) p2 itself.
+        proj = (p2[0], p1[1]) if is_x else (p1[0], p2[1])
+        label_u = _get_tag(dim, _DIM_LABEL_U_TAG, "")
+        try:
+            label_u = float(label_u)
+        except ValueError:
+            label_u = 0.5
+        midx = p1[0] + (proj[0] - p1[0]) * label_u
+        midy = p1[1] + (proj[1] - p1[1]) * label_u
+        label_uv = (midx + perp[0] * perp_off, midy + perp[1] * perp_off)
+        return {"p1": list(p1), "p2": list(proj), "labelUV": list(label_uv), "ordinate": True}
     dx, dy = p2[0] - p1[0], p2[1] - p1[1]
     length = math.hypot(dx, dy)
     if length < 1e-9:
@@ -1014,6 +1043,28 @@ def set_dimension_geom(doc, dim_id, label_uv):
     if not pts:
         raise RpcError(APP_ERROR, "dimension has no resolvable geometry")
     p1, p2 = pts
+
+    if dim.Type in ("DistanceX", "DistanceY"):
+        # solve against the AXIS-LOCKED line (p1 -> proj), same convention
+        # _dimension_geom uses for these two types - solving against the
+        # raw p1->p2 diagonal instead (like the generic branch below) would
+        # let the label drift as if it could move perpendicular to the
+        # actual measured axis, which it can't.
+        is_x = dim.Type == "DistanceX"
+        proj = (p2[0], p1[1]) if is_x else (p1[0], p2[1])
+        dx, dy = proj[0] - p1[0], proj[1] - p1[1]
+        length = math.hypot(dx, dy)
+        if length < 1e-9:
+            raise RpcError(APP_ERROR, "degenerate dimension (zero-length reference)")
+        ux, uy = dx / length, dy / length
+        perp = (0.0, 1.0) if is_x else (1.0, 0.0)
+        vx, vy = label_uv[0] - p1[0], label_uv[1] - p1[1]
+        label_u = (vx * ux + vy * uy) / length
+        perp_off = vx * perp[0] + vy * perp[1]
+        _tag(dim, _DIM_PERP_TAG, perp_off)
+        _tag(dim, _DIM_LABEL_U_TAG, label_u)
+        return _dimension_geom(dim)
+
     dx, dy = p2[0] - p1[0], p2[1] - p1[1]
     length = math.hypot(dx, dy)
     if length < 1e-9:

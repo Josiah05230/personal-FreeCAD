@@ -455,6 +455,11 @@ export interface DrawingDimension {
   p1?: [number, number]
   p2?: [number, number]
   labelUV?: [number, number]
+  /** true for DistanceX/DistanceY - the dimension/witness lines are axis-
+   *  locked (p2 is p1 projected onto that axis, not the raw referenced
+   *  point), the standard ordinate-dimensioning convention: no arrows, a
+   *  single leader-style line to the value. */
+  ordinate?: boolean
   /** Radius/Diameter: circle centre and one point on its rim (both 2D
    *  projected) - the leader runs from the centre out through/past the rim
    *  toward labelUV. */
@@ -1343,7 +1348,7 @@ export const api = {
   drawingMoveDimension: (dimId: string, labelUV: [number, number]) =>
     rpcQuiet<Pick<
       DrawingDimension,
-      'p1' | 'p2' | 'labelUV' | 'center' | 'rim' | 'dir1' | 'dir2' | 'arcRadius'
+      'p1' | 'p2' | 'labelUV' | 'center' | 'rim' | 'dir1' | 'dir2' | 'arcRadius' | 'ordinate'
     > | null>('drawing.moveDimension', { dimId, labelUV }),
   drawingSetDimensionFormat: (dimId: string, fmt: DimensionFormat | null) =>
     rpc<DimensionFormat | null>('drawing.setDimensionFormat', { dimId, fmt }),
