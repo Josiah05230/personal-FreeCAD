@@ -1103,6 +1103,17 @@ def _sub_point_2d(view, shape, sub, offset=None):
             return _project(view, v.Point, offset)
         if sub.startswith("Edge"):
             e = getattr(shape, sub)
+            # A hole rim is dimensioned to its CENTRE - that is what a
+            # hole-to-hole distance means in every CAD system, and it is
+            # already how list_snap_targets reports a circle (centre+radius)
+            # for picking. Resolving it like any other edge instead took
+            # valueAt(FirstParameter), i.e. wherever the circle's seam vertex
+            # happened to sit, so a distance between two holes came out wrong
+            # by their two radii (confirmed live: two holes 104.775 apart,
+            # Ø19.05 and Ø7.14, dimensioned as 110.728) - a sheet that reads
+            # a plausible but simply untrue number.
+            if e.isClosed() and hasattr(e.Curve, "Center"):
+                return _project(view, e.Curve.Center, offset)
             return _project(view, e.valueAt(e.FirstParameter), offset)
     except Exception:
         return None
