@@ -202,7 +202,7 @@ function ViewBox({
   snapTargets: SnapTarget[]
   onDown: (e: React.PointerEvent) => void
   onContextMenu: (e: React.MouseEvent) => void
-  onPick: (sub: string, p: [number, number]) => void
+  onPick: (sub: string, p: [number, number], kind?: SnapTarget['kind']) => void
   onHover: (over: boolean) => void
 }): JSX.Element {
   const { view } = placed
@@ -241,11 +241,20 @@ function ViewBox({
     let best: SnapTarget | null = null
     let bestD = Infinity
     for (const t of snapTargets) {
-      const d = t.p
-        ? Math.hypot(t.p[0] - p[0], t.p[1] - p[1])
-        : t.p1 && t.p2
-          ? distToSegment(p, t.p1, t.p2)
-          : Infinity
+      // a circular edge's p1/p2 are the SAME point (a full circle has no
+      // distinct first/last parameter), so distToSegment on them would only
+      // ever match a click on that one spot of the rim - use the real
+      // distance to the circle's curve instead when center/radius are
+      // present (user report, 2026-09-20: clicking a visibly-on-circle
+      // point still created a Radius dimension with value=null).
+      const d =
+        t.center && t.radius !== undefined
+          ? Math.abs(Math.hypot(t.center[0] - p[0], t.center[1] - p[1]) - t.radius)
+          : t.p
+            ? Math.hypot(t.p[0] - p[0], t.p[1] - p[1])
+            : t.p1 && t.p2
+              ? distToSegment(p, t.p1, t.p2)
+              : Infinity
       if (d < bestD) {
         bestD = d
         best = t
@@ -274,7 +283,7 @@ function ViewBox({
     if (tool === 'dimension' || tool === 'cleanup') {
       const p = toData(e)
       const target = nearestTarget(p)
-      onPick(target?.sub ?? '', target ? (target.p ?? target.p1 ?? p) : p)
+      onPick(target?.sub ?? '', target ? (target.p ?? target.p1 ?? p) : p, target?.kind)
     }
   }
 
@@ -289,7 +298,17 @@ function ViewBox({
     }
     const p = toData(e)
     const target = nearestTarget(p)
-    setSnapHover(target ? (target.p ?? target.p1 ?? null) : null)
+    if (target?.center && target.radius !== undefined) {
+      // nearest point ON the circle to the cursor, not the degenerate p1 -
+      // otherwise the hover ring would jump to one fixed spot on the rim
+      // regardless of where the cursor actually is.
+      const dx = p[0] - target.center[0]
+      const dy = p[1] - target.center[1]
+      const len = Math.hypot(dx, dy) || 1
+      setSnapHover([target.center[0] + (dx / len) * target.radius, target.center[1] + (dy / len) * target.radius])
+    } else {
+      setSnapHover(target ? (target.p ?? target.p1 ?? null) : null)
+    }
   }
 
   return (
@@ -562,7 +581,17 @@ export const DrawingSheet = forwardRef<
     viewId: string
     sub: string
     p: [number, number]
+    kind?: SnapTarget['kind']
   } | null>(null)
+  // which dimension TYPE the next placement creates - previously the
+  // dimension tool only ever created a Distance dimension; Radius/
+  // Diameter/Angle were only reachable by converting an existing Distance
+  // dimension via its context menu, or a raw RPC call, with no way to
+  // place one interactively at all (user question, 2026-09-19 audit: "is
+  // there a way to... add various tolerances" implied full dimension
+  // support, and Angle/ordinate markings were separately called out as a
+  // requirement). Distance stays the default since it's the common case.
+  const [dimMode, setDimMode] = useState<'Distance' | 'Radius' | 'Diameter' | 'Angle'>('Distance')
   // p1/p2 are the two picked points (view-UV space) a dimension measures
   // between, and labelUV is where its value text sits (also view-UV) - all
   // three needed to draw real witness/extension lines, not just floating
@@ -968,11 +997,49 @@ export const DrawingSheet = forwardRef<
 
   const onViewPick = useCallback(
     (viewId: string) =>
-      (sub: string, p: [number, number]) => {
+      (sub: string, p: [number, number], kind?: SnapTarget['kind']) => {
         if (!sub) return
         if (tool === 'dimension') {
+          if (dimMode === 'Radius' || dimMode === 'Diameter') {
+            // single pick, must land on a circular edge - the server itself
+            // validates it's actually circular (_dimension_radial_source
+            // checks Curve.Radius), this just gives an immediate, specific
+            // error instead of a generic "value came back null" symptom.
+            if (kind !== 'edge') {
+              window.alert('Pick a circle/arc edge for a Radius or Diameter dimension.')
+              return
+            }
+            void addDimension(viewId, [{ sub }], dimMode)
+            setDimPending(null)
+            return
+          }
+          if (dimMode === 'Angle') {
+            // two picks, both edges (the two sides of the angle) - unlike
+            // Distance/Radius this never needs dimPending's `p`, only which
+            // edges were picked, so a same-point guard doesn't apply the
+            // same way (picking the SAME edge twice is still meaningless,
+            // guarded below).
+            if (kind !== 'edge') {
+              window.alert('Pick an edge (one side of the angle).')
+              return
+            }
+            if (!dimPending) {
+              setDimPending({ viewId, sub, p, kind })
+            } else if (dimPending.viewId === viewId) {
+              if (sub === dimPending.sub) {
+                window.alert('Pick a different edge for the second side of the angle.')
+                return
+              }
+              void addDimension(viewId, [{ sub: dimPending.sub }, { sub }], 'Angle')
+              setDimPending(null)
+            } else {
+              setDimPending({ viewId, sub, p, kind })
+            }
+            return
+          }
+          // Distance: two picks, vertex or edge-endpoint, same as always.
           if (!dimPending) {
-            setDimPending({ viewId, sub, p })
+            setDimPending({ viewId, sub, p, kind })
           } else if (dimPending.viewId === viewId) {
             // guard against the same point picked twice (two clicks that
             // both snapped to the identical vertex/edge-end) - that used to
@@ -992,20 +1059,20 @@ export const DrawingSheet = forwardRef<
             })
             setDimPending(null)
           } else {
-            setDimPending({ viewId, sub, p })
+            setDimPending({ viewId, sub, p, kind })
           }
         }
         // cleanup-line placement is handled via ViewBox's own two-click
         // sequence below (see cleanupPending)
       },
-    [tool, dimPending, addDimension]
+    [tool, dimMode, dimPending, addDimension]
   )
 
   const [cleanupPending, setCleanupPending] = useState<{ viewId: string; p: [number, number] } | null>(null)
 
   const onViewPickPoint = useCallback(
     (viewId: string) =>
-      (sub: string, p: [number, number]) => {
+      (sub: string, p: [number, number], kind?: SnapTarget['kind']) => {
         if (tool === 'cleanup') {
           if (!cleanupPending) {
             setCleanupPending({ viewId, p })
@@ -1032,7 +1099,7 @@ export const DrawingSheet = forwardRef<
           }
           return
         }
-        onViewPick(viewId)(sub, p)
+        onViewPick(viewId)(sub, p, kind)
       },
     [tool, cleanupPending, onViewPick, pushUndo]
   )
@@ -2109,6 +2176,22 @@ export const DrawingSheet = forwardRef<
         {tool !== 'select' && (
           <span className="drawing-tool-active">
             {tool === 'dimension' ? 'Dimension' : tool === 'note' ? 'Note' : 'Cleanup Line'} tool active
+            {tool === 'dimension' && (
+              <select
+                value={dimMode}
+                title="Dimension type - Distance needs two points, Radius/Diameter needs one circle edge, Angle needs two edges"
+                onChange={(e) => {
+                  setDimMode(e.target.value as typeof dimMode)
+                  setDimPending(null)
+                }}
+                style={{ marginLeft: 8 }}
+              >
+                <option value="Distance">Distance</option>
+                <option value="Radius">Radius</option>
+                <option value="Diameter">Diameter</option>
+                <option value="Angle">Angle</option>
+              </select>
+            )}
             <button
               onClick={() => {
                 setTool('select')

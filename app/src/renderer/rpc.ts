@@ -512,6 +512,11 @@ export interface SnapTarget {
   p1?: [number, number]
   p2?: [number, number]
   p?: [number, number]
+  /** present for a circular edge (a full circle has no distinct first/last
+   *  point, so p1/p2 alone can only ever match a click on that one point of
+   *  the rim - center/radius let the client hit-test the whole curve). */
+  center?: [number, number]
+  radius?: number
 }
 
 export interface BomRow {

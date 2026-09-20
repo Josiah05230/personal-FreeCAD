@@ -1172,8 +1172,27 @@ def list_snap_targets(doc, view_id):
             try:
                 a = _project(view, e.valueAt(e.FirstParameter), offset)
                 b = _project(view, e.valueAt(e.LastParameter), offset)
-                targets.append({"sub": "Edge%d" % i, "kind": "edge",
-                                 "p1": [a[0], a[1]], "p2": [b[0], b[1]]})
+                target = {"sub": "Edge%d" % i, "kind": "edge",
+                          "p1": [a[0], a[1]], "p2": [b[0], b[1]]}
+                # a full circle's first/last parameter are the SAME point
+                # (a==b above), so a straight-segment hit test can only ever
+                # match a click landing on that one specific point on the
+                # rim, nowhere else on the circle - Radius/Diameter picking
+                # was effectively unusable except by luck (confirmed live:
+                # a click clearly on the visible circle, just not that exact
+                # point, silently created a dimension with value=null).
+                # Reporting the circle's own centre+radius lets the client
+                # do a real point-to-circle distance test instead.
+                if hasattr(e.Curve, "Radius") and hasattr(e.Curve, "Center"):
+                    c = _project(view, e.Curve.Center, offset)
+                    # radius in the SAME already-projected 2D frame as p1/p2
+                    # above (not a raw model-space value scaled by hand) -
+                    # measured as the projected distance from centre to the
+                    # rim point already computed as `a`, so it's correct
+                    # regardless of view scale/projection direction.
+                    target["center"] = [c[0], c[1]]
+                    target["radius"] = math.hypot(a[0] - c[0], a[1] - c[1])
+                targets.append(target)
             except Exception:
                 continue
         for i, v in enumerate(shape.Vertexes, 1):
