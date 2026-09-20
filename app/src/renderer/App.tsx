@@ -303,6 +303,8 @@ export function App(): JSX.Element {
   // 2026-09-20: "there is a special move/drag tool ... so that the user's
   // mouse isn't always doing that").
   const [asmTool, setAsmTool] = useState<'select' | 'move'>('select')
+  const [asmExploded, setAsmExploded] = useState(false)
+  const [asmExplodeDistance, setAsmExplodeDistance] = useState(1.5)
 
   const [sketchSession, setSketchSession] = useState<{
     sketchId: string
@@ -429,8 +431,17 @@ export function App(): JSX.Element {
         .asmPinRead(docPath)
         .then(setAsmPins)
         .catch(() => setAsmPins({}))
+      // restore the exploded-view toggle from the document's own stored
+      // per-component offsets, instead of resetting to "off" on every open -
+      // explode state is real geometry state (a Placement offset), same as
+      // any other saved position, so reopening a document you left exploded
+      // should show it exploded.
+      void api.assemblyExplodeState().then((s) => {
+        setAsmExploded(s.active)
+      }).catch(() => setAsmExploded(false))
     } else {
       setAsmPins({})
+      setAsmExploded(false)
     }
     done()
   }, [applySceneTree, docPath])
@@ -3562,6 +3573,34 @@ export function App(): JSX.Element {
     await refreshScene()
   }, [refreshScene])
 
+  const asmExplodeToggle = useCallback(
+    async (on: boolean) => {
+      if (on) await api.assemblyExplodeAuto(asmExplodeDistance)
+      const r = await api.assemblyExplodeSetActive(on)
+      setAsmExploded(on)
+      setAsmTree(r)
+      await refreshScene()
+    },
+    [asmExplodeDistance, refreshScene]
+  )
+  const asmExplodeDistanceChange = useCallback(
+    async (d: number) => {
+      setAsmExplodeDistance(d)
+      if (!asmExploded) return
+      // re-explode at the new spread: turn off (restores assembled
+      // placement exactly), recompute offsets at the new distance, turn
+      // back on - simpler and just as correct as scaling the existing
+      // offsets in place, and it can't accumulate floating-point drift
+      // across repeated slider moves.
+      await api.assemblyExplodeSetActive(false)
+      await api.assemblyExplodeAuto(d)
+      const r = await api.assemblyExplodeSetActive(true)
+      setAsmTree(r)
+      await refreshScene()
+    },
+    [asmExploded, refreshScene]
+  )
+
   // test / automation bridge - drives the same handlers the buttons call, so an
   // out-of-band script can exercise the app end to end (see test/e2e).
   useEffect(() => {
@@ -4735,6 +4774,10 @@ export function App(): JSX.Element {
                       onSetPin={setComponentPin}
                       tool={asmTool}
                       onSetTool={setAsmTool}
+                      exploded={asmExploded}
+                      explodeDistance={asmExplodeDistance}
+                      onExplodeToggle={(on) => void asmExplodeToggle(on)}
+                      onExplodeDistanceChange={(d) => void asmExplodeDistanceChange(d)}
                     />
                   )}
                   {op && (

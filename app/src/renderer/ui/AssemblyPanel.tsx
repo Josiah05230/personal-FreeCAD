@@ -24,7 +24,11 @@ export function AssemblyPanel({
   pins,
   onSetPin,
   tool,
-  onSetTool
+  onSetTool,
+  exploded,
+  explodeDistance,
+  onExplodeToggle,
+  onExplodeDistanceChange
 }: {
   tree: AssemblyTree | null
   selection: Selection[]
@@ -44,6 +48,13 @@ export function AssemblyPanel({
    *  a separate mode so dragging never fights face-picking. */
   tool: 'select' | 'move'
   onSetTool: (t: 'select' | 'move') => void
+  /** Exploded view: on/off, and the spread distance multiplier (1 = the
+   *  assembly's own bounding radius) that onExplodeDistanceChange feeds
+   *  back into a fresh explodeAuto call each time the slider moves. */
+  exploded: boolean
+  explodeDistance: number
+  onExplodeToggle: (on: boolean) => void
+  onExplodeDistanceChange: (d: number) => void
 }): JSX.Element {
   const faceSel = selection.filter((s) => s.kind === 'face')
   const canJoint = faceSel.length === 2 && faceSel[0].bodyId !== faceSel[1].bodyId
@@ -168,6 +179,31 @@ export function AssemblyPanel({
         {canJoint
           ? 'Ready: 2 faces on 2 components selected'
           : 'Select one face on each of two components'}
+      </div>
+
+      <div className="asm-section">Exploded View</div>
+      <div className="asm-explode">
+        <button
+          className={exploded ? 'asm-tool on' : 'asm-tool'}
+          disabled={!tree || tree.components.length < 2}
+          onClick={() => onExplodeToggle(!exploded)}
+        >
+          {exploded ? 'Exploded' : 'Explode'}
+        </button>
+        <input
+          type="range"
+          min={0.3}
+          max={4}
+          step={0.1}
+          value={explodeDistance}
+          disabled={!exploded}
+          onChange={(e) => onExplodeDistanceChange(Number(e.target.value))}
+        />
+      </div>
+      <div className="asm-hint small">
+        {tree && tree.components.length < 2
+          ? 'Needs at least 2 components.'
+          : 'Spreads components apart from the assembly centre - a drawing view can capture this pose alongside normal ones.'}
       </div>
     </div>
   )

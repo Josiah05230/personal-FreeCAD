@@ -77,6 +77,7 @@ _NO_TXN = {
     "datum.planePreview", "kicad.status", "sketch.solve",
     "sketch.dragStart", "sketch.dragMove", "sketch.dragEnd",
     "assembly.dragStart", "assembly.dragMove",
+    "assembly.explodeSet", "assembly.explodeState",
     "feature.previewUpdate", "feature.editPreview", "feature.get",
     "feature.previewSetBase",
     "appearance.get", "appearance.set", "appearance.clear",

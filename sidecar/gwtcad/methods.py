@@ -5219,6 +5219,21 @@ def drawing_add_view(pageId, bodyId=None, direction="front", scale=1.0):
         src = d.getObject(bodyId)
     if src is None:
         src = session.active_body(d)
+    # active_body() only knows PartDesign::Body, which for an assembly
+    # document is always the empty starter body (real component geometry
+    # lives in App::Link objects, never wrapped in a body) - it silently
+    # "succeeded" with a source that has no solid, so make_view built a real
+    # TechDraw::DrawViewPart with nothing to project ("drawing view produced
+    # no geometry", confirmed live trying to put an exploded assembly on a
+    # drawing sheet, 2026-09-20). TechDraw's own Source property natively
+    # accepts a LIST of objects and unions their projected geometry - the
+    # same mechanism the GUI uses for "select the whole assembly, add view" -
+    # so when the resolved single source has no real geometry, fall back to
+    # every link in the assembly instead of raising.
+    if src is not None and getattr(src, "TypeId", None) == "PartDesign::Body" and not getattr(src, "Tip", None):
+        links = [o for o in d.Objects if o.TypeId == "App::Link"]
+        if links:
+            return _drawing.make_view(d, pageId, links, direction, float(scale))
     if src is None:
         raise RpcError(APP_ERROR, "no body to project")
     return _drawing.make_view(d, pageId, src, direction, float(scale))
@@ -5474,6 +5489,32 @@ def assembly_drag_move(dragId, base, axis, angle=0.0):
 def assembly_drag_end(dragId):
     d = session.doc()
     return _assembly.drag_end(d, dragId)
+
+
+@method("assembly.explodeAuto")
+def assembly_explode_auto(distance=1.5):
+    d = session.doc()
+    return _assembly.explode_auto(d, float(distance))
+
+
+@method("assembly.explodeSet")
+def assembly_explode_set(componentId, offset):
+    d = session.doc()
+    return _assembly.explode_set(d, componentId, offset)
+
+
+@method("assembly.explodeSetActive")
+def assembly_explode_set_active(active):
+    d = session.doc()
+    return _assembly.explode_set_active(d, bool(active))
+
+
+@method("assembly.explodeState")
+def assembly_explode_state():
+    d = session.doc(create=False)
+    if d is None:
+        return {"components": [], "active": False}
+    return _assembly.explode_state(d)
 
 
 @method("assembly.tree")

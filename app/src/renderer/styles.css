@@ -2288,6 +2288,22 @@ code {
   color: #fff;
 }
 
+.asm-explode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+}
+
+.asm-explode .asm-tool {
+  flex: 0 0 auto;
+  padding: 3px 12px;
+}
+
+.asm-explode input[type='range'] {
+  flex: 1;
+}
+
 .asm-row {
   display: flex;
   align-items: center;

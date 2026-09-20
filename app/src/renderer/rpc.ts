@@ -1380,6 +1380,32 @@ export const api = {
     ),
   assemblyDragEnd: (dragId: string) => rpcQuiet<{ ok: boolean }>('assembly.dragEnd', { dragId }),
 
+  /** Exploded view: explodeAuto computes a per-component offset (radiating
+   *  outward from the assembly's own bounding centre) and WRITES it, without
+   *  moving anything yet; explodeSetActive applies/removes every stored
+   *  offset on top of the current assembled (joint-solved) placement, so
+   *  toggling off always restores exactly what the joints/drag left it at.
+   *  explodeSet overrides one component's offset by hand (a drag-the-part
+   *  or type-a-distance path); explodeState reads back the current offsets
+   *  + on/off flag for the panel to restore on reopen. */
+  assemblyExplodeAuto: (distance = 1.5) =>
+    rpc<{ components: { id: string; offset: [number, number, number] }[] }>(
+      'assembly.explodeAuto',
+      { distance }
+    ),
+  assemblyExplodeSet: (componentId: string, offset: [number, number, number]) =>
+    rpcQuiet<{ id: string; offset: [number, number, number] }>('assembly.explodeSet', {
+      componentId,
+      offset
+    }),
+  assemblyExplodeSetActive: (active: boolean) =>
+    rpc<AssemblyTree>('assembly.explodeSetActive', { active }),
+  assemblyExplodeState: () =>
+    rpcQuiet<{
+      components: { id: string; offset: [number, number, number]; active: boolean }[]
+      active: boolean
+    }>('assembly.explodeState'),
+
   setVisibility: (id: string, visible: boolean) =>
     rpc<{ id: string; visible: boolean }>('object.setVisibility', { id, visible }),
   setVisibilityGroup: (group: string, visible: boolean) =>

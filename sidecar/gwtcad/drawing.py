@@ -338,13 +338,17 @@ def _part_view_payload(view):
 
 
 def make_view(doc, page_id, source_obj, direction="front", scale=1.0):
+    """source_obj is normally a single body/object; also accepts a real list
+    (an assembly's several App::Link components) - TechDraw's own Source
+    property natively unions the projected geometry of every object in it,
+    same mechanism the GUI uses for "select the whole assembly, add view"."""
     page = get_page(doc, page_id)
     direction = _norm_dir(direction)
     d = _DIRS[direction]
 
     view = doc.addObject("TechDraw::DrawViewPart", "View")
     page.addView(view)
-    view.Source = [source_obj]
+    view.Source = list(source_obj) if isinstance(source_obj, (list, tuple)) else [source_obj]
     view.Direction = App.Vector(*d)
     view.Scale = float(scale)
     view.Label = "%s view" % direction.title()

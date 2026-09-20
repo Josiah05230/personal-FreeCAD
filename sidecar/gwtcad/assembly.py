@@ -335,6 +335,130 @@ def drag_end(doc, drag_id):
     return {"ok": True}
 
 
+# --------------------------------------------------------------------------- #
+# exploded view: a per-component offset layered ON TOP of the assembled
+# (joint-solved) Placement, not a replacement for it - so turning explode off
+# always restores exactly whatever the joints/drag left the assembly at,
+# never a separately-drifting second copy of position state.
+# --------------------------------------------------------------------------- #
+_EXPLODE_PROP = "GwtExplodeOffset"
+_EXPLODE_STATE_PROP = "GwtExploded"
+
+
+def _explode_links(doc):
+    return [o for o in doc.Objects if o.TypeId == "App::Link"]
+
+
+def _ensure_explode_prop(link):
+    if _EXPLODE_PROP not in link.PropertiesList:
+        link.addProperty("App::PropertyVector", _EXPLODE_PROP, "GWT",
+                          "Exploded-view offset, added on top of the assembled Placement")
+    return link
+
+
+def explode_auto(doc, distance=1.5):
+    """Compute a default per-component offset: push each component away from
+    the assembly's overall centre along the line from that centre to the
+    component's own bounding-box centre, scaled by `distance` (a multiplier
+    on the assembly's own bounding radius, not an absolute mm value, so the
+    same call gives a sensible spread whether the assembly is a 40mm PCB
+    stack or a 2m enclosure). A component sitting exactly on the assembly
+    centre (radial direction undefined) falls back to +Z so it still moves
+    instead of staying put and overlapping everything else.
+
+    This only WRITES the offsets (as a per-link property, not a live
+    Placement change) - explode_set_active applies/removes them. Splitting
+    "compute" from "apply" lets the UI show a distance slider that re-applies
+    instantly without recomputing directions each time."""
+    import Part
+    from FreeCAD import Vector
+    links = _explode_links(doc)
+    if len(links) < 2:
+        return {"components": []}
+    centers = []
+    overall = App.BoundBox()
+    for link in links:
+        shape = Part.getShape(link, transform=True)
+        bb = shape.BoundBox
+        centers.append((link, bb.Center))
+        overall.add(bb)
+    assembly_center = overall.Center
+    radius = max(overall.DiagonalLength / 2.0, 1.0)
+    out = []
+    for link, center in centers:
+        direction = center - assembly_center
+        if direction.Length < 1e-6:
+            direction = Vector(0, 0, 1)
+        else:
+            direction.normalize()
+        offset = direction * radius * float(distance)
+        _ensure_explode_prop(link)
+        setattr(link, _EXPLODE_PROP, offset)
+        out.append({"id": link.Name, "offset": [offset.x, offset.y, offset.z]})
+    doc.recompute()
+    return {"components": out}
+
+
+def explode_set(doc, component_id, offset):
+    """Set one component's explode offset directly (drag-a-slider / type-a-
+    distance path, as an alternative to explode_auto's computed spread)."""
+    link = doc.getObject(component_id)
+    if link is None:
+        raise RpcError(APP_ERROR, "no component %r" % component_id)
+    from FreeCAD import Vector
+    _ensure_explode_prop(link)
+    setattr(link, _EXPLODE_PROP, Vector(*offset))
+    doc.recompute()
+    return {"id": component_id, "offset": list(offset)}
+
+
+def explode_set_active(doc, active):
+    """Toggle exploded view on/off. ON: each link's Placement.Base gets its
+    stored GwtExplodeOffset added, on top of whatever the assembled
+    (joint-solved) position currently is. OFF: the offset is subtracted back
+    out, exactly restoring the assembled position - explode never overwrites
+    or forgets the assembled placement, it only displaces the render/export
+    view of it. A link with no offset property yet (explode_auto/explode_set
+    never called for it) is left untouched either way."""
+    from FreeCAD import Vector
+    active = bool(active)
+    for link in _explode_links(doc):
+        offset = getattr(link, _EXPLODE_PROP, None)
+        if offset is None or offset.Length < 1e-9:
+            continue
+        currently = bool(getattr(link, _EXPLODE_STATE_PROP, False))
+        if active and not currently:
+            link.Placement.Base = link.Placement.Base + offset
+        elif not active and currently:
+            link.Placement.Base = link.Placement.Base - offset
+        if _EXPLODE_STATE_PROP not in link.PropertiesList:
+            link.addProperty("App::PropertyBool", _EXPLODE_STATE_PROP, "GWT",
+                              "Whether this component's explode offset is currently applied")
+        setattr(link, _EXPLODE_STATE_PROP, active)
+    doc.recompute()
+    return tree(doc)
+
+
+def explode_state(doc):
+    """Current per-component offsets and whether explode is active - for the
+    panel to restore its sliders/toggle on reopen without re-running
+    explode_auto (which would silently discard any hand-tuned offsets)."""
+    out = []
+    any_active = False
+    for link in _explode_links(doc):
+        offset = getattr(link, _EXPLODE_PROP, None)
+        if offset is None:
+            continue
+        active = bool(getattr(link, _EXPLODE_STATE_PROP, False))
+        any_active = any_active or active
+        out.append({
+            "id": link.Name,
+            "offset": [offset.x, offset.y, offset.z],
+            "active": active,
+        })
+    return {"components": out, "active": any_active}
+
+
 def tree(doc):
     asm = None
     for o in doc.Objects:

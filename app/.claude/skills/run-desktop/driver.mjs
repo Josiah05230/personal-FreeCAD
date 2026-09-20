@@ -121,6 +121,13 @@ const COMMANDS = {
     console.log(`ctrl-clicked (${x},${y})`);
   },
 
+  async 'dbl-click'(argstr) {
+    if (!page) return console.log('ERROR: launch first');
+    const [x, y] = (argstr || '').split(/\s+/).map(Number);
+    await page.mouse.dblclick(x, y);
+    console.log(`dbl-clicked (${x},${y})`);
+  },
+
   // pause between chained commands sent in one tmux send-keys batch, so a
   // whole multi-step flow can be queued at once without each step racing the
   // previous one's async completion
