@@ -21,6 +21,7 @@ import { basename } from '../util'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { promptText, promptForm, promptMultiline } from './PromptDialog'
 import { formatDimension, formatDimensionTolerance, DEFAULT_DIM_FORMAT } from '../dimensionFormat'
+import { resolveFitClass } from '../iso286'
 
 interface Placed {
   view: DrawingView
@@ -2639,25 +2640,56 @@ export const DrawingSheet = forwardRef<
                         options: ['off', 'symmetric', 'deviation']
                       },
                       {
+                        key: 'fitClass',
+                        label: 'ISO fit class (e.g. H7, g6) - fills +/- below',
+                        value: '',
+                        placeholder: 'leave blank to enter +/- manually'
+                      },
+                      {
                         key: 'tolerancePlus',
-                        label: 'Tolerance + (symmetric: ± value)',
+                        label: 'Upper deviation, mm (symmetric mode: the ± value)',
                         value: fmt.tolerancePlus !== undefined && fmt.tolerancePlus !== null ? String(fmt.tolerancePlus) : ''
                       },
                       {
                         key: 'toleranceMinus',
-                        label: 'Tolerance - (deviation mode only)',
+                        label: 'Lower deviation, mm - signed (deviation mode only, e.g. -0.05)',
                         value: fmt.toleranceMinus !== undefined && fmt.toleranceMinus !== null ? String(fmt.toleranceMinus) : ''
                       }
                     ])
                     if (!res) return
                     const toleranceMode = (res.toleranceMode as DimensionFormat['toleranceMode']) ?? 'off'
+                    let tolerancePlus = res.tolerancePlus.trim() === '' ? undefined : Number(res.tolerancePlus)
+                    let toleranceMinus = res.toleranceMinus.trim() === '' ? undefined : Number(res.toleranceMinus)
+                    // a fit class (e.g. "H7") resolves against this
+                    // dimension's own nominal value and overrides whatever
+                    // was typed in the +/- fields - ISO 286 gives an upper
+                    // and lower LIMIT DEVIATION, not a symmetric +/- band,
+                    // so picking one always produces deviation-mode numbers
+                    // (a fit's tolerance is essentially never symmetric).
+                    // Both fields are the genuinely signed limit deviations
+                    // (see formatDimensionTolerance's comment) - e.g. f7
+                    // resolves to tolerancePlus=-0.025, toleranceMinus=-0.050,
+                    // both negative, which a "+X/-Y" magnitude convention
+                    // could never represent correctly.
+                    if (res.fitClass.trim() && d.value !== null) {
+                      const limits = resolveFitClass(res.fitClass.trim(), d.value)
+                      if (!limits) {
+                        window.alert(
+                          `Unrecognized or unsupported fit class "${res.fitClass.trim()}". ` +
+                            `Supported: H7/H8/H9/H11 (holes), g6/f7/e8/e9/d9/d10/h6/h7/h9/k6/n6/p6/s6 (shafts).`
+                        )
+                        return
+                      }
+                      tolerancePlus = limits.upper
+                      toleranceMinus = limits.lower
+                    }
                     const newFmt: DimensionFormat = {
                       precision: Number(res.precision) || 0,
                       leadingZero: res.leadingZero !== 'no',
                       trailingZeros: res.trailingZeros !== 'no',
                       toleranceMode,
-                      tolerancePlus: res.tolerancePlus.trim() === '' ? undefined : Number(res.tolerancePlus),
-                      toleranceMinus: res.toleranceMinus.trim() === '' ? undefined : Number(res.toleranceMinus)
+                      tolerancePlus,
+                      toleranceMinus
                     }
                     await api.drawingSetDimensionFormat(d.id, newFmt)
                     void refreshDimFormats()

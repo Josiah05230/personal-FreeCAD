@@ -59,15 +59,18 @@ export function formatDimensionTolerance(
     if (t === undefined || t === null || !(t >= 0)) return null
     return { lines: [`±${fixed(t)}`] }
   }
-  // deviation: plus and minus are independent magnitudes (minus is stored
-  // positive - a hole/shaft tolerance band is almost never symmetric, so
-  // forcing a sign convention on the input would just invite mistakes;
-  // the renderer always shows plus as "+" and minus as "-").
+  // deviation: tolerancePlus/toleranceMinus are the upper/lower LIMIT
+  // DEVIATIONS themselves, genuinely signed (not magnitudes with a forced
+  // +/- glyph) - a real ISO fit's two limits are very often the same sign
+  // (e.g. f7 is -0.025/-0.050, a clearance shaft with both limits below
+  // nominal), which a hardcoded "+ this / - that" display can't represent
+  // at all. Each line still gets an explicit leading sign for readability
+  // (a bare "0.025" reads ambiguously on a drawing), but that sign now
+  // reflects the value's own sign rather than which field it came from.
   const plus = fmt.tolerancePlus
   const minus = fmt.toleranceMinus
   if ((plus === undefined || plus === null) && (minus === undefined || minus === null)) return null
-  const lines: string[] = []
-  lines.push(`+${fixed(plus ?? 0)}`)
-  lines.push(`-${fixed(minus ?? 0)}`)
+  const signed = (n: number): string => (n < 0 ? `-${fixed(n)}` : `+${fixed(n)}`)
+  const lines: string[] = [signed(plus ?? 0), signed(minus ?? 0)]
   return { lines }
 }
