@@ -61,6 +61,8 @@ operation dialog and asserts its OK button actually becomes pressable
 - `test/e2e/` - the end-to-end suite and the always-on fuzzer.
 - `scripts/` - dev / build / packaging helpers.
 - `docs/` - design decisions, status, the Fusion-parity gap list, live feedback.
+- `models/` - real parts built with the app, each with the script that
+  generates it (see `models/hes-9400-spacer/`).
 
 ## Running (dev)
 
