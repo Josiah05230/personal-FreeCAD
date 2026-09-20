@@ -550,12 +550,31 @@ export interface SheetTemplate {
   builtin: boolean
 }
 
+export interface TableMerge {
+  r: number
+  c: number
+  rs: number
+  cs: number
+}
+
+export interface TableStyle {
+  x?: number
+  y?: number
+  showGrid?: boolean
+  gridColor?: string
+  rowHeight?: number
+  colWidths?: number[]
+  rowHeights?: number[]
+  merges?: TableMerge[]
+}
+
 export interface DrawingTable {
   id: string
   sheetId: string
   pageId: string
   columns: TableColumn[]
   rows: BomRow[]
+  style?: TableStyle
 }
 
 export interface DrawingPageContents {
@@ -1365,10 +1384,17 @@ export const api = {
     rows: Array<BomRow | Record<string, string | number>>,
     columns?: TableColumn[],
     template?: TableTemplate['spec'],
-    tableId?: string
+    tableId?: string,
+    style?: TableStyle
   ) =>
-    rpc<DrawingTable>('drawing.makeTable', { pageId, rows, columns, template, tableId }),
+    rpc<DrawingTable>('drawing.makeTable', { pageId, rows, columns, template, tableId, style }),
   drawingRemoveTable: (tableId: string) => rpc<{ ok: boolean }>('drawing.removeTable', { tableId }),
+  drawingUpdateTableStyle: (tableId: string, style: TableStyle) =>
+    rpcQuiet<TableStyle>('drawing.updateTableStyle', { tableId, style }),
+  drawingMergeTableCells: (tableId: string, r: number, c: number, rs: number, cs: number) =>
+    rpc<TableStyle>('drawing.mergeTableCells', { tableId, r, c, rs, cs }),
+  drawingUnmergeTableCells: (tableId: string, r: number, c: number) =>
+    rpc<TableStyle>('drawing.unmergeTableCells', { tableId, r, c }),
   drawingSaveTableTemplate: (name: string, spec: TableTemplate['spec']) =>
     rpc<TableTemplate>('drawing.saveTableTemplate', { name, spec }),
   drawingListTableTemplates: () =>

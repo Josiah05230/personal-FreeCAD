@@ -318,8 +318,10 @@ def page_contents(doc, page_id):
                             rowvals[c["source"]] = ""
                     rows.append(rowvals)
                     row += 1
+            from . import tables as _tables
             tables.append({"id": o.Name, "sheetId": sheet.Name if sheet else "",
-                            "pageId": page.Name, "columns": columns, "rows": rows})
+                            "pageId": page.Name, "columns": columns, "rows": rows,
+                            "style": _tables.table_style(o)})
     cleanup_lines = {}
     for v in views:
         cl = list_cleanup_lines(doc, v["id"])

@@ -136,7 +136,7 @@ def _cell_value(row, col):
     return str(row.get(src, ""))
 
 
-def make_table(doc, page_id, rows, columns=None, template=None, table_id=None):
+def make_table(doc, page_id, rows, columns=None, template=None, table_id=None, style=None):
     from . import drawing as _drawing
 
     page = _drawing.get_page(doc, page_id)
@@ -203,12 +203,129 @@ def make_table(doc, page_id, rows, columns=None, template=None, table_id=None):
         view.TextSize = text_size
     except Exception:
         pass
+    if style:
+        _apply_table_style(view, style)
+    elif "_gwt_style" not in view.PropertiesList:
+        # brand-new table, no style passed - persist the same defaults the
+        # frontend has always applied client-side, so the very first
+        # page_contents() after creation already has something to read
+        # instead of the caller needing a round-trip just to establish one.
+        _apply_table_style(view, {"showGrid": True, "gridColor": "#111111", "rowHeight": 5})
     doc.recompute()
 
     return {
         "id": view.Name, "sheetId": sheet.Name, "pageId": page.Name,
-        "columns": columns, "rows": rows,
+        "columns": columns, "rows": rows, "style": table_style(view),
     }
+
+
+def _apply_table_style(view, style):
+    """Persist a table's position + display style so it round-trips with the
+    .FCStd instead of resetting to a hardcoded corner/default every reopen
+    (previously 100% client-only React state - confirmed no sidecar RPC or
+    FreeCAD property backed it, so any dragged table or edited row height
+    silently reverted the moment the drawing was closed and reopened)."""
+    from . import drawing as _drawing
+
+    if "x" in style:
+        try:
+            view.X = float(style["x"])
+        except Exception:
+            pass
+    if "y" in style:
+        try:
+            view.Y = float(style["y"])
+        except Exception:
+            pass
+    rest = {k: v for k, v in style.items()
+            if k in ("showGrid", "gridColor", "rowHeight", "colWidths", "rowHeights", "merges")}
+    if rest:
+        cur = table_style(view)
+        cur.update(rest)
+        _drawing._tag(view, "_gwt_style", json.dumps(cur))
+
+
+def table_style(view):
+    from . import drawing as _drawing
+
+    raw = _drawing._get_tag(view, "_gwt_style", "")
+    style = {}
+    if raw:
+        try:
+            style = json.loads(raw)
+        except Exception:
+            style = {}
+    style.setdefault("showGrid", True)
+    style.setdefault("gridColor", "#111111")
+    style.setdefault("rowHeight", 5)
+    # colWidths/rowHeights: per-column/per-row overrides, empty = every
+    # column/row uses the shared default (colW derived client-side,
+    # rowHeight above). merges: cell-merge regions, {r, c, rs, cs} = the
+    # merged region's top-left cell + how many rows/cols it spans - empty
+    # means no merges, same "absent = uniform" convention.
+    style.setdefault("colWidths", [])
+    style.setdefault("rowHeights", [])
+    style.setdefault("merges", [])
+    try:
+        style["x"] = float(view.X)
+        style["y"] = float(view.Y)
+    except Exception:
+        style.setdefault("x", 0.0)
+        style.setdefault("y", 0.0)
+    return style
+
+
+def update_table_style(doc, table_id, style):
+    view = doc.getObject(table_id)
+    if view is None or view.TypeId != "TechDraw::DrawViewSpreadsheet":
+        raise RpcError(APP_ERROR, "no such table: %r" % table_id)
+    _apply_table_style(view, style or {})
+    doc.recompute()
+    return table_style(view)
+
+
+def _get_table_view(doc, table_id):
+    view = doc.getObject(table_id)
+    if view is None or view.TypeId != "TechDraw::DrawViewSpreadsheet":
+        raise RpcError(APP_ERROR, "no such table: %r" % table_id)
+    return view
+
+
+def merge_table_cells(doc, table_id, r, c, rs, cs):
+    """Merge a rectangular block of cells starting at data-row r, column c
+    (0-based, header row excluded - same indexing the rows/columns arrays
+    already use), spanning rs rows and cs columns. Only the top-left cell's
+    value is kept/shown; the covered cells are hidden by the renderer, not
+    deleted (unmerging must be able to give their old values back)."""
+    view = _get_table_view(doc, table_id)
+    rs = max(1, int(rs))
+    cs = max(1, int(cs))
+    if rs == 1 and cs == 1:
+        raise RpcError(APP_ERROR, "nothing to merge: a 1x1 region")
+    style = table_style(view)
+    merges = [m for m in style.get("merges", [])]
+
+    def _overlaps(a, b):
+        return not (a["c"] + a["cs"] <= b["c"] or b["c"] + b["cs"] <= a["c"]
+                    or a["r"] + a["rs"] <= b["r"] or b["r"] + b["rs"] <= a["r"])
+
+    new_region = {"r": int(r), "c": int(c), "rs": rs, "cs": cs}
+    if any(_overlaps(new_region, m) for m in merges):
+        raise RpcError(APP_ERROR, "that region overlaps an existing merge")
+    merges.append(new_region)
+    _apply_table_style(view, {"merges": merges})
+    doc.recompute()
+    return table_style(view)
+
+
+def unmerge_table_cells(doc, table_id, r, c):
+    """Remove whichever merge region (if any) has its top-left at (r, c)."""
+    view = _get_table_view(doc, table_id)
+    style = table_style(view)
+    merges = [m for m in style.get("merges", []) if not (m["r"] == int(r) and m["c"] == int(c))]
+    _apply_table_style(view, {"merges": merges})
+    doc.recompute()
+    return table_style(view)
 
 
 def remove_table(doc, table_id):

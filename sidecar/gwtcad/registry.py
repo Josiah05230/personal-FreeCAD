@@ -97,7 +97,9 @@ _NO_TXN = {
     "drawing.listCleanupLines", "drawing.removeCleanupLine",
     "drawing.addNote", "drawing.setNoteText", "drawing.setNoteStyle",
     "drawing.moveNote", "drawing.removeNote", "drawing.snapTargets",
-    "drawing.bomRows", "drawing.makeTable", "drawing.removeTable", "drawing.saveTableTemplate",
+    "drawing.bomRows", "drawing.makeTable", "drawing.removeTable", "drawing.updateTableStyle",
+    "drawing.mergeTableCells", "drawing.unmergeTableCells",
+    "drawing.saveTableTemplate",
     "drawing.listTableTemplates", "drawing.loadTableTemplate",
     "drawing.listSheetTemplates", "drawing.saveSheetTemplate", "drawing.applySheetTemplate",
     # PN registry: plain file/git bookkeeping, no FreeCAD document involved.

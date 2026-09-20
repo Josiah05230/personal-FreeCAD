@@ -5384,16 +5384,34 @@ def drawing_bom_rows(sourceId=None):
 
 
 @method("drawing.makeTable")
-def drawing_make_table(pageId, tableId=None, rows=None, columns=None, template=None):
+def drawing_make_table(pageId, tableId=None, rows=None, columns=None, template=None, style=None):
     d = session.doc()
     return _tables.make_table(d, pageId, rows or [], columns, template=template,
-                               table_id=tableId)
+                               table_id=tableId, style=style)
 
 
 @method("drawing.removeTable")
 def drawing_remove_table(tableId):
     d = session.doc()
     return _tables.remove_table(d, tableId)
+
+
+@method("drawing.updateTableStyle")
+def drawing_update_table_style(tableId, style):
+    d = session.doc()
+    return _tables.update_table_style(d, tableId, style)
+
+
+@method("drawing.mergeTableCells")
+def drawing_merge_table_cells(tableId, r, c, rs, cs):
+    d = session.doc()
+    return _tables.merge_table_cells(d, tableId, r, c, rs, cs)
+
+
+@method("drawing.unmergeTableCells")
+def drawing_unmerge_table_cells(tableId, r, c):
+    d = session.doc()
+    return _tables.unmerge_table_cells(d, tableId, r, c)
 
 
 @method("drawing.saveTableTemplate")

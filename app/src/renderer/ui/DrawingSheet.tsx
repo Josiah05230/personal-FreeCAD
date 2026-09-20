@@ -14,6 +14,7 @@ import {
   type NoteTextStyle,
   type SnapTarget,
   type TableColumn,
+  type TableMerge,
   type TableTemplate
 } from '../rpc'
 import { basename } from '../util'
@@ -43,6 +44,10 @@ interface TableState {
   rowHeight: number
   x: number
   y: number
+  /** per-column width overrides (mm) - empty/short means "use the shared
+   *  derived colW for that index," same convention as the sidecar. */
+  colWidths: number[]
+  merges: TableMerge[]
 }
 
 /** A view's own nested <svg> uses viewBox="minX -maxY (maxX-minX) (maxY-minY)"
@@ -472,6 +477,14 @@ export const DrawingSheet = forwardRef<
   // table, there is no row width" - row HEIGHT was already editable;
   // column WIDTH, which is what was actually missing, is this).
   const [columnWidthOverride, setColumnWidthOverride] = useState<Record<string, number>>({})
+  // a rectangular block of data cells (0-based, header row excluded) the
+  // user has selected via click + shift-click, for "right-click -> Merge
+  // Cells" - the only cell-merge entry point (user question, 2026-09-20:
+  // "Can I merge cells ... of tables?" - previously there was no merge
+  // concept anywhere in the table model at all).
+  const [selCells, setSelCells] = useState<{ tableId: string; r0: number; c0: number; r1: number; c1: number } | null>(
+    null
+  )
   // command-pattern undo/redo: each entry knows its own real inverse RPC
   // call, not just a local-state snapshot - a plain state snapshot would
   // leave orphaned server-side TechDraw objects behind (e.g. undoing
@@ -620,16 +633,25 @@ export const DrawingSheet = forwardRef<
         setDims(c.dimensions)
         setNotes(c.notes)
         setCleanupLines(c.cleanupLines)
+        // position/rowHeight/showGrid/gridColor round-trip through the
+        // sidecar now (view.X/Y + a _gwt_style tag - fixed 2026-09-20: a
+        // table's position and style used to be pure client React state,
+        // so any dragged table or edited row height silently reset to this
+        // same hardcoded corner-cascade default every time the drawing was
+        // reopened). style is only absent for a table from before this
+        // fix existed on disk - the same defaults as before cover that.
         setTables(
           c.tables.map((t, i) => ({
             id: t.id,
             rows: t.rows,
             columns: t.columns,
-            showGrid: true,
-            gridColor: '#111',
-            rowHeight: 5,
-            x: MARGIN + 4 + i * 8,
-            y: MARGIN + 4 + i * 8
+            showGrid: t.style?.showGrid ?? true,
+            gridColor: t.style?.gridColor ?? '#111',
+            rowHeight: t.style?.rowHeight ?? 5,
+            x: t.style?.x ?? MARGIN + 4 + i * 8,
+            y: t.style?.y ?? MARGIN + 4 + i * 8,
+            colWidths: t.style?.colWidths ?? [],
+            merges: t.style?.merges ?? []
           }))
         )
         for (const v of c.views) void refreshSnapTargets(v.id)
@@ -1366,16 +1388,23 @@ export const DrawingSheet = forwardRef<
           gridColor: template?.spec.gridColor ?? '#111',
           rowHeight: template?.spec.rowHeight ?? 5,
           x,
-          y
+          y,
+          colWidths: [],
+          merges: []
         }
         setTables((cur) => [...cur, next])
+        void api.drawingUpdateTableStyle(t.id, {
+          x, y, showGrid: next.showGrid, gridColor: next.gridColor, rowHeight: next.rowHeight
+        })
         pushUndo({
           undo: async () => {
             await api.drawingRemoveTable(t.id)
             setTables((cur) => cur.filter((tb) => tb.id !== t.id))
           },
           redo: async () => {
-            const t2 = await api.drawingMakeTable(pageId, rows, template?.spec.columns, template?.spec, t.id)
+            const t2 = await api.drawingMakeTable(pageId, rows, template?.spec.columns, template?.spec, t.id, {
+              x, y, showGrid: next.showGrid, gridColor: next.gridColor, rowHeight: next.rowHeight
+            })
             setTables((cur) => [...cur, { ...next, id: t2.id, rows: t2.rows, columns: t2.columns }])
           }
         })
@@ -1429,16 +1458,23 @@ export const DrawingSheet = forwardRef<
           gridColor: template?.spec.gridColor ?? '#111',
           rowHeight: template?.spec.rowHeight ?? 5,
           x,
-          y
+          y,
+          colWidths: [],
+          merges: []
         }
         setTables((cur) => [...cur, next])
+        void api.drawingUpdateTableStyle(t.id, {
+          x, y, showGrid: next.showGrid, gridColor: next.gridColor, rowHeight: next.rowHeight
+        })
         pushUndo({
           undo: async () => {
             await api.drawingRemoveTable(t.id)
             setTables((cur) => cur.filter((tb) => tb.id !== t.id))
           },
           redo: async () => {
-            const t2 = await api.drawingMakeTable(pageId, rows, columns, template?.spec, t.id)
+            const t2 = await api.drawingMakeTable(pageId, rows, columns, template?.spec, t.id, {
+              x, y, showGrid: next.showGrid, gridColor: next.gridColor, rowHeight: next.rowHeight
+            })
             setTables((cur) => [...cur, { ...next, id: t2.id, rows: t2.rows, columns: t2.columns }])
           }
         })
@@ -1521,7 +1557,46 @@ export const DrawingSheet = forwardRef<
 
   const setTableGridStyle = useCallback(
     (tableId: string, style: Partial<{ showGrid: boolean; gridColor: string; rowHeight: number }>) => {
+      // persisted server-side now (view.X/Y + a _gwt_style tag - previously
+      // pure client state, silently reverting to defaults on every reopen).
       updateTable(tableId, style)
+      void api.drawingUpdateTableStyle(tableId, style)
+    },
+    [updateTable]
+  )
+
+  const setTableColWidths = useCallback(
+    (tableId: string, colWidths: number[]) => {
+      updateTable(tableId, { colWidths })
+      void api.drawingUpdateTableStyle(tableId, { colWidths })
+    },
+    [updateTable]
+  )
+
+  /** merge a rectangular block of DATA cells (0-based, header row excluded -
+   *  same indexing addTableRow/addTableColumn already use) into one. Server-
+   *  validated (rejects overlap with an existing merge) so a stale/optimistic
+   *  local update never diverges from what actually got saved. */
+  const mergeTableCells = useCallback(
+    async (tableId: string, r: number, c: number, rs: number, cs: number) => {
+      try {
+        const style = await api.drawingMergeTableCells(tableId, r, c, rs, cs)
+        updateTable(tableId, { merges: style.merges ?? [] })
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [updateTable]
+  )
+
+  const unmergeTableCells = useCallback(
+    async (tableId: string, r: number, c: number) => {
+      try {
+        const style = await api.drawingUnmergeTableCells(tableId, r, c)
+        updateTable(tableId, { merges: style.merges ?? [] })
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
     },
     [updateTable]
   )
@@ -1529,10 +1604,17 @@ export const DrawingSheet = forwardRef<
   const moveTable = useCallback(
     (tableId: string, x: number, y: number, orig?: { x: number; y: number }) => {
       updateTable(tableId, { x, y })
+      void api.drawingUpdateTableStyle(tableId, { x, y })
       if (orig) {
         pushUndo({
-          undo: async () => updateTable(tableId, { x: orig.x, y: orig.y }),
-          redo: async () => updateTable(tableId, { x, y })
+          undo: async () => {
+            updateTable(tableId, { x: orig.x, y: orig.y })
+            void api.drawingUpdateTableStyle(tableId, { x: orig.x, y: orig.y })
+          },
+          redo: async () => {
+            updateTable(tableId, { x, y })
+            void api.drawingUpdateTableStyle(tableId, { x, y })
+          }
         })
       }
     },
@@ -2321,6 +2403,7 @@ export const DrawingSheet = forwardRef<
               setSelMultiViews(new Set())
               setSelMultiNotes(new Set())
               setSelTableId(null)
+              setSelCells(null)
               if (tool === 'note') {
                 const svg = e.currentTarget as SVGSVGElement
                 const pt = svg.createSVGPoint()
@@ -2912,9 +2995,26 @@ export const DrawingSheet = forwardRef<
 
           {tables.map((table) => {
             const rowH = table.rowHeight
-            const colW = columnWidthOverride[table.id] ?? Math.max(20, 130 / table.columns.length)
-            const tableW = colW * table.columns.length
+            // per-column width, falling back to the shared derived width for
+            // any column with no explicit override (table.colWidths[i]) or
+            // the legacy single-value override map (columnWidthOverride,
+            // still read for a table where the user set one before per-
+            // column widths existed but hasn't touched it since).
+            const baseColW = columnWidthOverride[table.id] ?? Math.max(20, 130 / table.columns.length)
+            const colWAt = (ci: number): number => table.colWidths[ci] ?? baseColW
+            const colX = (ci: number): number => {
+              let x = 0
+              for (let i = 0; i < ci; i++) x += colWAt(i)
+              return x
+            }
+            const tableW = table.columns.reduce((sum, _c, i) => sum + colWAt(i), 0)
             const tableH = rowH * (table.rows.length + 1)
+            // which (r, c) data cells a merge covers, and the top-left cell
+            // each merge is keyed by - a covered-but-not-top-left cell
+            // renders nothing (its old value is kept underneath so unmerge
+            // can restore it, per mergeTableCells' server-side contract).
+            const mergeAt = (r: number, c: number): TableMerge | undefined =>
+              table.merges.find((m) => r >= m.r && r < m.r + m.rs && c >= m.c && c < m.c + m.cs)
             const tableContextMenu = (e: React.MouseEvent): void => {
               e.preventDefault()
               setMenu(null)
@@ -2952,20 +3052,21 @@ export const DrawingSheet = forwardRef<
                     }
                   },
                   {
-                    label: 'Column Width…',
+                    label: 'Column Width (all)…',
                     onClick: () => {
                       void (async () => {
                         const res = await promptForm('Table Grid', [
-                          { key: 'w', label: 'Column width (mm)', value: String(colW) }
+                          { key: 'w', label: 'Column width (mm), all columns', value: String(baseColW) }
                         ])
                         if (!res) return
                         const w = Number(res.w)
                         if (!(w > 0)) return
-                        // colW is derived (130 / columns.length) rather than
-                        // stored - persist an explicit override so a chosen
-                        // width survives a rows/columns change. Widened here
-                        // via a per-table override map keyed by table id.
+                        // sets every column to the same width, clearing any
+                        // per-column overrides so the result is predictable -
+                        // use each column's own "Column Width…" (its header's
+                        // right-click menu) to size just one column instead.
                         setColumnWidthOverride((cur) => ({ ...cur, [table.id]: w }))
+                        setTableColWidths(table.id, [])
                       })()
                     }
                   },
@@ -2997,6 +3098,13 @@ export const DrawingSheet = forwardRef<
                   setSelMultiViews(new Set())
                   setSelMultiNotes(new Set())
                   setSelTableId(table.id)
+                  // a cell's own pointerdown (below, marked data-cell) already
+                  // sets selCells for a click that lands on a real cell rect,
+                  // and fires before this bubbled handler (DOM bubble order) -
+                  // so only clear it here when the click landed on the
+                  // padding/border outside any cell (no data-cell to have set
+                  // it), otherwise this would wipe out what that handler just set.
+                  if (!(e.target as Element).hasAttribute('data-cell')) setSelCells(null)
                   if (!sheetRef.current) return
                   const svg = sheetRef.current.querySelector('svg') as SVGSVGElement
                   const pt = svg.createSVGPoint()
@@ -3028,7 +3136,7 @@ export const DrawingSheet = forwardRef<
                   <g stroke={table.gridColor} strokeWidth={0.25} fill="none">
                     <rect x={0} y={0} width={tableW} height={tableH} />
                     {table.columns.slice(1).map((c, i) => (
-                      <line key={c.key} x1={colW * (i + 1)} y1={0} x2={colW * (i + 1)} y2={tableH} />
+                      <line key={c.key} x1={colX(i + 1)} y1={0} x2={colX(i + 1)} y2={tableH} />
                     ))}
                     {table.rows.map((_row, i) => (
                       <line key={`r${i}`} x1={0} y1={rowH * (i + 1)} x2={tableW} y2={rowH * (i + 1)} />
@@ -3038,9 +3146,9 @@ export const DrawingSheet = forwardRef<
                 {table.columns.map((c, ci) => (
                   <g key={c.key}>
                     <rect
-                      x={colW * ci}
+                      x={colX(ci)}
                       y={0}
-                      width={colW}
+                      width={colWAt(ci)}
                       height={rowH}
                       fill="transparent"
                       style={{ cursor: 'text' }}
@@ -3056,27 +3164,50 @@ export const DrawingSheet = forwardRef<
                           y: e.clientY,
                           items: [
                             { label: 'Rename Column…', onClick: () => void renameColumn(table.id, ci) },
+                            {
+                              label: 'Column Width…',
+                              onClick: () => {
+                                void (async () => {
+                                  const res = await promptForm('Column Width', [
+                                    { key: 'w', label: 'Width (mm)', value: String(colWAt(ci)) }
+                                  ])
+                                  if (!res) return
+                                  const w = Number(res.w)
+                                  if (!(w > 0)) return
+                                  const next = table.columns.map((_c2, i) => colWAt(i))
+                                  next[ci] = w
+                                  setTableColWidths(table.id, next)
+                                })()
+                              }
+                            },
                             { label: 'Delete Column', danger: true, onClick: () => void deleteTableColumn(table.id, ci) }
                           ]
                         })
                       }}
                     />
-                    <text x={colW * ci + 1.5} y={rowH - 1.5} fontSize={3.2} fontWeight="bold" style={{ pointerEvents: 'none' }}>
+                    <text x={colX(ci) + 1.5} y={rowH - 1.5} fontSize={3.2} fontWeight="bold" style={{ pointerEvents: 'none' }}>
                       {c.header}
                     </text>
                   </g>
                 ))}
                 {table.rows.map((row, ri) =>
                   table.columns.map((c, ci) => {
+                    const m = mergeAt(ri, ci)
+                    if (m && !(m.r === ri && m.c === ci)) return null // covered by a merge, not its top-left
+                    const spanCols = m ? m.cs : 1
+                    const spanRows = m ? m.rs : 1
+                    const cellW = Array.from({ length: spanCols }, (_, k) => colWAt(ci + k)).reduce((a, b) => a + b, 0)
+                    const cellH = rowH * spanRows
                     const isEditing = editingCell && editingCell.tableId === table.id && editingCell.row === ri && editingCell.col === ci
                     const value = String((row as unknown as Record<string, unknown>)[c.source] ?? '')
                     return (
                       <g key={`${ri}-${c.key}`}>
                         <rect
-                          x={colW * ci}
+                          data-cell="1"
+                          x={colX(ci)}
                           y={rowH * (ri + 1)}
-                          width={colW}
-                          height={rowH}
+                          width={cellW}
+                          height={cellH}
                           fill={isEditing ? '#0696d71a' : 'transparent'}
                           style={{ cursor: 'text' }}
                           onDoubleClick={(e) => {
@@ -3086,18 +3217,62 @@ export const DrawingSheet = forwardRef<
                           onContextMenu={(e) => {
                             e.preventDefault()
                             setMenu(null)
-                            setDimMenu({
-                              x: e.clientX,
-                              y: e.clientY,
-                              items: [
-                                { label: 'Delete Row', danger: true, onClick: () => void deleteTableRow(table.id, ri) },
-                                { label: 'Delete Column', danger: true, onClick: () => void deleteTableColumn(table.id, ci) }
-                              ]
-                            })
+                            const items: MenuItem[] = []
+                            if (m) {
+                              items.push({
+                                label: 'Unmerge Cells',
+                                onClick: () => void unmergeTableCells(table.id, m.r, m.c)
+                              })
+                            } else if (selCells && selCells.tableId === table.id) {
+                              const r0 = Math.min(selCells.r0, selCells.r1)
+                              const r1 = Math.max(selCells.r0, selCells.r1)
+                              const c0 = Math.min(selCells.c0, selCells.c1)
+                              const c1 = Math.max(selCells.c0, selCells.c1)
+                              if (r1 > r0 || c1 > c0) {
+                                items.push({
+                                  label: 'Merge Cells',
+                                  onClick: () => void mergeTableCells(table.id, r0, c0, r1 - r0 + 1, c1 - c0 + 1)
+                                })
+                              }
+                            }
+                            items.push({ label: 'Delete Row', danger: true, onClick: () => void deleteTableRow(table.id, ri) })
+                            items.push({ label: 'Delete Column', danger: true, onClick: () => void deleteTableColumn(table.id, ci) })
+                            setDimMenu({ x: e.clientX, y: e.clientY, items })
+                          }}
+                          onPointerDown={(e) => {
+                            // shift-click extends a rectangular selection
+                            // anchored at the first click - the only UI this
+                            // needs, since "select a range, right-click,
+                            // Merge Cells" is the standard spreadsheet flow
+                            // (no drag-select yet, but shift+click covers the
+                            // common case without new drag-state plumbing).
+                            if (e.shiftKey && selCells && selCells.tableId === table.id) {
+                              e.stopPropagation()
+                              setSelCells({ ...selCells, r1: ri, c1: ci })
+                            } else {
+                              setSelCells({ tableId: table.id, r0: ri, c0: ci, r1: ri, c1: ci })
+                            }
                           }}
                         />
+                        {selCells &&
+                          selCells.tableId === table.id &&
+                          ri >= Math.min(selCells.r0, selCells.r1) &&
+                          ri <= Math.max(selCells.r0, selCells.r1) &&
+                          ci >= Math.min(selCells.c0, selCells.c1) &&
+                          ci <= Math.max(selCells.c0, selCells.c1) &&
+                          !(selCells.r0 === selCells.r1 && selCells.c0 === selCells.c1) && (
+                            <rect
+                              x={colX(ci)}
+                              y={rowH * (ri + 1)}
+                              width={cellW}
+                              height={cellH}
+                              fill="#0696d71a"
+                              stroke="none"
+                              style={{ pointerEvents: 'none' }}
+                            />
+                          )}
                         {isEditing ? (
-                          <foreignObject x={colW * ci} y={rowH * (ri + 1)} width={colW} height={rowH}>
+                          <foreignObject x={colX(ci)} y={rowH * (ri + 1)} width={cellW} height={cellH}>
                             <input
                               autoFocus
                               defaultValue={value}
@@ -3117,7 +3292,7 @@ export const DrawingSheet = forwardRef<
                           </foreignObject>
                         ) : (
                           <text
-                            x={colW * ci + 1.5}
+                            x={colX(ci) + 1.5}
                             y={rowH * (ri + 1) + rowH - 1.5}
                             fontSize={3.2}
                             style={{ cursor: 'text', pointerEvents: 'none' }}
