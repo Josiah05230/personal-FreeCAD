@@ -36,9 +36,13 @@ export function formatDimension(
     s = s.replace(/^(-?)0(\.\d)/, '$1$2')
   }
 
-  const prefix = RADIAL_PREFIX[type] ?? ''
-  const suffix = f.unitSuffix ? (type === 'Angle' || type === 'Angle3Pt' ? '°' : 'mm') : ''
-  return `${prefix}${s}${suffix}`
+  const radialPrefix = RADIAL_PREFIX[type] ?? ''
+  const unitSuffix = f.unitSuffix ? (type === 'Angle' || type === 'Angle3Pt' ? '°' : 'mm') : ''
+  // user-typed callout text (e.g. "2X ", "4X ", " TYP") wraps AROUND the
+  // automatic radial prefix/unit suffix, not instead of them - "2X R4.00"
+  // keeps both the count and the fact that it's a radius, not "2X4.00"
+  // silently dropping the R.
+  return `${fmt.textPrefix ?? ''}${radialPrefix}${s}${unitSuffix}${fmt.textSuffix ?? ''}`
 }
 
 /** A tolerance rendered as one or two lines of text, stacked to the right of

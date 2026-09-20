@@ -3007,6 +3007,18 @@ export const DrawingSheet = forwardRef<
                         options: ['yes', 'no']
                       },
                       {
+                        key: 'textPrefix',
+                        label: 'Prefix (e.g. "2X ", "4X ")',
+                        value: fmt.textPrefix ?? '',
+                        placeholder: 'none'
+                      },
+                      {
+                        key: 'textSuffix',
+                        label: 'Suffix (e.g. " TYP")',
+                        value: fmt.textSuffix ?? '',
+                        placeholder: 'none'
+                      },
+                      {
                         key: 'toleranceMode',
                         label: 'Tolerance',
                         value: fmt.toleranceMode ?? 'off',
@@ -3060,6 +3072,8 @@ export const DrawingSheet = forwardRef<
                       precision: Number(res.precision) || 0,
                       leadingZero: res.leadingZero !== 'no',
                       trailingZeros: res.trailingZeros !== 'no',
+                      textPrefix: res.textPrefix || undefined,
+                      textSuffix: res.textSuffix || undefined,
                       toleranceMode,
                       tolerancePlus,
                       toleranceMinus

@@ -479,13 +479,20 @@ export interface DimensionFormat {
   trailingZeros?: boolean
   unitSuffix?: boolean
   /** Tolerance display, real and rendered (not just stored) - 'symmetric'
-   *  shows "value ±tolerancePlus"; 'deviation' shows separate +/- lines
-   *  using tolerancePlus/toleranceMinus (toleranceMinus is a positive
-   *  magnitude - the renderer prints it with a leading minus); 'off' (or
-   *  omitted) shows no tolerance at all, unchanged from before. */
+   *  shows "value ±tolerancePlus"; 'deviation' shows two lines, the upper
+   *  and lower LIMIT DEVIATIONS themselves (genuinely signed - e.g. an ISO
+   *  fit like f7 is -0.025/-0.050, both negative, which a magnitude-with-
+   *  forced-glyph convention couldn't represent); 'off' (or omitted) shows
+   *  no tolerance at all, unchanged from before. */
   toleranceMode?: 'off' | 'symmetric' | 'deviation'
   tolerancePlus?: number
   toleranceMinus?: number
+  /** free-text callout prefix/suffix, e.g. prefix "2X " for a hole pattern
+   *  or suffix " TYP" - rendered around the value (and the automatic R/⌀
+   *  radial prefix, for Radius/Diameter: user prefix, then R/⌀, then the
+   *  number, e.g. "2X R4.00"), independent of tolerance/unit formatting. */
+  textPrefix?: string
+  textSuffix?: string
 }
 
 /** A named ISO 286 hole/shaft fit class (e.g. "H7", "g6") resolved to a
