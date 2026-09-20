@@ -494,6 +494,13 @@ export interface DrawingNote {
   x: number
   y: number
   leaderId?: string | null
+  /** the view the leader's tip is anchored to, and the tip's own point in
+   *  THAT view's UV frame - the same frame dimensions' p1/p2/center/etc
+   *  live in. Convert with uvToLocal + that view's own placed.x/y (see
+   *  DrawingSheet.tsx) to draw the actual leader line, present whenever
+   *  leaderId is. */
+  leaderViewId?: string
+  leaderPointUV?: [number, number]
   font?: string
   textSize?: number
   textStyle?: NoteTextStyle

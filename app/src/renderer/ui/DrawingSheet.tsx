@@ -285,6 +285,12 @@ function ViewBox({
       const target = nearestTarget(p)
       onPick(target?.sub ?? '', target ? (target.p ?? target.p1 ?? p) : p, target?.kind)
     }
+    if (tool === 'note') {
+      // a note's leader tip doesn't need to snap to a vertex/edge the way a
+      // dimension does - any point on the view is a reasonable callout
+      // target, so this is the raw click position, not nearestTarget().
+      onPick('leader', toData(e))
+    }
   }
 
   // a picking tool (dimension/cleanup) with no visual cue for what's about
@@ -1070,6 +1076,39 @@ export const DrawingSheet = forwardRef<
 
   const [cleanupPending, setCleanupPending] = useState<{ viewId: string; p: [number, number] } | null>(null)
 
+  const addNote = useCallback(
+    async (viewId: string | null, p: [number, number]) => {
+      const text = await promptMultiline('Note text', '')
+      if (!text || !text.trim()) return
+      try {
+        const n = await api.drawingAddNote(
+          pageId,
+          text.trim(),
+          p[0],
+          p[1],
+          viewId ?? undefined,
+          viewId ? p : undefined
+        )
+        setNotes((cur) => [...cur, n])
+        const liveId = { current: n.id }
+        pushUndo({
+          undo: async () => {
+            await api.drawingRemoveNote(liveId.current)
+            setNotes((cur) => cur.filter((x) => x.id !== liveId.current))
+          },
+          redo: async () => {
+            const n2 = await api.drawingAddNote(pageId, n.text, n.x, n.y, viewId ?? undefined, viewId ? p : undefined, n.font, n.textSize)
+            liveId.current = n2.id
+            setNotes((cur) => [...cur, n2])
+          }
+        })
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [pageId, pushUndo]
+  )
+
   const onViewPickPoint = useCallback(
     (viewId: string) =>
       (sub: string, p: [number, number], kind?: SnapTarget['kind']) => {
@@ -1099,9 +1138,22 @@ export const DrawingSheet = forwardRef<
           }
           return
         }
+        if (tool === 'note') {
+          // a leader note anchored to a real point ON a view - previously
+          // the only way to reach add_note's leader_view_id/leader_point
+          // params was a raw RPC call, since the note tool's one and only
+          // click handler (on the empty sheet background) explicitly
+          // excludes clicks that land on a view at all (user question,
+          // 2026-09-20 audit: "Is there a way to make leader notes for
+          // call outs?" - the sidecar support existed, but nothing in the
+          // UI could ever reach it).
+          void addNote(viewId, p)
+          setTool('select')
+          return
+        }
         onViewPick(viewId)(sub, p, kind)
       },
-    [tool, cleanupPending, onViewPick, pushUndo]
+    [tool, cleanupPending, onViewPick, addNote, setTool, pushUndo]
   )
 
   const sectionTool = useCallback(async () => {
@@ -1901,39 +1953,6 @@ export const DrawingSheet = forwardRef<
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [selTableId, deleteTable])
-
-  const addNote = useCallback(
-    async (viewId: string | null, p: [number, number]) => {
-      const text = await promptMultiline('Note text', '')
-      if (!text || !text.trim()) return
-      try {
-        const n = await api.drawingAddNote(
-          pageId,
-          text.trim(),
-          p[0],
-          p[1],
-          viewId ?? undefined,
-          viewId ? p : undefined
-        )
-        setNotes((cur) => [...cur, n])
-        const liveId = { current: n.id }
-        pushUndo({
-          undo: async () => {
-            await api.drawingRemoveNote(liveId.current)
-            setNotes((cur) => cur.filter((x) => x.id !== liveId.current))
-          },
-          redo: async () => {
-            const n2 = await api.drawingAddNote(pageId, n.text, n.x, n.y, viewId ?? undefined, viewId ? p : undefined, n.font, n.textSize)
-            liveId.current = n2.id
-            setNotes((cur) => [...cur, n2])
-          }
-        })
-      } catch (e) {
-        window.alert((e as Error).message)
-      }
-    },
-    [pageId, pushUndo]
-  )
 
   const applyNoteText = useCallback(
     async (noteId: string, oldText: string, text: string) => {
@@ -3037,16 +3056,46 @@ export const DrawingSheet = forwardRef<
             )
           })}
 
-          {notes.map((n) => (
-            <text
-              key={n.id}
-              data-note={n.id}
-              x={n.x}
-              y={n.y}
-              fontSize={n.textSize ?? 3.4}
-              fontFamily={n.font || undefined}
-              fontWeight={n.textStyle === 'Bold' || n.textStyle === 'Bold-Italic' ? 'bold' : undefined}
-              fontStyle={n.textStyle === 'Italic' || n.textStyle === 'Bold-Italic' ? 'italic' : undefined}
+          {notes.map((n) => {
+            // the leader tip is stored view-relative (leaderPointUV, in the
+            // SAME frame dimensions' p1/p2/etc use) - converted to sheet
+            // coordinates here via that view's own current placement, the
+            // same uvToLocal + placed.x/y every other view-anchored point
+            // in this file already goes through, so the leader always
+            // lands exactly where the app itself placed that view.
+            const leaderPl = n.leaderViewId ? placed.find((p) => p.view.id === n.leaderViewId) : undefined
+            const leaderTip: [number, number] | null =
+              leaderPl && n.leaderPointUV
+                ? (() => {
+                    const [lx, ly] = uvToLocal(leaderPl, n.leaderPointUV!)
+                    return [leaderPl.x + lx, leaderPl.y + ly]
+                  })()
+                : null
+            return (
+            <g key={n.id}>
+              {leaderTip && (
+                // the actual callout line, tip -> label - previously the
+                // note TEXT rendered but this line never did, even for a
+                // leader created via raw RPC (user question, 2026-09-20:
+                // "Is there a way to make leader notes for call outs?").
+                <line
+                  x1={leaderTip[0]}
+                  y1={leaderTip[1]}
+                  x2={n.x}
+                  y2={n.y}
+                  stroke={n.color || '#333'}
+                  strokeWidth={0.25}
+                  style={{ pointerEvents: 'none' }}
+                />
+              )}
+              <text
+                data-note={n.id}
+                x={n.x}
+                y={n.y}
+                fontSize={n.textSize ?? 3.4}
+                fontFamily={n.font || undefined}
+                fontWeight={n.textStyle === 'Bold' || n.textStyle === 'Bold-Italic' ? 'bold' : undefined}
+                fontStyle={n.textStyle === 'Italic' || n.textStyle === 'Bold-Italic' ? 'italic' : undefined}
               fill={selNote === n.id || selMultiNotes.has(n.id) ? '#0696d7' : n.color || '#333'}
               style={{ cursor: 'move' }}
               onPointerDown={(e) => {
@@ -3121,8 +3170,10 @@ export const DrawingSheet = forwardRef<
                   {line || ' '}
                 </tspan>
               ))}
-            </text>
-          ))}
+              </text>
+            </g>
+            )
+          })}
 
           {tables.map((table) => {
             const rowH = table.rowHeight

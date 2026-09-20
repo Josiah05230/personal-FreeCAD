@@ -137,6 +137,30 @@ def _project(view, model_point, offset=None):
     return (p.x - offset[0], p.y - offset[1])
 
 
+def _view_uv_to_sheet(view, uv):
+    """A point in a view's own projected UV frame (the same frame
+    page_contents' views[].visible/hidden polylines and _project's output
+    live in - what the frontend calls "view-UV") -> absolute page/sheet
+    coordinates (mm), the frame view.X/view.Y and a note's own X/Y live in.
+
+    Mirrors the frontend's uvToLocal + placed.x/y exactly (see
+    DrawingSheet.tsx): sheet = view.X + (u - minX), view.Y - (v - maxY),
+    using the view's own bbox (min/max over its visible+hidden polylines,
+    same source _view_bbox already uses for the view DTO's own bbox field)
+    to find that frame's origin. Needed because a leader's WayPoints - a
+    DrawLeaderLine, not a DrawViewDimension - take raw sheet coordinates
+    with no References2D-style live binding at all; a caller only ever has
+    a point relative to the view it clicked on, so this conversion has to
+    happen at write time (see add_note's leader_point)."""
+    try:
+        vis = _edges_to_polylines(view.getVisibleEdges()) if hasattr(view, "getVisibleEdges") else []
+        hid = _edges_to_polylines(view.getHiddenEdges()) if hasattr(view, "getHiddenEdges") else []
+    except Exception:
+        vis, hid = [], []
+    minX, minY, maxX, maxY = _view_bbox(vis, hid)
+    return (float(view.X) + (uv[0] - minX), float(view.Y) + (maxY - uv[1]))
+
+
 def _tag(obj, prop, value):
     """Stash a GWT-CAD-only string property on a native TechDraw object -
     same pattern as the original _gwt_dir tag: invisible to plain FreeCAD,
@@ -259,10 +283,19 @@ def page_contents(doc, page_id):
             dimensions.append(dim_entry)
         elif tid == "TechDraw::DrawViewAnnotation":
             leader_id = None
+            leader_view_id = None
+            leader_uv = None
             for leader in doc.Objects:
                 if (leader.TypeId == "TechDraw::DrawLeaderLine"
                         and getattr(leader, "LeaderParent", None) is o):
                     leader_id = leader.Name
+                    leader_view_id = _get_tag(leader, "_gwt_leaderView", "") or None
+                    raw_uv = _get_tag(leader, "_gwt_leaderUV", "")
+                    if raw_uv:
+                        try:
+                            leader_uv = json.loads(raw_uv)
+                        except Exception:
+                            leader_uv = None
                     break
             # was a hand-rolled duplicate of _note_dto that predated
             # textStyle/color - reuse _note_dto directly so a reopened
@@ -273,6 +306,21 @@ def page_contents(doc, page_id):
             # this payload, so it looked like clicking Bold did nothing).
             note_entry = _note_dto(o)
             note_entry["leaderId"] = leader_id
+            # leaderViewId/leaderPointUV: the leader's own tip, in the SAME
+            # view-relative UV frame every other view-anchored point in this
+            # payload uses (dimensions' p1/p2/center/etc) - the frontend
+            # converts this to sheet coordinates itself via uvToLocal +
+            # that view's own placed.x/y, so the leader always lands
+            # exactly where the app placed the view, not wherever the raw
+            # WayPoints snapshot (page-absolute, computed once at creation
+            # time against a view.X/Y this app never actually sets) happens
+            # to be. Previously nothing exposed the leader's tip at all, so
+            # the callout LINE never rendered anywhere in the app, only the
+            # note's own text (user question, 2026-09-20: "Is there a way
+            # to make leader notes for call outs?").
+            if leader_id and leader_view_id and leader_uv:
+                note_entry["leaderViewId"] = leader_view_id
+                note_entry["leaderPointUV"] = leader_uv
             notes.append(note_entry)
         elif tid == "TechDraw::DrawViewSpreadsheet":
             from . import tables as _tables
@@ -1088,21 +1136,47 @@ def add_note(doc, page_id, text, x, y, leader_view_id=None, leader_point=None,
     doc.recompute()
 
     leader_id = None
+    leader_uv = None
     if leader_view_id and leader_point:
         view = doc.getObject(leader_view_id)
         if view is not None:
+            # leader_point comes in as view-UV (a point on THAT view, the
+            # same frame dimension picks/snap targets use). DrawLeaderLine
+            # has no References2D-style live binding at all - WayPoints is
+            # just raw page-absolute mm - so this app's OWN rendering can't
+            # rely on WayPoints being anywhere near correct: a view's own
+            # on-sheet placement (pl.x/pl.y) is purely client-side layout
+            # state (confirmed: TechDraw::DrawViewPart's X/Y is never set
+            # anywhere in this codebase, so view.X/Y is always 0 - nothing
+            # to convert against here that would match what the app itself
+            # actually drew). WayPoints is still given a best-effort
+            # same-formula conversion below for the sake of any OTHER
+            # FreeCAD tool that might read this .FCStd directly (a real
+            # native GUI, or an export), but this app's own SVG renders the
+            # leader from leaderViewId/leaderPointUV (persisted as tags
+            # below) via the same uvToLocal + pl.x/pl.y every other view-
+            # relative point already uses, so it's always exactly where the
+            # app itself placed that view - not off by whatever WayPoints'
+            # page-absolute snapshot happened to be.
+            leader_uv = (float(leader_point[0]), float(leader_point[1]))
+            sheet_pt = _view_uv_to_sheet(view, leader_uv)
             leader = doc.addObject("TechDraw::DrawLeaderLine", "Leader")
             page.addView(leader)
             leader.LeaderParent = ann
             leader.WayPoints = [
-                App.Vector(float(leader_point[0]), float(leader_point[1]), 0),
+                App.Vector(sheet_pt[0], sheet_pt[1], 0),
                 App.Vector(float(x), float(y), 0),
             ]
+            _tag(leader, "_gwt_leaderView", view.Name)
+            _tag(leader, "_gwt_leaderUV", json.dumps(list(leader_uv)))
             doc.recompute()
             leader_id = leader.Name
 
     dto = _note_dto(ann)
     dto["leaderId"] = leader_id
+    if leader_id:
+        dto["leaderViewId"] = leader_view_id
+        dto["leaderPointUV"] = list(leader_uv)
     return dto
 
 
