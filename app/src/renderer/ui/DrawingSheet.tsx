@@ -2460,7 +2460,7 @@ export const DrawingSheet = forwardRef<
           </span>
         )}
         <span className="drawing-spacer" />
-        {(dims.length > 0 || placed.length > 0 || notes.length > 0 || tables.length > 0) && (
+        {(dims.length > 0 || placed.length > 0 || notes.length > 0 || tables.length > 0 || images.length > 0) && (
           <button
             className="drawing-adddir"
             onClick={() => {
@@ -2469,6 +2469,7 @@ export const DrawingSheet = forwardRef<
               setDimGeom({})
               setNotes([])
               setTables([])
+              setImages([])
             }}
           >
             Clear
