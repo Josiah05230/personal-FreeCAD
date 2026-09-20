@@ -486,6 +486,7 @@ export function Viewport({
         testHandlePointCount: () => stateRef.current?.sketch?.testHandlePointCount() ?? 0,
         testFillCount: () => stateRef.current?.sketch?.fillCount() ?? 0,
         testDimPicksState: () => stateRef.current?.sketch?.testDimPicksState() ?? [],
+        testDimAxisKind: () => stateRef.current?.sketch?.testDimAxisKind() ?? { kind: 'distance', forced: null },
         testNudgeCamera: (delta) => {
           const s = stateRef.current
           if (!s) return

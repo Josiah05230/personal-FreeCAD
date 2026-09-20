@@ -249,13 +249,27 @@ export class SketchController {
   private dimPlaceUV: [number, number] | null = null
   /** which axis a point-to-point dimension pick measures along - 'distance'
    *  (the real point-to-point path length), or 'distanceX'/'distanceY' (a
-   *  horizontal- or vertical-only projection). Auto-detected from the
-   *  placement drag's direction (see firePendingDim), or forced by Shift-
-   *  clicking to place, which cycles through all three instead - "should
-   *  just be by dragging my mouse [but] we want shift to cycle it too so the
-   *  user can force it if they struggle" (user request, 2026-09-19). Reset
-   *  whenever a fresh dim-pick session starts (see startDimPick). */
+   *  horizontal- or vertical-only projection).
+   *
+   *  Live and continuous: recomputed from the CURSOR position on every
+   *  pointer move while a 2-point pick is armed (see onMove), so the live
+   *  preview - the dimension line/value that follows the mouse before you
+   *  click to place - visibly updates as you drag, not just at the moment
+   *  you click (user report, 2026-09-19: "The UI didn't seem to update/
+   *  change at all when I was hitting shift while dimensioning. It only
+   *  seemed to happen after I placed the dimension" - the first version of
+   *  this only computed the axis kind inside firePendingDim, i.e. at the
+   *  final placement click, so nothing could visibly react before then).
+   *
+   *  Shift is a live modifier, not a one-shot click cycle: holding it FORCES
+   *  the axis to whatever dimAxisForced says (cycled once per keydown, not
+   *  continuously), overriding the drag-angle auto-detect until Shift is
+   *  released - "should just be by dragging my mouse [but] we want shift to
+   *  cycle it too so the user can force it when they struggle" (user
+   *  request, 2026-09-19). Reset whenever a fresh dim-pick session starts. */
   private dimAxisKind: 'distance' | 'distanceX' | 'distanceY' = 'distance'
+  private dimAxisForced: 'distance' | 'distanceX' | 'distanceY' | null = null
+  private shiftHeld = false
   private hoverIdx = -1
   /** live drag-gesture state (real FreeCAD solver, via dragApi) - no shadow
    *  geometry: every dragMove response's `geometry` array IS the render state,
@@ -393,6 +407,7 @@ export class SketchController {
     this.dom.addEventListener('dblclick', this.onDblClick)
     window.addEventListener('pointerup', this.onUp)
     window.addEventListener('keydown', this.onKey)
+    window.addEventListener('keyup', this.onKeyUp)
     window.addEventListener('blur', this.onBlur)
   }
 
@@ -445,6 +460,7 @@ export class SketchController {
     this.hoverIdx = -1
     this.hoverPt = null
     this.dimPicks = []
+    this.dimAxisForced = null
     this.drag = null
     this.band = null
     this.dom.style.cursor = ''
@@ -1267,30 +1283,23 @@ export class SketchController {
     return 'pt' in p ? this.ptUV(p.pt) : this.entMidUV(p.ent)
   }
 
-  /** Decide (or, with Shift held, cycle) which axis a point-to-point
-   *  dimension measures along, from the direction the user dragged to place
-   *  it relative to the line connecting the two picked points - "should
-   *  just be by dragging my mouse" (user request, 2026-09-19): drag mostly
-   *  along that line's own direction -> the real point-to-point Distance;
-   *  drag mostly horizontally or vertically away from it -> DistanceX /
-   *  DistanceY. Only applies to point-to-point / point-to-line picks (whole
-   *  LINE-LINE picks either form an Angle or a line-to-line gap Distance,
-   *  neither of which has a meaningful X/Y split here). Shift-clicking to
-   *  place cycles distance -> distanceX -> distanceY -> distance regardless
-   *  of drag direction, so the user can force it when the auto-detect picks
-   *  the wrong one on an ambiguous drag. */
-  private updateDimAxisKind(shift: boolean): void {
-    if (shift) {
-      this.dimAxisKind =
-        this.dimAxisKind === 'distance'
-          ? 'distanceX'
-          : this.dimAxisKind === 'distanceX'
-            ? 'distanceY'
-            : 'distance'
+  /** Recompute dimAxisKind for the CURRENT cursor position - called on every
+   *  pointer move while a 2-point pick is armed (live preview) AND once more
+   *  at the final placement click, so the exact same logic drives both.
+   *  Drag mostly along the two picked points' own connecting line -> the
+   *  real point-to-point Distance; drag mostly horizontally or vertically
+   *  away from it -> DistanceX / DistanceY. Only applies to point-to-point /
+   *  point-to-line picks (a whole LINE-LINE pick either forms an Angle or a
+   *  line-to-line gap Distance, neither of which has a meaningful X/Y split
+   *  here). While Shift is held, dimAxisForced overrides this entirely
+   *  (see onKey's Shift handling) until released. */
+  private updateDimAxisKind(cursor: [number, number]): void {
+    if (this.dimAxisForced) {
+      this.dimAxisKind = this.dimAxisForced
       return
     }
     this.dimAxisKind = 'distance'
-    if (this.dimPicksAreAngle() || this.dimPicks.length < 2 || !this.dimPlaceUV) return
+    if (this.dimPicksAreAngle() || this.dimPicks.length < 2) return
     const [p0, p1] = this.dimPicks
     // a line-line pick (both whole entities, not points) only has a single
     // perpendicular-gap Distance value - no X/Y split makes sense there
@@ -1302,14 +1311,14 @@ export class SketchController {
     const lineLen = Math.hypot(dx, dy)
     if (lineLen < 1e-6) return
     // unit vector along the two points' own connecting line, and its
-    // perpendicular - project the placement offset (from the midpoint) onto
-    // each to see which the user actually dragged toward
+    // perpendicular - project the cursor's offset from the midpoint onto
+    // each to see which the user is currently dragging toward
     const ux = dx / lineLen
     const uy = dy / lineLen
     const mx = (a[0] + b[0]) / 2
     const my = (a[1] + b[1]) / 2
-    const offX = this.dimPlaceUV[0] - mx
-    const offY = this.dimPlaceUV[1] - my
+    const offX = cursor[0] - mx
+    const offY = cursor[1] - my
     const alongPath = Math.abs(offX * ux + offY * uy)
     const alongX = Math.abs(offX)
     const alongY = Math.abs(offY)
@@ -1433,10 +1442,13 @@ export class SketchController {
    *  angle when both are non-parallel lines. A single lone POINT with
    *  nothing else has no dimension of its own, so this is a no-op until a
    *  2nd pick arrives (ctrl-click adds one without placing). */
-  private firePendingDim(uv: [number, number], shift = false): void {
+  private firePendingDim(uv: [number, number]): void {
     if (this.dimPicks.length >= 2) {
       this.dimPlaceUV = uv
-      this.updateDimAxisKind(shift)
+      // one final recompute at the exact placement point, matching the live
+      // preview's own logic exactly (already kept up to date on every
+      // pointer move - see onMove) - not gated on a one-off click modifier.
+      this.updateDimAxisKind(uv)
       this.fireDistanceDim()
       this.dimPlaceUV = null
       return
@@ -1565,6 +1577,7 @@ export class SketchController {
     this.constraints.push({ type, refs, value })
     this.lastUserConstraint = this.constraints.length - 1
     this.dimPicks = []
+    this.dimAxisForced = null
     this.selectedPts = []
     this.geomV++
     this.redraw()
@@ -1683,7 +1696,7 @@ export class SketchController {
       // space to place it"). With nothing armed yet, an empty click is a
       // no-op (nothing to place).
       if (!pick) {
-        if (this.dimPicks.length > 0) this.firePendingDim(raw, ev.shiftKey)
+        if (this.dimPicks.length > 0) this.firePendingDim(raw)
         else this.redraw()
         return
       }
@@ -1706,6 +1719,7 @@ export class SketchController {
         // a fresh single-pick session, discarding anything else queued
         this.dimPicks = [pick]
         this.dimAxisKind = 'distance'
+        this.dimAxisForced = null
       }
       this.redraw()
       return
@@ -2261,6 +2275,12 @@ export class SketchController {
       // changes
       if (this.tool === 'dimension' && this.dimPicks.length > 0) {
         this.cursorUV = raw
+        // live-recompute the axis kind (Distance/DistanceX/DistanceY) from
+        // the cursor's CURRENT drag position every frame, so the preview
+        // dimension actually updates as the mouse moves - previously this
+        // only ran once at the final placement click, so nothing visibly
+        // changed while dragging (user report, 2026-09-19).
+        this.updateDimAxisKind(raw)
         this.redraw()
       }
       return
@@ -2273,6 +2293,29 @@ export class SketchController {
   private onKey = (ev: KeyboardEvent): void => {
     const t = ev.target as HTMLElement | null
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return
+    // Shift while the Dimension tool has a 2-point pick armed: a live
+    // modifier that FORCES the axis kind, cycling once per keydown (browsers
+    // auto-repeat keydown while held, so debounce on the leading edge via
+    // shiftHeld rather than cycling every repeat) - "we want shift to cycle
+    // it too so the user can force it when they struggle" (user request,
+    // 2026-09-19). Recomputes the live preview immediately so this is
+    // visible before the placement click, not just after it.
+    if (ev.key === 'Shift') {
+      if (!this.shiftHeld && this.tool === 'dimension' && this.dimPicks.length >= 2) {
+        this.dimAxisForced =
+          this.dimAxisForced === null
+            ? 'distanceX'
+            : this.dimAxisForced === 'distanceX'
+              ? 'distanceY'
+              : this.dimAxisForced === 'distanceY'
+                ? 'distance'
+                : null
+        this.updateDimAxisKind(this.cursorUV)
+        this.redraw()
+      }
+      this.shiftHeld = true
+      return
+    }
     if (ev.key === 'Escape') {
       this.abortDrag()
       this.pending = []
@@ -2281,6 +2324,7 @@ export class SketchController {
       this.selected = []
       this.selectedPts = []
       this.dimPicks = []
+      this.dimAxisForced = null
       this.selectedDim = null
       this.dimV = -1
       this.band = null
@@ -2321,6 +2365,10 @@ export class SketchController {
     } else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z') {
       this.undo()
     }
+  }
+
+  private onKeyUp = (ev: KeyboardEvent): void => {
+    if (ev.key === 'Shift') this.shiftHeld = false
   }
 
   /** Remove the dimension whose label is selected. Any Distance / Radius (base
@@ -4117,6 +4165,14 @@ export class SketchController {
     return this.dimPicks.map((p) => ('pt' in p ? { pt: p.pt } : { ent: p.ent }))
   }
 
+  /** DEBUG test hook: the LIVE (pre-placement) dimension axis kind - lets a
+   *  test assert the preview actually updates as the mouse moves / Shift is
+   *  pressed, before any click commits it (user report, 2026-09-19: the UI
+   *  only seemed to react after placing, not during). */
+  testDimAxisKind(): { kind: string; forced: string | null } {
+    return { kind: this.dimAxisKind, forced: this.dimAxisForced }
+  }
+
   private pickSym(ev: { clientX: number; clientY: number }): string | null {
     if (!this.symGroup.children.length) return null
     this.ray.setFromCamera(this.ndcFor(ev.clientX, ev.clientY), this.camera)
@@ -4872,6 +4928,7 @@ export class SketchController {
     this.dom.removeEventListener('dblclick', this.onDblClick)
     window.removeEventListener('pointerup', this.onUp)
     window.removeEventListener('keydown', this.onKey)
+    window.removeEventListener('keyup', this.onKeyUp)
     window.removeEventListener('blur', this.onBlur)
     for (const c of this.symGroup.children) (c as THREE.Sprite).material.dispose()
     for (const t of this.symTexCache.values()) t.dispose()

@@ -139,6 +139,8 @@ export interface ViewportApi {
   testFillCount: () => number
   /** DEBUG test hook: current dimension-tool picks */
   testDimPicksState: () => unknown
+  /** DEBUG test hook: the live (pre-placement) dimension axis kind */
+  testDimAxisKind: () => { kind: string; forced: string | null }
   /** offset the camera + pivot by a world-space delta (test hook only - a
    *  reliable way to perturb the camera for a "does Fit/Home recover?" test
    *  without depending on synthetic drag-event edge cases) */

@@ -70,7 +70,53 @@ clickAt(pB.x, pB.y, { ctrlKey: true });
 await sleep(60);
 assert(!dimEditorInput(), 'Ctrl-click ADDS the 2nd point but does not place until an empty click');
 
+note('--- the LIVE preview axis kind updates on mouse move alone, before any click ---');
+// user report, 2026-09-19: "The UI didn't seem to update/change at all when
+// I was hitting shift while dimensioning. It only seemed to happen after I
+// placed the dimension" - assert the preview state actually tracks the
+// cursor continuously, not just at the final placement click.
+const el = viewportEl();
+fire(el, 'pointermove', pA.x, pA.y); // roughly along the line itself
+fire(el, 'pointermove', (pA.x + pB.x) / 2, (pA.y + pB.y) / 2 + 5, { buttons: 0 });
 const belowPlace = await G.sketchUVToScreen(10, -15); // far vertical offset from the (10, 7.5) midpoint
+fire(el, 'pointermove', belowPlace.x, belowPlace.y);
+await sleep(60);
+let liveKind = G.sketch.dimAxisKind();
+note('live axis kind after moving far vertically (no click yet): ' + JSON.stringify(liveKind));
+assert(liveKind.kind === 'distanceY', 'the LIVE preview already reads DistanceY from mouse position alone, before any placement click (got ' + liveKind.kind + ')');
+
+const alongPreview = await G.sketchUVToScreen(26, 19.5); // far along the line's own direction
+fire(el, 'pointermove', alongPreview.x, alongPreview.y);
+await sleep(60);
+liveKind = G.sketch.dimAxisKind();
+note('live axis kind after moving along the line (no click yet): ' + JSON.stringify(liveKind));
+assert(liveKind.kind === 'distance', 'moving the mouse back to an along-the-line position updates the LIVE preview back to plain Distance, with no click at all (got ' + liveKind.kind + ')');
+
+note('--- Shift keydown updates the LIVE preview immediately too, before any click ---');
+window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', bubbles: true, cancelable: true }));
+await sleep(60);
+liveKind = G.sketch.dimAxisKind();
+note('live axis kind immediately after a Shift keydown (no click yet): ' + JSON.stringify(liveKind));
+assert(liveKind.forced === 'distanceX', 'a Shift keydown alone (no click) forces the live preview to DistanceX (got forced=' + liveKind.forced + ')');
+window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Shift', bubbles: true, cancelable: true }));
+await sleep(30);
+// cycle forward three more times (distanceX -> distanceY -> distance -> null)
+// to deterministically clear the forced override before placing below - the
+// cycle has 4 states (auto/null, forced distance, forced X, forced Y), and
+// each press needs a keyup in between since it only advances on the leading
+// edge of a keydown.
+for (let i = 0; i < 3; i++) {
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', bubbles: true, cancelable: true }));
+  await sleep(30);
+  window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Shift', bubbles: true, cancelable: true }));
+  await sleep(30);
+}
+liveKind = G.sketch.dimAxisKind();
+note('live axis kind after cycling Shift back to unforced: ' + JSON.stringify(liveKind));
+assert(liveKind.forced === null, 'cycling Shift 3 times total returns to the unforced (drag-angle auto-detect) state');
+fire(el, 'pointermove', belowPlace.x, belowPlace.y);
+await sleep(60);
+
 clickAt(belowPlace.x, belowPlace.y);
 await sleep(150);
 let input = dimEditorInput();
@@ -130,23 +176,30 @@ clickAt(pA.x, pA.y);
 await sleep(60);
 clickAt(pB.x, pB.y, { ctrlKey: true });
 await sleep(60);
-// a placement point well clear of the line itself (directly "above" the
-// midpoint in a perpendicular-ish direction) so this click can't be
-// re-interpreted as picking the line/a point on it - Shift forces the axis
-// cycle regardless of where exactly this lands.
+// Shift is a REAL held modifier now (live-updates the preview continuously,
+// per the user's own follow-up report: "the UI didn't seem to update... it
+// only seemed to happen after I placed the dimension") - a genuine keydown
+// is what cycles dimAxisForced, not a shiftKey flag on the placement click
+// itself. Press it once (forces distanceX), move the mouse (live preview
+// should reflect it before any click), THEN click anywhere to place.
+window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', bubbles: true, cancelable: true }));
+await sleep(80);
 const ambiguous = await G.sketchUVToScreen(3, 20);
-fire(viewportEl(), 'pointerdown', ambiguous.x, ambiguous.y, { shiftKey: true, buttons: 1 });
-fire(viewportEl(), 'pointerup', ambiguous.x, ambiguous.y, { shiftKey: true, buttons: 0 });
+fire(viewportEl(), 'pointermove', ambiguous.x, ambiguous.y, { shiftKey: true });
+await sleep(80);
+window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Shift', bubbles: true, cancelable: true }));
+await sleep(30);
+clickAt(ambiguous.x, ambiguous.y);
 await sleep(150);
 input = dimEditorInput();
-assert(!!input, 'a Shift-click at the ambiguous midpoint still placed/opened the editor');
+assert(!!input, 'clicking after Shift-cycling the axis still placed/opened the editor');
 if (input) {
   typeAndCommitDimEditor('9');
   await sleep(200);
   const cons3 = G.sketch.newConstraints();
   note('constraints after Shift-cycle place: ' + JSON.stringify(cons3));
   const d3 = cons3.find((c) => c.type === 'Distance' || c.type === 'DistanceX' || c.type === 'DistanceY');
-  assert(!!d3 && d3.type === 'DistanceX', 'Shift-clicking to place cycled from the default distance to DistanceX (got ' + (d3 && d3.type) + ')');
+  assert(!!d3 && d3.type === 'DistanceX', 'a real Shift keydown cycled from the default distance to DistanceX, and it stuck through to placement (got ' + (d3 && d3.type) + ')');
 }
 
 note('--- done ---');
