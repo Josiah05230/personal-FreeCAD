@@ -5458,6 +5458,24 @@ def assembly_add_joint(jointType, comp1, sub1="", comp2="", sub2="", params=None
     return r
 
 
+@method("assembly.dragStart")
+def assembly_drag_start(componentId):
+    d = session.doc()
+    return _assembly.drag_start(d, componentId)
+
+
+@method("assembly.dragMove")
+def assembly_drag_move(dragId, base, axis, angle=0.0):
+    d = session.doc()
+    return _assembly.drag_move(d, dragId, base, axis, float(angle))
+
+
+@method("assembly.dragEnd")
+def assembly_drag_end(dragId):
+    d = session.doc()
+    return _assembly.drag_end(d, dragId)
+
+
 @method("assembly.tree")
 def assembly_tree():
     d = session.doc(create=False)

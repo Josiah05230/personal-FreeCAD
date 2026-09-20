@@ -2264,6 +2264,30 @@ code {
   letter-spacing: 0.5px;
 }
 
+.asm-toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.asm-tool {
+  flex: 1;
+  background: var(--chrome-3);
+  border: 1px solid var(--line-soft);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 3px 10px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.asm-tool.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
 .asm-row {
   display: flex;
   align-items: center;

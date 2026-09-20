@@ -295,6 +295,14 @@ export function App(): JSX.Element {
   const [asmTree, setAsmTree] = useState<AssemblyTree | null>(null)
   const [jointType, setJointType] = useState('Revolute')
   const [asmPins, setAsmPins] = useState<AsmPinFile>({})
+  // Assembly panel has two mouse modes, like a sketch's tool palette: 'select'
+  // (default - click faces to build joint references, exactly as before) and
+  // 'move' (drag a whole component around, live-solved against whatever
+  // joints touch it). A bare always-on drag would fight click-to-pick-a-face,
+  // so dragging only engages while this tool is explicitly on (user request,
+  // 2026-09-20: "there is a special move/drag tool ... so that the user's
+  // mouse isn't always doing that").
+  const [asmTool, setAsmTool] = useState<'select' | 'move'>('select')
 
   const [sketchSession, setSketchSession] = useState<{
     sketchId: string
@@ -3518,9 +3526,41 @@ export function App(): JSX.Element {
     setSelection([])
     if (!r.solved)
       window.alert(
-        `Joint "${jointType}" added (${r.engine}). Headless joint solving is experimental; it will move components once the solver session lands.`
+        `Joint "${jointType}" added (${r.engine}) but did not solve (rc ${r.solveRc ?? '?'}). ` +
+          `Check the two faces actually make sense for a ${jointType} joint (e.g. two roughly-facing planar faces for Revolute) - a bad reference pair can leave the joint recorded but unconstrained.`
       )
   }, [selection, jointType, refreshScene])
+
+  // --- assembly component drag (real solver-backed, per-frame RPC - see
+  // assembly.dragStart/Move/End's docstrings in sidecar/gwtcad/assembly.py).
+  // Only armed while asmTool === 'move' (Viewport gates onDown on this), so
+  // dragging never fights the Assembly panel's normal click-to-pick-a-face
+  // flow for building joint references.
+  const asmDragRef = useRef<{ dragId: string; base: [number, number, number] } | null>(null)
+  const asmDragStart = useCallback(async (componentId: string) => {
+    const comp = asmTree?.components.find((c) => c.id === componentId)
+    if (!comp) return
+    const r = await api.assemblyDragStart(componentId)
+    asmDragRef.current = { dragId: r.dragId, base: comp.placement.base as [number, number, number] }
+  }, [asmTree])
+  const asmDragMove = useCallback(async (deltaWorld: [number, number, number]) => {
+    const d = asmDragRef.current
+    if (!d) return
+    const base: [number, number, number] = [
+      d.base[0] + deltaWorld[0],
+      d.base[1] + deltaWorld[1],
+      d.base[2] + deltaWorld[2]
+    ]
+    const r = await api.assemblyDragMove(d.dragId, base, [0, 0, 1], 0)
+    setAsmTree(r)
+  }, [])
+  const asmDragEnd = useCallback(async () => {
+    const d = asmDragRef.current
+    if (!d) return
+    asmDragRef.current = null
+    await api.assemblyDragEnd(d.dragId)
+    await refreshScene()
+  }, [refreshScene])
 
   // test / automation bridge - drives the same handlers the buttons call, so an
   // out-of-band script can exercise the app end to end (see test/e2e).
@@ -4615,6 +4655,18 @@ export function App(): JSX.Element {
                         return drop ? cur.filter((s) => s !== drop) : cur
                       })
                     }}
+                    asmTool={asmTree ? asmTool : undefined}
+                    onAssemblyDrag={{
+                      start: async (componentId) => {
+                        await asmDragStart(componentId)
+                      },
+                      move: async (delta) => {
+                        await asmDragMove(delta)
+                      },
+                      end: async () => {
+                        await asmDragEnd()
+                      }
+                    }}
                     apiRef={vpApi}
                   />
                   {sketchNotice && (
@@ -4681,6 +4733,8 @@ export function App(): JSX.Element {
                       onAddJoint={addJoint}
                       pins={asmPins}
                       onSetPin={setComponentPin}
+                      tool={asmTool}
+                      onSetTool={setAsmTool}
                     />
                   )}
                   {op && (

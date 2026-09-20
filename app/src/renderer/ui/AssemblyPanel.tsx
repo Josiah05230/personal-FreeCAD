@@ -22,7 +22,9 @@ export function AssemblyPanel({
   onGround,
   onAddJoint,
   pins,
-  onSetPin
+  onSetPin,
+  tool,
+  onSetTool
 }: {
   tree: AssemblyTree | null
   selection: Selection[]
@@ -37,6 +39,11 @@ export function AssemblyPanel({
     sourcePath: string,
     pin: { mode: PinMode; ref: string } | null
   ) => Promise<void>
+  /** 'select' (default): click faces to build joint references. 'move':
+   *  drag a whole component, live-solved against whatever joints touch it -
+   *  a separate mode so dragging never fights face-picking. */
+  tool: 'select' | 'move'
+  onSetTool: (t: 'select' | 'move') => void
 }): JSX.Element {
   const faceSel = selection.filter((s) => s.kind === 'face')
   const canJoint = faceSel.length === 2 && faceSel[0].bodyId !== faceSel[1].bodyId
@@ -48,6 +55,23 @@ export function AssemblyPanel({
         <span className="asmpanel-title">ASSEMBLY</span>
         <button className="asmpanel-add" onClick={onAddComponent}>
           + Component
+        </button>
+      </div>
+
+      <div className="asm-toolbar">
+        <button
+          className={tool === 'select' ? 'asm-tool on' : 'asm-tool'}
+          title="Select - click faces to pick joint references"
+          onClick={() => onSetTool('select')}
+        >
+          Select
+        </button>
+        <button
+          className={tool === 'move' ? 'asm-tool on' : 'asm-tool'}
+          title="Move - drag a component; joints constrain the motion live"
+          onClick={() => onSetTool('move')}
+        >
+          Move
         </button>
       </div>
 

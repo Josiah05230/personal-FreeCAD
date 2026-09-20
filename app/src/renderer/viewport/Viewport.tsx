@@ -122,6 +122,8 @@ export function Viewport({
   onProjectionChange,
   dressUpGhost = [],
   onDressUpGhostToggle,
+  asmTool,
+  onAssemblyDrag,
   apiRef
 }: {
   meshes: RenderMesh[]
@@ -182,6 +184,20 @@ export function Viewport({
    *  them). Ctrl-click one to deselect it. */
   dressUpGhost?: import('../rpc').BaseRef[]
   onDressUpGhostToggle?: (sub: string, midpoint: [number, number, number] | null) => void
+  /** Assembly panel's mouse mode: undefined/absent when no assembly is open.
+   *  'move' arms body-drag on pointerdown over a component; 'select' (or
+   *  undefined) leaves plain face-pick as the only behaviour, unchanged. */
+  asmTool?: 'select' | 'move'
+  /** Live-drag path for assembly components - the real solver-backed
+   *  dragStart/Move/End RPCs, same shape/reasoning as onSketchDrag: drag
+   *  renders directly off the delta the caller reports back applying, no
+   *  local approximate solver. delta is a world-space translation from the
+   *  drag's start point, recomputed every pointer move. */
+  onAssemblyDrag?: {
+    start: (componentId: string) => Promise<void>
+    move: (delta: [number, number, number]) => Promise<void>
+    end: () => Promise<void>
+  }
   apiRef?: { current: ViewportApi | null }
 }): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -202,6 +218,22 @@ export function Viewport({
   sketchToolRef.current = sketchTool
   const onSketchProjectRef = useRef(onSketchProject)
   onSketchProjectRef.current = onSketchProject
+  const asmToolRef = useRef(asmTool)
+  asmToolRef.current = asmTool
+  const onAssemblyDragRef = useRef(onAssemblyDrag)
+  onAssemblyDragRef.current = onAssemblyDrag
+  /** live body-drag gesture state: which component, the object(s) to move in
+   *  the three.js scene for immediate visual feedback (server round-trip
+   *  still drives the actual accepted position - this ref's objects just
+   *  follow the mouse smoothly between responses), and the world-space
+   *  anchor point the delta is computed from. */
+  const asmDragState = useRef<{
+    componentId: string
+    objs: THREE.Object3D[]
+    startWorld: THREE.Vector3
+    plane: THREE.Plane
+    active: boolean
+  } | null>(null)
   const projectionRef = useRef(projection)
   const onProjectionChangeRef = useRef(onProjectionChange)
   onProjectionChangeRef.current = onProjectionChange
@@ -645,6 +677,63 @@ export function Viewport({
           return
         }
       }
+      // Assembly Move tool: pick up a whole component and start a live,
+      // solver-backed drag. Gated on asmToolRef so a plain click still just
+      // face-picks (the Assembly panel's normal joint-reference flow) unless
+      // the user explicitly armed Move (user request, 2026-09-20 - a
+      // dedicated tool, not an always-on drag fighting face-pick clicks).
+      if (
+        e.button === 0 &&
+        asmToolRef.current === 'move' &&
+        onAssemblyDragRef.current &&
+        st &&
+        !st.sketch &&
+        st.content
+      ) {
+        const hit = st.picker.pick(e, st.content)
+        const bodyId = hit && 'bodyId' in hit ? (hit as { bodyId: string }).bodyId : null
+        if (bodyId) {
+          const objs = st.content.children.filter((o) => o.userData?.bodyId === bodyId)
+          if (objs.length) {
+            const r = host.getBoundingClientRect()
+            const ndc = new THREE.Vector2(
+              ((e.clientX - r.left) / r.width) * 2 - 1,
+              -((e.clientY - r.top) / r.height) * 2 + 1
+            )
+            const rc = new THREE.Raycaster()
+            rc.setFromCamera(ndc, st.controls.camera)
+            const camDir = new THREE.Vector3()
+            st.controls.camera.getWorldDirection(camDir)
+            // grab point: where the pick ray actually hit the body, not the
+            // plane - lets the drag plane sit at the right depth
+            const grabPoint = new THREE.Vector3()
+            rc.ray.intersectPlane(
+              new THREE.Plane().setFromNormalAndCoplanarPoint(
+                camDir,
+                objs[0].getWorldPosition(new THREE.Vector3())
+              ),
+              grabPoint
+            )
+            const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camDir, grabPoint)
+            for (const o of objs) o.userData.asmBasePos = o.position.clone()
+            asmDragState.current = {
+              componentId: bodyId,
+              objs,
+              startWorld: grabPoint.clone(),
+              plane,
+              active: true
+            }
+            void onAssemblyDragRef.current.start(bodyId)
+            try {
+              renderer.domElement.setPointerCapture(e.pointerId)
+            } catch {
+              /* ignore */
+            }
+            e.stopPropagation()
+            return
+          }
+        }
+      }
       // orbit / pan around whatever geometry is under the cursor (Fusion feel);
       // fall back to the model centre when the cursor is over empty space
       if ((e.button === 1 || e.button === 2) && st && !st.sketch) {
@@ -699,6 +788,18 @@ export function Viewport({
       if (pv.active) {
         pv.active = false
         onPreviewDragRef.current?.(normalParam(e) - pv.t0, 'end')
+        try {
+          renderer.domElement.releasePointerCapture(e.pointerId)
+        } catch {
+          /* ignore */
+        }
+        return
+      }
+      const ad = asmDragState.current
+      if (ad?.active) {
+        ad.active = false
+        asmDragState.current = null
+        void onAssemblyDragRef.current?.end()
         try {
           renderer.domElement.releasePointerCapture(e.pointerId)
         } catch {
@@ -848,6 +949,28 @@ export function Viewport({
         const t = normalParam(e)
         pv.handle.position.copy(pv.O0).addScaledVector(pv.N0, t - pv.t0)
         onPreviewDragRef.current?.(t - pv.t0, 'move')
+        return
+      }
+      const ad = asmDragState.current
+      if (ad?.active && st) {
+        const r = host.getBoundingClientRect()
+        const ndc = new THREE.Vector2(
+          ((e.clientX - r.left) / r.width) * 2 - 1,
+          -((e.clientY - r.top) / r.height) * 2 + 1
+        )
+        const rc = new THREE.Raycaster()
+        rc.setFromCamera(ndc, st.controls.camera)
+        const hitPoint = new THREE.Vector3()
+        if (rc.ray.intersectPlane(ad.plane, hitPoint)) {
+          const delta = hitPoint.clone().sub(ad.startWorld)
+          // move the real scene objects immediately for smooth visual
+          // feedback - the server call below is what actually determines the
+          // ACCEPTED position (joint-projected); the caller's dragMove
+          // response re-syncs the whole scene, so a rejected/corrected move
+          // self-heals on the next refresh rather than drifting out of sync
+          for (const o of ad.objs) o.position.copy(o.userData.asmBasePos as THREE.Vector3).add(delta)
+          void onAssemblyDragRef.current?.move([delta.x, delta.y, delta.z])
+        }
         return
       }
       if (banding) {

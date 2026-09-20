@@ -1358,16 +1358,27 @@ export const api = {
     comp2: string,
     sub2: string
   ) =>
-    rpc<AssemblyTree & { solved: boolean; engine: string }>('assembly.addJoint', {
-      jointType,
-      comp1,
-      sub1,
-      comp2,
-      sub2
-    }),
+    rpc<AssemblyTree & { solved: boolean; engine: string; solveRc: number | null }>(
+      'assembly.addJoint',
+      { jointType, comp1, sub1, comp2, sub2 }
+    ),
   assemblyTree: () => rpc<AssemblyTree>('assembly.tree'),
   assemblyRemoveComponent: (componentId: string) =>
     rpc<AssemblyTree & { removed: boolean }>('assembly.removeComponent', { componentId }),
+
+  /** Live-drag path for assembly components: the real solver-backed
+   *  dragStart/Move/End RPCs, same shape/reasoning as sketch's - drag
+   *  renders directly off dragMove's response (every component's placement,
+   *  since a joint chain can move parts other than the one under the
+   *  cursor), no local approximate solver. */
+  assemblyDragStart: (componentId: string) =>
+    rpcQuiet<AssemblyTree & { dragId: string }>('assembly.dragStart', { componentId }),
+  assemblyDragMove: (dragId: string, base: number[], axis: number[], angle: number) =>
+    rpcQuiet<AssemblyTree & { dragId: string; solveRc: number | null; accepted: boolean }>(
+      'assembly.dragMove',
+      { dragId, base, axis, angle }
+    ),
+  assemblyDragEnd: (dragId: string) => rpcQuiet<{ ok: boolean }>('assembly.dragEnd', { dragId }),
 
   setVisibility: (id: string, visible: boolean) =>
     rpc<{ id: string; visible: boolean }>('object.setVisibility', { id, visible }),
