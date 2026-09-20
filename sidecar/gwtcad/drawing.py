@@ -249,10 +249,14 @@ def page_contents(doc, page_id):
                         pass
             views.append(entry)
         elif tid == "TechDraw::DrawViewDimension":
-            dimensions.append({
+            dim_entry = {
                 "id": o.Name, "viewId": (o.References2D[0][0].Name if o.References2D else ""),
                 "type": o.Type, "value": _dimension_raw_value(o),
-            })
+            }
+            geom = _dimension_geom(o)
+            if geom:
+                dim_entry.update(geom)
+            dimensions.append(dim_entry)
         elif tid == "TechDraw::DrawViewAnnotation":
             leader_id = None
             for leader in doc.Objects:
@@ -582,7 +586,11 @@ def add_dimension(doc, page_id, view_id, refs, kind="Distance"):
     doc.recompute()
 
     value = _dimension_raw_value(dim)
-    return {"id": dim.Name, "viewId": view.Name, "type": dim.Type, "value": value}
+    geom = _dimension_geom(dim)
+    result = {"id": dim.Name, "viewId": view.Name, "type": dim.Type, "value": value}
+    if geom:
+        result.update(geom)
+    return result
 
 
 def remove_dimension(doc, dim_id):
@@ -592,6 +600,42 @@ def remove_dimension(doc, dim_id):
     doc.removeObject(dim.Name)
     doc.recompute()
     return {"ok": True}
+
+
+def _dimension_linear_points(dim):
+    """The two 2D points (in the same projected frame as the view's visible/
+    hidden edge polylines) a Distance-family dimension measures between -
+    factored out of _dimension_raw_value so add_dimension/page_contents can
+    return real p1/p2 for the frontend to draw witness lines from, not just
+    the scalar value. Returns None for non-Distance types or if resolution
+    fails (mirrors _dimension_raw_value's own failure mode)."""
+    try:
+        refs = list(dim.References2D or [])
+        if not refs:
+            return None
+        view = refs[0][0]
+        shape = view.Source[0].Shape if view.Source else None
+        if shape is None:
+            return None
+        subs = []
+        for r in refs:
+            s = r[1]
+            subs.extend(s if isinstance(s, (tuple, list)) else [s])
+        offset = _project_offset(view)
+        pts = []
+        if len(subs) == 1 and subs[0].startswith("Edge"):
+            edge = _sub_model_edge(shape, subs[0])
+            if edge is not None:
+                pts = [_project(view, edge.valueAt(edge.FirstParameter), offset),
+                       _project(view, edge.valueAt(edge.LastParameter), offset)]
+        else:
+            for s in subs[:2]:
+                p = _sub_point_2d(view, shape, s, offset)
+                if p is not None:
+                    pts.append(p)
+        return pts if len(pts) == 2 else None
+    except Exception:
+        return None
 
 
 def _dimension_raw_value(dim):
@@ -639,22 +683,8 @@ def _dimension_raw_value(dim):
             cosang = max(-1.0, min(1.0, d1.dot(d2) / (d1.Length * d2.Length)))
             return math.degrees(math.acos(abs(cosang)))
         # Distance family: 2D distance in the view's own projected plane.
-        # A single-edge reference measures between that edge's own two
-        # endpoints; a two-point/two-edge reference measures between the
-        # first point of each.
-        offset = _project_offset(view)
-        pts = []
-        if len(subs) == 1 and subs[0].startswith("Edge"):
-            edge = _sub_model_edge(shape, subs[0])
-            if edge is not None:
-                pts = [_project(view, edge.valueAt(edge.FirstParameter), offset),
-                       _project(view, edge.valueAt(edge.LastParameter), offset)]
-        else:
-            for s in subs[:2]:
-                p = _sub_point_2d(view, shape, s, offset)
-                if p is not None:
-                    pts.append(p)
-        if len(pts) == 2:
+        pts = _dimension_linear_points(dim)
+        if pts:
             dx = pts[1][0] - pts[0][0]
             dy = pts[1][1] - pts[0][1]
             if dim.Type == "DistanceX":
@@ -665,6 +695,237 @@ def _dimension_raw_value(dim):
     except Exception:
         return None
     return None
+
+
+_DIM_PERP_TAG = "_gwt_dimPerp"
+_DIM_LABEL_U_TAG = "_gwt_dimLabelU"
+
+
+def _dimension_radial_source(dim):
+    """(view, shape, edge, subs) for a Radius/Diameter dimension, or None -
+    factored out of the value/geometry computations since both need the same
+    resolved circular edge."""
+    refs = list(dim.References2D or [])
+    if not refs:
+        return None
+    view = refs[0][0]
+    shape = view.Source[0].Shape if view.Source else None
+    if shape is None:
+        return None
+    subs = []
+    for r in refs:
+        s = r[1]
+        subs.extend(s if isinstance(s, (tuple, list)) else [s])
+    if not subs:
+        return None
+    edge = _sub_model_edge(shape, subs[0])
+    if edge is None or not hasattr(edge.Curve, "Radius"):
+        return None
+    return view, edge
+
+
+def _dimension_radial_points(dim):
+    """centerUV/edgeUV for a Radius/Diameter dimension - the circle's centre
+    and one point on its rim, both projected into the view's 2D sheet frame,
+    the same way _dimension_linear_points does for Distance. A radial
+    dimension's leader runs from somewhere along (or beyond) this line."""
+    src = _dimension_radial_source(dim)
+    if src is None:
+        return None
+    view, edge = src
+    offset = _project_offset(view)
+    center3d = edge.Curve.Center
+    # a point on the circle toward the view's local +X, in the circle's own
+    # plane (Curve.Axis is its normal) - any point on the rim works, this one
+    # is just a deterministic, reproducible choice
+    axis = edge.Curve.Axis
+    ref = App.Vector(1, 0, 0) if abs(axis.dot(App.Vector(1, 0, 0))) < 0.9 else App.Vector(0, 1, 0)
+    radial_dir = axis.cross(ref).normalize()
+    rim3d = center3d + radial_dir * edge.Curve.Radius
+    center_uv = _project(view, center3d, offset)
+    rim_uv = _project(view, rim3d, offset)
+    return center_uv, rim_uv
+
+
+def _dimension_angle_source(dim):
+    refs = list(dim.References2D or [])
+    if len(refs) < 1:
+        return None
+    view = refs[0][0]
+    shape = view.Source[0].Shape if view.Source else None
+    if shape is None:
+        return None
+    subs = []
+    for r in refs:
+        s = r[1]
+        subs.extend(s if isinstance(s, (tuple, list)) else [s])
+    if len(subs) < 2:
+        return None
+    e1 = _sub_model_edge(shape, subs[0])
+    e2 = _sub_model_edge(shape, subs[1])
+    if e1 is None or e2 is None:
+        return None
+    return view, e1, e2
+
+
+def _dimension_angle_geom(dim):
+    """centerUV + start/end 2D directions for an Angle/Angle3Pt dimension -
+    the vertex where the two referenced lines (projected into the view's 2D
+    sheet frame) meet, and unit directions along each toward its own edge, so
+    the frontend can sweep a real arc between them instead of drawing a
+    straight line between two arbitrary points (which is all the generic
+    Distance-family geom would give it)."""
+    src = _dimension_angle_source(dim)
+    if src is None:
+        return None
+    view, e1, e2 = src
+    offset = _project_offset(view)
+    a1 = _project(view, e1.valueAt(e1.FirstParameter), offset)
+    a2 = _project(view, e1.valueAt(e1.LastParameter), offset)
+    b1 = _project(view, e2.valueAt(e2.FirstParameter), offset)
+    b2 = _project(view, e2.valueAt(e2.LastParameter), offset)
+    # intersect the two projected LINES (not segments - the edges' endpoints
+    # rarely coincide exactly after projection/rounding) for the true vertex
+    center = _line_intersect_2d(a1, a2, b1, b2)
+    if center is None:
+        # parallel or degenerate in this view - fall back to the nearest
+        # pair of endpoints as a best-effort vertex
+        center = a1
+    def _unit(p, q):
+        dx, dy = q[0] - p[0], q[1] - p[1]
+        n = math.hypot(dx, dy)
+        return (dx / n, dy / n) if n > 1e-9 else (1.0, 0.0)
+    # direction from the vertex toward whichever endpoint of each edge is
+    # farther away (keeps the arc opening toward the actual edges, not
+    # doubling back through the vertex when the vertex is itself an endpoint)
+    dir1 = _unit(center, a2 if math.hypot(a2[0] - center[0], a2[1] - center[1])
+                 >= math.hypot(a1[0] - center[0], a1[1] - center[1]) else a1)
+    dir2 = _unit(center, b2 if math.hypot(b2[0] - center[0], b2[1] - center[1])
+                 >= math.hypot(b1[0] - center[0], b1[1] - center[1]) else b1)
+    return {"center": center, "dir1": dir1, "dir2": dir2}
+
+
+def _line_intersect_2d(a1, a2, b1, b2):
+    """Where infinite lines through a1-a2 and b1-b2 cross, or None if
+    (near-)parallel. Standard 2D line-line intersection determinant form."""
+    x1, y1 = a1
+    x2, y2 = a2
+    x3, y3 = b1
+    x4, y4 = b2
+    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(denom) < 1e-9:
+        return None
+    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+    return (x1 + t * (x2 - x1), y1 + t * (y2 - y1))
+
+
+def _dimension_geom(dim):
+    """Geometry for the frontend's witness/dimension-line (Distance family),
+    leader-line (Radius/Diameter), or arc (Angle/Angle3Pt) SVG drawing -
+    computed server-side so it round-trips with the document instead of
+    living only in React state that a reopen throws away. perpOff/radius
+    offset/arc radius (how far the dimension line/leader/arc sits from the
+    measured geometry) default to a fixed value outside it on first
+    creation; set_dimension_geom persists a user's drag so it isn't
+    recomputed to the default on every reopen."""
+    if dim.Type in ("Radius", "Diameter"):
+        pts = _dimension_radial_points(dim)
+        if not pts:
+            return None
+        center, rim = pts
+        dx, dy = rim[0] - center[0], rim[1] - center[1]
+        radius2d = math.hypot(dx, dy)
+        if radius2d < 1e-9:
+            return None
+        ux, uy = dx / radius2d, dy / radius2d
+        leader_len = _get_tag(dim, _DIM_PERP_TAG, "")
+        try:
+            leader_len = float(leader_len)
+        except ValueError:
+            leader_len = radius2d + 8.0  # first-time default: 8mm past the rim
+        label_uv = (center[0] + ux * leader_len, center[1] + uy * leader_len)
+        return {"center": list(center), "rim": list(rim), "labelUV": list(label_uv)}
+    if dim.Type in ("Angle", "Angle3Pt"):
+        ag = _dimension_angle_geom(dim)
+        if not ag:
+            return None
+        arc_r = _get_tag(dim, _DIM_PERP_TAG, "")
+        try:
+            arc_r = float(arc_r)
+        except ValueError:
+            arc_r = 12.0  # first-time default: a 12mm-radius arc
+        return {
+            "center": list(ag["center"]), "dir1": list(ag["dir1"]), "dir2": list(ag["dir2"]),
+            "arcRadius": arc_r,
+        }
+    pts = _dimension_linear_points(dim)
+    if not pts:
+        return None
+    p1, p2 = pts
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    length = math.hypot(dx, dy)
+    if length < 1e-9:
+        return None
+    ux, uy = dx / length, dy / length
+    perp = (-uy, ux)
+    perp_off = _get_tag(dim, _DIM_PERP_TAG, "")
+    try:
+        perp_off = float(perp_off)
+    except ValueError:
+        perp_off = 8.0  # first-time default: 8mm outside the measured points
+    label_u = _get_tag(dim, _DIM_LABEL_U_TAG, "")
+    try:
+        label_u = float(label_u)
+    except ValueError:
+        label_u = 0.5  # first-time default: centred along p1-p2
+    mid = (p1[0] + dx * label_u, p1[1] + dy * label_u)
+    label_uv = (mid[0] + perp[0] * perp_off, mid[1] + perp[1] * perp_off)
+    return {"p1": list(p1), "p2": list(p2), "labelUV": list(label_uv)}
+
+
+def set_dimension_geom(doc, dim_id, label_uv):
+    """Persist a user's drag of the dimension line/label/leader/arc - solved
+    as an offset against the dimension's own referenced geometry (rather
+    than storing labelUV directly) so it stays correctly anchored even if
+    that geometry itself later moves (e.g. a parameter-driven edit)."""
+    dim = doc.getObject(dim_id)
+    if dim is None:
+        raise RpcError(APP_ERROR, "no such dimension: %r" % dim_id)
+
+    if dim.Type in ("Radius", "Diameter"):
+        pts = _dimension_radial_points(dim)
+        if not pts:
+            raise RpcError(APP_ERROR, "dimension has no resolvable geometry")
+        center, _rim = pts
+        leader_len = math.hypot(label_uv[0] - center[0], label_uv[1] - center[1])
+        _tag(dim, _DIM_PERP_TAG, leader_len)
+        return _dimension_geom(dim)
+
+    if dim.Type in ("Angle", "Angle3Pt"):
+        ag = _dimension_angle_geom(dim)
+        if not ag:
+            raise RpcError(APP_ERROR, "dimension has no resolvable geometry")
+        center = ag["center"]
+        arc_r = math.hypot(label_uv[0] - center[0], label_uv[1] - center[1])
+        _tag(dim, _DIM_PERP_TAG, arc_r)
+        return _dimension_geom(dim)
+
+    pts = _dimension_linear_points(dim)
+    if not pts:
+        raise RpcError(APP_ERROR, "dimension has no resolvable geometry")
+    p1, p2 = pts
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    length = math.hypot(dx, dy)
+    if length < 1e-9:
+        raise RpcError(APP_ERROR, "degenerate dimension (zero-length reference)")
+    ux, uy = dx / length, dy / length
+    perp = (-uy, ux)
+    vx, vy = label_uv[0] - p1[0], label_uv[1] - p1[1]
+    label_u = (vx * ux + vy * uy) / length
+    perp_off = vx * perp[0] + vy * perp[1]
+    _tag(dim, _DIM_PERP_TAG, perp_off)
+    _tag(dim, _DIM_LABEL_U_TAG, label_u)
+    return _dimension_geom(dim)
 
 
 def _sub_model_edge(shape, sub):

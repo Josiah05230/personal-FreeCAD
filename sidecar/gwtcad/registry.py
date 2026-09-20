@@ -91,6 +91,7 @@ _NO_TXN = {
     "drawing.addDetailView", "drawing.addBrokenView", "drawing.convertView",
     "drawing.removeView",
     "drawing.addDimension", "drawing.removeDimension", "drawing.setDimensionType",
+    "drawing.moveDimension",
     "drawing.setDimensionFormat", "drawing.setDefaultDimensionFormat",
     "drawing.getDimensionFormats", "drawing.addCleanupLine",
     "drawing.listCleanupLines", "drawing.removeCleanupLine",

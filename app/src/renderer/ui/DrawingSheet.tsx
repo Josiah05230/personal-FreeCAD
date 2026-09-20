@@ -377,6 +377,7 @@ function viewsToDxf(placed: Placed[]): string {
 }
 
 const RADIAL_TYPES: DimensionType[] = ['Radius', 'Diameter']
+const ANGLE_TYPES: DimensionType[] = ['Angle', 'Angle3Pt']
 
 /**
  * Drawing sheet editor. Views/dimensions/notes/tables/cleanup-lines are all
@@ -2347,12 +2348,168 @@ export const DrawingSheet = forwardRef<
             if (!pl || d.value === null) return null
             const fmt = { ...dimFormats.default, ...(dimFormats.overrides[d.id] ?? {}) }
             const text = formatDimension(d.value, d.type, fmt || DEFAULT_DIM_FORMAT)
-            const geom = dimGeom[d.id]
+            // dimGeom (an in-session drag not yet saved) wins; otherwise the
+            // server-persisted p1/p2/labelUV on the DTO itself - computed by
+            // the sidecar from the dimension's own References2D, so real
+            // witness/dimension lines survive a reopen instead of degrading
+            // to a corner label the way a client-only cache would (fixed
+            // 2026-09-20: every dimension used to lose its lines/arrows the
+            // moment the drawing was closed and reopened, even one placed
+            // through the normal two-click UI flow - the geometry only ever
+            // lived in this React state, never round-tripped through the
+            // sidecar).
+            const geom = dimGeom[d.id] ?? (d.p1 && d.p2 && d.labelUV
+              ? { p1: d.p1, p2: d.p2, labelUV: d.labelUV }
+              : undefined)
+            const radialGeom = RADIAL_TYPES.includes(d.type) && d.center && d.rim && d.labelUV
+              ? { center: d.center, rim: d.rim, labelUV: d.labelUV }
+              : undefined
+            const angleGeom = ANGLE_TYPES.includes(d.type) && d.center && d.dir1 && d.dir2 && d.arcRadius
+              ? { center: d.center, dir1: d.dir1, dir2: d.dir2, arcRadius: d.arcRadius }
+              : undefined
+            const dimContextMenu = (e: React.MouseEvent): void => {
+              e.preventDefault()
+              const items: MenuItem[] = []
+              if (RADIAL_TYPES.includes(d.type)) {
+                items.push({
+                  label: d.type === 'Radius' ? 'Convert to Diameter' : 'Convert to Radius',
+                  onClick: () => void setDimensionType(d.id, d.type === 'Radius' ? 'Diameter' : 'Radius')
+                })
+              }
+              items.push({
+                label: 'Format…',
+                onClick: () => {
+                  void (async () => {
+                    const res = await promptForm('Dimension Format', [
+                      { key: 'precision', label: 'Decimal places', value: String(fmt.precision ?? 2) },
+                      {
+                        key: 'leadingZero',
+                        label: 'Leading zero (0.5 vs .5)',
+                        value: fmt.leadingZero === false ? 'no' : 'yes',
+                        options: ['yes', 'no']
+                      },
+                      {
+                        key: 'trailingZeros',
+                        label: 'Trailing zeros (1.20 vs 1.2)',
+                        value: fmt.trailingZeros === false ? 'no' : 'yes',
+                        options: ['yes', 'no']
+                      }
+                    ])
+                    if (!res) return
+                    const newFmt: DimensionFormat = {
+                      precision: Number(res.precision) || 0,
+                      leadingZero: res.leadingZero !== 'no',
+                      trailingZeros: res.trailingZeros !== 'no'
+                    }
+                    await api.drawingSetDimensionFormat(d.id, newFmt)
+                    void refreshDimFormats()
+                  })()
+                }
+              })
+              items.push({ separator: true, label: '' })
+              items.push({ label: 'Delete Dimension', danger: true, onClick: () => void deleteDimension(d.id) })
+              setMenu(null)
+              setDimMenu({ x: e.clientX, y: e.clientY, items })
+            }
+            const arrow = (x: number, y: number, dirx: number, diry: number): string => {
+              const s = 1.6
+              const backx = x - dirx * s
+              const backy = y - diry * s
+              const nx = -diry * s * 0.35
+              const ny = dirx * s * 0.35
+              return `${x},${y} ${backx + nx},${backy + ny} ${backx - nx},${backy - ny}`
+            }
+            if (radialGeom) {
+              // leader: a line from the circle's centre out through the rim
+              // to the label - real technical-drawing radial dimension, not
+              // a straight line between two arbitrary points.
+              const [cx, cy] = uvToLocal(pl, radialGeom.center)
+              const [rx, ry] = uvToLocal(pl, radialGeom.rim)
+              const [lx, ly] = uvToLocal(pl, radialGeom.labelUV)
+              const dirx0 = rx - cx
+              const diry0 = ry - cy
+              const rlen = Math.hypot(dirx0, diry0) || 1
+              const dirx = dirx0 / rlen
+              const diry = diry0 / rlen
+              // Radius: leader starts at the centre. Diameter: starts on the
+              // far rim so the leader visibly crosses the whole circle.
+              const startx = d.type === 'Diameter' ? cx - dirx0 : cx
+              const starty = d.type === 'Diameter' ? cy - diry0 : cy
+              return (
+                <g
+                  key={d.id}
+                  transform={`translate(${pl.x} ${pl.y})`}
+                  stroke="#c47f16"
+                  fill="#c47f16"
+                  strokeWidth={0.25}
+                  onContextMenu={dimContextMenu}
+                >
+                  <line x1={startx} y1={starty} x2={lx} y2={ly} />
+                  {d.type === 'Radius' && <circle cx={cx} cy={cy} r={0.5} stroke="none" />}
+                  <polygon points={arrow(rx, ry, dirx, diry)} stroke="none" />
+                  <text
+                    x={lx + (lx >= cx ? 1.5 : -1.5)}
+                    y={ly}
+                    fontSize={3.4}
+                    textAnchor={lx >= cx ? 'start' : 'end'}
+                    dominantBaseline="middle"
+                    stroke="none"
+                  >
+                    {text}
+                  </text>
+                </g>
+              )
+            }
+            if (angleGeom) {
+              // real arc sweep between the two referenced edges, not a
+              // straight line - angle in screen space (Y flips sign vs the
+              // model-space angle already computed for the label text).
+              const [cx, cy] = uvToLocal(pl, angleGeom.center)
+              const r = angleGeom.arcRadius
+              const a1 = Math.atan2(-angleGeom.dir1[1], angleGeom.dir1[0])
+              const a2 = Math.atan2(-angleGeom.dir2[1], angleGeom.dir2[0])
+              let sweep = a2 - a1
+              while (sweep <= -Math.PI) sweep += 2 * Math.PI
+              while (sweep > Math.PI) sweep -= 2 * Math.PI
+              const large = Math.abs(sweep) > Math.PI ? 1 : 0
+              const sweepFlag = sweep >= 0 ? 1 : 0
+              const startx = cx + Math.cos(a1) * r
+              const starty = cy + Math.sin(a1) * r
+              const endx = cx + Math.cos(a2) * r
+              const endy = cy + Math.sin(a2) * r
+              const midAngle = a1 + sweep / 2
+              const labelx = cx + Math.cos(midAngle) * (r + 3)
+              const labely = cy + Math.sin(midAngle) * (r + 3)
+              // arrow direction = tangent to the arc at each end
+              const tanSign = sweepFlag ? 1 : -1
+              const startTan = [-Math.sin(a1) * tanSign, Math.cos(a1) * tanSign]
+              const endTan = [Math.sin(a2) * tanSign, -Math.cos(a2) * tanSign]
+              return (
+                <g
+                  key={d.id}
+                  transform={`translate(${pl.x} ${pl.y})`}
+                  stroke="#c47f16"
+                  fill="#c47f16"
+                  strokeWidth={0.25}
+                  onContextMenu={dimContextMenu}
+                >
+                  {/* extension lines from the vertex out along each edge direction to the arc */}
+                  <line x1={cx} y1={cy} x2={startx} y2={starty} strokeWidth={0.2} strokeDasharray="0.8,0.6" />
+                  <line x1={cx} y1={cy} x2={endx} y2={endy} strokeWidth={0.2} strokeDasharray="0.8,0.6" />
+                  <path
+                    d={`M ${startx} ${starty} A ${r} ${r} 0 ${large} ${sweepFlag} ${endx} ${endy}`}
+                    fill="none"
+                  />
+                  <polygon points={arrow(startx, starty, startTan[0], startTan[1])} stroke="none" />
+                  <polygon points={arrow(endx, endy, endTan[0], endTan[1])} stroke="none" />
+                  <text x={labelx} y={labely} fontSize={3.4} textAnchor="middle" stroke="none">
+                    {text}
+                  </text>
+                </g>
+              )
+            }
             // fall back to a corner label (no witness lines) only for a
-            // dimension whose geometry we never recorded - e.g. one already
-            // on the page when this drawing was reopened, before per-
-            // dimension geometry existed. A freshly-placed dimension always
-            // has geom and gets real extension/dimension lines below.
+            // dimension whose geometry genuinely can't be resolved.
             if (!geom) {
               return (
                 <text
@@ -2362,15 +2519,7 @@ export const DrawingSheet = forwardRef<
                   fontSize={3.4}
                   textAnchor="middle"
                   fill="#c47f16"
-                  onContextMenu={(e) => {
-                    e.preventDefault()
-                    setMenu(null)
-                    setDimMenu({
-                      x: e.clientX,
-                      y: e.clientY,
-                      items: [{ label: 'Delete Dimension', danger: true, onClick: () => void deleteDimension(d.id) }]
-                    })
-                  }}
+                  onContextMenu={dimContextMenu}
                 >
                   {text}
                 </text>
@@ -2398,14 +2547,6 @@ export const DrawingSheet = forwardRef<
             const dly1 = p1y + ux * perpOff
             const dlx2 = p2x - uy * perpOff
             const dly2 = p2y + ux * perpOff
-            const arrow = (x: number, y: number, dirx: number, diry: number): string => {
-              const s = 1.6
-              const backx = x - dirx * s
-              const backy = y - diry * s
-              const nx = -diry * s * 0.35
-              const ny = dirx * s * 0.35
-              return `${x},${y} ${backx + nx},${backy + ny} ${backx - nx},${backy - ny}`
-            }
             return (
               <g
                 key={d.id}
@@ -2413,50 +2554,7 @@ export const DrawingSheet = forwardRef<
                 stroke="#c47f16"
                 fill="#c47f16"
                 strokeWidth={0.25}
-                onContextMenu={(e) => {
-                  e.preventDefault()
-                  const items: MenuItem[] = []
-                  if (RADIAL_TYPES.includes(d.type)) {
-                    items.push({
-                      label: d.type === 'Radius' ? 'Convert to Diameter' : 'Convert to Radius',
-                      onClick: () => void setDimensionType(d.id, d.type === 'Radius' ? 'Diameter' : 'Radius')
-                    })
-                  }
-                  items.push({
-                    label: 'Format…',
-                    onClick: () => {
-                      void (async () => {
-                        const res = await promptForm('Dimension Format', [
-                          { key: 'precision', label: 'Decimal places', value: String(fmt.precision ?? 2) },
-                          {
-                            key: 'leadingZero',
-                            label: 'Leading zero (0.5 vs .5)',
-                            value: fmt.leadingZero === false ? 'no' : 'yes',
-                            options: ['yes', 'no']
-                          },
-                          {
-                            key: 'trailingZeros',
-                            label: 'Trailing zeros (1.20 vs 1.2)',
-                            value: fmt.trailingZeros === false ? 'no' : 'yes',
-                            options: ['yes', 'no']
-                          }
-                        ])
-                        if (!res) return
-                        const newFmt: DimensionFormat = {
-                          precision: Number(res.precision) || 0,
-                          leadingZero: res.leadingZero !== 'no',
-                          trailingZeros: res.trailingZeros !== 'no'
-                        }
-                        await api.drawingSetDimensionFormat(d.id, newFmt)
-                        void refreshDimFormats()
-                      })()
-                    }
-                  })
-                  items.push({ separator: true, label: '' })
-                  items.push({ label: 'Delete Dimension', danger: true, onClick: () => void deleteDimension(d.id) })
-                  setMenu(null)
-                  setDimMenu({ x: e.clientX, y: e.clientY, items })
-                }}
+                onContextMenu={dimContextMenu}
               >
                 {/* extension (witness) lines: from each measured point out to the dimension line */}
                 <line x1={p1x} y1={p1y} x2={dlx1} y2={dly1} strokeWidth={0.2} />

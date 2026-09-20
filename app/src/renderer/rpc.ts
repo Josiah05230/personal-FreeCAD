@@ -441,6 +441,25 @@ export interface DrawingDimension {
   viewId: string
   type: DimensionType
   value: number | null
+  /** Witness/dimension-line geometry (Distance family), in the same
+   *  projected 2D frame as the view's own visible/hidden edge polylines -
+   *  computed server-side and persisted (a drag moves it via
+   *  drawingMoveDimension) so the actual lines/arrows survive a reopen
+   *  instead of only existing for the React session that placed them. */
+  p1?: [number, number]
+  p2?: [number, number]
+  labelUV?: [number, number]
+  /** Radius/Diameter: circle centre and one point on its rim (both 2D
+   *  projected) - the leader runs from the centre out through/past the rim
+   *  toward labelUV. */
+  center?: [number, number]
+  rim?: [number, number]
+  /** Angle/Angle3Pt: the vertex where the two referenced lines meet, and a
+   *  unit direction toward each one's own edge, so the arc sweeps the actual
+   *  angle between them rather than a straight line between two points. */
+  dir1?: [number, number]
+  dir2?: [number, number]
+  arcRadius?: number
 }
 
 export interface DimensionFormat {
@@ -1257,6 +1276,13 @@ export const api = {
   drawingRemoveDimension: (dimId: string) => rpc<{ ok: boolean }>('drawing.removeDimension', { dimId }),
   drawingSetDimensionType: (dimId: string, kind: DimensionType) =>
     rpc<DrawingDimension>('drawing.setDimensionType', { dimId, kind }),
+  /** Persist a drag of the dimension line/label so it survives a reopen -
+   *  see drawing.moveDimension's sidecar docstring. */
+  drawingMoveDimension: (dimId: string, labelUV: [number, number]) =>
+    rpcQuiet<{ p1: [number, number]; p2: [number, number]; labelUV: [number, number] } | null>(
+      'drawing.moveDimension',
+      { dimId, labelUV }
+    ),
   drawingSetDimensionFormat: (dimId: string, fmt: DimensionFormat | null) =>
     rpc<DimensionFormat | null>('drawing.setDimensionFormat', { dimId, fmt }),
   drawingSetDefaultDimensionFormat: (fmt: DimensionFormat | null) =>

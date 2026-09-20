@@ -5289,6 +5289,16 @@ def drawing_set_dimension_type(dimId, kind):
     return _drawing.set_dimension_type(d, dimId, kind)
 
 
+@method("drawing.moveDimension")
+def drawing_move_dimension(dimId, labelUV):
+    """Persist a drag of the dimension line/label - see
+    drawing.set_dimension_geom's docstring for why this solves an offset
+    against the dimension's own referenced geometry rather than storing the
+    dropped point directly."""
+    d = session.doc()
+    return _drawing.set_dimension_geom(d, dimId, labelUV)
+
+
 @method("drawing.setDimensionFormat")
 def drawing_set_dimension_format(dimId, fmt=None):
     return _drawing.set_dimension_format(dimId, fmt)
