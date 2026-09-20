@@ -38,6 +38,11 @@ interface Placed {
 interface TableState {
   id: string
   rows: Array<BomRow | Record<string, string | number>>
+  /** rows before "=NAME" parameter resolution - what an edit box seeds
+   *  from (see rpc.ts's DrawingTable.rawRows). Defaults to rows itself
+   *  right after a plain (non-reload) edit, since make_table's own
+   *  response is always already the raw input. */
+  rawRows: Array<BomRow | Record<string, string | number>>
   columns: TableColumn[]
   showGrid: boolean
   gridColor: string
@@ -644,6 +649,7 @@ export const DrawingSheet = forwardRef<
           c.tables.map((t, i) => ({
             id: t.id,
             rows: t.rows,
+            rawRows: t.rawRows ?? t.rows,
             columns: t.columns,
             showGrid: t.style?.showGrid ?? true,
             gridColor: t.style?.gridColor ?? '#111',
@@ -1383,6 +1389,7 @@ export const DrawingSheet = forwardRef<
         const next: TableState = {
           id: t.id,
           rows: t.rows,
+          rawRows: t.rawRows ?? t.rows,
           columns: t.columns,
           showGrid: template?.spec.showGrid ?? true,
           gridColor: template?.spec.gridColor ?? '#111',
@@ -1453,6 +1460,7 @@ export const DrawingSheet = forwardRef<
         const next: TableState = {
           id: t.id,
           rows: t.rows,
+          rawRows: t.rawRows ?? t.rows,
           columns: t.columns,
           showGrid: template?.spec.showGrid ?? true,
           gridColor: template?.spec.gridColor ?? '#111',
@@ -1528,23 +1536,28 @@ export const DrawingSheet = forwardRef<
     async (tableId: string, rowIdx: number, source: string, value: string) => {
       const t = tables.find((x) => x.id === tableId)
       if (!t) return
-      const oldValue = String((t.rows[rowIdx] as unknown as Record<string, unknown>)?.[source] ?? '')
-      const rows = t.rows.map((row, i) => (i === rowIdx ? { ...row, [source]: value } : row))
+      // build off rawRows (the unresolved "=NAME" text), not the resolved
+      // display rows - editing one cell must not silently bake every OTHER
+      // cell's live parameter reference into a frozen literal (user
+      // question, 2026-09-20: part name/description/hole size "driven/
+      // grabbed in drawing tables with some sort of '=PARAMETER_NAME'").
+      const oldValue = String((t.rawRows[rowIdx] as unknown as Record<string, unknown>)?.[source] ?? '')
+      const rows = t.rawRows.map((row, i) => (i === rowIdx ? { ...row, [source]: value } : row))
       const columns = t.columns
-      updateTable(tableId, { rows })
+      updateTable(tableId, { rows, rawRows: rows })
       try {
         const res = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
-        updateTable(tableId, { rows: res.rows })
+        updateTable(tableId, { rows: res.rows, rawRows: res.rows })
         if (String(oldValue) !== value) {
           pushUndo({
             undo: async () => {
               const revertRows = rows.map((row, i) => (i === rowIdx ? { ...row, [source]: oldValue } : row))
               const t2 = await api.drawingMakeTable(pageId, revertRows, columns, undefined, tableId)
-              updateTable(tableId, { rows: t2.rows })
+              updateTable(tableId, { rows: t2.rows, rawRows: t2.rows })
             },
             redo: async () => {
               const t2 = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
-              updateTable(tableId, { rows: t2.rows })
+              updateTable(tableId, { rows: t2.rows, rawRows: t2.rows })
             }
           })
         }
@@ -1679,21 +1692,24 @@ export const DrawingSheet = forwardRef<
     async (tableId: string) => {
       const t = tables.find((x) => x.id === tableId)
       if (!t) return
-      const blank: Record<string, string | number> = { index: t.rows.length + 1 }
+      const blank: Record<string, string | number> = { index: t.rawRows.length + 1 }
       for (const c of t.columns) blank[c.source] = ''
-      const rows = [...t.rows, blank]
+      // built off rawRows so any "=NAME" reference in an existing row
+      // survives the round trip (see setTableCell's comment - t.rows here
+      // would be already-resolved display values).
+      const rows = [...t.rawRows, blank]
       const { columns } = t
       try {
         const res = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
-        updateTable(tableId, { rows: res.rows })
+        updateTable(tableId, { rows: res.rows, rawRows: res.rows })
         pushUndo({
           undo: async () => {
-            const t2 = await api.drawingMakeTable(pageId, t.rows, columns, undefined, tableId)
-            updateTable(tableId, { rows: t2.rows })
+            const t2 = await api.drawingMakeTable(pageId, t.rawRows, columns, undefined, tableId)
+            updateTable(tableId, { rows: t2.rows, rawRows: t2.rows })
           },
           redo: async () => {
             const t2 = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
-            updateTable(tableId, { rows: t2.rows })
+            updateTable(tableId, { rows: t2.rows, rawRows: t2.rows })
           }
         })
       } catch (e) {
@@ -1710,20 +1726,20 @@ export const DrawingSheet = forwardRef<
         window.alert('A table needs at least one row.')
         return
       }
-      const rows = t.rows.filter((_, i) => i !== rowIdx)
+      const rows = t.rawRows.filter((_, i) => i !== rowIdx)
       const { columns } = t
-      const previousRows = t.rows
+      const previousRows = t.rawRows
       try {
         const res = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
-        updateTable(tableId, { rows: res.rows })
+        updateTable(tableId, { rows: res.rows, rawRows: res.rows })
         pushUndo({
           undo: async () => {
             const t2 = await api.drawingMakeTable(pageId, previousRows, columns, undefined, tableId)
-            updateTable(tableId, { rows: t2.rows })
+            updateTable(tableId, { rows: t2.rows, rawRows: t2.rows })
           },
           redo: async () => {
             const t2 = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
-            updateTable(tableId, { rows: t2.rows })
+            updateTable(tableId, { rows: t2.rows, rawRows: t2.rows })
           }
         })
       } catch (e) {
@@ -1740,22 +1756,22 @@ export const DrawingSheet = forwardRef<
       const n = t.columns.length
       const key = `col${n}`
       const columns = [...t.columns, { key, header: `Column ${n + 1}`, source: key }]
-      const rows = t.rows.map(
+      const rows = t.rawRows.map(
         (r) => ({ ...(r as unknown as Record<string, string | number>), [key]: '' }) as Record<string, string | number>
       )
       const previousColumns = t.columns
-      const previousRows = t.rows
+      const previousRows = t.rawRows
       try {
         const res = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
-        updateTable(tableId, { rows: res.rows, columns: res.columns })
+        updateTable(tableId, { rows: res.rows, rawRows: res.rows, columns: res.columns })
         pushUndo({
           undo: async () => {
             const t2 = await api.drawingMakeTable(pageId, previousRows, previousColumns, undefined, tableId)
-            updateTable(tableId, { rows: t2.rows, columns: t2.columns })
+            updateTable(tableId, { rows: t2.rows, rawRows: t2.rows, columns: t2.columns })
           },
           redo: async () => {
             const t2 = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
-            updateTable(tableId, { rows: t2.rows, columns: t2.columns })
+            updateTable(tableId, { rows: t2.rows, rawRows: t2.rows, columns: t2.columns })
           }
         })
       } catch (e) {
@@ -1774,24 +1790,24 @@ export const DrawingSheet = forwardRef<
       }
       const removed = t.columns[colIdx]
       const columns = t.columns.filter((_, i) => i !== colIdx)
-      const rows = t.rows.map((r) => {
+      const rows = t.rawRows.map((r) => {
         const row = { ...(r as unknown as Record<string, string | number>) }
         delete row[removed.source]
         return row
       })
       const previousColumns = t.columns
-      const previousRows = t.rows
+      const previousRows = t.rawRows
       try {
         const res = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
-        updateTable(tableId, { rows: res.rows, columns: res.columns })
+        updateTable(tableId, { rows: res.rows, rawRows: res.rows, columns: res.columns })
         pushUndo({
           undo: async () => {
             const t2 = await api.drawingMakeTable(pageId, previousRows, previousColumns, undefined, tableId)
-            updateTable(tableId, { rows: t2.rows, columns: t2.columns })
+            updateTable(tableId, { rows: t2.rows, rawRows: t2.rows, columns: t2.columns })
           },
           redo: async () => {
             const t2 = await api.drawingMakeTable(pageId, rows, columns, undefined, tableId)
-            updateTable(tableId, { rows: t2.rows, columns: t2.columns })
+            updateTable(tableId, { rows: t2.rows, rawRows: t2.rows, columns: t2.columns })
           }
         })
       } catch (e) {
@@ -3200,6 +3216,12 @@ export const DrawingSheet = forwardRef<
                     const cellH = rowH * spanRows
                     const isEditing = editingCell && editingCell.tableId === table.id && editingCell.row === ri && editingCell.col === ci
                     const value = String((row as unknown as Record<string, unknown>)[c.source] ?? '')
+                    // the edit box seeds from the RAW row (pre "=NAME"
+                    // resolution), not the resolved display value above -
+                    // otherwise reopening a parameter-driven cell to edit it
+                    // would show its frozen number instead of "=BoltHoleDia".
+                    const rawRow = table.rawRows[ri]
+                    const editValue = rawRow ? String((rawRow as unknown as Record<string, unknown>)[c.source] ?? '') : value
                     return (
                       <g key={`${ri}-${c.key}`}>
                         <rect
@@ -3212,7 +3234,7 @@ export const DrawingSheet = forwardRef<
                           style={{ cursor: 'text' }}
                           onDoubleClick={(e) => {
                             e.stopPropagation()
-                            setEditingCell({ tableId: table.id, row: ri, col: ci, value })
+                            setEditingCell({ tableId: table.id, row: ri, col: ci, value: editValue })
                           }}
                           onContextMenu={(e) => {
                             e.preventDefault()
@@ -3275,7 +3297,7 @@ export const DrawingSheet = forwardRef<
                           <foreignObject x={colX(ci)} y={rowH * (ri + 1)} width={cellW} height={cellH}>
                             <input
                               autoFocus
-                              defaultValue={value}
+                              defaultValue={editingCell.value}
                               style={{ width: '100%', height: '100%', fontSize: '3.2px', border: 'none', outline: '1px solid #0696d7', boxSizing: 'border-box' }}
                               onBlur={(e) => {
                                 void setTableCell(table.id, ri, c.source, e.currentTarget.value)
@@ -3284,7 +3306,7 @@ export const DrawingSheet = forwardRef<
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter') e.currentTarget.blur()
                                 if (e.key === 'Escape') {
-                                  e.currentTarget.value = value
+                                  e.currentTarget.value = editingCell.value
                                   setEditingCell(null)
                                 }
                               }}

@@ -573,7 +573,13 @@ export interface DrawingTable {
   sheetId: string
   pageId: string
   columns: TableColumn[]
+  /** resolved display values - a "=PARAM_NAME" cell shows the parameter's
+   *  current value here. */
   rows: BomRow[]
+  /** the same rows before "=NAME" resolution - what an edit box should
+   *  seed from, so re-opening a parameter-driven cell for editing shows
+   *  "=BoltHoleDia" again instead of the frozen number it last resolved to. */
+  rawRows?: BomRow[]
   style?: TableStyle
 }
 

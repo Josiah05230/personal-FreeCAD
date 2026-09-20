@@ -127,13 +127,49 @@ def _grouped_rows(objs, group_key, display_label):
     return rows
 
 
+def _resolve_param_ref(name):
+    """Resolve a bare `=NAME` table-cell reference: string PN fields first
+    (PN/NAME/DESCRIPTION, the model's own part number/name/description - the
+    same three GwtPartNumber/GwtPartName/GwtPartDescription document
+    properties document.save mirrors onto the raw .FCStd), then numeric
+    document parameters (session.params(), the same names params.set /
+    the Parameters panel manage) evaluated as a length expression. Raises
+    ValueError if NAME resolves to neither, so the caller can fall back to
+    showing the literal text (e.g. "=TYPO" reads as a mistake, not silently
+    as blank)."""
+    from . import expr as _expr
+
+    pn = session.part_number() or {}
+    upper = {"PN": pn.get("pn", ""), "NAME": pn.get("name", ""), "DESCRIPTION": pn.get("description", "")}
+    if name in upper and upper[name]:
+        return upper[name]
+    params = session.params()
+    if name in params:
+        return _expr.evaluate(params[name], "length", params)
+    raise ValueError("unknown parameter %r" % name)
+
+
 def _cell_value(row, col):
     src = col.get("source", "")
     if src == "index":
         return str(row.get("index", ""))
     if src.startswith("fixed:"):
         return src[len("fixed:"):]
-    return str(row.get(src, ""))
+    raw = row.get(src, "")
+    # a cell whose typed value is literally "=NAME" (user question,
+    # 2026-09-20: "have the part name and description be parameters that
+    # are able to be driven/grabbed in drawing tables with some sort of
+    # '=PARAMETER_NAME'") - resolved fresh every time the table is rebuilt
+    # (make_table re-derives every cell from row data, so this stays live
+    # as the referenced parameter/PN field changes, no manual refresh step).
+    if isinstance(raw, str) and raw.startswith("=") and len(raw) > 1:
+        name = raw[1:].strip()
+        try:
+            value = _resolve_param_ref(name)
+            return ("%g" % value) if isinstance(value, float) else str(value)
+        except Exception:
+            return raw  # unresolved reference - show the literal "=NAME" so it reads as a mistake, not blank
+    return str(raw)
 
 
 def make_table(doc, page_id, rows, columns=None, template=None, table_id=None, style=None):
@@ -174,6 +210,25 @@ def make_table(doc, page_id, rows, columns=None, template=None, table_id=None, s
             pass
     try:
         sheet._gwt_columns = json.dumps(columns)
+    except Exception:
+        pass
+
+    # remember the RAW (unresolved) row data too - the spreadsheet cell
+    # itself only ever holds the resolved display text (_cell_value's
+    # output), so a "=BoltHoleDia" cell would otherwise freeze at whatever
+    # value the parameter had on the last edit, rather than staying live
+    # across a reopen the way params.set's other consumers (feature dims)
+    # already do (user question, 2026-09-20: part name/description/hole
+    # size "driven/grabbed in drawing tables with some sort of
+    # '=PARAMETER_NAME'"). page_contents() re-runs _cell_value against this
+    # raw data on every read, same as make_table does here.
+    if "_gwt_rawrows" not in sheet.PropertiesList:
+        try:
+            sheet.addProperty("App::PropertyString", "_gwt_rawrows", "GWT").setEditorMode("_gwt_rawrows", 2)
+        except Exception:
+            pass
+    try:
+        sheet._gwt_rawrows = json.dumps(rows)
     except Exception:
         pass
 

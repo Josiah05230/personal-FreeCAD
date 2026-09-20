@@ -275,9 +275,11 @@ def page_contents(doc, page_id):
             note_entry["leaderId"] = leader_id
             notes.append(note_entry)
         elif tid == "TechDraw::DrawViewSpreadsheet":
+            from . import tables as _tables
             sheet = o.Source
             rows = []
             columns = []
+            raw_rows_out = None
             if sheet is not None:
                 gwt_cols = _get_tag(sheet, "_gwt_columns", "")
                 if gwt_cols:
@@ -301,26 +303,45 @@ def page_contents(doc, page_id):
                         columns.append({"key": str(header).lower(), "header": str(header),
                                          "source": str(header).lower()})
                         col += 1
-                row = 2
-                while columns:
+                raw_rows_json = _get_tag(sheet, "_gwt_rawrows", "")
+                raw_rows = None
+                if raw_rows_json:
                     try:
-                        first = sheet.get("A%d" % row)
+                        raw_rows = json.loads(raw_rows_json)
                     except Exception:
-                        break
-                    if not first:
-                        break
-                    rowvals = {}
-                    for i, c in enumerate(columns):
-                        cell = "%s%d" % (chr(ord("A") + i), row)
+                        raw_rows = None
+                if raw_rows is not None and columns:
+                    # re-resolve every "=NAME" cell against the CURRENT
+                    # parameter/PN values, same as make_table does on a
+                    # fresh write - the spreadsheet's own cell text is only
+                    # ever last write's resolved snapshot, so reading it
+                    # directly would freeze a parameter-driven cell at
+                    # whatever value it had the moment it was last saved
+                    # instead of staying live (see make_table's _gwt_rawrows
+                    # comment for the full reasoning).
+                    rows = [{c["source"]: _tables._cell_value(row, c) for c in columns} for row in raw_rows]
+                    raw_rows_out = raw_rows
+                else:
+                    row = 2
+                    while columns:
                         try:
-                            rowvals[c["source"]] = sheet.get(cell)
+                            first = sheet.get("A%d" % row)
                         except Exception:
-                            rowvals[c["source"]] = ""
-                    rows.append(rowvals)
-                    row += 1
-            from . import tables as _tables
+                            break
+                        if not first:
+                            break
+                        rowvals = {}
+                        for i, c in enumerate(columns):
+                            cell = "%s%d" % (chr(ord("A") + i), row)
+                            try:
+                                rowvals[c["source"]] = sheet.get(cell)
+                            except Exception:
+                                rowvals[c["source"]] = ""
+                        rows.append(rowvals)
+                        row += 1
             tables.append({"id": o.Name, "sheetId": sheet.Name if sheet else "",
                             "pageId": page.Name, "columns": columns, "rows": rows,
+                            "rawRows": raw_rows_out if raw_rows_out is not None else rows,
                             "style": _tables.table_style(o)})
     cleanup_lines = {}
     for v in views:
