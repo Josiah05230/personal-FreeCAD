@@ -98,6 +98,26 @@ const SHEET_W = 420
 const SHEET_H = 297
 const MARGIN = 10
 
+/** Approximate rendered width (in the same local/sheet units as fontSize)
+ *  of a string at a given font size, without needing a mounted DOM node to
+ *  call getComputedTextLength on - a dimension value/tolerance is always a
+ *  short run of digits, punctuation (. - ± ⌀ °) and occasional prefix/
+ *  suffix letters, so a per-character average width (calibrated against
+ *  this app's own sans-serif label font) is close enough to place a
+ *  trailing tolerance block flush against the value with no visible gap
+ *  or overlap - real kerning precision isn't needed for that. */
+function measureText(s: string, fontSize: number): number {
+  let w = 0
+  for (const ch of s) {
+    if (ch === ' ') w += 0.28
+    else if ('.,-'.includes(ch)) w += 0.28
+    else if (ch === '±' || ch === '⌀' || ch === '°') w += 0.72
+    else if (ch >= '0' && ch <= '9') w += 0.56
+    else w += 0.6 // letters (prefix/suffix text)
+  }
+  return w * fontSize
+}
+
 const flip = (poly: number[][]): [number, number][] => poly.map((p) => [p[0], -p[1]])
 
 /** Find the next sheet position for a newly-placed view (w x h mm, already
@@ -2933,28 +2953,54 @@ export const DrawingSheet = forwardRef<
             const fmt = { ...dimFormats.default, ...(dimFormats.overrides[d.id] ?? {}) }
             const text = formatDimension(d.value, d.type, fmt || DEFAULT_DIM_FORMAT)
             const tol = formatDimensionTolerance(fmt)
-            // Rendered as a standalone <text> block, offset from the main
-            // value's own (x, y) by a fixed local-space amount - simpler and
-            // more robust than chaining <tspan dx> off a parent whose x/
-            // textAnchor already vary per dimension type. Single line for
-            // symmetric "±0.05"; two vertically-stacked lines ("+0.10" over
-            // "-0.05") for a deviation band, the standard drawing convention.
-            // Only rendered when toleranceMode is actually set (user
-            // question, 2026-09-20: "add various tolerances to them").
-            const renderTolerance = (
-              anchorX: number,
-              anchorY: number,
-              textAnchor: 'start' | 'middle' | 'end'
+            // Rendered as part of the SAME <text> element as the value
+            // (see valueWithTolerance below), not a separate <text> block
+            // positioned by a guessed offset - a second, independently-
+            // positioned <text> never actually lined up with where the
+            // value text really ended (a short value left a visible gap, a
+            // longer one like "2X ⌀8.00" got overlapped instead), and read
+            // as two unrelated labels rather than one dimension's value
+            // plus its tolerance (user report, 2026-09-20: "the text for
+            // tolerances isn't lined up... should look like they are in
+            // the same text box").
+            //
+            // measureText estimates the value's own rendered width from its
+            // character content (digits/punctuation/prefix-suffix letters
+            // each have a calibrated average width - see measureText's own
+            // comment) so "where the value text ends" is known without
+            // needing a mounted DOM node to measure against. That width
+            // becomes the tolerance block's own x, so it sits flush
+            // against the value regardless of anchor side (start/middle/
+            // end) or how long the value happens to be.
+            const valueWidth = measureText(text, 3.4)
+            const renderValueTolerance = (
+              x: number,
+              y: number,
+              textAnchor: 'start' | 'middle' | 'end',
+              dominantBaseline?: 'middle'
             ): React.ReactNode => {
               if (!tol) return null
-              const tx = anchorX + (textAnchor === 'end' ? -8 : 8)
+              // the value's own visual left edge, in local (untransformed)
+              // units, regardless of which side it's anchored from - this
+              // is the one number every call site actually needs, since
+              // "flush after the value" always means "value's left edge +
+              // its own rendered width", never "anchor point + a guess".
+              const valueLeft = textAnchor === 'start' ? x : textAnchor === 'end' ? x - valueWidth : x - valueWidth / 2
+              const tolX = valueLeft + valueWidth + 1
               return (
-                <text x={tx} y={anchorY} fontSize={2.2} textAnchor={textAnchor === 'middle' ? 'start' : textAnchor} stroke="none">
-                  {tol.lines.map((line, i) => (
-                    <tspan key={i} x={tx} dy={i === 0 ? (tol.lines.length > 1 ? '-0.35em' : 0) : '1.1em'}>
-                      {line}
-                    </tspan>
-                  ))}
+                <text x={tolX} y={y} fontSize={2.2} textAnchor="start" dominantBaseline={dominantBaseline} stroke="none">
+                  {tol.lines.length === 1 ? (
+                    tol.lines[0]
+                  ) : (
+                    <>
+                      <tspan x={tolX} dy="-0.35em">
+                        {tol.lines[0]}
+                      </tspan>
+                      <tspan x={tolX} dy="1.05em">
+                        {tol.lines[1]}
+                      </tspan>
+                    </>
+                  )}
                 </text>
               )
             }
@@ -3188,7 +3234,7 @@ export const DrawingSheet = forwardRef<
                     >
                       {text}
                     </text>
-                    {renderTolerance(lx + labelDx, ly, labelAnchor)}
+                    {renderValueTolerance(lx + labelDx, ly, labelAnchor, 'middle')}
                   </g>
                 )
               }
@@ -3218,7 +3264,7 @@ export const DrawingSheet = forwardRef<
                   >
                     {text}
                   </text>
-                  {renderTolerance(lx + labelDx, ly, labelAnchor)}
+                  {renderValueTolerance(lx + labelDx, ly, labelAnchor, 'middle')}
                 </g>
               )
             }
@@ -3269,7 +3315,7 @@ export const DrawingSheet = forwardRef<
                   <text x={labelx} y={labely} fontSize={3.4} textAnchor="middle" stroke="none">
                     {text}
                   </text>
-                  {renderTolerance(labelx, labely + 4, 'middle')}
+                  {renderValueTolerance(labelx, labely, 'middle')}
                 </g>
               )
             }
@@ -3288,7 +3334,7 @@ export const DrawingSheet = forwardRef<
                   >
                     {text}
                   </text>
-                  {renderTolerance(pl.x + 2, pl.y - 2, 'middle')}
+                  {renderValueTolerance(pl.x + 2, pl.y - 2, 'middle')}
                 </g>
               )
             }
@@ -3337,7 +3383,7 @@ export const DrawingSheet = forwardRef<
                   <text x={labelX} y={labelY} fontSize={3.4} textAnchor="middle" dominantBaseline="middle" stroke="none">
                     {text}
                   </text>
-                  {renderTolerance(labelX, labelY + 4, 'middle')}
+                  {renderValueTolerance(labelX, labelY, 'middle', 'middle')}
                 </g>
               )
             }
@@ -3382,7 +3428,7 @@ export const DrawingSheet = forwardRef<
                 <text x={labelX} y={labelY} fontSize={3.4} textAnchor="middle" stroke="none">
                   {text}
                 </text>
-                {renderTolerance(labelX, labelY + 4, 'middle')}
+                {renderValueTolerance(labelX, labelY, 'middle')}
               </g>
             )
           })}
