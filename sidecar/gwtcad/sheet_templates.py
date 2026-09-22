@@ -66,6 +66,12 @@ _GRAINWAVE_TITLE_BLOCK = {
         "colWidths": [28, 62],
         "font": "osifont",
         "textSize": 3.2,
+        # both columns are blank ("" above) - PART NAME/DESCRIPTION/etc
+        # are already real labels in the LEFT data column, a header row
+        # captioning "label"/"value" above them would be pure dead space
+        # (user report, 2026-09-22: "why does the drawing template have
+        # an extra row at the top?").
+        "hideHeader": True,
     },
 }
 

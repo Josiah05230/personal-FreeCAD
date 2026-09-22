@@ -62,6 +62,14 @@ interface TableState {
   textSize: number
   bold: boolean
   italic: boolean
+  /** skip rendering the blank header row entirely - for a label/value
+   *  title-block table (columns have no real header text, e.g. the
+   *  GrainWave template's PART NAME / value pairs) an empty header row
+   *  just wastes one rowHeight of vertical space for nothing (user
+   *  report, 2026-09-22: "why does the drawing template have an extra
+   *  row at the top?"). A table with real column headers (a BOM, a plain
+   *  Insert Table) keeps hideHeader unset/false - no change for those. */
+  hideHeader?: boolean
 }
 
 /** A view's own nested <svg> uses viewBox="minX -maxY (maxX-minX) (maxY-minY)"
@@ -763,7 +771,8 @@ export const DrawingSheet = forwardRef<
             font: t.style?.font ?? 'osifont',
             textSize: t.style?.textSize ?? 3.2,
             bold: t.style?.bold ?? false,
-            italic: t.style?.italic ?? false
+            italic: t.style?.italic ?? false,
+            hideHeader: t.style?.hideHeader ?? false
           }))
         )
         for (const v of c.views) void refreshSnapTargets(v.id)
@@ -886,16 +895,20 @@ export const DrawingSheet = forwardRef<
         const { columns, rows, style } = tpl.titleBlockTable
         const rowHeight = style?.rowHeight ?? 5
         const colWidths = style?.colWidths ?? []
+        const hideHeader = style?.hideHeader ?? false
         const tableW = colWidths.length
           ? colWidths.reduce((a, b) => a + b, 0)
           : columns.length * 30
-        // +1 row for the table's own header row (every table renders one,
-        // even with blank column headers) - the old math omitted this,
-        // so the table's real footprint was 1 rowHeight taller than
-        // calculated and it sat that far past where it should have,
-        // right up against (or past) the bottom margin (user report,
-        // 2026-09-22: "the table goes off the page").
-        const tableH = rowHeight * (rows.length + 1)
+        // +1 row for the table's own header row - every table renders one
+        // (even with blank column headers) UNLESS hideHeader skips it
+        // entirely (a label/value title-block table has no real column
+        // headers to show at all - user report, 2026-09-22: "why does the
+        // drawing template have an extra row at the top?"). Omitting this
+        // +1 for a table that DOES render its header used to leave the
+        // table's real footprint 1 rowHeight taller than calculated, so it
+        // sat that far past where it should have (user report, same day:
+        // "the table goes off the page") - fixed together, same math.
+        const tableH = rowHeight * (rows.length + (hideHeader ? 0 : 1))
         const tableX = SHEET_W - MARGIN - tableW
         const tableY = SHEET_H - MARGIN - tableH
         const t = await api.drawingMakeTable(pageId, rows, columns, style)
@@ -916,13 +929,15 @@ export const DrawingSheet = forwardRef<
             font: style?.font ?? 'osifont',
             textSize: style?.textSize ?? 3.2,
             bold: false,
-            italic: false
+            italic: false,
+            hideHeader
           }
         ])
         void api.drawingUpdateTableStyle(t.id, {
           x: tableX, y: tableY, showGrid: style?.showGrid ?? true,
           gridColor: style?.gridColor ?? '#111', rowHeight, colWidths,
-          font: style?.font ?? 'osifont', textSize: style?.textSize ?? 3.2
+          font: style?.font ?? 'osifont', textSize: style?.textSize ?? 3.2,
+          hideHeader
         })
         if (tpl.logoPath) {
           // logo sits immediately to the LEFT of the table, bottom-
@@ -3738,7 +3753,11 @@ export const DrawingSheet = forwardRef<
               return x
             }
             const tableW = table.columns.reduce((sum, _c, i) => sum + colWAt(i), 0)
-            const tableH = rowH * (table.rows.length + 1)
+            // 0 or 1 - whether the header row actually takes up a rowHeight
+            // of space (see TableState.hideHeader's own comment for why a
+            // label/value title-block table wants none at all).
+            const headerRows = table.hideHeader ? 0 : 1
+            const tableH = rowH * (table.rows.length + headerRows)
             // which (r, c) data cells a merge covers, and the top-left cell
             // each merge is keyed by - a covered-but-not-top-left cell
             // renders nothing (its old value is kept underneath so unmerge
@@ -3868,12 +3887,20 @@ export const DrawingSheet = forwardRef<
                     {table.columns.slice(1).map((c, i) => (
                       <line key={c.key} x1={colX(i + 1)} y1={0} x2={colX(i + 1)} y2={tableH} />
                     ))}
+                    {/* one line per row boundary, INCLUDING the
+                        header/data boundary when a header exists (i=0
+                        there is that boundary) - when hideHeader is set
+                        there is no such boundary to draw, so start from
+                        i=1 (skip the would-be line at y=0, redundant with
+                        the outer rect's own top edge anyway). */}
                     {table.rows.map((_row, i) => (
-                      <line key={`r${i}`} x1={0} y1={rowH * (i + 1)} x2={tableW} y2={rowH * (i + 1)} />
+                      i === 0 && headerRows === 0 ? null : (
+                        <line key={`r${i}`} x1={0} y1={rowH * (i + headerRows)} x2={tableW} y2={rowH * (i + headerRows)} />
+                      )
                     ))}
                   </g>
                 )}
-                {table.columns.map((c, ci) => (
+                {!table.hideHeader && table.columns.map((c, ci) => (
                   <g key={c.key}>
                     <rect
                       x={colX(ci)}
@@ -3949,7 +3976,7 @@ export const DrawingSheet = forwardRef<
                         <rect
                           data-cell="1"
                           x={colX(ci)}
-                          y={rowH * (ri + 1)}
+                          y={rowH * (ri + headerRows)}
                           width={cellW}
                           height={cellH}
                           fill={isEditing ? '#0696d71a' : 'transparent'}
@@ -4022,7 +4049,7 @@ export const DrawingSheet = forwardRef<
                             return (
                               <rect
                                 x={colX(ci)}
-                                y={rowH * (ri + 1)}
+                                y={rowH * (ri + headerRows)}
                                 width={cellW}
                                 height={cellH}
                                 fill={single ? '#0696d733' : '#0696d71a'}
@@ -4033,7 +4060,7 @@ export const DrawingSheet = forwardRef<
                             )
                           })()}
                         {isEditing ? (
-                          <foreignObject x={colX(ci)} y={rowH * (ri + 1)} width={cellW} height={cellH}>
+                          <foreignObject x={colX(ci)} y={rowH * (ri + headerRows)} width={cellW} height={cellH}>
                             {/* a real <textarea> so long text wraps inside the
                                 cell as it's typed instead of scrolling off a
                                 single-line <input> (user report, 2026-09-20:
@@ -4080,7 +4107,7 @@ export const DrawingSheet = forwardRef<
                         ) : (
                           <text
                             x={colX(ci) + 1.5}
-                            y={rowH * (ri + 1) + rowH - 1.5}
+                            y={rowH * (ri + headerRows) + rowH - 1.5}
                             fontSize={table.textSize}
                             fontFamily={table.font}
                             fontWeight={table.bold ? 'bold' : undefined}

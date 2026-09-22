@@ -645,6 +645,10 @@ export interface TableStyle {
   textSize?: number
   bold?: boolean
   italic?: boolean
+  /** skip the blank header row for a label/value table with no real
+   *  column headers (e.g. a title block) - see DrawingSheet.tsx's
+   *  TableState.hideHeader for the full reasoning. */
+  hideHeader?: boolean
 }
 
 export interface DrawingTable {

@@ -294,7 +294,7 @@ def _apply_table_style(view, style):
             pass
     rest = {k: v for k, v in style.items()
             if k in ("showGrid", "gridColor", "rowHeight", "colWidths", "rowHeights", "merges",
-                     "font", "textSize", "bold", "italic")}
+                     "font", "textSize", "bold", "italic", "hideHeader")}
     if rest:
         cur = table_style(view)
         cur.update(rest)
