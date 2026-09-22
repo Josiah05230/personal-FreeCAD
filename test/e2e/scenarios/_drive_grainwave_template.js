@@ -57,16 +57,36 @@ const tableX = SHEET_W - MARGIN - tableW;
 const tableY = SHEET_H - MARGIN - tableH;
 await rpc('drawing.updateTableStyle', { tableId: t.id, style: { x: tableX, y: tableY, ...style } });
 
-// logo sits immediately LEFT of the table, bottom-aligned, sized to the
-// table's own full height x the logo's native aspect ratio - reads as one
-// unified title block instead of a separate floating image stacked above
-// it with a gap (user report, 2026-09-22: "the logo isn't in the table").
-const logoH = tableH;
+// logo sits immediately LEFT of the table, top-aligned to it, sized to
+// logoHeightFrac of the table's own height x the logo's native aspect
+// ratio (the rest of that left column goes to a legalNote below the logo
+// - user request, 2026-09-22: "raise + shrink the logo so that both fit
+// in the height of the table"). Without a legalNote, logoHeightFrac
+// defaults to filling the whole table height as before.
+const hasNote = !!applied.legalNote;
+const logoFrac = hasNote ? (applied.logoHeightFrac ?? 0.55) : 1;
+const logoH = tableH * logoFrac;
 const logoW = logoH * applied.logoAspect;
-const logoX = tableX - logoW - 2;
+const noteW = hasNote ? Math.max(logoW, 55) : logoW;
+const panelW = Math.max(logoW, noteW);
+const panelRight = tableX - 2;
+const logoX = panelRight - panelW / 2 - logoW / 2;
 const logoY = tableY;
 const img = await rpc('drawing.addImage', { pageId, path: applied.logoPath, x: logoX, y: logoY, width: logoW, height: logoH });
 note('image placed: ' + JSON.stringify(img));
+
+let noteResult = null;
+if (hasNote) {
+  const noteX = panelRight - panelW;
+  const noteTop = logoY + logoH + 2;
+  const noteH = tableH - logoH - 2;
+  const lines = applied.legalNote.split('\n').filter(Boolean);
+  const noteTextSize = Math.max(1.4, Math.min(2.2, noteH / Math.max(lines.length, 1) - 0.3));
+  noteResult = await rpc('drawing.addNote', {
+    pageId, text: applied.legalNote, x: noteX, y: noteTop + noteTextSize, font: 'osifont', textSize: noteTextSize
+  });
+  note('legal note placed: ' + JSON.stringify(noteResult));
+}
 
 await G.refresh();
 await idle();
@@ -93,9 +113,16 @@ assert(Math.abs(tableBottom - (SHEET_H - MARGIN)) < 0.5, 'table bottom edge sits
 
 const imgRight = logoX + logoW;
 assert(imgRight <= tableX, 'logo sits entirely to the left of the table, no overlap');
-assert(Math.abs(logoY - tableY) < 0.01, 'logo is bottom-aligned with the table (same y)');
-assert(Math.abs(logoH - tableH) < 0.01, 'logo height matches the table\'s own full height');
+assert(Math.abs(logoY - tableY) < 0.01, 'logo is top-aligned with the table (same y)');
 assert(Math.abs(logoW / logoH - applied.logoAspect) < 0.01, 'logo keeps its native banner aspect ratio');
+assert(!!applied.legalNote, 'template returned legalNote boilerplate text');
+assert(logoH < tableH, 'logo is shrunk (not the table\'s full height) to leave room for the legal note below it');
+assert(!!noteResult, 'legal note was placed on the sheet');
+if (noteResult) {
+  assert(noteResult.x + Math.max(logoW, 55) >= 0, 'legal note has a real x position');
+  assert(noteResult.y > logoY + logoH, 'legal note sits below the (shrunk) logo, not overlapping it');
+  assert(noteResult.y <= tableY + tableH + 3, 'legal note stays within (near) the table\'s own bottom edge, not overflowing past it');
+}
 
 note('--- remount the drawing so it actually renders on screen for the screenshot (raw RPC does not go through React state) ---');
 const backBtn = document.querySelector('.drawing-back');

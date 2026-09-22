@@ -5684,6 +5684,10 @@ def drawing_apply_sheet_template(name):
             out["logoWidth"] = tpl["logoWidth"]
         if tpl.get("logoHeight"):
             out["logoHeight"] = tpl["logoHeight"]
+        if tpl.get("logoHeightFrac"):
+            out["logoHeightFrac"] = float(tpl["logoHeightFrac"])
+    if tpl.get("legalNote"):
+        out["legalNote"] = tpl["legalNote"]
     return out
 
 

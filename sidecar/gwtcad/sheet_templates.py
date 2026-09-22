@@ -87,11 +87,24 @@ _BUILTIN = {
         "titleBlockTable": _GRAINWAVE_TITLE_BLOCK,
         "logoAsset": "grainwave_banner.png",
         # native asset is ~3740x1900px (1.968:1) - logoWidth is computed
-        # client-side now (loadSheetTemplate sizes it to the table's own
-        # rendered height x this aspect ratio, so it always matches
-        # regardless of row/column edits), logoAspect is the only fixed
-        # number a template needs to carry.
+        # client-side now (loadSheetTemplate sizes it to a FRACTION of the
+        # table's own rendered height x this aspect ratio, leaving room
+        # below it for legalNote - see logoHeightFrac below), logoAspect
+        # is the only fixed number a template needs to carry for that.
         "logoAspect": 3740 / 1900,
+        # the logo panel (left of the table) is split top/bottom: the logo
+        # image gets this fraction of the panel's total height (matched to
+        # the table's own height so the whole title block reads as one
+        # aligned unit), and legalNote fills the remainder below it -
+        # standard confidentiality legend, the same purpose every other
+        # CAD title block carries one for (user ask, 2026-09-22).
+        "logoHeightFrac": 0.55,
+        "legalNote": (
+            "PROPRIETARY AND CONFIDENTIAL\n"
+            "This drawing contains proprietary information of GrainWave\n"
+            "Technologies. Any reproduction or disclosure, in whole or in\n"
+            "part, without prior written consent is strictly prohibited."
+        ),
     },
 }
 

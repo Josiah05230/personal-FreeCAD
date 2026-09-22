@@ -946,17 +946,58 @@ export const DrawingSheet = forwardRef<
           // (logo panel + field grid side by side, the conventional
           // layout) instead of a separate floating image stacked above it
           // with a gap (user report, 2026-09-22: "the logo isn't in the
-          // table").
+          // table"). When the template also carries a legalNote, the logo
+          // only gets logoHeightFrac of the panel's height (top-aligned to
+          // the table) and the note fills the remainder below it, so both
+          // fit within the table's own total height rather than the note
+          // pushing the panel taller than the table (user request,
+          // 2026-09-22: "raise + shrink the logo so that both fit in the
+          // height of the table").
           const aspect = tpl.logoAspect ?? (tpl.logoWidth && tpl.logoHeight ? tpl.logoWidth / tpl.logoHeight : 2)
-          const logoH = tableH
+          const hasNote = !!tpl.legalNote
+          const logoFrac = hasNote ? (tpl.logoHeightFrac ?? 0.55) : 1
+          const logoH = tableH * logoFrac
           const logoW = logoH * aspect
-          const logoX = tableX - logoW - 2
+          // the note (when present) needs its own, generally wider, left
+          // edge to hold a readable line of legal text - the whole panel
+          // (logo + note) is as wide as the WIDER of the two, right-
+          // aligned against the table so neither one dangles past the
+          // other's edge.
+          const noteW = hasNote ? Math.max(logoW, 55) : logoW
+          const panelW = Math.max(logoW, noteW)
+          const panelRight = tableX - 2
+          const logoX = panelRight - panelW / 2 - logoW / 2
           const logoY = tableY
           try {
             const img = await api.drawingAddImage(pageId, tpl.logoPath, logoX, logoY, logoW, logoH)
             setImages((cur) => [...cur, img])
           } catch (e) {
             window.alert(`Template logo could not be placed: ${(e as Error).message}`)
+          }
+          if (tpl.legalNote) {
+            // note sits below the logo, filling the rest of the panel's
+            // height down to the table's own bottom edge, so the combined
+            // logo+note column matches the table's total height exactly.
+            const noteX = panelRight - panelW
+            const noteTop = logoY + logoH + 2
+            const noteH = tableH - logoH - 2
+            const lines = tpl.legalNote.split('\n').filter(Boolean)
+            const noteTextSize = Math.max(1.4, Math.min(2.2, noteH / Math.max(lines.length, 1) - 0.3))
+            try {
+              const note = await api.drawingAddNote(
+                pageId,
+                tpl.legalNote,
+                noteX,
+                noteTop + noteTextSize,
+                undefined,
+                undefined,
+                'osifont',
+                noteTextSize
+              )
+              setNotes((cur) => [...cur, note])
+            } catch (e) {
+              window.alert(`Template legal note could not be placed: ${(e as Error).message}`)
+            }
           }
         }
       }

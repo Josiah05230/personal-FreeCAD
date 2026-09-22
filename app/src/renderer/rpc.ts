@@ -603,6 +603,16 @@ export interface SheetTemplate {
     logoAspect?: number
     logoWidth?: number
     logoHeight?: number
+    /** fraction (0..1) of the logo panel's total height (matched to the
+     *  table's own height) given to the logo image itself - the rest goes
+     *  to legalNote below it. Only meaningful when legalNote is set;
+     *  defaults to the whole panel (1.0) otherwise. */
+    logoHeightFrac?: number
+    /** confidentiality/proprietary legend, rendered as a small multi-line
+     *  note beneath the logo (same left column, sized to fill what
+     *  logoHeightFrac left over) - the standard legal boilerplate every
+     *  other CAD title block format carries (user request, 2026-09-22). */
+    legalNote?: string
   }
   builtin: boolean
 }
@@ -620,6 +630,8 @@ export interface AppliedSheetTemplate {
   logoAspect?: number
   logoWidth?: number
   logoHeight?: number
+  logoHeightFrac?: number
+  legalNote?: string
 }
 
 export interface TableMerge {
