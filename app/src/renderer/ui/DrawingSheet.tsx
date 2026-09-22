@@ -2977,7 +2977,22 @@ export const DrawingSheet = forwardRef<
               }
             }
           }}
-          style={{ cursor: spaceHeld.current ? 'grab' : undefined }}
+          style={{
+            cursor: spaceHeld.current ? 'grab' : undefined,
+            // the SVG element's OWN on-screen size now scales with zoom
+            // (at viewBox.w===SHEET_W, i.e. 100%, this is exactly the old
+            // fixed min(100%,1400px) base) - previously only viewBox
+            // changed, so the page's outer box stayed pinned at one
+            // constant screen size and only the border/content drawn
+            // inside it grew or shrank, which read as "the black box and
+            // everything in it changes but the white page stays the same
+            // size" (user report, 2026-09-22). Now the page itself
+            // visibly grows/shrinks like a real zoom, and the container's
+            // own overflow:auto scrolling (already in place for panning)
+            // handles the rest.
+            width: `min(${(SHEET_W / viewBox.w) * 100}%, ${(1400 * SHEET_W) / viewBox.w}px)`,
+            height: 'auto'
+          }}
           onClick={(e) => {
             // the sheet's own white background <rect> sits directly under
             // the root <svg> and should count as "empty sheet," same as the
