@@ -5481,6 +5481,13 @@ def drawing_apply_sheet_template(name):
         out["titleBlockTable"] = tpl["titleBlockTable"]
     if tpl.get("logoAsset"):
         out["logoPath"] = _sheet_templates.logo_asset_path(tpl["logoAsset"])
+        # width/height in mm are no longer fixed by the template - the
+        # frontend sizes the logo to the table's own rendered height (so it
+        # always matches even if row count/height changes) x this aspect
+        # ratio, falling back to logoWidth/logoHeight verbatim for an older
+        # template saved before logoAspect existed.
+        if tpl.get("logoAspect"):
+            out["logoAspect"] = float(tpl["logoAspect"])
         if tpl.get("logoWidth"):
             out["logoWidth"] = tpl["logoWidth"]
         if tpl.get("logoHeight"):

@@ -30,15 +30,23 @@ def logo_asset_path(name):
     return path
 
 
-# a real title-block table: logo top-left (placed as a separate DrawingImage
-# alongside it, tables have no image-in-cell support), fields as label/value
-# row pairs (label column merged/styled bold via the table's own font system
-# already built for tables - see tables.py). =PN/=NAME/=DESCRIPTION are the
-# sidecar's own live parameter-reference convention (tables.py
-# _resolve_param_ref) - these three cells re-resolve from the document's
-# real part-number metadata every time the table rebuilds, not typed-once
-# static text. Date/engineer have no live source, so they seed as an empty
-# fill-in-yourself cell the user edits in place once per drawing.
+# a real title-block table: label/value row pairs, wide enough that the two
+# columns read as clearly separate (not "basically one column" - user
+# report, 2026-09-22) with the value column noticeably wider since it holds
+# the actual content. =PN/=NAME/=DESCRIPTION are the sidecar's own live
+# parameter-reference convention (tables.py _resolve_param_ref) - these
+# three cells re-resolve from the document's real part-number metadata
+# every time the table rebuilds, not typed-once static text. Date/engineer
+# have no live source, so they seed as an empty fill-in-yourself cell the
+# user edits in place once per drawing.
+#
+# The logo is placed as a SEPARATE DrawingImage (tables have no
+# image-in-cell support) immediately to the LEFT of the table, bottom-
+# aligned to it and sized to the table's own total height, rather than
+# floating above it with a gap - reads as one unified title block, the
+# conventional layout (logo panel + field grid side by side) instead of a
+# stacked pair that looked like two unrelated objects (user report,
+# 2026-09-22: "the logo isn't in the table").
 _GRAINWAVE_TITLE_BLOCK = {
     "columns": [
         {"key": "label", "header": "", "source": "label"},
@@ -54,8 +62,8 @@ _GRAINWAVE_TITLE_BLOCK = {
     "style": {
         "showGrid": True,
         "gridColor": "#111111",
-        "rowHeight": 6,
-        "colWidths": [30, 55],
+        "rowHeight": 7,
+        "colWidths": [28, 62],
         "font": "osifont",
         "textSize": 3.2,
     },
@@ -72,14 +80,12 @@ _BUILTIN = {
         "views": ["front", "top", "right", "iso"],
         "titleBlockTable": _GRAINWAVE_TITLE_BLOCK,
         "logoAsset": "grainwave_banner.png",
-        # native asset is ~3740x1900px (1.968:1) - held to a fixed WIDTH
-        # here so it reads clearly above an 85mm-wide table without
-        # dominating the corner; height follows the same aspect ratio
-        # (addImage keeps native aspect unless BOTH are given, so both are
-        # given explicitly to guarantee the ratio holds regardless of the
-        # source file's own pixel size).
-        "logoWidth": 70,
-        "logoHeight": 35.6,
+        # native asset is ~3740x1900px (1.968:1) - logoWidth is computed
+        # client-side now (loadSheetTemplate sizes it to the table's own
+        # rendered height x this aspect ratio, so it always matches
+        # regardless of row/column edits), logoAspect is the only fixed
+        # number a template needs to carry.
+        "logoAspect": 3740 / 1900,
     },
 }
 

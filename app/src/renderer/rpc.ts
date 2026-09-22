@@ -596,6 +596,11 @@ export interface SheetTemplate {
      *  drawing.addImage at apply time - never a client filesystem path,
      *  so the template stays portable across machines. */
     logoAsset?: string
+    /** native width/height ratio of the logo asset - the frontend sizes
+     *  it to the title-block table's own rendered height x this ratio
+     *  (so it always matches the table even if row count/height changes),
+     *  rather than a template carrying fixed mm dimensions. */
+    logoAspect?: number
     logoWidth?: number
     logoHeight?: number
   }
@@ -612,6 +617,7 @@ export interface AppliedSheetTemplate {
   views: string[]
   titleBlockTable?: SheetTemplate['spec']['titleBlockTable']
   logoPath?: string
+  logoAspect?: number
   logoWidth?: number
   logoHeight?: number
 }

@@ -889,7 +889,13 @@ export const DrawingSheet = forwardRef<
         const tableW = colWidths.length
           ? colWidths.reduce((a, b) => a + b, 0)
           : columns.length * 30
-        const tableH = rowHeight * rows.length
+        // +1 row for the table's own header row (every table renders one,
+        // even with blank column headers) - the old math omitted this,
+        // so the table's real footprint was 1 rowHeight taller than
+        // calculated and it sat that far past where it should have,
+        // right up against (or past) the bottom margin (user report,
+        // 2026-09-22: "the table goes off the page").
+        const tableH = rowHeight * (rows.length + 1)
         const tableX = SHEET_W - MARGIN - tableW
         const tableY = SHEET_H - MARGIN - tableH
         const t = await api.drawingMakeTable(pageId, rows, columns, style)
@@ -919,13 +925,18 @@ export const DrawingSheet = forwardRef<
           font: style?.font ?? 'osifont', textSize: style?.textSize ?? 3.2
         })
         if (tpl.logoPath) {
-          // logo sits directly above the table, left-aligned to it, sized
-          // by the template's own logoWidth/Height (native aspect ratio
-          // preserved server-side) - never overlapping the table itself.
-          const logoW = tpl.logoWidth ?? 40
-          const logoH = tpl.logoHeight ?? logoW * 0.5
-          const logoX = tableX
-          const logoY = tableY - logoH - 2
+          // logo sits immediately to the LEFT of the table, bottom-
+          // aligned, sized to the table's own full rendered height x the
+          // logo's native aspect ratio - reads as one unified title block
+          // (logo panel + field grid side by side, the conventional
+          // layout) instead of a separate floating image stacked above it
+          // with a gap (user report, 2026-09-22: "the logo isn't in the
+          // table").
+          const aspect = tpl.logoAspect ?? (tpl.logoWidth && tpl.logoHeight ? tpl.logoWidth / tpl.logoHeight : 2)
+          const logoH = tableH
+          const logoW = logoH * aspect
+          const logoX = tableX - logoW - 2
+          const logoY = tableY
           try {
             const img = await api.drawingAddImage(pageId, tpl.logoPath, logoX, logoY, logoW, logoH)
             setImages((cur) => [...cur, img])

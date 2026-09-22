@@ -1,9 +1,11 @@
-/* Manual driver (--drive): applies the new "GrainWave Technologies" sheet
- * template (real title-block table + logo in the bottom-right corner,
- * replacing the old generic name/date box) and verifies it actually lands:
- * table present with the right fields/positions, logo image present and
- * correctly sized/positioned above it, nothing overlapping the sheet
- * margin. Screenshots for visual confirmation. */
+/* Manual driver (--drive): applies the "GrainWave Technologies" sheet
+ * template (real title-block table + logo, bottom-right corner, replacing
+ * the old generic name/date box) and verifies it actually lands: table
+ * present with the right fields/positions flush with the sheet margin
+ * (including its own header row in the height math), logo bottom-aligned
+ * immediately to the table's LEFT at the table's own full height (reads
+ * as one unified block, not a separate floating image above it).
+ * Screenshots for visual confirmation. */
 
 note('--- dismiss the first-run welcome dialog ---');
 for (let i = 0; i < 5; i++) {
@@ -46,15 +48,23 @@ const style = applied.titleBlockTable.style;
 const rowHeight = style.rowHeight;
 const colWidths = style.colWidths;
 const tableW = colWidths.reduce((a, b) => a + b, 0);
-const tableH = rowHeight * applied.titleBlockTable.rows.length;
+// +1 row for the table's own header row - every table renders one even
+// with blank column headers; the old math omitted this and the table sat
+// one row-height too low, right up against/past the bottom margin (user
+// report, 2026-09-22: "the table goes off the page").
+const tableH = rowHeight * (applied.titleBlockTable.rows.length + 1);
 const tableX = SHEET_W - MARGIN - tableW;
 const tableY = SHEET_H - MARGIN - tableH;
 await rpc('drawing.updateTableStyle', { tableId: t.id, style: { x: tableX, y: tableY, ...style } });
 
-const logoW = applied.logoWidth;
-const logoH = applied.logoHeight;
-const logoX = tableX;
-const logoY = tableY - logoH - 2;
+// logo sits immediately LEFT of the table, bottom-aligned, sized to the
+// table's own full height x the logo's native aspect ratio - reads as one
+// unified title block instead of a separate floating image stacked above
+// it with a gap (user report, 2026-09-22: "the logo isn't in the table").
+const logoH = tableH;
+const logoW = logoH * applied.logoAspect;
+const logoX = tableX - logoW - 2;
+const logoY = tableY;
 const img = await rpc('drawing.addImage', { pageId, path: applied.logoPath, x: logoX, y: logoY, width: logoW, height: logoH });
 note('image placed: ' + JSON.stringify(img));
 
@@ -81,9 +91,11 @@ const tableBottom = tableY + tableH;
 assert(Math.abs(tableRight - (SHEET_W - MARGIN)) < 0.5, 'table right edge sits flush with the sheet margin');
 assert(Math.abs(tableBottom - (SHEET_H - MARGIN)) < 0.5, 'table bottom edge sits flush with the sheet margin');
 
-const imgBottom = logoY + logoH;
-assert(imgBottom <= tableY, 'logo sits entirely above the table, no overlap');
-assert(Math.abs(logoW / logoH - 70 / 35.6) < 0.01, 'logo keeps its native banner aspect ratio');
+const imgRight = logoX + logoW;
+assert(imgRight <= tableX, 'logo sits entirely to the left of the table, no overlap');
+assert(Math.abs(logoY - tableY) < 0.01, 'logo is bottom-aligned with the table (same y)');
+assert(Math.abs(logoH - tableH) < 0.01, 'logo height matches the table\'s own full height');
+assert(Math.abs(logoW / logoH - applied.logoAspect) < 0.01, 'logo keeps its native banner aspect ratio');
 
 note('--- remount the drawing so it actually renders on screen for the screenshot (raw RPC does not go through React state) ---');
 const backBtn = document.querySelector('.drawing-back');
