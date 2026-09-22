@@ -62,8 +62,8 @@ _GRAINWAVE_TITLE_BLOCK = {
     "style": {
         "showGrid": True,
         "gridColor": "#111111",
-        "rowHeight": 7,
-        "colWidths": [28, 62],
+        "rowHeight": 7.5,
+        "colWidths": [28, 70],
         "font": "osifont",
         "textSize": 3.2,
         # both columns are blank ("" above) - PART NAME/DESCRIPTION/etc
@@ -98,7 +98,7 @@ _BUILTIN = {
         # aligned unit), and legalNote fills the remainder below it -
         # standard confidentiality legend, the same purpose every other
         # CAD title block carries one for (user ask, 2026-09-22).
-        "logoHeightFrac": 0.55,
+        "logoHeightFrac": 0.75,
         "legalNote": (
             "PROPRIETARY AND CONFIDENTIAL\n"
             "This drawing contains proprietary information of GrainWave\n"

@@ -81,7 +81,10 @@ if (hasNote) {
   const noteTop = logoY + logoH + 2;
   const noteH = tableH - logoH - 2;
   const lines = applied.legalNote.split('\n').filter(Boolean);
-  const noteTextSize = Math.max(1.4, Math.min(2.2, noteH / Math.max(lines.length, 1) - 0.3));
+  // matches DrawingSheet.tsx's own line-height-aware sizing (dy="1.2em"
+  // per line after the first).
+  const lineSpan = Math.max(1, 1 + 1.2 * (lines.length - 1));
+  const noteTextSize = Math.max(1.4, Math.min(2.2, (noteH * 0.85) / lineSpan));
   noteResult = await rpc('drawing.addNote', {
     pageId, text: applied.legalNote, x: noteX, y: noteTop + noteTextSize, font: 'osifont', textSize: noteTextSize
   });

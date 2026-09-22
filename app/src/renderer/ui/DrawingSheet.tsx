@@ -982,7 +982,19 @@ export const DrawingSheet = forwardRef<
             const noteTop = logoY + logoH + 2
             const noteH = tableH - logoH - 2
             const lines = tpl.legalNote.split('\n').filter(Boolean)
-            const noteTextSize = Math.max(1.4, Math.min(2.2, noteH / Math.max(lines.length, 1) - 0.3))
+            // the sheet's own note renderer spaces every line after the
+            // first by dy="1.2em" (DrawingSheet's <tspan> block below), so
+            // N lines actually occupy textSize * (1 + 1.2*(N-1)) mm, not
+            // textSize * N - sizing off the plain line count left the
+            // last line or two clipped past noteH once logoHeightFrac grew
+            // and noteH shrank (user report, 2026-09-22: legal text cut
+            // off at the bottom after raising the logo's height share).
+            const lineSpan = Math.max(1, 1 + 1.2 * (lines.length - 1))
+            // leave a little headroom below the last baseline (glyph
+            // descenders + the line's own leading) rather than sizing text
+            // to exactly fill noteH, which put the last line's baseline
+            // flush with the panel's bottom edge - close enough to clip.
+            const noteTextSize = Math.max(1.4, Math.min(2.2, (noteH * 0.85) / lineSpan))
             try {
               const note = await api.drawingAddNote(
                 pageId,
