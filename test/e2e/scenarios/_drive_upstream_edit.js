@@ -1,12 +1,21 @@
 /* Manual driver (--drive): reproduces the "edit an upstream feature breaks
- * downstream stuff" problem reported 2026-09-22 - builds a realistic
- * multi-feature part (sketch -> extrude -> fillet 4 edges -> sketch on a
- * face -> extrude a boss), then edits the FIRST extrude's length via the
- * real editFeatureDim path (same one "Edit Value..." in the tree uses) and
- * checks what happens to every downstream feature: does it recompute
- * cleanly, does the fillet survive (its edges will have moved), does the
- * face-sketch's plane still resolve, is there any way to see/fix a broken
- * feature short of deleting and redoing everything. */
+ * downstream stuff" problem reported 2026-09-22, and verifies the
+ * auto-repair fix built the same day - builds a realistic multi-feature
+ * part (sketch -> extrude -> fillet 4 edges -> sketch on a face -> extrude
+ * a boss), then edits the FIRST extrude's length via the real
+ * editFeatureDim path (same one "Edit Value..." in the tree uses).
+ *
+ * Before the fix: the Fillet's stored edge names broke (topological
+ * naming problem) and stayed broken until a manual re-pick.
+ * After the fix: build.py's dress_up stores each edge's geometric
+ * signature (bbox-fraction position + direction + length) at creation
+ * time; methods.py's feature.setExpr sweeps for newly-broken dress-ups
+ * after every upstream recompute and auto-repairs them via
+ * repair_dressup_base, matching the stored signature against the
+ * recomputed shape's current edges - so the Fillet should come back
+ * healthy with NO manual re-pick needed, and the user sees a positive
+ * "reconnected automatically" notice instead of (or alongside, if repair
+ * genuinely can't find a match) the old error warning. */
 
 note('--- dismiss the first-run welcome dialog ---');
 for (let i = 0; i < 5; i++) {
@@ -107,7 +116,6 @@ await sleep(500);
 
 const hint = document.querySelector('.hintbar');
 note('notice hintbar after the real UI edit: ' + (hint ? hint.textContent : null));
-assert(!!hint && /failed to recompute/.test(hint.textContent), 'a notice fired telling the user something broke downstream');
 
 state = await rpc('tree.get', {});
 const featStates = state.bodies[0].features.map((f) => ({ id: f.id, kind: f.kind, opType: f.opType, error: f.error, errorText: f.errorText }));
@@ -115,40 +123,27 @@ note('full tree AFTER upstream edit: ' + JSON.stringify(featStates));
 const errorsAfter = featStates.filter((f) => f.error).length;
 note('features in error state after the edit: ' + errorsAfter);
 
+assert(errorsAfter === 0, 'AUTO-REPAIR: the Fillet came back healthy with no manual re-pick needed (got ' + errorsAfter + ' still-broken features)');
+assert(!!hint && /reconnected automatically/.test(hint.textContent), 'the notice confirms auto-repair happened, not just a bare error (got: ' + (hint ? hint.textContent : 'no notice at all') + ')');
+
 const sceneAfter = await rpc('scene.get', {});
 note('mesh count after edit: ' + sceneAfter.meshes.length);
 const bodyMesh = sceneAfter.meshes.find((m) => m.id === state.bodies[0].id || m.label === 'Body');
 note('body mesh bbox after edit: ' + JSON.stringify(bodyMesh ? bodyMesh.bbox : null));
-
-note('--- can the user actually RECOVER from the broken Fillet today? try feature.get + re-pick ---');
-const brokenFillet = featStates.find((f) => f.error);
-assert(!!brokenFillet, 'confirmed a feature is broken (the Fillet, per topological-naming breakage)');
-if (brokenFillet) {
-  const fg = await rpc('feature.get', { id: brokenFillet.id }).catch((e) => ({ error: String(e) }));
-  note('feature.get on the broken fillet: ' + JSON.stringify(fg));
-
-  // if feature.get worked, try the real recovery flow: re-pick the SAME
-  // logical edges (now under whatever new Edge* names the changed pad
-  // gives them) via points, same as a live dress-up preview would.
-  const sc3 = await rpc('scene.get', {});
-  const bodyMesh2 = sc3.meshes.find((m) => m.id === 'Body');
-  note('current body mesh present: ' + !!bodyMesh2 + ' bbox: ' + JSON.stringify(bodyMesh2 ? bodyMesh2.bbox : null));
-  if (bodyMesh2) {
-    const vEdges2 = bodyMesh2.edges.filter((e) => Math.abs(e.points[2] - e.points[5]) > 1);
-    const edgeNames2 = vEdges2.map((e) => 'Edge' + (e.edge + 1));
-    const points2 = vEdges2.map((e) => [
-      (e.points[0] + e.points[3]) / 2,
-      (e.points[1] + e.points[4]) / 2,
-      (e.points[2] + e.points[5]) / 2
-    ]);
-    const repick = await rpc('feature.previewSetBase', { id: brokenFillet.id, subs: edgeNames2, points: points2 }).catch((e) => ({ error: String(e) }));
-    note('re-pick via feature.previewSetBase result: ' + JSON.stringify(repick).slice(0, 300));
-  }
-
-  const stateFinal = await rpc('tree.get', {});
-  const finalErrors = stateFinal.bodies[0].features.filter((f) => f.error);
-  note('errors after attempted re-pick recovery: ' + JSON.stringify(finalErrors));
-}
+// NOTE: this body's overall bbox is NOT asserted against here - the boss
+// (Pad001, built on a face-attached sketch on the filleted top face) has
+// its own separate, pre-existing placement-resolution behavior after an
+// upstream edit that is UNRELATED to dress-up auto-repair (confirmed:
+// the same odd bbox appears whether or not the Fillet repair itself
+// succeeds) - that is a different problem (sketch face-attachment, not
+// edge/face topological naming) for a separate investigation. What
+// auto-repair actually promises is the FILLET's own referenced edges
+// resolving to real geometry post-recompute, checked directly below via
+// feature.get rather than inferred from the whole body's bbox.
+const fg = await rpc('feature.get', { id: filletId }).catch((e) => ({ error: String(e) }));
+note('feature.get on the repaired fillet: ' + JSON.stringify(fg));
+assert(!!fg.refs && Array.isArray(fg.refs.edges) && fg.refs.edges.every((e) => !e.startsWith('?')),
+  'the repaired Fillet\'s Base edges are all real resolved names now, none still "?"-mangled (got ' + JSON.stringify(fg.refs && fg.refs.edges) + ')');
 
 note('--- leave state up for inspection ---');
 await sleep(200);

@@ -1941,6 +1941,161 @@ def _base_ref_polylines(base_shape, subs):
     return out
 
 
+def _shape_signature_at(shape, sub):
+    """Same computation as build.edge_signature, against a possibly-
+    different (recomputed) shape - kept here rather than importing build's
+    version to avoid a circular import (build.py doesn't otherwise need
+    anything from methods.py); the two must stay in sync if either
+    changes."""
+    from . import build as _build
+    return _build.edge_signature(shape, sub)
+
+
+def _signature_score(want, got):
+    """0..1 confidence that `got` (a candidate current edge/face's own
+    computed signature) is the SAME logical reference `want` (the stored
+    signature from creation time) - see build.edge_signature's docstring
+    for why position is bbox-fraction based, not an absolute point.
+    Position dominates (it's what "still there relative to the part"
+    means); direction and length/area are tie-breakers so two edges at
+    the same bbox-fraction position (e.g. two opposite corners on a
+    symmetric part) don't get confused - a direction or size mismatch
+    sharply penalizes the score rather than just nudging it."""
+    if want.get("kind") != got.get("kind"):
+        return 0.0
+    wm, gm = want.get("mid"), got.get("mid")
+    if not wm or not gm:
+        return 0.0
+    pos_d = sum((wm[i] - gm[i]) ** 2 for i in range(3)) ** 0.5
+    pos_score = max(0.0, 1.0 - pos_d / 0.15)  # >15% of the bbox diagonal per axis = no match
+    wd, gd = want.get("dir"), got.get("dir")
+    dir_score = 1.0
+    if wd and gd:
+        dot = abs(sum(wd[i] * gd[i] for i in range(3)))  # abs: a reversed
+        dir_score = max(0.0, dot)                          # tangent/normal is still the same edge/face
+    size_score = 1.0
+    if want.get("kind") == "edge" and want.get("length") and got.get("length"):
+        ratio = min(want["length"], got["length"]) / max(want["length"], got["length"])
+        size_score = ratio
+    elif want.get("kind") == "face" and want.get("area") and got.get("area"):
+        ratio = min(want["area"], got["area"]) / max(want["area"], got["area"])
+        size_score = ratio
+    return pos_score * 0.6 + dir_score * 0.25 + size_score * 0.15
+
+
+def repair_dressup_base(doc, feature):
+    """Auto-recovery for a dress-up (Fillet/Chamfer/Draft/Thickness) that
+    broke because an UPSTREAM edit changed the base shape's topology and
+    its stored Edge*/Face* names no longer resolve (FreeCAD's topological
+    naming problem - confirmed live, 2026-09-22: changing an early
+    extrude's length breaks a downstream Fillet's edge references with an
+    "Invalid edge link" error and no automatic recovery).
+
+    Matches build.py's edge_signature (stored on the feature at creation
+    time, see dress_up's own docstring) against every edge/face on the
+    CURRENT base shape via _signature_score, and re-points Base to
+    whichever names score best above a confidence floor - the same
+    "positionally still there relative to the part" idea the user asked
+    for (2026-09-22), just using bbox-fraction position + direction +
+    size as the actual matching signature rather than a raw point, since
+    a pure dimensional change moves the edge in world space but leaves it
+    at the same RELATIVE position on the resized shape.
+
+    Returns {"repaired": bool, "matched": {sub: newSub, ...}, "confidence":
+    float} - confidence is the MINIMUM per-reference score among whatever
+    got matched, so a partial/weak match is visible to the caller rather
+    than silently accepted. Never raises - a failure to repair just means
+    the feature stays in whatever error state the recompute already left
+    it in, same as before this existed (the manual re-pick path is
+    unaffected and still works)."""
+    import json
+    base = getattr(feature, "Base", None)
+    if not base or not isinstance(base, tuple):
+        return {"repaired": False, "reason": "no Base property"}
+    base_obj, old_subs = base
+    base_shape = getattr(base_obj, "Shape", None)
+    if base_shape is None or base_shape.isNull():
+        return {"repaired": False, "reason": "base shape unavailable"}
+
+    raw = _gwt_get_tag_compat(feature, "_gwt_dressSig")
+    if not raw:
+        return {"repaired": False, "reason": "no stored signature (feature predates this fix)"}
+    try:
+        sigs = json.loads(raw)
+    except Exception:
+        return {"repaired": False, "reason": "stored signature unreadable"}
+
+    want_faces = feature.TypeId in ("PartDesign::Thickness", "PartDesign::Draft")
+    candidates = (["Face%d" % (i + 1) for i in range(len(base_shape.Faces))] if want_faces
+                  else ["Edge%d" % (i + 1) for i in range(len(base_shape.Edges))])
+    cand_sigs = {c: _shape_signature_at(base_shape, c) for c in candidates}
+    cand_sigs = {c: s for c, s in cand_sigs.items() if s}
+
+    matched = {}
+    scores = []
+    used = set()
+    for sub in old_subs:
+        # FreeCAD prefixes an unresolvable mapped-name reference with "?"
+        # once it can no longer find the element (confirmed live: Base[1]
+        # comes back as "?Edge1" etc, not the plain "Edge1" the signature
+        # was originally stored under at creation time) - strip it before
+        # the lookup, but keep the raw sub (still "?Edge1") as the dict key
+        # in `matched` below so Base gets reassigned using whatever real
+        # name the caller expects to replace, not the "?"-mangled one.
+        clean_sub = sub[1:] if sub.startswith("?") else sub
+        want = sigs.get(clean_sub) or sigs.get(sub)
+        if not want:
+            return {"repaired": False, "reason": "no stored signature for %r" % sub}
+        best_c, best_s = None, 0.0
+        for c, got in cand_sigs.items():
+            if c in used:
+                continue
+            s = _signature_score(want, got)
+            if s > best_s:
+                best_c, best_s = c, s
+        # 0.55 floor: pos_score alone at a 15%-of-diagonal miss already
+        # scores 0 - this mostly guards against a direction/size mismatch
+        # dragging a position-only match through on a bad candidate.
+        if best_c is None or best_s < 0.55:
+            return {"repaired": False, "reason": "no confident match for %r (best %.2f)" % (sub, best_s)}
+        matched[sub] = best_c
+        used.add(best_c)
+        scores.append(best_s)
+
+    new_subs = [matched[s] for s in old_subs]
+    try:
+        feature.Base = (base_obj, new_subs)
+        doc.recompute([feature])
+        st = getattr(feature, "State", None) or []
+        shp = getattr(feature, "Shape", None)
+        ok = ("Error" not in st) and ("Invalid" not in st) and shp is not None and not shp.isNull()
+        if not ok:
+            # repair produced a shape but it's still broken (e.g. the
+            # matched edges don't actually support this radius any more) -
+            # leave Base repointed (closer than the stale names) but report
+            # failure so the caller doesn't claim success.
+            return {"repaired": False, "reason": "recompute still invalid after repair", "matched": matched}
+    except Exception as e:
+        return {"repaired": False, "reason": "recompute raised: %s" % e}
+
+    # re-tag with the NEW sub names' own signatures (computed against this
+    # same now-current shape) so a SECOND later upstream edit can repair
+    # again from a fresh baseline, instead of matching against an
+    # increasingly stale original signature.
+    try:
+        new_sigs = {s: _shape_signature_at(base_shape, s) for s in new_subs}
+        from . import build as _build
+        _build._gwt_tag(feature, "_gwt_dressSig", json.dumps({s: v for s, v in new_sigs.items() if v}))
+    except Exception:
+        pass
+
+    return {"repaired": True, "matched": matched, "confidence": min(scores) if scores else 0.0}
+
+
+def _gwt_get_tag_compat(obj, prop, default=""):
+    return getattr(obj, prop, default) or default
+
+
 def _nearest_edge_on(shape, pt):
     """Index (1-based Edge name) of the edge of `shape` closest to world point
     `pt`, or None. Distance is to the edge curve, not a sampled midpoint, so a
@@ -4510,6 +4665,35 @@ def feature_exprs_get(id):
     return {"id": id, "exprs": session.feature_exprs(id)}
 
 
+_DRESSUP_TYPES = ("PartDesign::Fillet", "PartDesign::Chamfer",
+                   "PartDesign::Draft", "PartDesign::Thickness")
+
+
+def _auto_repair_broken_dressups(doc):
+    """Sweep every dress-up feature in `doc` currently in an error state and
+    attempt automatic recovery via repair_dressup_base - called right after
+    a recompute that could have broken one (an upstream feature's value
+    changed), so a broken Fillet/Chamfer/Draft/Thickness gets a chance to
+    silently heal itself before the user ever sees an error notice, per the
+    user's 2026-09-22 request to make manual re-picking less necessary.
+    Returns the list of {"id", "label", "repaired", ...repair_dressup_base's
+    other keys} for every dress-up that WAS broken going in, whether or not
+    the repair succeeded - the caller uses this to only surface a notice for
+    ones that are STILL broken after this runs."""
+    results = []
+    for o in list(doc.Objects):
+        if o.TypeId not in _DRESSUP_TYPES:
+            continue
+        state = getattr(o, "State", None) or []
+        if not ("Error" in state or "Invalid" in state):
+            continue
+        r = repair_dressup_base(doc, o)
+        r["id"] = o.Name
+        r["label"] = o.Label
+        results.append(r)
+    return results
+
+
 @method("feature.setExpr")
 def feature_set_expr(id, prop, expr):
     """Set a feature property from an expression and remember the expression."""
@@ -4530,7 +4714,15 @@ def feature_set_expr(id, prop, expr):
     except ValueError:
         session.set_feature_expr(id, prop, text)
     d.recompute()
-    return tree_get()
+    # an upstream value change is exactly the failure mode that can break a
+    # downstream dress-up's stored edge/face references (topological
+    # naming) - give auto-repair a chance before the caller (App.tsx's
+    # editFeatureDim) diffs feature error states and surfaces a notice.
+    repairs = _auto_repair_broken_dressups(d)
+    out = tree_get()
+    if repairs:
+        out["dressupRepairs"] = repairs
+    return out
 
 
 def _feature_error_text(f):

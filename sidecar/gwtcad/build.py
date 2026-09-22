@@ -307,9 +307,103 @@ def pocket(body, sketch, length, through_all=False, name="Pocket", up_to=None,
     return p
 
 
+def _gwt_tag(obj, prop, value):
+    """Stash a GWT-CAD-only string property on a native object - same
+    pattern as drawing.py's _tag (invisible to plain FreeCAD, round-trips
+    with the object as a real property, no companion file needed)."""
+    if prop not in obj.PropertiesList:
+        try:
+            obj.addProperty("App::PropertyString", prop, "GWT").setEditorMode(prop, 2)
+        except Exception:
+            return
+    try:
+        setattr(obj, prop, str(value))
+    except Exception:
+        pass
+
+
+def _gwt_get_tag(obj, prop, default=""):
+    return getattr(obj, prop, default) or default
+
+
+def edge_signature(shape, sub):
+    """A dress-up reference's geometric identity, independent of its
+    current Edge*/Face* NAME (which the topological naming problem can
+    reshuffle on an unrelated upstream edit) - see repair_dressup_base's
+    own docstring for how this gets used to auto-recover a broken
+    reference instead of requiring the user to manually re-pick.
+
+    Position is stored as a FRACTION of the base shape's own bounding box
+    (0..1 per axis), not an absolute point - a pure dimensional change
+    (the classic case: an earlier extrude's length changes, so every edge
+    on the far face moves in world space) still leaves an edge at the
+    same RELATIVE position on the new, resized shape, which an absolute-
+    point match would miss entirely. Direction (tangent/normal) and
+    length/area are stored too, as secondary disambiguators when two
+    candidates tie on position alone (e.g. two of a box's 4 corner
+    edges can share one bbox-fraction axis).
+    """
+    bb = shape.BoundBox
+    span = [max(bb.XLength, 1e-6), max(bb.YLength, 1e-6), max(bb.ZLength, 1e-6)]
+    origin = [bb.XMin, bb.YMin, bb.ZMin]
+
+    def frac(pt):
+        return [(pt[i] - origin[i]) / span[i] for i in range(3)]
+
+    el = shape.getElement(sub) if hasattr(shape, "getElement") else None
+    if el is None:
+        return None
+    if sub.startswith("Edge"):
+        try:
+            mid = el.valueAt((el.FirstParameter + el.LastParameter) / 2.0)
+            tang = el.tangentAt((el.FirstParameter + el.LastParameter) / 2.0)
+            tang.normalize()
+            return {
+                "kind": "edge",
+                "mid": frac([mid.x, mid.y, mid.z]),
+                "dir": [tang.x, tang.y, tang.z],
+                "length": float(el.Length),
+            }
+        except Exception:
+            return None
+    if sub.startswith("Face"):
+        try:
+            u0, u1, v0, v1 = el.ParameterRange
+            mid = el.valueAt((u0 + u1) / 2.0, (v0 + v1) / 2.0)
+            norm = el.normalAt((u0 + u1) / 2.0, (v0 + v1) / 2.0)
+            norm.normalize()
+            return {
+                "kind": "face",
+                "mid": frac([mid.x, mid.y, mid.z]),
+                "dir": [norm.x, norm.y, norm.z],
+                "area": float(el.Area),
+            }
+        except Exception:
+            return None
+    return None
+
+
 def dress_up(body, type_id, base_feature, sub_names, name):
     """Fillet / Chamfer / Draft / Thickness - all take a (feature, [subs]) base."""
     f = body.newObject(type_id, name)
     f.Label = next_label(body, type_id)
     f.Base = (base_feature, list(sub_names))
+    # store each reference's geometric signature at creation time (see
+    # edge_signature's own docstring) - this is what auto-repair
+    # (repair_dressup_base, methods.py) matches against when a later
+    # upstream edit breaks the stored Edge*/Face* names, instead of
+    # requiring the user to manually reopen the feature and re-pick.
+    try:
+        import json
+        base_shape = getattr(base_feature, "Shape", None)
+        if base_shape is not None and not base_shape.isNull():
+            sigs = {}
+            for s in sub_names:
+                sig = edge_signature(base_shape, s)
+                if sig:
+                    sigs[s] = sig
+            if sigs:
+                _gwt_tag(f, "_gwt_dressSig", json.dumps(sigs))
+    except Exception:
+        pass
     return f

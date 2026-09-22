@@ -1359,7 +1359,22 @@ export const api = {
   featureExprs: (id: string) =>
     rpc<{ id: string; exprs: Record<string, string> }>('feature.exprs', { id }),
   featureSetExpr: (id: string, prop: string, expr: string) =>
-    rpc<{ bodies: BodyTree[] }>('feature.setExpr', { id, prop, expr }),
+    rpc<{
+      bodies: BodyTree[]
+      /** present only when an upstream value change broke a downstream
+       *  dress-up (fillet/chamfer/draft/thickness) - each entry is one
+       *  that WAS in an error state before this call, whether or not
+       *  auto-repair (matching its creation-time geometric signature
+       *  against the recomputed shape) actually fixed it. repaired:false
+       *  entries are the ones that still need a manual re-pick. */
+      dressupRepairs?: Array<{
+        id: string
+        label: string
+        repaired: boolean
+        confidence?: number
+        reason?: string
+      }>
+    }>('feature.setExpr', { id, prop, expr }),
 
   drawingPageList: () => rpc<{ pages: DrawingPage[] }>('drawing.pageList'),
   drawingPageContents: (pageId: string) =>

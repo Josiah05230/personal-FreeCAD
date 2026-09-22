@@ -986,22 +986,6 @@ export function App(): JSX.Element {
       setDatums(scene.datums ?? [])
       setBodies(tree.bodies)
       setImported(tree.imported ?? [])
-      // A feature downstream of this sketch (Sweep, Pad, ...) can fail to
-      // regenerate on recompute with NO exception thrown - FreeCAD just
-      // leaves it in an error state holding its last-good shape, silently.
-      // Flag anything that newly went red so the edit doesn't look like it
-      // "did nothing" when it actually broke something further down the
-      // tree. (User report, 2026-09-14: a Sweep "didn't error or update"
-      // after a profile edit + Finish + roll down the timeline.)
-      const newlyErrored = tree.bodies
-        .flatMap((b) => b.features)
-        .filter((f) => f.error && !erroredBefore.has(f.id))
-      if (newlyErrored.length) {
-        flashSketchNotice(
-          `${newlyErrored.map((f) => f.label).join(', ')} failed to update from this sketch change` +
-            (newlyErrored[0].errorText ? `: ${newlyErrored[0].errorText}` : '.')
-        )
-      }
       // Re-finishing an EXISTING sketch (editSketch rolled the marker back to
       // it) must resume all the way to the tip, same as cancelling an edit
       // already does - sketch.finish's own marker logic instead parks on the
@@ -1013,10 +997,44 @@ export function App(): JSX.Element {
       // updated solid - the exact stale-looking "ghost" of the pre-edit shape
       // the user reported (2026-09-14), right up until they happened to also
       // scrub the timeline themselves.
+      //
+      // CRITICALLY, this roll-to-tip is also the step that actually
+      // RECOMPUTES anything downstream of the edited sketch (Pad, Fillet,
+      // Sweep, ...) - while the marker still sits parked ON the sketch
+      // (right above), those features are rolled off and simply not
+      // evaluated yet, so `tree` fetched a few lines up can't possibly
+      // reflect a downstream failure this edit caused. The newly-errored
+      // diff below was originally computed from THAT premature `tree`
+      // (before this roll-to-tip ran at all) - confirmed live, 2026-09-22:
+      // a Fillet that demonstrably broke (error:true right after Finish)
+      // still produced notice:null, because the check ran a step too
+      // early and could never see it. Moved after the roll-to-tip, against
+      // a FRESH tree.get, so it actually observes the real post-recompute
+      // state.
+      let finalTree = tree
       if (isEdit && sketchBodyId) {
         await apiQuiet.rollTo(sketchBodyId, null).catch(() => undefined)
         rollCacheRef.current.clear()
         await refreshScene()
+        finalTree = await apiQuiet.treeGet()
+        setBodies(finalTree.bodies)
+        setImported(finalTree.imported ?? [])
+      }
+      // A feature downstream of this sketch (Sweep, Pad, ...) can fail to
+      // regenerate on recompute with NO exception thrown - FreeCAD just
+      // leaves it in an error state holding its last-good shape, silently.
+      // Flag anything that newly went red so the edit doesn't look like it
+      // "did nothing" when it actually broke something further down the
+      // tree. (User report, 2026-09-14: a Sweep "didn't error or update"
+      // after a profile edit + Finish + roll down the timeline.)
+      const newlyErrored = finalTree.bodies
+        .flatMap((b) => b.features)
+        .filter((f) => f.error && !erroredBefore.has(f.id))
+      if (newlyErrored.length) {
+        flashSketchNotice(
+          `${newlyErrored.map((f) => f.label).join(', ')} failed to update from this sketch change` +
+            (newlyErrored[0].errorText ? `: ${newlyErrored[0].errorText}` : '.')
+        )
       }
     } catch (e) {
       window.alert((e as Error).message)
@@ -2729,7 +2747,7 @@ export function App(): JSX.Element {
         bodies.flatMap((b) => b.features).filter((f) => f.error).map((f) => f.id)
       )
       try {
-        await api.featureSetExpr(id, pd.prop, next)
+        const res = await api.featureSetExpr(id, pd.prop, next)
         rollCacheRef.current.clear()
         const tree = await apiQuiet.treeGet()
         setBodies(tree.bodies)
@@ -2737,11 +2755,33 @@ export function App(): JSX.Element {
         const newlyErrored = tree.bodies
           .flatMap((b) => b.features)
           .filter((f) => f.error && !erroredBefore.has(f.id))
-        if (newlyErrored.length) {
+        // dressupRepairs lists every dress-up that WAS broken by this edit,
+        // whether or not the sidecar's own auto-repair (matching its
+        // creation-time geometric signature against the recomputed shape -
+        // see build.py's edge_signature / methods.py's repair_dressup_base)
+        // fixed it. A repaired one is no longer in tree's error list at all
+        // (the sidecar re-recomputed it before returning) - surface that as
+        // a positive confirmation instead of silence, per the user's
+        // 2026-09-22 request that re-picking be needed less often; a
+        // repaired:false one is already covered by newlyErrored above, so
+        // only add to that warning rather than duplicate it.
+        const repaired = (res.dressupRepairs ?? []).filter((r) => r.repaired)
+        const stillBroken = (res.dressupRepairs ?? []).filter((r) => !r.repaired)
+        // a still-broken feature needs action, so it always wins the
+        // (single) notice slot when both happen from the same edit; a
+        // repair-only notice only shows when nothing is still broken.
+        if (newlyErrored.length || stillBroken.length) {
+          const names = new Set([...newlyErrored.map((f) => f.label), ...stillBroken.map((r) => r.label)])
           flashSketchNotice(
-            `${newlyErrored.map((f) => f.label).join(', ')} failed to recompute after this change` +
-              (newlyErrored[0].errorText ? `: ${newlyErrored[0].errorText}` : '.') +
-              ' Double-click it in the timeline and re-pick its edges/faces to fix it.'
+            `${[...names].join(', ')} failed to recompute after this change` +
+              (newlyErrored[0]?.errorText ? `: ${newlyErrored[0].errorText}` : '.') +
+              ' Double-click it in the timeline and re-pick its edges/faces to fix it.' +
+              (repaired.length ? ` (${repaired.map((r) => r.label).join(', ')} reconnected automatically.)` : '')
+          )
+        } else if (repaired.length) {
+          flashSketchNotice(
+            `${repaired.map((r) => r.label).join(', ')} lost its edge/face references from this ` +
+              'change but reconnected automatically - worth a quick look to confirm it landed right.'
           )
         }
         await refreshScene()
