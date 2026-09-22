@@ -861,7 +861,11 @@ export const DrawingSheet = forwardRef<
       ])
       if (!res) return
       const tpl = await api.drawingApplySheetTemplate(res.name)
-      setShowTitleBlock(tpl.titleBlock)
+      // a template with a real titleBlockTable (2026-09-22) replaces the
+      // old generic name/date-only box entirely rather than stacking both -
+      // showTitleBlock stays off so the two don't overlap in the same
+      // corner.
+      setShowTitleBlock(tpl.titleBlock && !tpl.titleBlockTable)
       const specs: [string, number, number][] = [
         ['front', 40, 60],
         ['right', 200, 60],
@@ -878,10 +882,62 @@ export const DrawingSheet = forwardRef<
         setPlaced((cur) => [...cur, { view: v, x, y, scale: fit }])
         void refreshSnapTargets(v.id)
       }
+      if (tpl.titleBlockTable) {
+        const { columns, rows, style } = tpl.titleBlockTable
+        const rowHeight = style?.rowHeight ?? 5
+        const colWidths = style?.colWidths ?? []
+        const tableW = colWidths.length
+          ? colWidths.reduce((a, b) => a + b, 0)
+          : columns.length * 30
+        const tableH = rowHeight * rows.length
+        const tableX = SHEET_W - MARGIN - tableW
+        const tableY = SHEET_H - MARGIN - tableH
+        const t = await api.drawingMakeTable(pageId, rows, columns, style)
+        setTables((cur) => [
+          ...cur,
+          {
+            id: t.id,
+            rows: t.rows,
+            rawRows: t.rawRows ?? t.rows,
+            columns: t.columns,
+            showGrid: style?.showGrid ?? true,
+            gridColor: style?.gridColor ?? '#111',
+            rowHeight,
+            x: tableX,
+            y: tableY,
+            colWidths,
+            merges: [],
+            font: style?.font ?? 'osifont',
+            textSize: style?.textSize ?? 3.2,
+            bold: false,
+            italic: false
+          }
+        ])
+        void api.drawingUpdateTableStyle(t.id, {
+          x: tableX, y: tableY, showGrid: style?.showGrid ?? true,
+          gridColor: style?.gridColor ?? '#111', rowHeight, colWidths,
+          font: style?.font ?? 'osifont', textSize: style?.textSize ?? 3.2
+        })
+        if (tpl.logoPath) {
+          // logo sits directly above the table, left-aligned to it, sized
+          // by the template's own logoWidth/Height (native aspect ratio
+          // preserved server-side) - never overlapping the table itself.
+          const logoW = tpl.logoWidth ?? 40
+          const logoH = tpl.logoHeight ?? logoW * 0.5
+          const logoX = tableX
+          const logoY = tableY - logoH - 2
+          try {
+            const img = await api.drawingAddImage(pageId, tpl.logoPath, logoX, logoY, logoW, logoH)
+            setImages((cur) => [...cur, img])
+          } catch (e) {
+            window.alert(`Template logo could not be placed: ${(e as Error).message}`)
+          }
+        }
+      }
     } catch (e) {
       window.alert((e as Error).message)
     }
-  }, [makeView, refreshSnapTargets])
+  }, [makeView, refreshSnapTargets, pageId])
 
   // direct on/off, independent of templates - "Load Template" was the ONLY
   // way to ever turn a title block on, which meant a brand-new drawing (no

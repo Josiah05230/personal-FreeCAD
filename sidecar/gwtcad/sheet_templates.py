@@ -15,11 +15,71 @@ from .registry import RpcError, APP_ERROR
 
 _PATH = os.path.expanduser("~/.gwtcad/sheet_templates.json")
 
+_ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+
+
+def logo_asset_path(name):
+    """Resolve a template's logoAsset (a bare filename, e.g.
+    "grainwave_banner.png") to the real path of a bundled asset in
+    sidecar/gwtcad/assets/ - never a client-supplied path, so a template
+    stays portable across machines/installs instead of pointing at
+    wherever one particular workstation happened to keep the source file."""
+    path = os.path.join(_ASSETS_DIR, os.path.basename(str(name)))
+    if not os.path.isfile(path):
+        raise RpcError(APP_ERROR, "no such bundled logo asset: %r" % name)
+    return path
+
+
+# a real title-block table: logo top-left (placed as a separate DrawingImage
+# alongside it, tables have no image-in-cell support), fields as label/value
+# row pairs (label column merged/styled bold via the table's own font system
+# already built for tables - see tables.py). =PN/=NAME/=DESCRIPTION are the
+# sidecar's own live parameter-reference convention (tables.py
+# _resolve_param_ref) - these three cells re-resolve from the document's
+# real part-number metadata every time the table rebuilds, not typed-once
+# static text. Date/engineer have no live source, so they seed as an empty
+# fill-in-yourself cell the user edits in place once per drawing.
+_GRAINWAVE_TITLE_BLOCK = {
+    "columns": [
+        {"key": "label", "header": "", "source": "label"},
+        {"key": "value", "header": "", "source": "value"},
+    ],
+    "rows": [
+        {"label": "PART NAME", "value": "=NAME"},
+        {"label": "DESCRIPTION", "value": "=DESCRIPTION"},
+        {"label": "PART NUMBER", "value": "=PN"},
+        {"label": "DATE", "value": ""},
+        {"label": "ENGINEER", "value": ""},
+    ],
+    "style": {
+        "showGrid": True,
+        "gridColor": "#111111",
+        "rowHeight": 6,
+        "colWidths": [30, 55],
+        "font": "osifont",
+        "textSize": 3.2,
+    },
+}
+
 _BUILTIN = {
     "Blank": {"titleBlock": False, "views": []},
     "Basic 4-view": {
         "titleBlock": True,
         "views": ["front", "top", "right", "iso"],
+    },
+    "GrainWave Technologies": {
+        "titleBlock": False,
+        "views": ["front", "top", "right", "iso"],
+        "titleBlockTable": _GRAINWAVE_TITLE_BLOCK,
+        "logoAsset": "grainwave_banner.png",
+        # native asset is ~3740x1900px (1.968:1) - held to a fixed WIDTH
+        # here so it reads clearly above an 85mm-wide table without
+        # dominating the corner; height follows the same aspect ratio
+        # (addImage keeps native aspect unless BOTH are given, so both are
+        # given explicitly to guarantee the ratio holds regardless of the
+        # source file's own pixel size).
+        "logoWidth": 70,
+        "logoHeight": 35.6,
     },
 }
 

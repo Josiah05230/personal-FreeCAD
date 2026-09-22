@@ -576,8 +576,44 @@ export interface TableTemplate {
 
 export interface SheetTemplate {
   name: string
-  spec: { titleBlock: boolean; views: string[] }
+  spec: {
+    titleBlock: boolean
+    views: string[]
+    /** a real title-block table + logo to auto-place in the sheet's
+     *  bottom-right corner on apply, instead of the old hardcoded
+     *  name/date-only box (user request, 2026-09-22: "a table in the
+     *  bottom right corner with our logo and some default information
+     *  needed like Part name, description, part number, date, engineer
+     *  name, etc."). Absent on the built-in "Blank"/"Basic 4-view" and
+     *  any template saved before this existed - those still fall back to
+     *  the old generic box. */
+    titleBlockTable?: {
+      columns: TableColumn[]
+      rows: Array<Record<string, string>>
+      style?: TableStyle
+    }
+    /** server-side asset name (sidecar/gwtcad/assets/<name>) to embed via
+     *  drawing.addImage at apply time - never a client filesystem path,
+     *  so the template stays portable across machines. */
+    logoAsset?: string
+    logoWidth?: number
+    logoHeight?: number
+  }
   builtin: boolean
+}
+
+/** drawing.applySheetTemplate's response is NOT the same shape as
+ *  SheetTemplate['spec'] - the sidecar resolves logoAsset to a real
+ *  server-side filesystem path (logoPath) before handing it back, since
+ *  drawing.addImage needs a real path and the client can't see the
+ *  sidecar's own asset directory at all. */
+export interface AppliedSheetTemplate {
+  titleBlock: boolean
+  views: string[]
+  titleBlockTable?: SheetTemplate['spec']['titleBlockTable']
+  logoPath?: string
+  logoWidth?: number
+  logoHeight?: number
 }
 
 export interface TableMerge {
@@ -1472,7 +1508,7 @@ export const api = {
   drawingSaveSheetTemplate: (name: string, spec: SheetTemplate['spec']) =>
     rpc<SheetTemplate>('drawing.saveSheetTemplate', { name, spec }),
   drawingApplySheetTemplate: (name: string) =>
-    rpc<{ titleBlock: boolean; views: string[] }>('drawing.applySheetTemplate', { name }),
+    rpc<AppliedSheetTemplate>('drawing.applySheetTemplate', { name }),
 
   assemblyCreate: () => rpc<{ assembly: string }>('assembly.create'),
   assemblyAddComponent: (path: string, name?: string) =>

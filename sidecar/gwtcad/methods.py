@@ -5466,14 +5466,26 @@ def drawing_save_sheet_template(name, spec):
 @method("drawing.applySheetTemplate")
 def drawing_apply_sheet_template(name):
     """Look up a named sheet template's spec: whether to show a title block,
-    and which default view directions to auto-add. A brand-new page from
-    drawing.pageCreate is never auto-populated - the frontend calls this
-    ONLY when the user opts in via "Load Template", then adds the returned
-    view directions itself through the same makeView path "Add View" and
-    "Auto-layout" already use (no need to duplicate that view-creation
-    logic here against a raw source-object name)."""
+    which default view directions to auto-add, and (2026-09-22) an optional
+    real title-block table + logo spec for the frontend to actually place via
+    drawing.makeTable / drawing.addImage - a brand-new page from
+    drawing.pageCreate is never auto-populated, this RPC only ever runs when
+    the user opts in via "Load Template". logoAsset (if present) is resolved
+    to a real server-side path here via _sheet_templates.logo_asset_path, NOT
+    handed back as a bare name - addImage needs a real filesystem path and
+    the asset lives in the sidecar's own install, not reachable from the
+    client at all."""
     tpl = _sheet_templates.load_sheet_template(name)["spec"]
-    return {"titleBlock": bool(tpl.get("titleBlock", False)), "views": list(tpl.get("views", []))}
+    out = {"titleBlock": bool(tpl.get("titleBlock", False)), "views": list(tpl.get("views", []))}
+    if tpl.get("titleBlockTable"):
+        out["titleBlockTable"] = tpl["titleBlockTable"]
+    if tpl.get("logoAsset"):
+        out["logoPath"] = _sheet_templates.logo_asset_path(tpl["logoAsset"])
+        if tpl.get("logoWidth"):
+            out["logoWidth"] = tpl["logoWidth"]
+        if tpl.get("logoHeight"):
+            out["logoHeight"] = tpl["logoHeight"]
+    return out
 
 
 # --------------------------------------------------------------------------- #
