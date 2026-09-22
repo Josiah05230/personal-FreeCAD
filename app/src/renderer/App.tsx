@@ -2712,16 +2712,45 @@ export function App(): JSX.Element {
       const cur = pd.expr ?? String(pd.value ?? '')
       const next = await promptText(`${pd.prop} (number or expression)`, cur)
       if (next == null || next === cur) return
+      // Changing an UPSTREAM value (this feature's own dimension) can break a
+      // downstream dress-up whose edge/face references no longer resolve on
+      // the changed shape (FreeCAD's topological-naming problem) - the engine
+      // recomputes it into an error state with NO exception thrown, so the
+      // edit silently "worked" while something further down the tree quietly
+      // broke. sketchFinish already flags this same failure mode (see its own
+      // comment above); editFeatureDim never did (user report, 2026-09-22:
+      // changing an early extrude length broke a downstream fillet with no
+      // warning at all - confirmed live via a reproduction script). Re-pick
+      // recovery already exists (feature.previewSetBase, reachable by
+      // reopening the broken feature's Edit dialog and re-selecting its
+      // edges/faces) - this notice's job is just making sure the user finds
+      // out something broke, and where, right when it happens.
+      const erroredBefore = new Set(
+        bodies.flatMap((b) => b.features).filter((f) => f.error).map((f) => f.id)
+      )
       try {
         await api.featureSetExpr(id, pd.prop, next)
         rollCacheRef.current.clear()
+        const tree = await apiQuiet.treeGet()
+        setBodies(tree.bodies)
+        setImported(tree.imported ?? [])
+        const newlyErrored = tree.bodies
+          .flatMap((b) => b.features)
+          .filter((f) => f.error && !erroredBefore.has(f.id))
+        if (newlyErrored.length) {
+          flashSketchNotice(
+            `${newlyErrored.map((f) => f.label).join(', ')} failed to recompute after this change` +
+              (newlyErrored[0].errorText ? `: ${newlyErrored[0].errorText}` : '.') +
+              ' Double-click it in the timeline and re-pick its edges/faces to fix it.'
+          )
+        }
         await refreshScene()
         markDirty()
       } catch (e) {
         window.alert((e as Error).message)
       }
     },
-    [refreshScene, markDirty]
+    [refreshScene, markDirty, bodies, flashSketchNotice]
   )
 
   // reopen a committed feature in its real operation dialog: values + references
