@@ -290,6 +290,57 @@ def page_contents(doc, page_id):
                     except Exception:
                         pass
             views.append(entry)
+        elif tid == "TechDraw::DrawProjGroup":
+            # A real first/third-angle projection group: one Anchor view plus
+            # N projected views (TechDraw::DrawProjGroupItem), all sharing
+            # ONE Scale (TechDraw enforces this - there is no per-item scale
+            # to drift out of sync, unlike three independently-created plain
+            # views) and laid out by TechDraw's own AutoDistribute, not this
+            # app's placement code. Added 2026-09 for exactly this: a set of
+            # orthographic views that are genuinely locked together (same
+            # scale, standard alignment) rather than three unrelated views
+            # that each happen to point a camera in a different direction -
+            # see make_projection_group below for the write side.
+            #
+            # Each child ProjGroupItem is emitted as an ordinary view entry
+            # (same shape a plain DrawViewPart gets) so every existing
+            # consumer of page_contents' views[] - export_page_svg, the
+            # frontend's DrawingSheet - keeps working with zero changes;
+            # "groupId" is the only new field, letting a caller that DOES
+            # care about the grouping (e.g. "select the whole group") find
+            # the other members, without requiring it to.
+            for item in o.Views:
+                if item.TypeId != "TechDraw::DrawProjGroupItem":
+                    continue
+                try:
+                    vis, hid = _part_view_payload(item)
+                except Exception:
+                    continue
+                direction = _get_tag(item, "_gwt_dir", "") or str(item.Type).lower()
+                entry = {
+                    "id": item.Name, "label": item.Label, "direction": direction,
+                    "kind": "part", "scale": float(o.Scale),
+                    "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid),
+                    "groupId": o.Name,
+                    # FreeCAD's Python proxy objects don't support reliable
+                    # `is`/`==` identity comparison (confirmed live: a
+                    # freshly-fetched reference to the SAME underlying object
+                    # compares unequal both ways) - .Name equality is the
+                    # correct check, same pattern this codebase already uses
+                    # elsewhere for object identity (e.g. _get_tag callers).
+                    "isAnchor": (o.Anchor is not None and item.Name == o.Anchor.Name),
+                    # Item X/Y are relative to the GROUP's own placement, not
+                    # page-absolute (confirmed live: a 3-item group at
+                    # X=150 has items at their own small +/- offsets from
+                    # that, e.g. Y=-30 for the Top item) - add the group's
+                    # position once here so every view entry this function
+                    # returns keeps meaning "absolute sheet position",
+                    # same contract page_contents already promises for a
+                    # plain view's x/y.
+                    "x": float(o.X) + float(item.X),
+                    "y": float(o.Y) + float(item.Y),
+                }
+                views.append(entry)
         elif tid == "TechDraw::DrawViewDimension":
             dim_entry = {
                 "id": o.Name, "viewId": (o.References2D[0][0].Name if o.References2D else ""),
@@ -1088,6 +1139,86 @@ def make_view(doc, page_id, source_obj, direction="front", scale=1.0):
     }
 
 
+# GWT-CAD's own lowercase direction name -> DrawProjGroup.addProjection's
+# own projection-type string (confirmed live, not documented anywhere
+# obvious: "iso" is direction (1,-1,1) normalized, which addProjection
+# calls "FrontTopRight" - the isometric corner you get looking at the
+# front-top-right of the part, the same (1,-1,1) _DIRS["iso"] already uses
+# for a plain make_view). Every entry here was verified to actually work
+# via addProjection, not assumed from FreeCAD's own docs/enum, which don't
+# enumerate the valid projection-type strings anywhere convenient.
+_PROJ_GROUP_TYPES = {
+    "front": "Front", "back": "Rear", "top": "Top", "bottom": "Bottom",
+    "left": "Left", "right": "Right", "iso": "FrontTopRight",
+}
+
+
+def make_projection_group(doc, page_id, source_obj, directions, anchor=None, scale=1.0):
+    """A REAL first/third-angle projection group (TechDraw::DrawProjGroup) -
+    one Anchor view plus N projected views, all sharing ONE Scale enforced
+    by TechDraw itself (there is no way for a projection group's members to
+    drift out of scale with each other, unlike calling make_view() several
+    times for the same part, which creates unrelated views that each just
+    happen to point in a different direction and can end up at whatever
+    scale each call was given). Added 2026-09 specifically because that
+    was happening: a purchased-part reference drawing's front/top/right
+    views were three independent make_view() calls and came out at visibly
+    different scales.
+
+    `directions` is a list of GWT-CAD's usual lowercase direction names
+    (see _PROJ_GROUP_TYPES) - the FIRST one becomes the anchor unless
+    `anchor` names a different one explicitly (addProjection's own rule:
+    whichever projection is added first becomes Anchor, so this always
+    adds `anchor`'s direction first to guarantee it, rather than relying on
+    caller ordering). Returns one entry per added view, same DTO shape
+    make_view returns, plus "groupId"/"isAnchor" (see page_contents' own
+    DrawProjGroup branch, which this mirrors on the read side)."""
+    page = get_page(doc, page_id)
+    dirs = [_norm_dir(d) for d in directions]
+    if not dirs:
+        raise RpcError(APP_ERROR, "make_projection_group needs at least one direction")
+    anchor_dir = _norm_dir(anchor) if anchor else dirs[0]
+    if anchor_dir not in dirs:
+        dirs = [anchor_dir] + dirs
+    else:
+        dirs = [anchor_dir] + [d for d in dirs if d != anchor_dir]
+    unknown = [d for d in dirs if d not in _PROJ_GROUP_TYPES]
+    if unknown:
+        raise RpcError(APP_ERROR, "no projection-group mapping for direction(s): %r" % unknown)
+
+    grp = doc.addObject("TechDraw::DrawProjGroup", "ProjGroup")
+    page.addView(grp)
+    grp.Source = list(source_obj) if isinstance(source_obj, (list, tuple)) else [source_obj]
+    doc.recompute()
+
+    items = []
+    for d in dirs:
+        item = grp.addProjection(_PROJ_GROUP_TYPES[d])
+        doc.recompute()
+        _tag(item, "_gwt_dir", d)
+        items.append((d, item))
+    # ScaleType defaults to "Automatic" - TechDraw computes and OVERRIDES
+    # Scale itself in that mode (confirmed live: assigning grp.Scale under
+    # Automatic silently has no effect, grp.Scale reads back as whatever
+    # TechDraw's own auto-fit picked, not the caller's value) - "Custom"
+    # is required for an explicit scale to actually stick.
+    grp.ScaleType = "Custom"
+    grp.Scale = float(scale)
+    doc.recompute()
+
+    out = []
+    for d, item in items:
+        vis, hid = _part_view_payload(item)
+        out.append({
+            "id": item.Name, "label": item.Label, "direction": d,
+            "kind": "part", "scale": float(grp.Scale),
+            "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid),
+            "groupId": grp.Name,
+            "isAnchor": (grp.Anchor is not None and item.Name == grp.Anchor.Name),
+        })
+    return {"groupId": grp.Name, "anchorDirection": anchor_dir, "views": out}
+
+
 def make_section(doc, page_id, base_view_id, plane="XY", offset=0.0, flip=False):
     """`plane` is the cut plane in absolute model axes (its normal is the
     THIRD, unlisted axis - "XY" cuts along a plane spanning X and Y, so its
@@ -1303,7 +1434,23 @@ def set_view_position(doc, view_id, x, y):
     view.Y = float(y)
     _tag(view, "_gwt_placed", "1")
     doc.recompute()
-    return {"id": view.Name, "x": float(view.X), "y": float(view.Y)}
+
+
+def set_projection_group_position(doc, group_id, x, y):
+    """Position a whole projection group (see make_projection_group) on the
+    sheet - unlike a plain view, page_contents' DrawProjGroup branch reads
+    the group's X/Y unconditionally, no _gwt_placed tag needed: a group is
+    only ever created (by make_projection_group) with an explicit position
+    set right after, so there is no "old file predating this fix, X/Y
+    genuinely never set" case to distinguish from a real (0, 0) placement -
+    the ambiguity set_view_position's tag exists for doesn't apply here."""
+    grp = doc.getObject(group_id)
+    if grp is None or grp.TypeId != "TechDraw::DrawProjGroup":
+        raise RpcError(APP_ERROR, "no such projection group: %r" % group_id)
+    grp.X = float(x)
+    grp.Y = float(y)
+    doc.recompute()
+    return {"id": grp.Name, "x": float(grp.X), "y": float(grp.Y)}
 
 
 def add_dimension(doc, page_id, view_id, refs, kind="Distance"):

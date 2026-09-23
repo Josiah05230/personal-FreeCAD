@@ -23,7 +23,9 @@ while GWT-CAD wasn't running), and on-demand from a UI button (so a user
 doesn't have to relaunch the app to get a drawing generated right when they
 need one).
 """
+import datetime
 import io
+import json
 import os
 import tempfile
 import zipfile
@@ -51,43 +53,115 @@ def _cad_repo_path(cfg, pn):
 
 
 _SHEET_W, _SHEET_H = 420.0, 297.0  # matches drawing.py's _SHEET_W_DEFAULT/_SHEET_H_DEFAULT and DrawingSheet.tsx's SHEET_W/SHEET_H
+_MARGIN = 10.0  # matches DrawingSheet.tsx's own MARGIN
 
-# View layout for a purchased-part reference drawing: three orthographic
-# views sized generously (this sheet has no dimensioning or other views
-# competing for space, unlike a real designed-part drawing) plus a SMALLER
-# iso tucked in the top-right corner as a quick "what does this look like
-# in 3D" reference, not the headline view - per this feature's design
-# conversation. Position tuples are (direction, x, y, targetSize-in-mm);
-# targetSize feeds the same bbox-fit scale math loadSheetTemplate.ts uses
-# (fit = min(targetW/bboxW, targetH/bboxH, cap)) rather than a fixed scale
-# number, since a part's real size varies and a fixed scale would either
-# overflow a big part or look tiny for a small one.
-_ORTHO_VIEW_LAYOUT = [
-    ("front", 30.0, 60.0, 110.0, 90.0),
-    ("top", 30.0, 170.0, 110.0, 90.0),
-    ("right", 150.0, 60.0, 110.0, 90.0),
-]
-_ISO_VIEW_LAYOUT = ("iso", 320.0, 20.0, 70.0, 55.0)
+# Real first/third-angle projection group (front anchor, top projected
+# above it, right projected beside it - true TechDraw::DrawProjGroup
+# linkage, not three independently-scaled views - see
+# drawing.make_projection_group) placed in the LEFT ~2/3 of the sheet,
+# stacked two rows tall; a SMALLER iso sits alone in the top-right corner
+# as a quick 3D reference, not the headline view - per this feature's
+# design conversation. group_target_w/h feed the same bbox-fit scale
+# make_projection_group's caller computes (below) rather than a fixed
+# scale number, since a part's real size varies and a fixed scale would
+# either overflow a big part or look tiny for a small one.
+_GROUP_TARGET_W, _GROUP_TARGET_H = 100.0, 130.0
+# grp.X/Y place the ANCHOR view's (front's) own origin, not the group's
+# bounding-box corner - "top" sits ABOVE front (negative Y offset) and
+# "right" sits beside it, so the group's real footprint extends well past
+# the anchor point in every direction. These constants were derived by
+# actually measuring that footprint at convergence (see
+# _projection_group_footprint) for a representative part: roughly
+# (-85, -106) to (+23, +44) relative to the anchor - GROUP_X/Y are chosen
+# so that footprint clears the sheet's left/top margin with the target box
+# above, not assumed from theory.
+_GROUP_X, _GROUP_Y = 95.0, 120.0
+_ISO_X, _ISO_Y, _ISO_TARGET_W, _ISO_TARGET_H = 330.0, 30.0, 65.0, 50.0
 
 
-def _fit_scale(bbox, target_w, target_h, cap=4.0):
+def _fit_scale(bbox, target_w, target_h, cap=8.0):
     min_x, min_y, max_x, max_y = bbox
     w = max(max_x - min_x, 1e-6)
     h = max(max_y - min_y, 1e-6)
     return min(target_w / w, target_h / h, cap)
 
 
-def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description):
+def _projection_group_footprint(doc, group_views):
+    """The REAL combined bbox of a just-created projection group's laid-out
+    views - NOT simply the union of each view's own bbox (those are each
+    centered in their own LOCAL frame, e.g. front/top/right all individually
+    spanning roughly (-10,-10) to (10,10) around their own origins - unioning
+    them directly says nothing about the group's actual on-sheet footprint
+    and drastically underestimates it, confirmed live: that naive union
+    reported ~21x40mm for a part whose real laid-out group spans ~57x77mm,
+    producing a wildly oversized fit-scale that ran the whole drawing off
+    the sheet). AutoDistribute's own item.X/item.Y (relative to the group,
+    set once the group actually lays itself out) are what place each view's
+    local bbox into the group's shared frame - this sums bbox + offset per
+    item, THEN unions across items, which is the real footprint the fit
+    scale must be computed against."""
+    min_x = min_y = 1e9
+    max_x = max_y = -1e9
+    for v in group_views:
+        item = doc.getObject(v["id"])
+        vmin_x, vmin_y, vmax_x, vmax_y = v["bbox"]
+        ox, oy = float(item.X), float(item.Y)
+        min_x = min(min_x, vmin_x + ox)
+        min_y = min(min_y, vmin_y + oy)
+        max_x = max(max_x, vmax_x + ox)
+        max_y = max(max_y, vmax_y + oy)
+    return [min_x, min_y, max_x, max_y]
+
+
+def _supplier_title_block_text(mfg, mfg_pn, meta):
+    """PART NAME / DESCRIPTION text for a purchased part's title block,
+    preferring the supplier's own structured catalog fields (see
+    tryFetchSupplierModel in functions/index.js - componentType/cavities/
+    gender, confirmed live against a real Aptiv part: CONNECTOR, 2,
+    Female) over its free-text description, which doesn't reliably state
+    pin count or gender at all. Falls back to the plain registry
+    description when no metadata sidecar exists (a manually-added vendor
+    .stp with no fetched metadata, or a supplier this doesn't have
+    structured fields for yet) - never raises, a missing/malformed
+    metadata file just means a plainer but still correct title block."""
+    component_type = (meta or {}).get("componentType")
+    cavities = (meta or {}).get("cavities")
+    gender = (meta or {}).get("gender")
+    if component_type:
+        name = component_type.upper()
+        desc_parts = []
+        if cavities and str(cavities) not in ("0", ""):
+            desc_parts.append("%s PIN" % cavities)
+        desc_parts.append("WP")
+        if gender:
+            desc_parts.append(gender.upper())
+        return name, " ".join(desc_parts)
+    fallback = " ".join(filter(None, [mfg, mfg_pn])) or "PART"
+    return fallback, (meta or {}).get("description") or ""
+
+
+def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, notes=None):
     """Ports DrawingSheet.tsx's loadSheetTemplate (the real "Load Template"
     action a user drives by hand in the GUI) into a headless, scripted
     equivalent for the auto-generated purchased-part drawing - same
     template ("GrainWave Technologies": real title-block table + logo +
     legal note, defined in sheet_templates.py), same underlying
     drawing/tables API calls, just invoked directly instead of through a
-    button click. Front/top/right render larger (this sheet has no
-    dimensioning competing for space); iso is smaller, tucked in the
-    top-right as a quick 3D reference rather than the headline view - see
-    _ORTHO_VIEW_LAYOUT/_ISO_VIEW_LAYOUT above.
+    button click.
+
+    Views are a REAL projection group (drawing.make_projection_group) -
+    front/top/right genuinely linked at one shared scale, not three
+    independent views that can drift out of scale with each other (see
+    this feature's dev history: that's exactly what happened with the
+    first version of this function) - stacked two rows tall on the left,
+    plus a smaller standalone iso view in the top-right corner as a quick
+    3D reference, not the headline view.
+
+    `notes` (a list of strings, optional) renders as a numbered NOTES
+    callout in the sheet's bottom-left - e.g. "<PN> IS EQUIVALENT TO
+    <SUPPLIER> <SUPPLIER PN>" for a purchased part with no CAD source of
+    its own, so anyone reading the drawing knows immediately that the
+    geometry shown is a supplier's part, not a GWT design.
 
     pn_tag_document is called first so the title-block table's live
     "=PN"/"=NAME"/"=DESCRIPTION" cell references (see tables._cell_value)
@@ -98,40 +172,83 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description):
 
     tpl = _sheet_templates.load_sheet_template("GrainWave Technologies")["spec"]
 
-    for direction, x, y, target_w, target_h in _ORTHO_VIEW_LAYOUT:
-        v = _drawing.make_view(doc, page_id, part_obj, direction=direction, scale=1.0)
-        view = doc.getObject(v["id"])
-        scale = _fit_scale(v["bbox"], target_w, target_h)
-        view.Scale = scale
-        # Re-derive the bbox at the real scale before placing - make_view's
-        # own bbox was computed at scale=1.0, and _drawing.set_view_position
-        # positions by the view's origin, not its rendered footprint, so this
-        # doesn't strictly need the rescaled bbox - kept for clarity that x/y
-        # here are the view's own placement point, not a bounding-box corner.
-        doc.recompute()
-        _drawing.set_view_position(doc, v["id"], x, y)
+    group_dirs = ["front", "top", "right"]
+    probe = _drawing.make_projection_group(doc, page_id, part_obj, group_dirs, anchor="front", scale=1.0)
+    grp = doc.getObject(probe["groupId"])
+    grp.ScaleType = "Custom"
 
-    iso_dir, iso_x, iso_y, iso_w, iso_h = _ISO_VIEW_LAYOUT
-    iso_result = _drawing.make_view(doc, page_id, part_obj, direction=iso_dir, scale=1.0)
-    iso_view = doc.getObject(iso_result["id"])
-    iso_view.Scale = _fit_scale(iso_result["bbox"], iso_w, iso_h)
+    # A projection group's real on-sheet footprint does NOT scale linearly
+    # with grp.Scale - confirmed live: doubling Scale grew the actual
+    # footprint by only ~1.74-1.80x, not 2x, because AutoDistribute's
+    # inter-view GAP is computed in fixed sheet-mm, not proportional to the
+    # geometry's own scale (so the gap becomes a proportionally SMALLER
+    # share of the total footprint as scale increases). A single "measure
+    # at 1.0, multiply" estimate is therefore unreliable - converges by
+    # re-measuring the actual footprint after each attempt and correcting,
+    # same as a real numeric solver would, rather than trusting one
+    # extrapolated guess to land inside the target box.
+    scale = 1.0
+    for _ in range(4):
+        grp.Scale = scale
+        doc.recompute()
+        views_now = []
+        for v in probe["views"]:
+            item = doc.getObject(v["id"])
+            vis, hid = _drawing._part_view_payload(item)
+            views_now.append({"id": v["id"], "bbox": _drawing._view_bbox(vis, hid)})
+        fp = _projection_group_footprint(doc, views_now)
+        w, h = fp[2] - fp[0], fp[3] - fp[1]
+        ratio = min(_GROUP_TARGET_W / max(w, 1e-6), _GROUP_TARGET_H / max(h, 1e-6))
+        if 0.97 <= ratio <= 1.0:
+            break  # within 3% of the target box and not overflowing it - close enough
+        scale = min(scale * ratio, 8.0)
     doc.recompute()
-    _drawing.set_view_position(doc, iso_result["id"], iso_x, iso_y)
+    _drawing.set_projection_group_position(doc, probe["groupId"], _GROUP_X, _GROUP_Y)
+
+    iso_result = _drawing.make_view(doc, page_id, part_obj, direction="iso", scale=1.0)
+    iso_view = doc.getObject(iso_result["id"])
+    iso_view.Scale = _fit_scale(iso_result["bbox"], _ISO_TARGET_W, _ISO_TARGET_H)
+    doc.recompute()
+    _drawing.set_view_position(doc, iso_result["id"], _ISO_X, _ISO_Y)
+
+    notes_h = 0.0
+    if notes:
+        numbered = "NOTES:\n" + "\n".join("%d. %s" % (i, n) for i, n in enumerate(notes, start=1))
+        note_text_size = 3.0
+        line_span = 1 + 1.2 * (numbered.count("\n"))
+        notes_h = note_text_size * line_span
+        _drawing.add_note(doc, page_id, numbered, x=_MARGIN + 5.0, y=_MARGIN + 5.0 + notes_h,
+                           font="osifont", textSize=note_text_size)
 
     title_block = tpl.get("titleBlockTable")
     if not title_block:
         return  # template has no real title block defined - views alone still export fine
 
     columns = title_block["columns"]
-    rows = title_block["rows"]
+    # DATE/ENGINEER are blank in the SHARED template spec (a hand-drawn
+    # part fills them in by hand once, per this template's own design) -
+    # copy the row list rather than mutate tpl's own dict, and fill in only
+    # THIS drawing's copy, so a real designed part loading the same
+    # "GrainWave Technologies" template later still gets the normal blank
+    # fields, not today's date leaking in from an unrelated auto-generated
+    # drawing that happened to load the template first.
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    rows = []
+    for row in title_block["rows"]:
+        row = dict(row)
+        if row.get("label") == "DATE":
+            row["value"] = today
+        elif row.get("label") == "ENGINEER":
+            row["value"] = "Auto-Generated"
+        rows.append(row)
     style = title_block.get("style") or {}
     row_height = float(style.get("rowHeight", 5))
     col_widths = style.get("colWidths") or []
     hide_header = bool(style.get("hideHeader", False))
     table_w = sum(col_widths) if col_widths else len(columns) * 30
     table_h = row_height * (len(rows) + (0 if hide_header else 1))
-    table_x = _SHEET_W - 10.0 - table_w  # 10.0 = MARGIN, matching DrawingSheet.tsx
-    table_y = _SHEET_H - 10.0 - table_h
+    table_x = _SHEET_W - _MARGIN - table_w
+    table_y = _SHEET_H - _MARGIN - table_h
 
     _tables.make_table(doc, page_id, rows, columns=columns, style=style)
     # make_table's own view object is whatever it just created/reused - the
@@ -236,6 +353,20 @@ def sync_supplier_models():
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 with open(dest, "wb") as f:
                     f.write(stp_bytes)
+                # The metadata sidecar (componentType/cavities/gender/etc -
+                # see tryFetchSupplierModel in functions/index.js) is
+                # best-effort: its absence never blocks organizing the
+                # actual .stp, which is the part that matters - a missing
+                # or malformed meta.json just means generate_supplier_drawing
+                # falls back to the plain registry description later.
+                try:
+                    meta_bytes = _storage.download_bytes(
+                        storage_path.replace("_supplier_model.zip", "_supplier_meta.json"))
+                    if meta_bytes is not None:
+                        with open(os.path.join(repo, pn, "%s_supplier_meta.json" % pn), "wb") as f:
+                            f.write(meta_bytes)
+                except Exception:
+                    pass
                 changed = True
                 results.append({"pn": pn, "ok": True, "path": dest})
             except Exception as e:
@@ -288,18 +419,36 @@ def generate_supplier_drawing(pn):
             part_obj.Label = row.get("mfg_pn") or pn
             doc.recompute()
 
+            # Metadata sidecar (componentType/cavities/gender - see
+            # tryFetchSupplierModel) organized alongside the .stp by
+            # sync_supplier_models, if the supplier's fetch produced one.
+            # Missing/unreadable is a normal, silent fallback case (a
+            # manually-added vendor .stp has no sidecar at all), not an
+            # error worth surfacing.
+            meta = None
+            meta_path = os.path.join(repo, pn, "%s_supplier_meta.json" % pn)
+            if os.path.isfile(meta_path):
+                try:
+                    with open(meta_path) as f:
+                        meta = json.load(f)
+                except Exception:
+                    meta = None
+            title_name, title_description = _supplier_title_block_text(
+                row.get("mfg"), row.get("mfg_pn"), meta)
+
             page_info = _drawing.create_page(doc, label="Drawing")
             page_id = page_info["id"]
             # Real GrainWave title-block template (logo, legal note, live
-            # =PN/=NAME/=DESCRIPTION table) plus front/top/right orthographic
-            # views and a smaller iso in the top-right - the exact same
-            # "Load Template" a user would drive by hand, applied headlessly.
-            # NAME here is "<mfg> <mfg_pn>" (e.g. "Aptiv 12015792") since a
-            # purchased part has no GWT-designed short name of its own worth
-            # showing in a title block - the supplier's own identifier IS its
-            # name, for a part like this.
-            supplier_label = " ".join(filter(None, [row.get("mfg"), row.get("mfg_pn")])) or pn
-            _apply_grainwave_template(doc, page_id, part_obj, pn, supplier_label, row.get("description") or "")
+            # =PN/=NAME/=DESCRIPTION table) plus a real projection group
+            # (front/top/right, genuinely linked/scaled) and a smaller iso
+            # in the top-right - the exact same "Load Template" a user
+            # would drive by hand, applied headlessly. The NOTES callout
+            # states plainly that this PN is a supplier's part, not a GWT
+            # design - anyone reading the drawing should know that at a
+            # glance, not have to infer it from the title block alone.
+            notes = ["%s IS EQUIVALENT TO %s %s" % (
+                pn, (row.get("mfg") or "SUPPLIER").upper(), row.get("mfg_pn") or "?")]
+            _apply_grainwave_template(doc, page_id, part_obj, pn, title_name, title_description, notes=notes)
             doc.recompute()
 
             doc.saveAs(fcstd_path)
