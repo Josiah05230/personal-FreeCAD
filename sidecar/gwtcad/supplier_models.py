@@ -57,21 +57,44 @@ _MARGIN = 10.0  # matches DrawingSheet.tsx's own MARGIN
 
 # Real third-angle projection group (front anchor; top and right are true
 # TechDraw::DrawProjGroup projections, not independently-scaled views - see
-# drawing.make_projection_group) sized to fit _GROUP_TARGET_W/H, placed so
-# its OWN bounding box's top-left corner sits at (_GROUP_LEFT, _GROUP_TOP) -
-# AutoDistribute already arranges front/top/right correctly relative to
-# EACH OTHER (standard third-angle layout, confirmed by direct rendering),
-# so this only ever translates the whole already-correct group as one
-# unit, never repositions its members individually.
-_GROUP_TARGET_W, _GROUP_TARGET_H = 100.0, 100.0
-# _GROUP_TOP leaves room BELOW the group's geometry bbox for each view's own
-# direction label (e.g. "Front — front"), which TechDraw renders below the
-# view but is NOT included in the geometry bbox _projection_group_footprint
+# drawing.make_projection_group), placed so its OWN bounding box's top-left
+# corner sits at (_GROUP_LEFT, _GROUP_TOP) - AutoDistribute already arranges
+# front/top/right correctly relative to EACH OTHER (standard third-angle
+# layout, confirmed by direct rendering), so this only ever translates the
+# whole already-correct group as one unit, never repositions its members
+# individually.
+#
+# Sizing is deliberately split into two independent knobs, not one combined
+# target box: _PART_TARGET_W/H sizes each INDIVIDUAL view's own geometry
+# (what the convergence loop below fits grp.Scale to, measured off the
+# anchor/Front item alone) and _GROUP_SPACING is the fixed gap AutoDistribute
+# puts between neighboring views on top of that geometry size. Fitting the
+# WHOLE group footprint (geometry + gaps) to one combined target - the
+# earlier approach - meant widening the gap just shrank the part to
+# compensate, so the views never actually looked farther apart. Sizing the
+# part alone and letting a generous fixed gap add on top of it is what
+# actually spaces the views out.
+_PART_TARGET_W, _PART_TARGET_H = 55.0, 55.0
+_GROUP_LEFT, _GROUP_TOP = 30.0, 100.0
+# Generous vertical ceiling for the group's total translated footprint
+# (part size + label allowance below each view + the wide inter-view gap) -
+# a soft cap the placement step checks against table_y (computed later, see
+# _apply_grainwave_template), not an input to the scale-fit itself.
+_GROUP_MAX_BOTTOM = 245.0
+# _GROUP_LABEL_ALLOWANCE leaves room BELOW each view's geometry bbox for its
+# own direction label (e.g. "Front — front"), which TechDraw renders below
+# the view but is NOT included in the geometry bbox _projection_group_footprint
 # measures - confirmed live: the geometry-only footprint fit cleanly above
 # the table/notes, but the actual rendered PDF still overlapped them once
-# labels were accounted for. _GROUP_LABEL_ALLOWANCE is that extra budget.
-_GROUP_LEFT, _GROUP_TOP = 30.0, 110.0
+# labels were accounted for.
 _GROUP_LABEL_ALLOWANCE = 12.0
+# AutoDistribute's own default inter-view gap (15mm/15mm) packs Top/Right
+# in tight against Front - widened so they read as clearly separate views,
+# closer to the group's own outer edges than Front is to them, rather than
+# crowded against the anchor (confirmed real DrawProjGroup.spacingX/Y
+# properties, live: each mm of spacing shifts the neighboring item's offset
+# by exactly that much, on top of the part's own bbox size).
+_GROUP_SPACING = 30.0
 _ISO_X, _ISO_Y, _ISO_TARGET_W, _ISO_TARGET_H = 330.0, 30.0, 65.0, 50.0
 
 
@@ -182,6 +205,14 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     probe = _drawing.make_projection_group(doc, page_id, part_obj, group_dirs, anchor="front", scale=1.0)
     grp = doc.getObject(probe["groupId"])
     grp.ScaleType = "Custom"
+    # TechDraw's own AutoDistribute default (15mm/15mm) packs the projected
+    # views in tight against the anchor - widen the gap so Top/Right sit
+    # clearly apart from Front (closer to the group's own outer edges than
+    # Front is), rather than crowded against it. Set BEFORE the convergence
+    # loop below so its footprint measurements already reflect the wider
+    # gap, not just the final scale pass.
+    grp.spacingX = _GROUP_SPACING
+    grp.spacingY = _GROUP_SPACING
 
     # Relabel the "bottom" item as "Top" on the sheet - it occupies the
     # position and shows the face a reader expects from a "Top" view (see
@@ -195,26 +226,47 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
             _drawing._tag(item, "_gwt_dir", "top")
             v["direction"] = "top"
 
-    # A projection group's real on-sheet footprint does NOT scale linearly
-    # with grp.Scale - confirmed live: doubling Scale grew the actual
-    # footprint by only ~1.74-1.80x, not 2x, because AutoDistribute's
-    # inter-view GAP is computed in fixed sheet-mm, not proportional to the
-    # geometry's own scale (so the gap becomes a proportionally SMALLER
-    # share of the total footprint as scale increases). A single "measure
-    # at 1.0, multiply" estimate is therefore unreliable - converges by
-    # re-measuring the actual footprint after each attempt and correcting,
-    # same as a real numeric solver would, rather than trusting one
-    # extrapolated guess to land inside the target box.
-    # The convergence loop fits the group's GEOMETRY bbox to a target box
-    # that is _GROUP_LABEL_ALLOWANCE mm shorter than _GROUP_TARGET_H - each
-    # view's own direction label (e.g. "Front — front") is rendered by
-    # TechDraw BELOW the geometry and is not part of the bbox this loop
-    # measures, so reserving that budget here (rather than after the fact)
-    # is what keeps the actual rendered footprint - geometry AND labels -
-    # inside _GROUP_TARGET_H and clear of the table/notes below it.
-    fit_target_h = _GROUP_TARGET_H - _GROUP_LABEL_ALLOWANCE
-    scale = 1.0
-    for _ in range(4):
+    # Fit grp.Scale so each INDIVIDUAL view's own geometry (measured off the
+    # anchor/Front item, which shares its one Scale with Top/Right - see
+    # make_projection_group) lands at _PART_TARGET_W/H, not the combined
+    # group footprint - sizing the part alone and letting _GROUP_SPACING
+    # add a fixed, unshrinking gap on top of it is what actually spaces the
+    # views apart (fitting the WHOLE footprint including gaps to one target,
+    # the earlier approach, just shrank the part whenever the gap grew,
+    # since both competed for the same fixed budget). A view's bbox does
+    # scale linearly with grp.Scale (unlike the whole group's footprint,
+    # which doesn't - AutoDistribute's gap is fixed sheet-mm, confirmed
+    # live: doubling Scale grew the total footprint only ~1.74-1.80x) so a
+    # single "measure at 1.0, multiply" estimate is reliable here.
+    anchor_id = next(v["id"] for v in probe["views"] if v["isAnchor"])
+    anchor_item = doc.getObject(anchor_id)
+    vis, hid = _drawing._part_view_payload(anchor_item)
+    anchor_bbox_at_1 = _drawing._view_bbox(vis, hid)
+    scale = _fit_scale(anchor_bbox_at_1, _PART_TARGET_W, _PART_TARGET_H, cap=8.0)
+    grp.Scale = scale
+    doc.recompute()
+
+    # The group's REAL combined footprint (geometry + the now-wide
+    # _GROUP_SPACING gaps) at the scale just chosen - used only for
+    # placement/translation and the max-bottom safety check below, never to
+    # drive the scale itself (see the comment above this fit).
+    views_now = []
+    for v in probe["views"]:
+        item = doc.getObject(v["id"])
+        vis, hid = _drawing._part_view_payload(item)
+        views_now.append({"id": v["id"], "bbox": _drawing._view_bbox(vis, hid)})
+    fp = _projection_group_footprint(doc, views_now)
+    fp_h = fp[3] - fp[1]
+    # A safety net, not a normal code path: if this ever produced a
+    # footprint tall enough to run into the title block/notes (e.g. an
+    # unusually tall/oddly-proportioned supplier part), shrink the group
+    # scale once to bring it back under the ceiling rather than silently
+    # overlapping - _GROUP_MAX_BOTTOM already has real margin under a
+    # typical part's footprint at _PART_TARGET_W/H, so this should rarely
+    # if ever trigger in practice.
+    max_fp_h = _GROUP_MAX_BOTTOM - _GROUP_TOP - _GROUP_LABEL_ALLOWANCE
+    if fp_h > max_fp_h > 0:
+        scale *= max_fp_h / fp_h
         grp.Scale = scale
         doc.recompute()
         views_now = []
@@ -223,12 +275,7 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
             vis, hid = _drawing._part_view_payload(item)
             views_now.append({"id": v["id"], "bbox": _drawing._view_bbox(vis, hid)})
         fp = _projection_group_footprint(doc, views_now)
-        w, h = fp[2] - fp[0], fp[3] - fp[1]
-        ratio = min(_GROUP_TARGET_W / max(w, 1e-6), fit_target_h / max(h, 1e-6))
-        if 0.97 <= ratio <= 1.0:
-            break  # within 3% of the target box and not overflowing it - close enough
-        scale = min(scale * ratio, 8.0)
-    doc.recompute()
+
     # Place the group by TRANSLATING its already-measured footprint (fp,
     # relative to the anchor's own origin) so its min corner lands at the
     # chosen sheet position - NOT by guessing grp.X/Y directly. AutoDistribute
