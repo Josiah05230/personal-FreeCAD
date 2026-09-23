@@ -34,7 +34,10 @@ import Part
 from .registry import method, RpcError, APP_ERROR
 from . import partnumbers as _pn
 from . import drawing as _drawing
+from . import tables as _tables
+from . import sheet_templates as _sheet_templates
 from . import firebase_storage as _storage
+from . import session as _session
 
 
 def _cad_repo_path(cfg, pn):
@@ -45,6 +48,132 @@ def _cad_repo_path(cfg, pn):
     # string rather than a row already in hand.
     project = pn[:2]
     return _pn._repo_path_for(cfg, project)
+
+
+_SHEET_W, _SHEET_H = 420.0, 297.0  # matches drawing.py's _SHEET_W_DEFAULT/_SHEET_H_DEFAULT and DrawingSheet.tsx's SHEET_W/SHEET_H
+
+# View layout for a purchased-part reference drawing: three orthographic
+# views sized generously (this sheet has no dimensioning or other views
+# competing for space, unlike a real designed-part drawing) plus a SMALLER
+# iso tucked in the top-right corner as a quick "what does this look like
+# in 3D" reference, not the headline view - per this feature's design
+# conversation. Position tuples are (direction, x, y, targetSize-in-mm);
+# targetSize feeds the same bbox-fit scale math loadSheetTemplate.ts uses
+# (fit = min(targetW/bboxW, targetH/bboxH, cap)) rather than a fixed scale
+# number, since a part's real size varies and a fixed scale would either
+# overflow a big part or look tiny for a small one.
+_ORTHO_VIEW_LAYOUT = [
+    ("front", 30.0, 60.0, 110.0, 90.0),
+    ("top", 30.0, 170.0, 110.0, 90.0),
+    ("right", 150.0, 60.0, 110.0, 90.0),
+]
+_ISO_VIEW_LAYOUT = ("iso", 320.0, 20.0, 70.0, 55.0)
+
+
+def _fit_scale(bbox, target_w, target_h, cap=4.0):
+    min_x, min_y, max_x, max_y = bbox
+    w = max(max_x - min_x, 1e-6)
+    h = max(max_y - min_y, 1e-6)
+    return min(target_w / w, target_h / h, cap)
+
+
+def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description):
+    """Ports DrawingSheet.tsx's loadSheetTemplate (the real "Load Template"
+    action a user drives by hand in the GUI) into a headless, scripted
+    equivalent for the auto-generated purchased-part drawing - same
+    template ("GrainWave Technologies": real title-block table + logo +
+    legal note, defined in sheet_templates.py), same underlying
+    drawing/tables API calls, just invoked directly instead of through a
+    button click. Front/top/right render larger (this sheet has no
+    dimensioning competing for space); iso is smaller, tucked in the
+    top-right as a quick 3D reference rather than the headline view - see
+    _ORTHO_VIEW_LAYOUT/_ISO_VIEW_LAYOUT above.
+
+    pn_tag_document is called first so the title-block table's live
+    "=PN"/"=NAME"/"=DESCRIPTION" cell references (see tables._cell_value)
+    resolve to this part's real values, exactly the same mechanism a
+    hand-drawn part's title block already relies on - not a separate,
+    parallel text-injection path."""
+    _pn.pn_tag_document(pn, name, description)
+
+    tpl = _sheet_templates.load_sheet_template("GrainWave Technologies")["spec"]
+
+    for direction, x, y, target_w, target_h in _ORTHO_VIEW_LAYOUT:
+        v = _drawing.make_view(doc, page_id, part_obj, direction=direction, scale=1.0)
+        view = doc.getObject(v["id"])
+        scale = _fit_scale(v["bbox"], target_w, target_h)
+        view.Scale = scale
+        # Re-derive the bbox at the real scale before placing - make_view's
+        # own bbox was computed at scale=1.0, and _drawing.set_view_position
+        # positions by the view's origin, not its rendered footprint, so this
+        # doesn't strictly need the rescaled bbox - kept for clarity that x/y
+        # here are the view's own placement point, not a bounding-box corner.
+        doc.recompute()
+        _drawing.set_view_position(doc, v["id"], x, y)
+
+    iso_dir, iso_x, iso_y, iso_w, iso_h = _ISO_VIEW_LAYOUT
+    iso_result = _drawing.make_view(doc, page_id, part_obj, direction=iso_dir, scale=1.0)
+    iso_view = doc.getObject(iso_result["id"])
+    iso_view.Scale = _fit_scale(iso_result["bbox"], iso_w, iso_h)
+    doc.recompute()
+    _drawing.set_view_position(doc, iso_result["id"], iso_x, iso_y)
+
+    title_block = tpl.get("titleBlockTable")
+    if not title_block:
+        return  # template has no real title block defined - views alone still export fine
+
+    columns = title_block["columns"]
+    rows = title_block["rows"]
+    style = title_block.get("style") or {}
+    row_height = float(style.get("rowHeight", 5))
+    col_widths = style.get("colWidths") or []
+    hide_header = bool(style.get("hideHeader", False))
+    table_w = sum(col_widths) if col_widths else len(columns) * 30
+    table_h = row_height * (len(rows) + (0 if hide_header else 1))
+    table_x = _SHEET_W - 10.0 - table_w  # 10.0 = MARGIN, matching DrawingSheet.tsx
+    table_y = _SHEET_H - 10.0 - table_h
+
+    _tables.make_table(doc, page_id, rows, columns=columns, style=style)
+    # make_table's own view object is whatever it just created/reused - the
+    # frontend addresses it by the id make_table's own return value carries;
+    # mirror that instead of re-deriving it, so this stays correct even if
+    # make_table's internal object-naming ever changes.
+    table_view_id = None
+    for o in doc.Objects:
+        if o.TypeId == "TechDraw::DrawViewSpreadsheet":
+            table_view_id = o.Name
+    if table_view_id:
+        table_view = doc.getObject(table_view_id)
+        table_view.X = table_x
+        table_view.Y = table_y
+    doc.recompute()
+
+    logo_asset = tpl.get("logoAsset")
+    if not logo_asset:
+        return
+    logo_path = _sheet_templates.logo_asset_path(logo_asset)
+    aspect = float(tpl.get("logoAspect") or 2.0)
+    has_note = bool(tpl.get("legalNote"))
+    logo_frac = float(tpl.get("logoHeightFrac", 0.55)) if has_note else 1.0
+    logo_h = table_h * logo_frac
+    logo_w = logo_h * aspect
+    note_w = max(logo_w, 55.0) if has_note else logo_w
+    panel_w = max(logo_w, note_w)
+    panel_right = table_x - 2.0
+    logo_x = panel_right - panel_w / 2 - logo_w / 2
+    logo_y = table_y
+    _drawing.add_image(doc, page_id, logo_path, x=logo_x, y=logo_y, width=logo_w, height=logo_h)
+
+    legal_note = tpl.get("legalNote")
+    if legal_note:
+        note_x = panel_right - panel_w
+        note_top = logo_y + logo_h + 2.0
+        note_h = table_h - logo_h - 2.0
+        lines = [l for l in legal_note.split("\n") if l]
+        line_span = max(1.0, 1 + 1.2 * (len(lines) - 1))
+        note_text_size = max(1.4, min(2.2, (note_h * 0.85) / line_span))
+        _drawing.add_note(doc, page_id, legal_note, x=note_x, y=note_top + note_text_size,
+                           font="osifont", textSize=note_text_size)
 
 
 def _extract_stp_from_zip(zip_bytes):
@@ -161,29 +290,16 @@ def generate_supplier_drawing(pn):
 
             page_info = _drawing.create_page(doc, label="Drawing")
             page_id = page_info["id"]
-            view_result = _drawing.make_view(doc, page_id, part_obj, direction="iso", scale=3.0)
-            # Raw view.X/view.Y writes are silently ignored by export_page_svg
-            # unless the view also carries the _gwt_placed tag (see
-            # page_contents' 2026-09-20 fix comment) - set_view_position is
-            # the real API that does both, same call the frontend's own
-            # drag-to-place uses. Sheet is 420x297mm landscape with Y growing
-            # downward from the top edge - (260, 90) puts the view in the
-            # upper-right, well clear of the callout note in the lower-left
-            # (verified by rendering, not guessed: an earlier (260, 200)
-            # attempt ran the view off the bottom edge of the sheet).
-            _drawing.set_view_position(doc, view_result["id"], 260.0, 90.0)
-
-            note_text = "\n".join([
-                "GWT PN:      %s" % pn,
-                "Supplier:    %s" % (row.get("mfg") or "?"),
-                "Supplier PN: %s" % (row.get("mfg_pn") or "?"),
-                "Description: %s" % (row.get("description") or ""),
-            ])
-            # Note's Y grows upward from the bottom edge (opposite of the
-            # view's Y, which grows downward from the top - verified by
-            # rendering both, not assumed) - 250 puts this near the bottom
-            # of a 297mm-tall sheet, i.e. visually well below the view above.
-            _drawing.add_note(doc, page_id, note_text, x=20.0, y=250.0, textSize=6.0)
+            # Real GrainWave title-block template (logo, legal note, live
+            # =PN/=NAME/=DESCRIPTION table) plus front/top/right orthographic
+            # views and a smaller iso in the top-right - the exact same
+            # "Load Template" a user would drive by hand, applied headlessly.
+            # NAME here is "<mfg> <mfg_pn>" (e.g. "Aptiv 12015792") since a
+            # purchased part has no GWT-designed short name of its own worth
+            # showing in a title block - the supplier's own identifier IS its
+            # name, for a part like this.
+            supplier_label = " ".join(filter(None, [row.get("mfg"), row.get("mfg_pn")])) or pn
+            _apply_grainwave_template(doc, page_id, part_obj, pn, supplier_label, row.get("description") or "")
             doc.recompute()
 
             doc.saveAs(fcstd_path)
