@@ -1189,6 +1189,13 @@ def make_projection_group(doc, page_id, source_obj, directions, anchor=None, sca
     grp = doc.addObject("TechDraw::DrawProjGroup", "ProjGroup")
     page.addView(grp)
     grp.Source = list(source_obj) if isinstance(source_obj, (list, tuple)) else [source_obj]
+    # Third angle (US/ANSI convention) rather than TechDraw's own default
+    # of First angle (ISO/European convention) - confirmed live the two
+    # conventions place a "Right" view on OPPOSITE sides of the anchor
+    # (First angle: Right view lands to the LEFT of Front; Third angle:
+    # Right view lands to the RIGHT, matching what "Right" actually sounds
+    # like it should mean to a reader not steeped in drafting convention).
+    grp.ProjectionType = "Third angle"
     doc.recompute()
 
     items = []

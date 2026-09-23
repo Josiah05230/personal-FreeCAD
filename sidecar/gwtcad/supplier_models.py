@@ -55,27 +55,23 @@ def _cad_repo_path(cfg, pn):
 _SHEET_W, _SHEET_H = 420.0, 297.0  # matches drawing.py's _SHEET_W_DEFAULT/_SHEET_H_DEFAULT and DrawingSheet.tsx's SHEET_W/SHEET_H
 _MARGIN = 10.0  # matches DrawingSheet.tsx's own MARGIN
 
-# Real first/third-angle projection group (front anchor, top projected
-# above it, right projected beside it - true TechDraw::DrawProjGroup
-# linkage, not three independently-scaled views - see
-# drawing.make_projection_group) placed in the LEFT ~2/3 of the sheet,
-# stacked two rows tall; a SMALLER iso sits alone in the top-right corner
-# as a quick 3D reference, not the headline view - per this feature's
-# design conversation. group_target_w/h feed the same bbox-fit scale
-# make_projection_group's caller computes (below) rather than a fixed
-# scale number, since a part's real size varies and a fixed scale would
-# either overflow a big part or look tiny for a small one.
-_GROUP_TARGET_W, _GROUP_TARGET_H = 100.0, 130.0
-# grp.X/Y place the ANCHOR view's (front's) own origin, not the group's
-# bounding-box corner - "top" sits ABOVE front (negative Y offset) and
-# "right" sits beside it, so the group's real footprint extends well past
-# the anchor point in every direction. These constants were derived by
-# actually measuring that footprint at convergence (see
-# _projection_group_footprint) for a representative part: roughly
-# (-85, -106) to (+23, +44) relative to the anchor - GROUP_X/Y are chosen
-# so that footprint clears the sheet's left/top margin with the target box
-# above, not assumed from theory.
-_GROUP_X, _GROUP_Y = 95.0, 120.0
+# Real third-angle projection group (front anchor; top and right are true
+# TechDraw::DrawProjGroup projections, not independently-scaled views - see
+# drawing.make_projection_group) sized to fit _GROUP_TARGET_W/H, placed so
+# its OWN bounding box's top-left corner sits at (_GROUP_LEFT, _GROUP_TOP) -
+# AutoDistribute already arranges front/top/right correctly relative to
+# EACH OTHER (standard third-angle layout, confirmed by direct rendering),
+# so this only ever translates the whole already-correct group as one
+# unit, never repositions its members individually.
+_GROUP_TARGET_W, _GROUP_TARGET_H = 100.0, 100.0
+# _GROUP_TOP leaves room BELOW the group's geometry bbox for each view's own
+# direction label (e.g. "Front — front"), which TechDraw renders below the
+# view but is NOT included in the geometry bbox _projection_group_footprint
+# measures - confirmed live: the geometry-only footprint fit cleanly above
+# the table/notes, but the actual rendered PDF still overlapped them once
+# labels were accounted for. _GROUP_LABEL_ALLOWANCE is that extra budget.
+_GROUP_LEFT, _GROUP_TOP = 30.0, 110.0
+_GROUP_LABEL_ALLOWANCE = 12.0
 _ISO_X, _ISO_Y, _ISO_TARGET_W, _ISO_TARGET_H = 330.0, 30.0, 65.0, 50.0
 
 
@@ -172,10 +168,32 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
 
     tpl = _sheet_templates.load_sheet_template("GrainWave Technologies")["spec"]
 
-    group_dirs = ["front", "top", "right"]
+    # "bottom" (not "top") is the direction that actually lands ABOVE "front"
+    # once ProjectionType is "Third angle" - confirmed by direct rendering
+    # test: FreeCAD's own AutoDistribute places "Top"'s item at Y=+30
+    # (BELOW front, since page Y grows downward) and "Bottom"'s item at
+    # Y=-30 (ABOVE front) in third-angle mode, the reverse of the plain
+    # English reading of those names. Geometrically "bottom" here still
+    # shows the same face a hand-drawn third-angle top view would (the
+    # face away from the viewer, which is what belongs above front) -
+    # confirmed by comparing the rendered geometry against the earlier
+    # "top" projection, not just the label.
+    group_dirs = ["front", "bottom", "right"]
     probe = _drawing.make_projection_group(doc, page_id, part_obj, group_dirs, anchor="front", scale=1.0)
     grp = doc.getObject(probe["groupId"])
     grp.ScaleType = "Custom"
+
+    # Relabel the "bottom" item as "Top" on the sheet - it occupies the
+    # position and shows the face a reader expects from a "Top" view (see
+    # the group_dirs comment above), so the on-page callout should say
+    # "Top", not leak FreeCAD's own inverted-from-third-angle-convention
+    # internal type name to a reader who has no reason to know about it.
+    for v in probe["views"]:
+        if v["direction"] == "bottom":
+            item = doc.getObject(v["id"])
+            item.Label = "Top"
+            _drawing._tag(item, "_gwt_dir", "top")
+            v["direction"] = "top"
 
     # A projection group's real on-sheet footprint does NOT scale linearly
     # with grp.Scale - confirmed live: doubling Scale grew the actual
@@ -187,6 +205,14 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     # re-measuring the actual footprint after each attempt and correcting,
     # same as a real numeric solver would, rather than trusting one
     # extrapolated guess to land inside the target box.
+    # The convergence loop fits the group's GEOMETRY bbox to a target box
+    # that is _GROUP_LABEL_ALLOWANCE mm shorter than _GROUP_TARGET_H - each
+    # view's own direction label (e.g. "Front — front") is rendered by
+    # TechDraw BELOW the geometry and is not part of the bbox this loop
+    # measures, so reserving that budget here (rather than after the fact)
+    # is what keeps the actual rendered footprint - geometry AND labels -
+    # inside _GROUP_TARGET_H and clear of the table/notes below it.
+    fit_target_h = _GROUP_TARGET_H - _GROUP_LABEL_ALLOWANCE
     scale = 1.0
     for _ in range(4):
         grp.Scale = scale
@@ -198,12 +224,26 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
             views_now.append({"id": v["id"], "bbox": _drawing._view_bbox(vis, hid)})
         fp = _projection_group_footprint(doc, views_now)
         w, h = fp[2] - fp[0], fp[3] - fp[1]
-        ratio = min(_GROUP_TARGET_W / max(w, 1e-6), _GROUP_TARGET_H / max(h, 1e-6))
+        ratio = min(_GROUP_TARGET_W / max(w, 1e-6), fit_target_h / max(h, 1e-6))
         if 0.97 <= ratio <= 1.0:
             break  # within 3% of the target box and not overflowing it - close enough
         scale = min(scale * ratio, 8.0)
     doc.recompute()
-    _drawing.set_projection_group_position(doc, probe["groupId"], _GROUP_X, _GROUP_Y)
+    # Place the group by TRANSLATING its already-measured footprint (fp,
+    # relative to the anchor's own origin) so its min corner lands at the
+    # chosen sheet position - NOT by guessing grp.X/Y directly. AutoDistribute
+    # already arranges front/top/right correctly relative to EACH OTHER
+    # (confirmed by direct rendering: touching, aligned, standard
+    # third-angle layout) - the only thing this function should still
+    # decide is where that whole, already-correct arrangement sits on the
+    # page as a unit. Fighting AutoDistribute's own internal placement
+    # decisions (what earlier versions of this function did, computing
+    # grp.X/Y from hand-derived per-part-shape offsets) is exactly what
+    # produced a wrong arrangement - AutoDistribute never needed correcting,
+    # only translating.
+    anchor_x = _GROUP_LEFT - fp[0]
+    anchor_y = _GROUP_TOP - fp[1]
+    _drawing.set_projection_group_position(doc, probe["groupId"], anchor_x, anchor_y)
 
     iso_result = _drawing.make_view(doc, page_id, part_obj, direction="iso", scale=1.0)
     iso_view = doc.getObject(iso_result["id"])
@@ -211,44 +251,59 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     doc.recompute()
     _drawing.set_view_position(doc, iso_result["id"], _ISO_X, _ISO_Y)
 
-    notes_h = 0.0
+    title_block = tpl.get("titleBlockTable")
+    # Precompute the title block's own geometry BEFORE placing the notes -
+    # "top of notes lines up with top of table" needs table_y known first,
+    # and table_h/table_y depend only on the (static) template spec, not on
+    # anything created later, so this is safe to hoist.
+    table_h = table_x = table_y = None
+    columns = rows = style = None
+    if title_block:
+        columns = title_block["columns"]
+        # DATE/ENGINEER are blank in the SHARED template spec (a hand-drawn
+        # part fills them in by hand once, per this template's own design) -
+        # copy the row list rather than mutate tpl's own dict, and fill in
+        # only THIS drawing's copy, so a real designed part loading the same
+        # "GrainWave Technologies" template later still gets the normal
+        # blank fields, not today's date leaking in from an unrelated
+        # auto-generated drawing that happened to load the template first.
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        rows = []
+        for row in title_block["rows"]:
+            row = dict(row)
+            if row.get("label") == "DATE":
+                row["value"] = today
+            elif row.get("label") == "ENGINEER":
+                row["value"] = "Auto-Generated"
+            rows.append(row)
+        style = title_block.get("style") or {}
+        row_height = float(style.get("rowHeight", 5))
+        col_widths = style.get("colWidths") or []
+        hide_header = bool(style.get("hideHeader", False))
+        table_w = sum(col_widths) if col_widths else len(columns) * 30
+        table_h = row_height * (len(rows) + (0 if hide_header else 1))
+        table_x = _SHEET_W - _MARGIN - table_w
+        table_y = _SHEET_H - _MARGIN - table_h
+
     if notes:
         numbered = "NOTES:\n" + "\n".join("%d. %s" % (i, n) for i, n in enumerate(notes, start=1))
-        note_text_size = 3.0
-        line_span = 1 + 1.2 * (numbered.count("\n"))
-        notes_h = note_text_size * line_span
-        _drawing.add_note(doc, page_id, numbered, x=_MARGIN + 5.0, y=_MARGIN + 5.0 + notes_h,
+        note_text_size = 4.0
+        # A note's Y is its FIRST line's baseline, and grows DOWNWARD from
+        # the sheet's top edge - same direction as everything else on this
+        # sheet (view.Y, table.Y) - confirmed by direct rendering test
+        # (y=15 landed near the top, y=280 near the bottom). "Float them a
+        # little" + "top of notes = top of table": start the block a bit
+        # right of the sheet's own left margin, with its first line at the
+        # SAME Y the table's own top edge sits at, rather than jammed into
+        # the bottom-left corner - table_y already accounts for the
+        # template's real row count/height (see above), computed once and
+        # shared by both.
+        notes_y = table_y + note_text_size if table_y is not None else _SHEET_H - _MARGIN - (note_text_size * (1 + 1.2 * numbered.count("\n")))
+        _drawing.add_note(doc, page_id, numbered, x=_MARGIN + 8.0, y=notes_y,
                            font="osifont", textSize=note_text_size)
 
-    title_block = tpl.get("titleBlockTable")
     if not title_block:
         return  # template has no real title block defined - views alone still export fine
-
-    columns = title_block["columns"]
-    # DATE/ENGINEER are blank in the SHARED template spec (a hand-drawn
-    # part fills them in by hand once, per this template's own design) -
-    # copy the row list rather than mutate tpl's own dict, and fill in only
-    # THIS drawing's copy, so a real designed part loading the same
-    # "GrainWave Technologies" template later still gets the normal blank
-    # fields, not today's date leaking in from an unrelated auto-generated
-    # drawing that happened to load the template first.
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-    rows = []
-    for row in title_block["rows"]:
-        row = dict(row)
-        if row.get("label") == "DATE":
-            row["value"] = today
-        elif row.get("label") == "ENGINEER":
-            row["value"] = "Auto-Generated"
-        rows.append(row)
-    style = title_block.get("style") or {}
-    row_height = float(style.get("rowHeight", 5))
-    col_widths = style.get("colWidths") or []
-    hide_header = bool(style.get("hideHeader", False))
-    table_w = sum(col_widths) if col_widths else len(columns) * 30
-    table_h = row_height * (len(rows) + (0 if hide_header else 1))
-    table_x = _SHEET_W - _MARGIN - table_w
-    table_y = _SHEET_H - _MARGIN - table_h
 
     _tables.make_table(doc, page_id, rows, columns=columns, style=style)
     # make_table's own view object is whatever it just created/reused - the
