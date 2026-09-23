@@ -1770,6 +1770,21 @@ export const api = {
   assemblyBomPns: () => rpc<{ items: BomItem[] }>('assembly.bomPns', {}),
   pnSaveBom: (pn: string, items: BomItem[]) =>
     rpc<{ pn: string; itemCount: number }>('pn.saveBom', { pn, items }),
+  /** Exports STEP (+ PDF, if the currently-open document has a drawing
+   *  page) and uploads both to Firebase Storage, called right after a
+   *  successful promotion to 'active' - see setLifecycle in App.tsx. Every
+   *  failure mode is reported back as data here, not thrown, so a failed
+   *  export never reads as a failed lifecycle change. */
+  exportPromote: (pnSeq: string) =>
+    rpc<{
+      pn: string
+      ok: boolean
+      stepUploaded: boolean
+      pdfGenerated: boolean
+      pdfUploaded: boolean
+      pdfSkippedReason: string | null
+      errors: string[]
+    }>('export.promote', { pnSeq }),
   pnBomFor: (pn: string) => rpc<{ items: BomItem[] }>('pn.bomFor', { pn })
 }
 

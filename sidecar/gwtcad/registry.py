@@ -108,6 +108,8 @@ _NO_TXN = {
     "pn.listAvailableSeq", "pn.reserve", "pn.newRevision", "pn.resolve",
     "pn.tagDocument", "pn.repoForPath", "pn.checkLocation", "pn.relocate",
     "pn.history",
+    # export/upload only - reads the open document, never mutates it.
+    "export.promote",
 }
 
 

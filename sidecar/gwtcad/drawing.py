@@ -13,10 +13,12 @@ special handling, they round-trip like any other object. `session.py`'s
 `_drawings` registry only remembers id->label for the Browser tree; the
 page's actual contents are these objects themselves.
 """
+import base64
 import json
 import math
 import os
 import time
+from xml.sax.saxutils import escape
 
 import FreeCAD as App
 
@@ -414,6 +416,637 @@ def page_contents(doc, page_id):
             cleanup_lines[v["id"]] = cl
     return {"views": views, "dimensions": dimensions, "notes": notes,
             "tables": tables, "images": images, "cleanupLines": cleanup_lines}
+
+
+# --------------------------------------------------------------------------- #
+# SVG export (server-side port of app/src/renderer/ui/DrawingSheet.tsx's
+# render) - see this function's own docstring below for the full rationale.
+# --------------------------------------------------------------------------- #
+
+# ISO A3 landscape sheet in mm - same hardcoded fallback DrawingSheet.tsx
+# uses (its SHEET_W/SHEET_H/MARGIN). A real TechDraw::DrawSVGTemplate's own
+# Width/Height only populate once its Template (SVG file) property is set -
+# confirmed live: a freshly created page's Template object reports
+# Width=Height=0.0mm until Template is pointed at an actual .svg file, which
+# create_page (above) never does today - so this fallback isn't a guess for
+# an edge case, it's the ONLY sheet size this app has ever actually produced.
+# Reading page.Template.Width/Height first (when they're populated) still
+# reproduces exactly the frontend's own 420x297 today (confirmed live against
+# an A3_Landscape_blank.svg template) and keeps this function correct if
+# create_page is later fixed to set a real template file.
+_SHEET_W_DEFAULT = 420.0
+_SHEET_H_DEFAULT = 297.0
+_MARGIN = 10.0
+
+_RADIAL_DIM_PREFIX = {"Radius": "R", "Diameter": "⌀"}  # ⌀ = ⌀
+
+
+def _sheet_size(page):
+    tmpl = getattr(page, "Template", None)
+    w = h = 0.0
+    if tmpl is not None:
+        try:
+            w = float(str(tmpl.Width).split()[0])
+            h = float(str(tmpl.Height).split()[0])
+        except Exception:
+            w = h = 0.0
+    if w <= 0 or h <= 0:
+        return _SHEET_W_DEFAULT, _SHEET_H_DEFAULT
+    return w, h
+
+
+def _dim_format_for(dim_id):
+    """Same merge DrawingSheet.tsx's dims.map does:
+    {...dimFormats.default, ...dimFormats.overrides[d.id]} - session.py
+    stores exactly those two pieces (dim_format_default()/dim_format(id))
+    keyed with the same field names (precision/leadingZero/trailingZeros/
+    unitSuffix/textPrefix/textSuffix/toleranceMode/tolerancePlus/
+    toleranceMinus) the frontend's DimensionFormat type uses."""
+    fmt = dict(session.dim_format_default() or {})
+    override = session.dim_format(dim_id)
+    if override:
+        fmt.update(override)
+    return fmt
+
+
+def _format_dimension(value, dtype, fmt):
+    """Port of dimensionFormat.ts's formatDimension - FreeCAD's own
+    FormattedValue needs a GUI ViewProvider and is unreadable headlessly (see
+    module docstring), so this app always formats client-side from the raw
+    measured value; this is that same formatting done server-side for PDF
+    export instead of in the browser."""
+    precision = max(0, int(fmt.get("precision", 2)))
+    s = "%.*f" % (precision, value)
+    if fmt.get("trailingZeros", True) is False and "." in s:
+        s = s.rstrip("0").rstrip(".")
+    if fmt.get("leadingZero", True) is False:
+        neg = s.startswith("-")
+        body = s[1:] if neg else s
+        if body.startswith("0.") and len(body) > 1:
+            body = body[1:]
+        s = ("-" + body) if neg else body
+    radial_prefix = _RADIAL_DIM_PREFIX.get(dtype, "")
+    unit_suffix = ""
+    if fmt.get("unitSuffix"):
+        unit_suffix = "°" if dtype in ("Angle", "Angle3Pt") else "mm"  # ° = °
+    return "%s%s%s%s%s" % (fmt.get("textPrefix") or "", radial_prefix, s, unit_suffix,
+                            fmt.get("textSuffix") or "")
+
+
+def _format_dimension_tolerance(fmt):
+    """Port of dimensionFormat.ts's formatDimensionTolerance - returns a list
+    of 1-2 text lines (symmetric "±X" or deviation "+X"/"-Y"), or None
+    when toleranceMode is off/unset or the needed numbers are missing."""
+    mode = fmt.get("toleranceMode", "off")
+    if mode == "off" or not mode:
+        return None
+    precision = max(0, int(fmt.get("precision", 2)))
+
+    def fixed(n):
+        return "%.*f" % (precision, abs(n))
+
+    if mode == "symmetric":
+        t = fmt.get("tolerancePlus")
+        if t is None or not (t >= 0):
+            return None
+        return ["±%s" % fixed(t)]  # ± = ±
+    plus = fmt.get("tolerancePlus")
+    minus = fmt.get("toleranceMinus")
+    if plus is None and minus is None:
+        return None
+
+    def signed(n):
+        n = n or 0.0
+        return ("-%s" if n < 0 else "+%s") % fixed(n)
+
+    return [signed(plus), signed(minus)]
+
+
+def _measure_text(s, font_size):
+    """Port of DrawingSheet.tsx's measureText - a per-character average width
+    calibrated against the app's own label font, used only to flush a
+    tolerance block against the end of a dimension's value text (see that
+    function's own comment for why exact DOM measurement isn't needed)."""
+    w = 0.0
+    for ch in s:
+        if ch == " " or ch in ".,-":
+            w += 0.28
+        elif ch in ("±", "⌀", "°"):
+            w += 0.72
+        elif ch.isdigit():
+            w += 0.56
+        else:
+            w += 0.6
+    return w * font_size
+
+
+def _uv_to_local(bbox, scale, uv):
+    """Port of DrawingSheet.tsx's uvToLocal - a view-UV point (the same
+    projected frame page_contents' views[].visible/hidden polylines and every
+    dimension's p1/p2/center/etc already live in) to that view's own local
+    (pre-translate) sheet-mm space: (u - minX) * scale, (maxY - v) * scale."""
+    min_x, _min_y, _max_x, max_y = bbox
+    return (uv[0] - min_x) * scale, (max_y - uv[1]) * scale
+
+
+def _svg_polyline(poly, stroke, width, dasharray=None):
+    if len(poly) < 2:
+        return ""
+    pts = " ".join("%s,%s" % (_fmt(p[0]), _fmt(-p[1])) for p in poly)  # flip: CAD Y-up -> SVG Y-down
+    dash = ' stroke-dasharray="%s"' % dasharray if dasharray else ""
+    return ('<polyline points="%s" fill="none" stroke="%s" stroke-width="%s"%s/>'
+            % (pts, stroke, _fmt(width), dash))
+
+
+def _fmt(n):
+    """Compact numeric formatting for SVG attribute values - avoids Python's
+    repr-style float noise (e.g. 12.000000000000002) without needing an XML
+    library, matching what a browser's own SVG serializer already produces
+    closely enough for rendering purposes."""
+    if isinstance(n, (int,)):
+        return str(n)
+    r = round(float(n), 4)
+    if r == int(r):
+        return str(int(r))
+    return ("%.4f" % r).rstrip("0").rstrip(".")
+
+
+def _arrow_points(x, y, dirx, diry):
+    """Port of DrawingSheet.tsx's per-dimension `arrow()` closure - a small
+    filled triangle pointing (dirx, diry) with its tip at (x, y)."""
+    s = 1.6
+    backx = x - dirx * s
+    backy = y - diry * s
+    nx = -diry * s * 0.35
+    ny = dirx * s * 0.35
+    return "%s,%s %s,%s %s,%s" % (
+        _fmt(x), _fmt(y), _fmt(backx + nx), _fmt(backy + ny), _fmt(backx - nx), _fmt(backy - ny))
+
+
+def _image_data_uri(path):
+    """Port of app/src/main/index.ts's 'fs:readImage' handler - the same
+    extension -> mime mapping (png/webp, else jpeg) and base64 encoding the
+    Electron main process uses to turn a DrawViewImage's ImageFile path into
+    something an <image href> can use directly."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except Exception:
+        return None
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    mime = "image/png" if ext == "png" else "image/webp" if ext == "webp" else "image/jpeg"
+    return "data:%s;base64,%s" % (mime, base64.b64encode(data).decode("ascii"))
+
+
+def export_page_svg(doc, page_id):
+    """Assemble a complete, standalone SVG string for a TechDraw drawing page
+    - a server-side port of DrawingSheet.tsx's own render, used so the
+    headless sidecar can produce a PDF (via `rsvg-convert -f pdf`, outside
+    this function) without a GUI TechDraw ViewProvider, which the plain
+    console `freecadcmd` process cannot load at all (see module docstring).
+
+    Reuses page_contents(doc, page_id)'s already-correct data (views' visible/
+    hidden polylines, dimension geometry, note text, table rows/columns/
+    style, image placements) rather than recomputing any geometry - this
+    function only serializes that data as SVG, matching the frontend's exact
+    numeric formulas (row heights, dy stepping, viewBox math, colors, stroke
+    widths) wherever this session's reading of DrawingSheet.tsx found them
+    literally, rather than approximating.
+
+    Known simplifications vs. the interactive editor (all cosmetic, not
+    correctness bugs - see this function's own inline comments at each site):
+      - No selection highlighting, hover state, drag handles, or snap-target
+        markers - none of that is part of a static export.
+      - No "Blank sheet - use Add View" placeholder text (a placement aid,
+        meaningless once actually exporting a page).
+      - Radial (Radius/Diameter) and Angle dimensions render their leader/
+        arc geometry faithfully; a dimension whose References2D can't be
+        resolved at all (page_contents' dim_entry with value=None) is
+        skipped outright rather than drawn as a corner label - a corner
+        label with no witness lines is a last-resort on-screen affordance
+        for "something is wrong here," not something a finished PDF should
+        ship.
+      - The title block (DrawingSheet.tsx's showTitleBlock overlay, keyed off
+        client-only React state with no server-side persistence at all) is
+        not reproduced - there is nothing in page_contents/the .FCStd to read
+        it from.
+    """
+    page = get_page(doc, page_id)
+    contents = page_contents(doc, page_id)
+    sheet_w, sheet_h = _sheet_size(page)
+
+    parts = []
+    parts.append('<?xml version="1.0" encoding="UTF-8" standalone="no"?>')
+    parts.append(
+        '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
+        'viewBox="0 0 %s %s" width="%smm" height="%smm">'
+        % (_fmt(sheet_w), _fmt(sheet_h), _fmt(sheet_w), _fmt(sheet_h))
+    )
+
+    # sheet background + border (DrawingSheet.tsx: two <rect>s, white fill
+    # then a MARGIN-inset outline) - see that render's literal values.
+    parts.append('<rect x="0" y="0" width="%s" height="%s" fill="#ffffff"/>' % (_fmt(sheet_w), _fmt(sheet_h)))
+    parts.append(
+        '<rect x="%s" y="%s" width="%s" height="%s" fill="none" stroke="#111" stroke-width="0.6"/>'
+        % (_fmt(_MARGIN), _fmt(_MARGIN), _fmt(sheet_w - _MARGIN * 2), _fmt(sheet_h - _MARGIN * 2))
+    )
+
+    # views: same cascade-default placement DrawingSheet.tsx's Placed state
+    # falls back to when a view has never been explicitly dragged (x/y absent
+    # from page_contents' entry - see that function's own comment). Views
+    # that HAVE been placed (x/y present) use their persisted position, same
+    # as the frontend reading useState from the same DTO.
+    views_by_id = {}
+    for i, v in enumerate(contents["views"]):
+        vx = v.get("x")
+        vy = v.get("y")
+        if vx is None or vy is None:
+            # DrawingSheet.tsx's own initial-placement cascade for a view
+            # with no persisted position - findOpenSlot is a full packing
+            # search over existing footprints; a fixed cascade here is a
+            # reasonable stand-in for a page that's only ever exported
+            # server-side (no interactive drag has happened yet to place it
+            # more precisely), not a faithful port of findOpenSlot itself.
+            vx = _MARGIN + 6 + (i % 3) * 90
+            vy = _MARGIN + 20 + (i // 3) * 70
+        placed_scale = float(v.get("scale", 1.0))
+        min_x, min_y, max_x, max_y = v["bbox"]
+        w = (max_x - min_x) * placed_scale
+        h = (max_y - min_y) * placed_scale
+        views_by_id[v["id"]] = {"x": vx, "y": vy, "scale": placed_scale, "bbox": v["bbox"], "w": w, "h": h}
+
+        parts.append('<g transform="translate(%s %s)">' % (_fmt(vx), _fmt(vy)))
+        parts.append(
+            '<rect width="%s" height="%s" fill="#ffffff01" stroke="#00000022" stroke-width="0.3"/>' % (_fmt(w), _fmt(h))
+        )
+        # nested <svg> with the view's own viewBox, mirroring ViewBox's
+        # render exactly: viewBox="minX -maxY (maxX-minX) (maxY-minY)", scaled
+        # up to (w, h) - hidden polylines drawn first (dashed grey), then
+        # visible ones on top (solid near-black), matching z-order + the
+        # exact stroke colors/widths/dasharray literals found in ViewBox.
+        parts.append(
+            '<svg x="0" y="0" width="%s" height="%s" viewBox="%s %s %s %s">'
+            % (_fmt(w), _fmt(h), _fmt(min_x), _fmt(-max_y), _fmt(max_x - min_x), _fmt(max_y - min_y))
+        )
+        for poly in v.get("hidden", []):
+            parts.append(_svg_polyline(poly, "#999", 0.25, "1.4 1"))
+        for poly in v.get("visible", []):
+            parts.append(_svg_polyline(poly, "#111", 0.45))
+        if v.get("kind") == "broken":
+            # break-line zigzags (breakLinePoints) - ported literally: 5
+            # zigzag segments spanning the bbox, amplitude 2% of the
+            # perpendicular span, one line at (position - gap/2), another at
+            # (position + gap/2), both drawn in the same accent blue.
+            for b in v.get("breaks") or []:
+                axis = b.get("axis", "x")
+                pos = float(b.get("position", 0.0))
+                gap = float(b.get("gap", 10.0))
+                for offset in (-gap / 2, gap / 2):
+                    line_pos = pos + offset
+                    pts = _break_line_points(axis, line_pos, min_x, min_y, max_x, max_y)
+                    parts.append(_svg_polyline(pts, "#0696d7", 0.4))
+        parts.append("</svg>")
+        # view label under the view, same font size/color/format as
+        # ViewBox's own <text> ("{label} — {direction} (kind)")
+        label = escape(v.get("label", ""))
+        direction = escape(v.get("direction", ""))
+        kind = v.get("kind", "part")
+        suffix = " (%s)" % escape(kind) if kind != "part" else ""
+        parts.append(
+            '<text x="0" y="%s" font-size="3.4" fill="#333">%s — %s%s</text>'
+            % (_fmt(h + 4), label, direction, suffix)
+        )
+        parts.append("</g>")
+
+    # dimensions
+    for d in contents["dimensions"]:
+        if d.get("value") is None:
+            continue
+        pl = views_by_id.get(d.get("viewId"))
+        if pl is None:
+            continue
+        fmt = _dim_format_for(d["id"])
+        text = escape(_format_dimension(d["value"], d["type"], fmt))
+        tol_lines = _format_dimension_tolerance(fmt)
+        value_width = _measure_text(text, 3.4)
+
+        def tolerance_svg(x, y, anchor, dominant_baseline=None):
+            if not tol_lines:
+                return ""
+            if anchor == "start":
+                value_left = x
+            elif anchor == "end":
+                value_left = x - value_width
+            else:
+                value_left = x - value_width / 2
+            tol_x = value_left + value_width + 1
+            baseline_attr = ' dominant-baseline="%s"' % dominant_baseline if dominant_baseline else ""
+            if len(tol_lines) == 1:
+                body = escape(tol_lines[0])
+            else:
+                body = (
+                    '<tspan x="%s" dy="-0.35em">%s</tspan><tspan x="%s" dy="1.05em">%s</tspan>'
+                    % (_fmt(tol_x), escape(tol_lines[0]), _fmt(tol_x), escape(tol_lines[1]))
+                )
+            return (
+                '<text x="%s" y="%s" font-size="2.2" text-anchor="start"%s stroke="none">%s</text>'
+                % (_fmt(tol_x), _fmt(y), baseline_attr, body)
+            )
+
+        gx, gy, scale = pl["x"], pl["y"], pl["scale"]
+        bbox = pl["bbox"]
+
+        def uv(point):
+            return _uv_to_local(bbox, scale, point)
+
+        if d["type"] in ("Radius", "Diameter") and d.get("center") and d.get("rim") and d.get("labelUV"):
+            cx, cy = uv(d["center"])
+            rx, ry = uv(d["rim"])
+            lx, ly = uv(d["labelUV"])
+            dirx0, diry0 = rx - cx, ry - cy
+            rlen = math.hypot(dirx0, diry0) or 1.0
+            dirx, diry = dirx0 / rlen, diry0 / rlen
+            label_anchor = "start" if lx >= cx else "end"
+            label_dx = 1.5 if lx >= cx else -1.5
+            g_open = '<g transform="translate(%s %s)" stroke="#c47f16" fill="#c47f16" stroke-width="0.25">' % (
+                _fmt(gx), _fmt(gy))
+            if d["type"] == "Diameter":
+                farx, fary = cx - dirx0, cy - diry0
+                parts.append(g_open)
+                parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s"/>' % (_fmt(farx), _fmt(fary), _fmt(rx), _fmt(ry)))
+                parts.append('<polygon points="%s" stroke="none"/>' % _arrow_points(rx, ry, dirx, diry))
+                parts.append('<polygon points="%s" stroke="none"/>' % _arrow_points(farx, fary, -dirx, -diry))
+                parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s" stroke-width="0.2"/>' % (_fmt(rx), _fmt(ry), _fmt(lx), _fmt(ly)))
+                parts.append(
+                    '<text x="%s" y="%s" font-size="3.4" text-anchor="%s" dominant-baseline="middle" stroke="none">%s</text>'
+                    % (_fmt(lx + label_dx), _fmt(ly), label_anchor, text)
+                )
+                parts.append(tolerance_svg(lx + label_dx, ly, label_anchor, "middle"))
+                parts.append("</g>")
+            else:
+                parts.append(g_open)
+                parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s"/>' % (_fmt(cx), _fmt(cy), _fmt(lx), _fmt(ly)))
+                parts.append('<circle cx="%s" cy="%s" r="0.5" stroke="none"/>' % (_fmt(cx), _fmt(cy)))
+                parts.append('<polygon points="%s" stroke="none"/>' % _arrow_points(rx, ry, dirx, diry))
+                parts.append(
+                    '<text x="%s" y="%s" font-size="3.4" text-anchor="%s" dominant-baseline="middle" stroke="none">%s</text>'
+                    % (_fmt(lx + label_dx), _fmt(ly), label_anchor, text)
+                )
+                parts.append(tolerance_svg(lx + label_dx, ly, label_anchor, "middle"))
+                parts.append("</g>")
+            continue
+
+        if d["type"] in ("Angle", "Angle3Pt") and d.get("center") and d.get("dir1") and d.get("dir2") and d.get("arcRadius"):
+            cx, cy = uv(d["center"])
+            r = float(d["arcRadius"])
+            a1 = math.atan2(-d["dir1"][1], d["dir1"][0])
+            a2 = math.atan2(-d["dir2"][1], d["dir2"][0])
+            sweep = a2 - a1
+            while sweep <= -math.pi:
+                sweep += 2 * math.pi
+            while sweep > math.pi:
+                sweep -= 2 * math.pi
+            large = 1 if abs(sweep) > math.pi else 0
+            sweep_flag = 1 if sweep >= 0 else 0
+            startx, starty = cx + math.cos(a1) * r, cy + math.sin(a1) * r
+            endx, endy = cx + math.cos(a2) * r, cy + math.sin(a2) * r
+            mid_angle = a1 + sweep / 2
+            labelx, labely = cx + math.cos(mid_angle) * (r + 3), cy + math.sin(mid_angle) * (r + 3)
+            tan_sign = 1 if sweep_flag else -1
+            start_tan = (-math.sin(a1) * tan_sign, math.cos(a1) * tan_sign)
+            end_tan = (math.sin(a2) * tan_sign, -math.cos(a2) * tan_sign)
+            parts.append('<g transform="translate(%s %s)" stroke="#c47f16" fill="#c47f16" stroke-width="0.25">' % (
+                _fmt(gx), _fmt(gy)))
+            parts.append(
+                '<line x1="%s" y1="%s" x2="%s" y2="%s" stroke-width="0.2" stroke-dasharray="0.8,0.6"/>'
+                % (_fmt(cx), _fmt(cy), _fmt(startx), _fmt(starty))
+            )
+            parts.append(
+                '<line x1="%s" y1="%s" x2="%s" y2="%s" stroke-width="0.2" stroke-dasharray="0.8,0.6"/>'
+                % (_fmt(cx), _fmt(cy), _fmt(endx), _fmt(endy))
+            )
+            parts.append(
+                '<path d="M %s %s A %s %s 0 %d %d %s %s" fill="none"/>'
+                % (_fmt(startx), _fmt(starty), _fmt(r), _fmt(r), large, sweep_flag, _fmt(endx), _fmt(endy))
+            )
+            parts.append('<polygon points="%s" stroke="none"/>' % _arrow_points(startx, starty, start_tan[0], start_tan[1]))
+            parts.append('<polygon points="%s" stroke="none"/>' % _arrow_points(endx, endy, end_tan[0], end_tan[1]))
+            parts.append('<text x="%s" y="%s" font-size="3.4" text-anchor="middle" stroke="none">%s</text>' % (
+                _fmt(labelx), _fmt(labely), text))
+            parts.append(tolerance_svg(labelx, labely, "middle"))
+            parts.append("</g>")
+            continue
+
+        if not (d.get("p1") and d.get("p2") and d.get("labelUV")):
+            # geometry genuinely unresolvable - DrawingSheet.tsx falls back
+            # to an un-anchored corner label here; a finished PDF export
+            # skips it instead (see export_page_svg's own docstring).
+            continue
+
+        p1x, p1y = uv(d["p1"])
+        p2x, p2y = uv(d["p2"])
+        label_x, label_y = uv(d["labelUV"])
+
+        if d.get("ordinate"):
+            dx, dy = p2x - p1x, p2y - p1y
+            length = math.hypot(dx, dy) or 1.0
+            ux, uy = dx / length, dy / length
+            perpx, perpy = -uy, ux
+            off_x, off_y = label_x - p2x, label_y - p2y
+            perp_off = off_x * perpx + off_y * perpy
+            base_x, base_y = p2x + perpx * perp_off, p2y + perpy * perp_off
+            parts.append('<g transform="translate(%s %s)" stroke="#c47f16" fill="#c47f16" stroke-width="0.25">' % (
+                _fmt(gx), _fmt(gy)))
+            parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s" stroke-width="0.2"/>' % (
+                _fmt(p2x), _fmt(p2y), _fmt(base_x), _fmt(base_y)))
+            parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s" stroke-width="0.2"/>' % (
+                _fmt(p1x + perpx * perp_off), _fmt(p1y + perpy * perp_off), _fmt(base_x), _fmt(base_y)))
+            parts.append(
+                '<text x="%s" y="%s" font-size="3.4" text-anchor="middle" dominant-baseline="middle" stroke="none">%s</text>'
+                % (_fmt(label_x), _fmt(label_y), text)
+            )
+            parts.append(tolerance_svg(label_x, label_y, "middle", "middle"))
+            parts.append("</g>")
+            continue
+
+        dx, dy = p2x - p1x, p2y - p1y
+        length = math.hypot(dx, dy) or 1.0
+        ux, uy = dx / length, dy / length
+        midx, midy = (p1x + p2x) / 2, (p1y + p2y) / 2
+        off_x, off_y = label_x - midx, label_y - midy
+        perp_off = off_x * -uy + off_y * ux
+        dlx1, dly1 = p1x - uy * perp_off, p1y + ux * perp_off
+        dlx2, dly2 = p2x - uy * perp_off, p2y + ux * perp_off
+        parts.append('<g transform="translate(%s %s)" stroke="#c47f16" fill="#c47f16" stroke-width="0.25">' % (
+            _fmt(gx), _fmt(gy)))
+        parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s" stroke-width="0.2"/>' % (_fmt(p1x), _fmt(p1y), _fmt(dlx1), _fmt(dly1)))
+        parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s" stroke-width="0.2"/>' % (_fmt(p2x), _fmt(p2y), _fmt(dlx2), _fmt(dly2)))
+        parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s"/>' % (
+            _fmt(dlx1), _fmt(dly1), _fmt(label_x - ux * 6), _fmt(label_y - uy * 6)))
+        parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s"/>' % (
+            _fmt(label_x + ux * 6), _fmt(label_y + uy * 6), _fmt(dlx2), _fmt(dly2)))
+        parts.append('<polygon points="%s" stroke="none"/>' % _arrow_points(dlx1, dly1, -ux, -uy))
+        parts.append('<polygon points="%s" stroke="none"/>' % _arrow_points(dlx2, dly2, ux, uy))
+        parts.append('<text x="%s" y="%s" font-size="3.4" text-anchor="middle" stroke="none">%s</text>' % (
+            _fmt(label_x), _fmt(label_y), text))
+        parts.append(tolerance_svg(label_x, label_y, "middle"))
+        parts.append("</g>")
+
+    # notes (+ their leader lines, view-UV -> sheet via the SAME uvToLocal +
+    # placed x/y every other view-anchored point above already uses)
+    for n in contents["notes"]:
+        leader_pl = views_by_id.get(n.get("leaderViewId")) if n.get("leaderViewId") else None
+        if leader_pl is not None and n.get("leaderPointUV"):
+            lx, ly = _uv_to_local(leader_pl["bbox"], leader_pl["scale"], n["leaderPointUV"])
+            tip_x, tip_y = leader_pl["x"] + lx, leader_pl["y"] + ly
+            parts.append(
+                '<line x1="%s" y1="%s" x2="%s" y2="%s" stroke="%s" stroke-width="0.25"/>'
+                % (_fmt(tip_x), _fmt(tip_y), _fmt(n["x"]), _fmt(n["y"]), n.get("color") or "#333")
+            )
+        font_size = n.get("textSize") or 3.4
+        style = n.get("textStyle") or ""
+        weight_attr = ' font-weight="bold"' if style in ("Bold", "Bold-Italic") else ""
+        style_attr = ' font-style="italic"' if style in ("Italic", "Bold-Italic") else ""
+        font_attr = ' font-family="%s"' % escape(n["font"]) if n.get("font") else ""
+        color = n.get("color") or "#333"
+        lines = (n.get("text") or "").split("\n")
+        tspans = "".join(
+            '<tspan x="%s" dy="%s">%s</tspan>' % (_fmt(n["x"]), "0" if i == 0 else "1.2em", escape(line) or "&#160;")
+            for i, line in enumerate(lines)
+        )
+        parts.append(
+            '<text x="%s" y="%s" font-size="%s"%s%s%s fill="%s">%s</text>'
+            % (_fmt(n["x"]), _fmt(n["y"]), _fmt(font_size), font_attr, weight_attr, style_attr, color, tspans)
+        )
+
+    # tables - same colWidths/rowHeight/hideHeader/merges layout math as
+    # DrawingSheet.tsx's tables.map (colX cumulative-sum, tableW/tableH,
+    # mergeAt for skipping covered cells, per-line <tspan> stepping for
+    # multi-line cell text)
+    for ti, table in enumerate(contents["tables"]):
+        style = table.get("style") or {}
+        row_h = float(style.get("rowHeight", 5))
+        col_widths = style.get("colWidths") or []
+        hide_header = bool(style.get("hideHeader", False))
+        show_grid = style.get("showGrid", True)
+        grid_color = style.get("gridColor", "#111")
+        font = style.get("font", "osifont")
+        text_size = float(style.get("textSize", 3.2))
+        bold = bool(style.get("bold", False))
+        italic = bool(style.get("italic", False))
+        merges = style.get("merges") or []
+        columns = table["columns"]
+        rows = table["rows"]
+        n_cols = len(columns) or 1
+        base_col_w = max(20.0, 130.0 / n_cols)
+
+        def col_w(ci):
+            return col_widths[ci] if ci < len(col_widths) else base_col_w
+
+        def col_x(ci):
+            return sum(col_w(i) for i in range(ci))
+
+        table_w = sum(col_w(i) for i in range(len(columns)))
+        header_rows = 0 if hide_header else 1
+        table_h = row_h * (len(rows) + header_rows)
+        table_x = style.get("x", _MARGIN + 4 + ti * 8)
+        table_y = style.get("y", _MARGIN + 4 + ti * 8)
+
+        def merge_at(r, c):
+            for m in merges:
+                if m["r"] <= r < m["r"] + m["rs"] and m["c"] <= c < m["c"] + m["cs"]:
+                    return m
+            return None
+
+        parts.append('<g transform="translate(%s %s)">' % (_fmt(table_x), _fmt(table_y)))
+        if show_grid:
+            parts.append('<g stroke="%s" stroke-width="0.25" fill="none">' % grid_color)
+            parts.append('<rect x="0" y="0" width="%s" height="%s"/>' % (_fmt(table_w), _fmt(table_h)))
+            for i in range(1, len(columns)):
+                x = col_x(i)
+                parts.append('<line x1="%s" y1="0" x2="%s" y2="%s"/>' % (_fmt(x), _fmt(x), _fmt(table_h)))
+            for i in range(len(rows)):
+                if i == 0 and header_rows == 0:
+                    continue
+                y = row_h * (i + header_rows)
+                parts.append('<line x1="0" y1="%s" x2="%s" y2="%s"/>' % (_fmt(y), _fmt(table_w), _fmt(y)))
+            parts.append("</g>")
+
+        font_attr = ' font-family="%s"' % escape(font)
+        italic_attr = ' font-style="italic"' if italic else ""
+        bold_attr = ' font-weight="bold"' if bold else ""
+
+        if not hide_header:
+            for ci, c in enumerate(columns):
+                parts.append(
+                    '<text x="%s" y="%s" font-size="%s"%s font-weight="bold"%s>%s</text>'
+                    % (_fmt(col_x(ci) + 1.5), _fmt(row_h - 1.5), _fmt(text_size), font_attr, italic_attr, escape(str(c.get("header", ""))))
+                )
+
+        for ri, row in enumerate(rows):
+            for ci, c in enumerate(columns):
+                m = merge_at(ri, ci)
+                if m and not (m["r"] == ri and m["c"] == ci):
+                    continue  # covered by a merge, not its top-left
+                cell_y = row_h * (ri + header_rows) + row_h - 1.5
+                value = str(row.get(c.get("source", ""), ""))
+                lines = value.split("\n")
+                n_lines = len(lines)
+                x = col_x(ci) + 1.5
+                tspans = "".join(
+                    '<tspan x="%s" dy="%s">%s</tspan>'
+                    % (_fmt(x), ("%gem" % (-(n_lines - 1) * 1.2)) if i == 0 else "1.2em", escape(line) or "&#160;")
+                    for i, line in enumerate(lines)
+                )
+                parts.append(
+                    '<text x="%s" y="%s" font-size="%s"%s%s%s>%s</text>'
+                    % (_fmt(x), _fmt(cell_y), _fmt(text_size), font_attr, bold_attr, italic_attr, tspans)
+                )
+        parts.append("</g>")
+
+    # images - embedded as data: URIs (the sidecar's _image_dto only ever
+    # returns the ORIGINAL filesystem path FreeCAD embedded into the .FCStd,
+    # same as the frontend's own imageData fetch via window.cad.readImage -
+    # see that IPC handler's mime-type mapping, ported in _image_data_uri).
+    for im in contents["images"]:
+        href = _image_data_uri(im["path"])
+        if href is None:
+            continue  # source file no longer readable - skip rather than emit a broken <image>
+        rotation = im.get("rotation") or 0.0
+        transform = ""
+        if rotation:
+            cx = im["x"] + im["width"] / 2
+            cy = im["y"] + im["height"] / 2
+            transform = ' transform="rotate(%s %s %s)"' % (_fmt(rotation), _fmt(cx), _fmt(cy))
+        parts.append(
+            '<image href="%s" x="%s" y="%s" width="%s" height="%s"%s/>'
+            % (href, _fmt(im["x"]), _fmt(im["y"]), _fmt(im["width"]), _fmt(im["height"]), transform)
+        )
+
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+def _break_line_points(axis, pos, min_x, min_y, max_x, max_y):
+    """Port of DrawingSheet.tsx's breakLinePoints - a jagged zigzag glyph
+    across a view's bbox at the given axis/position, standard CAD convention
+    for marking a broken-out section. Returns points in the view's own local
+    (y-up, pre-flip) coordinate space, same as _edges_to_polylines' output,
+    so _svg_polyline's own Y-flip applies to it identically."""
+    zigzags = 5
+    amp = (max_x - min_x) * 0.02 if axis == "x" else (max_y - min_y) * 0.02
+    pts = []
+    if axis == "x":
+        span = max_y - min_y
+        for i in range(zigzags + 1):
+            y = min_y + (span * i) / zigzags
+            pts.append((pos + (-amp if i % 2 == 0 else amp), y))
+    else:
+        span = max_x - min_x
+        for i in range(zigzags + 1):
+            x = min_x + (span * i) / zigzags
+            pts.append((x, pos + (-amp if i % 2 == 0 else amp)))
+    return pts
 
 
 # --------------------------------------------------------------------------- #

@@ -19,6 +19,7 @@ from . import tables as _tables
 from . import sheet_templates as _sheet_templates
 from . import assembly as _assembly
 from . import partnumbers as _partnumbers
+from . import export as _export
 from .tessellate import tessellate_shape
 from .vocab import op_name, next_label
 from . import expr as _expr

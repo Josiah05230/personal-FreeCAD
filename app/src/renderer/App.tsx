@@ -3359,11 +3359,46 @@ export function App(): JSX.Element {
         } catch (bomErr) {
           console.error('Failed to save BOM for lifecycle change:', bomErr)
         }
+        // Promoting to 'active' is also the trigger for the STEP+PDF
+        // export pipeline (see export.py) - a failed export must never
+        // read as a failed promotion, so this always runs in its own
+        // try/catch and only ever surfaces a notice, same as the BOM
+        // re-capture above. Only fires on in_work/discontinued -> active,
+        // not on every lifecycle change.
+        if (lifecycle === 'active') {
+          try {
+            const exp = await api.exportPromote(pnSeq)
+            if (!exp.ok) {
+              flashSketchNotice(
+                `${currentPn}: promoted, but export failed - ${exp.errors[0] ?? 'unknown error'}`
+              )
+            } else if (exp.pdfSkippedReason) {
+              flashSketchNotice(
+                `${currentPn}: exported STEP (PDF skipped - ${exp.pdfSkippedReason})`
+              )
+            } else if (!exp.pdfUploaded) {
+              flashSketchNotice(
+                `${currentPn}: exported STEP, but PDF export/upload failed - ${exp.errors[0] ?? 'unknown error'}`
+              )
+            } else if (exp.errors.length > 0) {
+              // STEP + PDF both landed, but something else in the pipeline
+              // (currently only metadata.json) still failed - worth a
+              // notice even though the two files the portal actually shows
+              // are fine, since a missing meta.json means the portal can't
+              // detect this export going stale later.
+              flashSketchNotice(`${currentPn}: exported STEP + PDF (${exp.errors[0]})`)
+            } else {
+              flashSketchNotice(`${currentPn}: exported STEP + PDF`)
+            }
+          } catch (expErr) {
+            flashSketchNotice(`${currentPn}: promoted, but export failed - ${(expErr as Error).message}`)
+          }
+        }
       } catch (e) {
         window.alert((e as Error).message)
       }
     },
-    [currentPn]
+    [currentPn, flashSketchNotice]
   )
 
   const openPnFile = useCallback(
