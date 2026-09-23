@@ -78,30 +78,13 @@ scripts/sidecar-dev.sh  # optional: run just the sidecar, poke it with curl
 `scripts/dev.sh` clears `ELECTRON_RUN_AS_NODE` (some shells export it, which
 stops Electron from opening a window).
 
-### CAD-export pipeline (optional)
-
-Promoting a part to `active` (company PN workflow) exports STEP + a PDF of
-its drawing and uploads both to Firebase Storage - this needs two things
-not required for everything else in the app:
-
-- `rsvg-convert` on `PATH` (Ubuntu/Debian: `sudo apt install librsvg2-bin`)
-  - used to convert the sidecar's own assembled page SVG to PDF, since
-    FreeCAD's real print-to-PDF path (`TechDrawGui`) cannot be imported at
-    all in the headless `freecadcmd` process this app runs under.
-- `google-auth` installed into the SAME FreeCAD Python interpreter named in
-  `config.local.json` (its `site-packages`, not the system Python - pip
-  wheels must match that interpreter's exact Python version, e.g. `cp311`,
-  or the native `_cffi_backend`/`cryptography` extension modules won't
-  load): `pip install --target <freecad>/usr/lib/python3.11/site-packages
-  google-auth` (adjust the version folder to match).
-  - used to sign a Firebase service-account JWT and exchange it for a
-    short-lived Storage access token.
-- A Firebase/GCP service-account key, scoped to Storage Object Admin on the
-  GrainWavePartners bucket, saved at `~/.gwtcad/firebase-service-account.json`.
-
-Without these, lifecycle promotion still works fully - the export step
-fails independently and cleanly, with a specific notice explaining what's
-missing, never blocking or undoing the promotion itself.
+For a fresh machine (company PN directories, and the CAD-export pipeline
+that runs on lifecycle promotion), see
+[`docs/first-time-setup.md`](docs/first-time-setup.md) - a full step-by-step
+walkthrough with a "check it worked" for each step. None of that is
+required just to run/build the app; without it, PN features have nothing
+to look up and lifecycle promotion's export step fails cleanly (with a
+notice explaining why), but everything else works.
 
 ### Running the test suite
 
