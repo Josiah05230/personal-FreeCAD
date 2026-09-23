@@ -11,6 +11,10 @@ export interface FileActions {
   onNewRevision?: () => void
   onPnBrowser: () => void
   onCompanySettings: () => void
+  /** On-demand version of the startup supplier-model sync (App.tsx runs it
+   * automatically once on launch too) - lets a user get a just-reserved
+   * part's model/drawing without relaunching the whole app. */
+  onCheckSupplierModels: () => void
   /** Current document's lifecycle (in_work / active / discontinued), or
    * undefined if it has no PN - only shown/settable when a PN is tagged. */
   currentLifecycle?: string | null
@@ -117,6 +121,7 @@ export function FileMenu({
               />
             )}
             {item('Part Number Manager…', actions.onPnBrowser)}
+            {item('Check for Supplier Models', actions.onCheckSupplierModels)}
             {item('Company Directories…', actions.onCompanySettings)}
             <div className="filemenu-sep" />
             {item('Import…', actions.onImport)}

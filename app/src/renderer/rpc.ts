@@ -1785,7 +1785,19 @@ export const api = {
       pdfSkippedReason: string | null
       errors: string[]
     }>('export.promote', { pnSeq }),
-  pnBomFor: (pn: string) => rpc<{ items: BomItem[] }>('pn.bomFor', { pn })
+  pnBomFor: (pn: string) => rpc<{ items: BomItem[] }>('pn.bomFor', { pn }),
+  /** Organizes any supplier-fetched 3D models (Aptiv currently - see
+   *  tryFetchSupplierModel in GrainWavePartners' functions/index.js) sitting
+   *  unprocessed in Firebase Storage into pn-cad-files, then generates a
+   *  reference drawing (isometric view + GWT PN <-> supplier PN callout)
+   *  for each. Safe to call repeatedly - already-organized/already-drawn
+   *  parts are skipped, not redone. Called once on app startup and from an
+   *  on-demand "Check for supplier models" action. */
+  supplierModelsSyncAndGenerateAll: () =>
+    rpc<{
+      sync: Array<{ pn: string; ok: boolean; path?: string; skipped?: string; error?: string }>
+      drawings: Array<{ pn: string; ok: boolean; pdfUploaded?: boolean; skipped?: string; errors?: string[]; error?: string }>
+    }>('supplierModels.syncAndGenerateAll', {})
 }
 
 export interface CompanyConfig {

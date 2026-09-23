@@ -105,3 +105,47 @@ def upload_bytes(storage_path, data, content_type):
 def upload_file(local_path, storage_path, content_type):
     with open(local_path, "rb") as f:
         return upload_bytes(storage_path, f.read(), content_type)
+
+
+def list_objects(prefix):
+    """Names of every object under `prefix` (e.g. "cad-exports/") - paginated
+    automatically since a real bucket can exceed one response page. Used by
+    supplier_models.sync_supplier_models to find *_supplier_model.zip
+    uploads (see GrainWavePartners' tryFetchSupplierModel) it hasn't
+    organized into pn-cad-files yet."""
+    token = _access_token()
+    url = "https://storage.googleapis.com/storage/v1/b/%s/o" % _BUCKET
+    names = []
+    page_token = None
+    while True:
+        params = {"prefix": prefix}
+        if page_token:
+            params["pageToken"] = page_token
+        resp = requests.get(url, params=params,
+                             headers={"Authorization": "Bearer %s" % token}, timeout=30)
+        if resp.status_code >= 300:
+            raise RpcError(APP_ERROR, "Firebase Storage list failed for %s: %s %s" % (
+                prefix, resp.status_code, resp.text[:500]))
+        body = resp.json()
+        names.extend(item["name"] for item in body.get("items", []))
+        page_token = body.get("nextPageToken")
+        if not page_token:
+            break
+    return names
+
+
+def download_bytes(storage_path):
+    """Raw bytes of one object, or None if it doesn't exist - a 404 here is
+    a normal, expected outcome (e.g. checking whether a file was already
+    processed), not an error worth raising."""
+    token = _access_token()
+    url = "https://storage.googleapis.com/download/storage/v1/b/%s/o/%s" % (
+        _BUCKET, storage_path.replace("/", "%2F"))
+    resp = requests.get(url, params={"alt": "media"},
+                         headers={"Authorization": "Bearer %s" % token}, timeout=60)
+    if resp.status_code == 404:
+        return None
+    if resp.status_code >= 300:
+        raise RpcError(APP_ERROR, "Firebase Storage download failed for %s: %s %s" % (
+            storage_path, resp.status_code, resp.text[:500]))
+    return resp.content

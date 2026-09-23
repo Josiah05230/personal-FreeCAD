@@ -394,6 +394,45 @@ export function App(): JSX.Element {
     if (sketchNoticeTimer.current) clearTimeout(sketchNoticeTimer.current)
     sketchNoticeTimer.current = setTimeout(() => setSketchNotice(null), 5000)
   }, [])
+  // Shared by both triggers this feature's design settled on: automatic on
+  // startup (catches anything reserved while GWT-CAD wasn't running, since
+  // the fetch itself happens in GrainWavePartners' Cloud Function the
+  // moment a PN is assigned/reserved, independent of whether GWT-CAD is
+  // even open at that moment) and on-demand from the File menu (so a user
+  // doesn't have to relaunch the whole app to get a just-reserved part's
+  // drawing right when they need it). `silent` suppresses the "nothing to
+  // do" case's notice for the startup call - a manual click always confirms
+  // something happened, even "no new supplier models," but starting the
+  // app doesn't need to announce that on every single launch.
+  const checkSupplierModels = useCallback(
+    (silent: boolean) => {
+      return api
+        .supplierModelsSyncAndGenerateAll()
+        .then((result) => {
+          const drawn = result.drawings.filter((d) => d.ok && d.pdfUploaded).length
+          if (drawn > 0) {
+            flashSketchNotice(`Generated ${drawn} reference drawing${drawn === 1 ? '' : 's'} for supplier-sourced parts.`)
+          } else if (!silent) {
+            flashSketchNotice('No new supplier models to organize.')
+          }
+        })
+        .catch((err) => {
+          console.error('supplierModelsSyncAndGenerateAll:', err)
+          if (!silent) flashSketchNotice('Checking for supplier models failed - see console.')
+        })
+    },
+    [flashSketchNotice]
+  )
+  useEffect(() => {
+    let live = true
+    if (live) void checkSupplierModels(true)
+    return () => {
+      live = false
+    }
+    // Deliberately [] (startup-only) - checkSupplierModels' identity only
+    // ever changes if flashSketchNotice's did, which never happens (it's
+    // itself a stable useCallback), so this can't silently start re-running.
+  }, [])
   const [planePickMode, setPlanePickMode] = useState(false)
   const [pickPlanes, setPickPlanes] = useState<PickPlane[]>([])
 
@@ -4606,6 +4645,7 @@ export function App(): JSX.Element {
           onNewPart: () => setNewPartOpen(true),
           onNewRevision: currentPn ? newRevision : undefined,
           onPnBrowser: () => setPnBrowserOpen(true),
+          onCheckSupplierModels: () => void checkSupplierModels(false),
           onCompanySettings: () => setCompanySettingsOpen(true),
           currentLifecycle,
           onSetLifecycle: currentPn ? setLifecycle : undefined
