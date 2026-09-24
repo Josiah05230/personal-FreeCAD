@@ -74,7 +74,7 @@ _MARGIN = 10.0  # matches DrawingSheet.tsx's own MARGIN
 # compensate, so the views never actually looked farther apart. Sizing the
 # part alone and letting a generous fixed gap add on top of it is what
 # actually spaces the views out.
-_GROUP_LEFT, _GROUP_TOP = 20.0, 20.0
+_GROUP_LEFT, _GROUP_TOP = 20.0, 25.0
 # AutoDistribute's own default inter-view gap (15mm/15mm) packs Top/Right
 # in tight against Front - widened so Top/Right sit clearly apart from
 # Front, near the group's own outer edges, rather than merely
@@ -109,6 +109,12 @@ _VIEW_LABEL_FOOTPRINT = _VIEW_LABEL_OFFSET + _VIEW_LABEL_FONT_SIZE * 0.25
 # a live check against those real, computed positions, not a fixed sheet-Y
 # ceiling guessed in isolation.
 _GROUP_MIN_CLEARANCE = 15.0
+# Extra slack subtracted from the convergence fit's budget (see
+# _apply_grainwave_template) ON TOP OF _GROUP_MIN_CLEARANCE, purely so the
+# fit settles with genuine visual breathing room instead of maximizing
+# right up to the edge of what the hard assertion allows - the assertion
+# alone only guarantees "no overlap", not "looks comfortably spaced".
+_GROUP_EDGE_BREATHING_ROOM = 15.0
 _ISO_X, _ISO_Y, _ISO_TARGET_W, _ISO_TARGET_H = 330.0, 30.0, 65.0, 50.0
 
 
@@ -271,25 +277,28 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
 
     # Real available budget for the group's WHOLE footprint (geometry +
     # spacing), measured against actual sheet geometry - not a guessed
-    # ceiling. Width: from _GROUP_LEFT to just clear of the iso view's own
-    # column (table_y's counterpart on the X axis has no real occupant here
-    # since the iso view sits well above table_y, but the iso column still
-    # must not be run into). Height: from _GROUP_TOP down to table_y (the
-    # title block's real, already-computed top edge - the lowest real
-    # floor on the sheet, since NOTES' own start is pinned to table_y too),
-    # minus _GROUP_MIN_CLEARANCE and _VIEW_LABEL_FOOTPRINT (each view's own
-    # direction label, rendered below its geometry - see that constant's
-    # derivation).
-    budget_w = (_ISO_X - _GROUP_MIN_CLEARANCE) - _GROUP_LEFT
-    budget_h = (table_y - _GROUP_MIN_CLEARANCE - _VIEW_LABEL_FOOTPRINT) - _GROUP_TOP if table_y is not None else _SHEET_H - _MARGIN - _GROUP_TOP
+    # ceiling. Width: from _GROUP_LEFT to clear of the iso view's own
+    # column. Height: from _GROUP_TOP down to table_y (the title block's
+    # real, already-computed top edge - the lowest real floor on the
+    # sheet, since NOTES' own start is pinned to table_y too). A second
+    # margin (_GROUP_EDGE_BREATHING_ROOM) is subtracted from both budgets
+    # on top of _GROUP_MIN_CLEARANCE/_VIEW_LABEL_FOOTPRINT so the fit
+    # settles with genuine slack rather than hugging the floor/column to
+    # within a fraction of a mm (confirmed live: without it, Front's real
+    # bottom landed only ~0.85mm above table_y - technically safe per the
+    # assertion below, but visually flush rather than "slightly further
+    # from the edges").
+    budget_w = (_ISO_X - _GROUP_MIN_CLEARANCE - _GROUP_EDGE_BREATHING_ROOM) - _GROUP_LEFT
+    budget_h = ((table_y - _GROUP_MIN_CLEARANCE - _VIEW_LABEL_FOOTPRINT - _GROUP_EDGE_BREATHING_ROOM) - _GROUP_TOP
+                if table_y is not None else _SHEET_H - _MARGIN - _GROUP_TOP)
 
     anchor_id = next(v["id"] for v in probe["views"] if v["isAnchor"])
     anchor_item = doc.getObject(anchor_id)
 
-    def _measure(scale, spacing):
+    def _measure(scale, spacing_x, spacing_y):
         grp.Scale = scale
-        grp.spacingX = spacing
-        grp.spacingY = spacing
+        grp.spacingX = spacing_x
+        grp.spacingY = spacing_y
         doc.recompute()
         views_now = []
         for v in probe["views"]:
@@ -298,29 +307,40 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
             views_now.append({"id": v["id"], "bbox": _drawing._view_bbox(vis, hid)})
         return _projection_group_footprint(doc, views_now)
 
-    # Converge scale+spacing TOGETHER (keeping their _PART_TARGET/_GROUP_SPACING
-    # ratio fixed) toward the largest size that fills the real budget above
-    # without exceeding it - re-measuring after each attempt since neither
-    # a view's bbox nor (especially) AutoDistribute's own gap scales
-    # linearly with a single guess (confirmed in this feature's own dev
-    # history). This is what makes "spread the views out more" a genuine,
-    # bounded fit against the actual page and title block - not a pair of
-    # independently-tuned constants that happen to work for one part.
+    # Converge scale, spacingX and spacingY TOGETHER toward the largest
+    # size that fills the real budget on EACH axis independently -
+    # re-measuring after each attempt since neither a view's bbox nor
+    # (especially) AutoDistribute's own gap scales linearly with a single
+    # guess (confirmed in this feature's own dev history). Spacing is
+    # solved per-axis (not one shared value) because the SAME absolute gap
+    # reads very differently on each axis: Right's own column is much
+    # narrower than Front+Top's combined height, so a shared spacing tied
+    # to whichever axis is tighter left real slack on the other axis
+    # unused (confirmed live: horizontal and vertical gaps came out nearly
+    # equal in absolute mm while the sheet's real horizontal budget out to
+    # the iso column was almost 2x the vertical budget down to the title
+    # block). grp.Scale still applies to geometry uniformly (TechDraw
+    # enforces one shared Scale across the group), so it converges against
+    # whichever axis is tightest, while spacingX/spacingY each grow to use
+    # their own axis's real remaining room.
     vis, hid = _drawing._part_view_payload(anchor_item)
     anchor_bbox_at_1 = _drawing._view_bbox(vis, hid)
     part_w0 = max(anchor_bbox_at_1[2] - anchor_bbox_at_1[0], 1e-6)
     part_h0 = max(anchor_bbox_at_1[3] - anchor_bbox_at_1[1], 1e-6)
     scale = min(_PART_TARGET_W / part_w0, _PART_TARGET_H / part_h0, 8.0)
-    spacing = _GROUP_SPACING
-    fp = _measure(scale, spacing)
-    for _ in range(6):
+    spacing_x = spacing_y = _GROUP_SPACING
+    fp = _measure(scale, spacing_x, spacing_y)
+    for _ in range(8):
         fp_w, fp_h = fp[2] - fp[0], fp[3] - fp[1]
-        ratio = min(budget_w / max(fp_w, 1e-6), budget_h / max(fp_h, 1e-6))
-        if 0.97 <= ratio <= 1.0:
-            break  # within 3% of the real budget and not overflowing it
-        scale *= ratio
-        spacing *= ratio
-        fp = _measure(scale, spacing)
+        ratio_w = budget_w / max(fp_w, 1e-6)
+        ratio_h = budget_h / max(fp_h, 1e-6)
+        scale_ratio = min(ratio_w, ratio_h)
+        if 0.97 <= ratio_w <= 1.03 and 0.97 <= ratio_h <= 1.03:
+            break  # both axes within 3% of their real budget
+        scale *= min(scale_ratio, 1.0) if scale_ratio < 1.0 else scale_ratio
+        spacing_x *= ratio_w
+        spacing_y *= ratio_h
+        fp = _measure(scale, spacing_x, spacing_y)
 
     # Place the group by TRANSLATING its already-measured footprint (fp,
     # relative to the anchor's own origin) so its min corner lands at the
