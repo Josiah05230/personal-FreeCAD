@@ -74,20 +74,8 @@ _MARGIN = 10.0  # matches DrawingSheet.tsx's own MARGIN
 # compensate, so the views never actually looked farther apart. Sizing the
 # part alone and letting a generous fixed gap add on top of it is what
 # actually spaces the views out.
-_PART_TARGET_W, _PART_TARGET_H = 55.0, 55.0
-_GROUP_LEFT, _GROUP_TOP = 30.0, 100.0
-# Generous vertical ceiling for the group's total translated footprint
-# (part size + label allowance below each view + the wide inter-view gap) -
-# a soft cap the placement step checks against table_y (computed later, see
-# _apply_grainwave_template), not an input to the scale-fit itself.
-_GROUP_MAX_BOTTOM = 245.0
-# _GROUP_LABEL_ALLOWANCE leaves room BELOW each view's geometry bbox for its
-# own direction label (e.g. "Front — front"), which TechDraw renders below
-# the view but is NOT included in the geometry bbox _projection_group_footprint
-# measures - confirmed live: the geometry-only footprint fit cleanly above
-# the table/notes, but the actual rendered PDF still overlapped them once
-# labels were accounted for.
-_GROUP_LABEL_ALLOWANCE = 12.0
+_PART_TARGET_W, _PART_TARGET_H = 75.0, 75.0
+_GROUP_LEFT, _GROUP_TOP = 30.0, 70.0
 # AutoDistribute's own default inter-view gap (15mm/15mm) packs Top/Right
 # in tight against Front - widened so they read as clearly separate views,
 # closer to the group's own outer edges than Front is to them, rather than
@@ -95,6 +83,24 @@ _GROUP_LABEL_ALLOWANCE = 12.0
 # properties, live: each mm of spacing shifts the neighboring item's offset
 # by exactly that much, on top of the part's own bbox size).
 _GROUP_SPACING = 30.0
+# The real (derived, not guessed) vertical footprint of a view's own
+# direction label below its geometry bbox - export_page_svg draws it at
+# local y=(h+4) in 3.4mm text (see that function's "view label under the
+# view" comment/literal), so the label's baseline sits 4mm below the
+# geometry and its glyphs reach a bit further down still (descender
+# allowance, ~0.25x font size) - computed from that literal formula so it
+# tracks correctly if export_page_svg's own numbers ever change, rather
+# than an independently-guessed constant that can drift out of sync with
+# what's actually rendered.
+_VIEW_LABEL_OFFSET = 4.0
+_VIEW_LABEL_FONT_SIZE = 3.4
+_VIEW_LABEL_FOOTPRINT = _VIEW_LABEL_OFFSET + _VIEW_LABEL_FONT_SIZE * 0.25
+# Minimum real clearance enforced (see _apply_grainwave_template) between
+# the group's true measured bottom edge (geometry + _VIEW_LABEL_FOOTPRINT)
+# and the actual top edge of the title-block table/NOTES callout below it -
+# a live check against those real, computed positions, not a fixed sheet-Y
+# ceiling guessed in isolation.
+_GROUP_MIN_CLEARANCE = 15.0
 _ISO_X, _ISO_Y, _ISO_TARGET_W, _ISO_TARGET_H = 330.0, 30.0, 65.0, 50.0
 
 
@@ -191,6 +197,43 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
 
     tpl = _sheet_templates.load_sheet_template("GrainWave Technologies")["spec"]
 
+    # Compute the title block's real geometry FIRST - table_h/table_x/table_y
+    # depend only on the (static) template spec, not on anything the group
+    # below creates, so this is safe to hoist ahead of it. Doing so gives
+    # the group's own placement a REAL measured floor (table_y) to check
+    # its true bottom edge against, rather than a ceiling constant guessed
+    # in isolation from what the table/notes actually occupy - see the
+    # clearance check right after the group is placed, below.
+    title_block = tpl.get("titleBlockTable")
+    table_h = table_x = table_y = None
+    columns = rows = style = None
+    if title_block:
+        columns = title_block["columns"]
+        # DATE/ENGINEER are blank in the SHARED template spec (a hand-drawn
+        # part fills them in by hand once, per this template's own design) -
+        # copy the row list rather than mutate tpl's own dict, and fill in
+        # only THIS drawing's copy, so a real designed part loading the same
+        # "GrainWave Technologies" template later still gets the normal
+        # blank fields, not today's date leaking in from an unrelated
+        # auto-generated drawing that happened to load the template first.
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        rows = []
+        for row in title_block["rows"]:
+            row = dict(row)
+            if row.get("label") == "DATE":
+                row["value"] = today
+            elif row.get("label") == "ENGINEER":
+                row["value"] = "Auto-Generated"
+            rows.append(row)
+        style = title_block.get("style") or {}
+        row_height = float(style.get("rowHeight", 5))
+        col_widths = style.get("colWidths") or []
+        hide_header = bool(style.get("hideHeader", False))
+        table_w = sum(col_widths) if col_widths else len(columns) * 30
+        table_h = row_height * (len(rows) + (0 if hide_header else 1))
+        table_x = _SHEET_W - _MARGIN - table_w
+        table_y = _SHEET_H - _MARGIN - table_h
+
     # "bottom" (not "top") is the direction that actually lands ABOVE "front"
     # once ProjectionType is "Third angle" - confirmed by direct rendering
     # test: FreeCAD's own AutoDistribute places "Top"'s item at Y=+30
@@ -248,7 +291,7 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
 
     # The group's REAL combined footprint (geometry + the now-wide
     # _GROUP_SPACING gaps) at the scale just chosen - used only for
-    # placement/translation and the max-bottom safety check below, never to
+    # placement/translation and the real clearance check below, never to
     # drive the scale itself (see the comment above this fit).
     views_now = []
     for v in probe["views"]:
@@ -256,25 +299,31 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
         vis, hid = _drawing._part_view_payload(item)
         views_now.append({"id": v["id"], "bbox": _drawing._view_bbox(vis, hid)})
     fp = _projection_group_footprint(doc, views_now)
+    # Real measured clearance check, not a guessed ceiling: the group's true
+    # bottom edge once placed at _GROUP_TOP is _GROUP_TOP + fp_h (geometry)
+    # + _VIEW_LABEL_FOOTPRINT (each view's own direction label, rendered
+    # below the geometry - see that constant's derivation) - compare THAT
+    # real number against table_y (the title block's actual, already-
+    # computed top edge, the lowest of the two floors on the sheet's right
+    # side; NOTES' own start, computed below, is pinned to table_y too, so
+    # checking against table_y covers both) and shrink the group only if it
+    # would actually violate the real minimum clearance, rather than
+    # guessing a fixed sheet-Y ceiling in isolation from what the table/
+    # notes actually occupy.
     fp_h = fp[3] - fp[1]
-    # A safety net, not a normal code path: if this ever produced a
-    # footprint tall enough to run into the title block/notes (e.g. an
-    # unusually tall/oddly-proportioned supplier part), shrink the group
-    # scale once to bring it back under the ceiling rather than silently
-    # overlapping - _GROUP_MAX_BOTTOM already has real margin under a
-    # typical part's footprint at _PART_TARGET_W/H, so this should rarely
-    # if ever trigger in practice.
-    max_fp_h = _GROUP_MAX_BOTTOM - _GROUP_TOP - _GROUP_LABEL_ALLOWANCE
-    if fp_h > max_fp_h > 0:
-        scale *= max_fp_h / fp_h
-        grp.Scale = scale
-        doc.recompute()
-        views_now = []
-        for v in probe["views"]:
-            item = doc.getObject(v["id"])
-            vis, hid = _drawing._part_view_payload(item)
-            views_now.append({"id": v["id"], "bbox": _drawing._view_bbox(vis, hid)})
-        fp = _projection_group_footprint(doc, views_now)
+    if table_y is not None:
+        real_bottom = _GROUP_TOP + fp_h + _VIEW_LABEL_FOOTPRINT
+        available_h = table_y - _GROUP_MIN_CLEARANCE - _GROUP_TOP - _VIEW_LABEL_FOOTPRINT
+        if real_bottom + _GROUP_MIN_CLEARANCE > table_y and available_h > 0:
+            scale *= available_h / fp_h
+            grp.Scale = scale
+            doc.recompute()
+            views_now = []
+            for v in probe["views"]:
+                item = doc.getObject(v["id"])
+                vis, hid = _drawing._part_view_payload(item)
+                views_now.append({"id": v["id"], "bbox": _drawing._view_bbox(vis, hid)})
+            fp = _projection_group_footprint(doc, views_now)
 
     # Place the group by TRANSLATING its already-measured footprint (fp,
     # relative to the anchor's own origin) so its min corner lands at the
@@ -297,40 +346,6 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     iso_view.Scale = _fit_scale(iso_result["bbox"], _ISO_TARGET_W, _ISO_TARGET_H)
     doc.recompute()
     _drawing.set_view_position(doc, iso_result["id"], _ISO_X, _ISO_Y)
-
-    title_block = tpl.get("titleBlockTable")
-    # Precompute the title block's own geometry BEFORE placing the notes -
-    # "top of notes lines up with top of table" needs table_y known first,
-    # and table_h/table_y depend only on the (static) template spec, not on
-    # anything created later, so this is safe to hoist.
-    table_h = table_x = table_y = None
-    columns = rows = style = None
-    if title_block:
-        columns = title_block["columns"]
-        # DATE/ENGINEER are blank in the SHARED template spec (a hand-drawn
-        # part fills them in by hand once, per this template's own design) -
-        # copy the row list rather than mutate tpl's own dict, and fill in
-        # only THIS drawing's copy, so a real designed part loading the same
-        # "GrainWave Technologies" template later still gets the normal
-        # blank fields, not today's date leaking in from an unrelated
-        # auto-generated drawing that happened to load the template first.
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
-        rows = []
-        for row in title_block["rows"]:
-            row = dict(row)
-            if row.get("label") == "DATE":
-                row["value"] = today
-            elif row.get("label") == "ENGINEER":
-                row["value"] = "Auto-Generated"
-            rows.append(row)
-        style = title_block.get("style") or {}
-        row_height = float(style.get("rowHeight", 5))
-        col_widths = style.get("colWidths") or []
-        hide_header = bool(style.get("hideHeader", False))
-        table_w = sum(col_widths) if col_widths else len(columns) * 30
-        table_h = row_height * (len(rows) + (0 if hide_header else 1))
-        table_x = _SHEET_W - _MARGIN - table_w
-        table_y = _SHEET_H - _MARGIN - table_h
 
     if notes:
         numbered = "NOTES:\n" + "\n".join("%d. %s" % (i, n) for i, n in enumerate(notes, start=1))

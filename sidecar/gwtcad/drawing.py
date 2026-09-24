@@ -317,10 +317,28 @@ def page_contents(doc, page_id):
                 except Exception:
                     continue
                 direction = _get_tag(item, "_gwt_dir", "") or str(item.Type).lower()
+                item_bbox = _view_bbox(vis, hid)
                 entry = {
                     "id": item.Name, "label": item.Label, "direction": direction,
-                    "kind": "part", "scale": float(o.Scale),
-                    "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid),
+                    # A DrawProjGroupItem's getVisibleEdges/getHiddenEdges -
+                    # unlike a plain DrawViewPart's - already bakes in the
+                    # group's current Scale (confirmed live: doubling
+                    # grp.Scale doubled the raw edge coordinates directly,
+                    # where a plain view's edges stayed constant regardless
+                    # of view.Scale). So "bbox"/"visible"/"hidden" here are
+                    # already final scaled page-mm, unlike every other kind
+                    # of view entry this function returns - reporting the
+                    # group's real Scale here would make export_page_svg's
+                    # w=(bbox)*scale formula apply it a SECOND time (this
+                    # was a real bug: confirmed live, a group at Scale=1.358
+                    # rendered its box ~1.358x too big, overlapping content
+                    # below it that was placed assuming the correct size).
+                    # "scale": 1.0 keeps this entry's contract identical to
+                    # every other view's (bbox is scale-1 model-space) even
+                    # though the underlying FreeCAD object works differently
+                    # internally.
+                    "kind": "part", "scale": 1.0,
+                    "visible": vis, "hidden": hid, "bbox": item_bbox,
                     "groupId": o.Name,
                     # FreeCAD's Python proxy objects don't support reliable
                     # `is`/`==` identity comparison (confirmed live: a
@@ -336,9 +354,25 @@ def page_contents(doc, page_id):
                     # position once here so every view entry this function
                     # returns keeps meaning "absolute sheet position",
                     # same contract page_contents already promises for a
-                    # plain view's x/y.
-                    "x": float(o.X) + float(item.X),
-                    "y": float(o.Y) + float(item.Y),
+                    # plain view's x/y. item.X/item.Y are the item's own
+                    # CENTER reference, not its bbox's top-left corner
+                    # (confirmed live: a group item's own bbox is centered
+                    # near 0,0 in its local frame, e.g. [-19.5,-37.5,19.5,
+                    # 37.5] - NOT [0,0,39,75]) - export_page_svg's contract
+                    # for every OTHER view kind is that "x"/"y" IS the
+                    # bbox's top-left (it draws a box of size bbox*scale
+                    # starting there), so this must also subtract the
+                    # bbox's own min-corner, exactly like
+                    # _projection_group_footprint already does when it
+                    # computes a group's real footprint. Omitting this was
+                    # a real bug: confirmed live, a Front view's rendered
+                    # box in the exported PDF sat ~half its own height
+                    # farther down the page than every placement
+                    # calculation (table_y clearance included) assumed,
+                    # because those calculations correctly treated bbox as
+                    # already centered while this "x"/"y" silently didn't.
+                    "x": float(o.X) + float(item.X) + item_bbox[0],
+                    "y": float(o.Y) + float(item.Y) + item_bbox[1],
                 }
                 views.append(entry)
         elif tid == "TechDraw::DrawViewDimension":
