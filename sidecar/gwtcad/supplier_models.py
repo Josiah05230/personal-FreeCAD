@@ -74,15 +74,23 @@ _MARGIN = 10.0  # matches DrawingSheet.tsx's own MARGIN
 # compensate, so the views never actually looked farther apart. Sizing the
 # part alone and letting a generous fixed gap add on top of it is what
 # actually spaces the views out.
-_PART_TARGET_W, _PART_TARGET_H = 75.0, 75.0
-_GROUP_LEFT, _GROUP_TOP = 30.0, 70.0
+_GROUP_LEFT, _GROUP_TOP = 20.0, 20.0
 # AutoDistribute's own default inter-view gap (15mm/15mm) packs Top/Right
-# in tight against Front - widened so they read as clearly separate views,
-# closer to the group's own outer edges than Front is to them, rather than
-# crowded against the anchor (confirmed real DrawProjGroup.spacingX/Y
-# properties, live: each mm of spacing shifts the neighboring item's offset
-# by exactly that much, on top of the part's own bbox size).
-_GROUP_SPACING = 30.0
+# in tight against Front - widened so Top/Right sit clearly apart from
+# Front, near the group's own outer edges, rather than merely
+# not-touching it (confirmed real DrawProjGroup.spacingX/Y properties,
+# live: each mm of spacing shifts the neighboring item's offset by exactly
+# that much, on top of the part's own bbox size). This is a STARTING
+# value only - _fit_group_to_budget below shrinks both this and the part's
+# own scale together, proportionally, if the resulting footprint would
+# overlap the title block/notes or run off the sheet, so this can be set
+# generously without separately re-deriving "is this safe" by hand.
+_GROUP_SPACING = 70.0
+# Same idea for the part's own per-view target size - a generous starting
+# point that _fit_group_to_budget scales down (spacing and part size
+# together, preserving their ratio) only as much as the real measured
+# budget actually requires.
+_PART_TARGET_W, _PART_TARGET_H = 90.0, 90.0
 # The real (derived, not guessed) vertical footprint of a view's own
 # direction label below its geometry bbox - export_page_svg draws it at
 # local y=(h+4) in 3.4mm text (see that function's "view label under the
@@ -248,14 +256,6 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     probe = _drawing.make_projection_group(doc, page_id, part_obj, group_dirs, anchor="front", scale=1.0)
     grp = doc.getObject(probe["groupId"])
     grp.ScaleType = "Custom"
-    # TechDraw's own AutoDistribute default (15mm/15mm) packs the projected
-    # views in tight against the anchor - widen the gap so Top/Right sit
-    # clearly apart from Front (closer to the group's own outer edges than
-    # Front is), rather than crowded against it. Set BEFORE the convergence
-    # loop below so its footprint measurements already reflect the wider
-    # gap, not just the final scale pass.
-    grp.spacingX = _GROUP_SPACING
-    grp.spacingY = _GROUP_SPACING
 
     # Relabel the "bottom" item as "Top" on the sheet - it occupies the
     # position and shows the face a reader expects from a "Top" view (see
@@ -269,61 +269,58 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
             _drawing._tag(item, "_gwt_dir", "top")
             v["direction"] = "top"
 
-    # Fit grp.Scale so each INDIVIDUAL view's own geometry (measured off the
-    # anchor/Front item, which shares its one Scale with Top/Right - see
-    # make_projection_group) lands at _PART_TARGET_W/H, not the combined
-    # group footprint - sizing the part alone and letting _GROUP_SPACING
-    # add a fixed, unshrinking gap on top of it is what actually spaces the
-    # views apart (fitting the WHOLE footprint including gaps to one target,
-    # the earlier approach, just shrank the part whenever the gap grew,
-    # since both competed for the same fixed budget). A view's bbox does
-    # scale linearly with grp.Scale (unlike the whole group's footprint,
-    # which doesn't - AutoDistribute's gap is fixed sheet-mm, confirmed
-    # live: doubling Scale grew the total footprint only ~1.74-1.80x) so a
-    # single "measure at 1.0, multiply" estimate is reliable here.
+    # Real available budget for the group's WHOLE footprint (geometry +
+    # spacing), measured against actual sheet geometry - not a guessed
+    # ceiling. Width: from _GROUP_LEFT to just clear of the iso view's own
+    # column (table_y's counterpart on the X axis has no real occupant here
+    # since the iso view sits well above table_y, but the iso column still
+    # must not be run into). Height: from _GROUP_TOP down to table_y (the
+    # title block's real, already-computed top edge - the lowest real
+    # floor on the sheet, since NOTES' own start is pinned to table_y too),
+    # minus _GROUP_MIN_CLEARANCE and _VIEW_LABEL_FOOTPRINT (each view's own
+    # direction label, rendered below its geometry - see that constant's
+    # derivation).
+    budget_w = (_ISO_X - _GROUP_MIN_CLEARANCE) - _GROUP_LEFT
+    budget_h = (table_y - _GROUP_MIN_CLEARANCE - _VIEW_LABEL_FOOTPRINT) - _GROUP_TOP if table_y is not None else _SHEET_H - _MARGIN - _GROUP_TOP
+
     anchor_id = next(v["id"] for v in probe["views"] if v["isAnchor"])
     anchor_item = doc.getObject(anchor_id)
+
+    def _measure(scale, spacing):
+        grp.Scale = scale
+        grp.spacingX = spacing
+        grp.spacingY = spacing
+        doc.recompute()
+        views_now = []
+        for v in probe["views"]:
+            item = doc.getObject(v["id"])
+            vis, hid = _drawing._part_view_payload(item)
+            views_now.append({"id": v["id"], "bbox": _drawing._view_bbox(vis, hid)})
+        return _projection_group_footprint(doc, views_now)
+
+    # Converge scale+spacing TOGETHER (keeping their _PART_TARGET/_GROUP_SPACING
+    # ratio fixed) toward the largest size that fills the real budget above
+    # without exceeding it - re-measuring after each attempt since neither
+    # a view's bbox nor (especially) AutoDistribute's own gap scales
+    # linearly with a single guess (confirmed in this feature's own dev
+    # history). This is what makes "spread the views out more" a genuine,
+    # bounded fit against the actual page and title block - not a pair of
+    # independently-tuned constants that happen to work for one part.
     vis, hid = _drawing._part_view_payload(anchor_item)
     anchor_bbox_at_1 = _drawing._view_bbox(vis, hid)
-    scale = _fit_scale(anchor_bbox_at_1, _PART_TARGET_W, _PART_TARGET_H, cap=8.0)
-    grp.Scale = scale
-    doc.recompute()
-
-    # The group's REAL combined footprint (geometry + the now-wide
-    # _GROUP_SPACING gaps) at the scale just chosen - used only for
-    # placement/translation and the real clearance check below, never to
-    # drive the scale itself (see the comment above this fit).
-    views_now = []
-    for v in probe["views"]:
-        item = doc.getObject(v["id"])
-        vis, hid = _drawing._part_view_payload(item)
-        views_now.append({"id": v["id"], "bbox": _drawing._view_bbox(vis, hid)})
-    fp = _projection_group_footprint(doc, views_now)
-    # Real measured clearance check, not a guessed ceiling: the group's true
-    # bottom edge once placed at _GROUP_TOP is _GROUP_TOP + fp_h (geometry)
-    # + _VIEW_LABEL_FOOTPRINT (each view's own direction label, rendered
-    # below the geometry - see that constant's derivation) - compare THAT
-    # real number against table_y (the title block's actual, already-
-    # computed top edge, the lowest of the two floors on the sheet's right
-    # side; NOTES' own start, computed below, is pinned to table_y too, so
-    # checking against table_y covers both) and shrink the group only if it
-    # would actually violate the real minimum clearance, rather than
-    # guessing a fixed sheet-Y ceiling in isolation from what the table/
-    # notes actually occupy.
-    fp_h = fp[3] - fp[1]
-    if table_y is not None:
-        real_bottom = _GROUP_TOP + fp_h + _VIEW_LABEL_FOOTPRINT
-        available_h = table_y - _GROUP_MIN_CLEARANCE - _GROUP_TOP - _VIEW_LABEL_FOOTPRINT
-        if real_bottom + _GROUP_MIN_CLEARANCE > table_y and available_h > 0:
-            scale *= available_h / fp_h
-            grp.Scale = scale
-            doc.recompute()
-            views_now = []
-            for v in probe["views"]:
-                item = doc.getObject(v["id"])
-                vis, hid = _drawing._part_view_payload(item)
-                views_now.append({"id": v["id"], "bbox": _drawing._view_bbox(vis, hid)})
-            fp = _projection_group_footprint(doc, views_now)
+    part_w0 = max(anchor_bbox_at_1[2] - anchor_bbox_at_1[0], 1e-6)
+    part_h0 = max(anchor_bbox_at_1[3] - anchor_bbox_at_1[1], 1e-6)
+    scale = min(_PART_TARGET_W / part_w0, _PART_TARGET_H / part_h0, 8.0)
+    spacing = _GROUP_SPACING
+    fp = _measure(scale, spacing)
+    for _ in range(6):
+        fp_w, fp_h = fp[2] - fp[0], fp[3] - fp[1]
+        ratio = min(budget_w / max(fp_w, 1e-6), budget_h / max(fp_h, 1e-6))
+        if 0.97 <= ratio <= 1.0:
+            break  # within 3% of the real budget and not overflowing it
+        scale *= ratio
+        spacing *= ratio
+        fp = _measure(scale, spacing)
 
     # Place the group by TRANSLATING its already-measured footprint (fp,
     # relative to the anchor's own origin) so its min corner lands at the
@@ -340,6 +337,27 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     anchor_x = _GROUP_LEFT - fp[0]
     anchor_y = _GROUP_TOP - fp[1]
     _drawing.set_projection_group_position(doc, probe["groupId"], anchor_x, anchor_y)
+
+    # Hard verification, not a hope: the group's real absolute bbox (plus
+    # the label footprint below it) must land fully on the sheet and clear
+    # of the title block/notes floor and the iso column - the convergence
+    # loop above should already guarantee this, but a supplier .stp can
+    # have pathological proportions (e.g. extremely long/thin) where a
+    # single-axis fit still leaves the OTHER axis oversized; this check
+    # catches that rather than silently shipping a drawing with real
+    # off-page or overlapping geometry.
+    real_min_x = anchor_x + fp[0]
+    real_max_x = anchor_x + fp[2]
+    real_min_y = anchor_y + fp[1]
+    real_max_y = anchor_y + fp[3] + _VIEW_LABEL_FOOTPRINT
+    assert real_min_x >= _MARGIN - 1e-6, "group runs off the sheet's left edge: %s" % real_min_x
+    assert real_max_x <= _ISO_X - _GROUP_MIN_CLEARANCE + 1e-6, "group overlaps the iso view's column: %s" % real_max_x
+    assert real_min_y >= _MARGIN - 1e-6, "group runs off the sheet's top edge: %s" % real_min_y
+    if table_y is not None:
+        assert real_max_y <= table_y - _GROUP_MIN_CLEARANCE + 1e-6, (
+            "group overlaps the title block/notes: bottom=%s table_y=%s" % (real_max_y, table_y))
+    else:
+        assert real_max_y <= _SHEET_H - _MARGIN + 1e-6, "group runs off the sheet's bottom edge: %s" % real_max_y
 
     iso_result = _drawing.make_view(doc, page_id, part_obj, direction="iso", scale=1.0)
     iso_view = doc.getObject(iso_result["id"])
