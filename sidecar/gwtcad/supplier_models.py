@@ -152,17 +152,21 @@ def _projection_group_footprint(doc, group_views):
     return [min_x, min_y, max_x, max_y]
 
 
-def _supplier_title_block_text(mfg, mfg_pn, meta):
+def _supplier_title_block_text(mfg, mfg_pn, meta, registry_description=None):
     """PART NAME / DESCRIPTION text for a purchased part's title block,
     preferring the supplier's own structured catalog fields (see
     tryFetchSupplierModel in functions/index.js - componentType/cavities/
     gender, confirmed live against a real Aptiv part: CONNECTOR, 2,
     Female) over its free-text description, which doesn't reliably state
-    pin count or gender at all. Falls back to the plain registry
-    description when no metadata sidecar exists (a manually-added vendor
-    .stp with no fetched metadata, or a supplier this doesn't have
-    structured fields for yet) - never raises, a missing/malformed
-    metadata file just means a plainer but still correct title block."""
+    pin count or gender at all. Falls back to the plain REGISTRY
+    description (the caller's own row.get("description"), e.g. "Deutsch
+    DT04-3P 3 Pin Male Plug" for a manually-added vendor .stp with no
+    fetched metadata at all - confirmed live: without this, the fallback
+    used ONLY the metadata sidecar's own description field, which is None
+    whenever there's no sidecar, silently discarding a perfectly good
+    description that was sitting right there in the registry row) - never
+    raises, a missing/malformed metadata file just means a plainer but
+    still correct title block."""
     component_type = (meta or {}).get("componentType")
     cavities = (meta or {}).get("cavities")
     gender = (meta or {}).get("gender")
@@ -176,7 +180,8 @@ def _supplier_title_block_text(mfg, mfg_pn, meta):
             desc_parts.append(gender.upper())
         return name, " ".join(desc_parts)
     fallback = " ".join(filter(None, [mfg, mfg_pn])) or "PART"
-    return fallback, (meta or {}).get("description") or ""
+    description = (meta or {}).get("description") or registry_description or ""
+    return fallback, description
 
 
 def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, notes=None):
@@ -589,7 +594,7 @@ def generate_supplier_drawing(pn):
                 except Exception:
                     meta = None
             title_name, title_description = _supplier_title_block_text(
-                row.get("mfg"), row.get("mfg_pn"), meta)
+                row.get("mfg"), row.get("mfg_pn"), meta, row.get("description"))
 
             page_info = _drawing.create_page(doc, label="Drawing")
             page_id = page_info["id"]

@@ -141,7 +141,16 @@ def _resolve_param_ref(name):
 
     pn = session.part_number() or {}
     upper = {"PN": pn.get("pn", ""), "NAME": pn.get("name", ""), "DESCRIPTION": pn.get("description", "")}
-    if name in upper and upper[name]:
+    # `name in upper` alone is the right check - upper always has exactly
+    # these three known keys, so membership (not truthiness of the value)
+    # is what distinguishes "a real PN-field reference" from "an unknown
+    # parameter name". Gating on truthiness too was a real bug: a part
+    # with a genuinely blank description (e.g. no supplier metadata
+    # available) fell through to the params/exception path below and
+    # rendered the literal text "=DESCRIPTION" instead of a blank cell -
+    # confirmed live generating drawings for several manually-supplied
+    # vendor STEP files with no metadata sidecar.
+    if name in upper:
         return upper[name]
     params = session.params()
     if name in params:
