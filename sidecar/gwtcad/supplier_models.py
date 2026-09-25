@@ -153,35 +153,22 @@ def _projection_group_footprint(doc, group_views):
 
 
 def _supplier_title_block_text(mfg, mfg_pn, meta, registry_description=None):
-    """PART NAME / DESCRIPTION text for a purchased part's title block,
-    preferring the supplier's own structured catalog fields (see
-    tryFetchSupplierModel in functions/index.js - componentType/cavities/
-    gender, confirmed live against a real Aptiv part: CONNECTOR, 2,
-    Female) over its free-text description, which doesn't reliably state
-    pin count or gender at all. Falls back to the plain REGISTRY
-    description (the caller's own row.get("description"), e.g. "Deutsch
-    DT04-3P 3 Pin Male Plug" for a manually-added vendor .stp with no
-    fetched metadata at all - confirmed live: without this, the fallback
-    used ONLY the metadata sidecar's own description field, which is None
-    whenever there's no sidecar, silently discarding a perfectly good
-    description that was sitting right there in the registry row) - never
-    raises, a missing/malformed metadata file just means a plainer but
-    still correct title block."""
+    """PART NAME / DESCRIPTION text for a purchased part's title block.
+
+    DESCRIPTION always equals the registry's own description column,
+    full stop - it must never diverge from what the portal/inventory
+    shows for the same PN (confirmed live: an earlier version of this
+    function derived its own "N PIN WP FEMALE"-style text from Aptiv's
+    componentType/cavities/gender metadata instead, which silently drifted
+    out of sync with CMC0010's real registry description - the registry
+    row is the single source of truth for this text, this function must
+    never invent a competing one). PART NAME still prefers the supplier's
+    structured componentType field (e.g. "CONNECTOR") when available,
+    since that's a category label, not a description, and has no registry
+    counterpart to diverge from."""
     component_type = (meta or {}).get("componentType")
-    cavities = (meta or {}).get("cavities")
-    gender = (meta or {}).get("gender")
-    if component_type:
-        name = component_type.upper()
-        desc_parts = []
-        if cavities and str(cavities) not in ("0", ""):
-            desc_parts.append("%s PIN" % cavities)
-        desc_parts.append("WP")
-        if gender:
-            desc_parts.append(gender.upper())
-        return name, " ".join(desc_parts)
-    fallback = " ".join(filter(None, [mfg, mfg_pn])) or "PART"
-    description = (meta or {}).get("description") or registry_description or ""
-    return fallback, description
+    name = component_type.upper() if component_type else (" ".join(filter(None, [mfg, mfg_pn])) or "PART")
+    return name, registry_description or ""
 
 
 def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, notes=None):
