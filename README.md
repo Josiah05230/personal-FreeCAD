@@ -115,7 +115,7 @@ cap). Full detail, code-signing, and the trim list are in
 | Input | Action |
 |---|---|
 | Middle-drag | Pan |
-| Shift + middle-drag | Orbit (constrained, horizon locked) |
+| Shift + middle-drag, or right-drag | Orbit (free trackball - tumbles past either pole) |
 | Wheel | Dolly, zoomed toward the cursor |
 
 ## Contributing

@@ -148,8 +148,14 @@ export interface ViewportApi {
   /** raw camera/controls debug snapshot (test hook, diagnostics only) */
   testCameraDebug: () => {
     pos: [number, number, number]
+    perspPos: [number, number, number]
+    perspUp: [number, number, number]
     pivot: [number, number, number]
     lastCenter: [number, number, number]
     lastRadius: number
   } | null
+  /** drive CadControls.applyOrbit directly (test hook only - exercises the
+   *  free-trackball rotation math without depending on synthetic pointer
+   *  drag events) */
+  testApplyOrbit: (yaw: number, pitch: number) => void
 }

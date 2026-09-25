@@ -550,10 +550,14 @@ export function Viewport({
           return {
             pos: [c.position.x, c.position.y, c.position.z],
             perspPos: [p.position.x, p.position.y, p.position.z],
+            perspUp: [p.up.x, p.up.y, p.up.z],
             pivot: [s.controls.pivot.x, s.controls.pivot.y, s.controls.pivot.z],
             lastCenter: [s.lastCenter.x, s.lastCenter.y, s.lastCenter.z],
             lastRadius: s.lastRadius
           }
+        },
+        testApplyOrbit: (yaw: number, pitch: number) => {
+          stateRef.current?.controls.applyOrbit(yaw, pitch)
         }
       }
     }

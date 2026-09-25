@@ -3,7 +3,7 @@
  *
  * This is deliberately hand-written rather than three's OrbitControls: matching
  * Fusion's feel is the whole point of the project, so every curve here (inertia
- * decay, zoom-to-cursor, constrained orbit) is a knob we own.
+ * decay, zoom-to-cursor, free trackball orbit) is a knob we own.
  *
  * Default mouse map (Fusion "Fusion" preset):
  *   - Middle drag ............ pan
@@ -11,11 +11,18 @@
  *   - Right drag ............. orbit (no modifier needed)
  *   - Wheel .................. dolly, zoomed toward the cursor
  *
- * Orbit is a constrained turntable, like Fusion's default: horizontal drags spin
- * about world +Z, vertical drags change elevation and stop just short of the
- * poles so the view never rolls or flips. The camera up stays world +Z, which
- * keeps the motion rock-steady (the old free-tumble version drifted roll and
- * spazzed near the poles). A short exponential momentum continues on release.
+ * Orbit is a free trackball: yaw and pitch rotate the camera's offset from the
+ * pivot (and its up vector) about ITS OWN current right/up axes, composed via
+ * quaternions - so the view can tumble past either pole and keep going in any
+ * direction, with no clamp. An earlier version of this pinned `up` to world +Z
+ * every frame (Fusion's own default, horizon-locked turntable) - that version
+ * is gone; see git history for it if that feel is ever wanted back as an
+ * option. A still-earlier attempt at free rotation drifted/roll-spazzed near
+ * the poles because it incrementally rotated `up` frame-over-frame with
+ * manual trig; this version avoids that by only ever applying ONE quaternion
+ * rotation per gesture step directly via THREE.Quaternion (which normalizes
+ * internally), never accumulating drift across frames the way repeated
+ * ad-hoc trig would. A short exponential momentum continues on release.
  */
 import * as THREE from 'three'
 
@@ -46,7 +53,6 @@ export class CadControls {
   private lastY = 0
   private orbitVel = new THREE.Vector2() // yaw, pitch radians/frame
   private panVel = new THREE.Vector3()
-  private rollAngle = 0 // persistent screen-roll (the view-cube 90 arrows)
   private readonly opts: Required<CadControlsOptions>
   private disposed = false
 
@@ -134,7 +140,6 @@ export class CadControls {
     const center = bad ? new THREE.Vector3() : centerIn
     const radius = bad ? 60 : radiusIn
     this.pivot.copy(center)
-    this.rollAngle = 0
     const dir = new THREE.Vector3(1, -1, 0.7).normalize()
     const dist = radius / Math.sin(THREE.MathUtils.degToRad(this.persp.fov * 0.5))
     this.persp.position.copy(center).addScaledVector(dir, dist * 1.15)
@@ -223,54 +228,60 @@ export class CadControls {
   }
 
   /**
-   * Constrained turntable orbit. Yaw spins the camera about world +Z (horizon
-   * stays level); pitch changes elevation and is clamped just shy of both poles
-   * so the view can never roll or snap over. Camera up is pinned to world +Z,
-   * which is what makes this steady. Public so the ViewCube drives the same path.
+   * Free trackball orbit. Yaw rotates the camera's offset-from-pivot and its
+   * own up vector about ITS current up axis; pitch rotates both about its
+   * current right axis - both composed as a single quaternion applied once,
+   * not incremental trig, so nothing accumulates drift across many calls.
+   * No clamp: the view can tumble straight over either pole and keep going,
+   * roll included, exactly like orbiting a physical trackball. Public so the
+   * ViewCube drives the same path.
    */
-  private static readonly POLE = 0.03 // rad kept clear of each pole (~1.7 deg)
-
   applyOrbit(yaw: number, pitch: number): void {
     const offset = this.persp.position.clone().sub(this.pivot)
     const radius = offset.length()
     if (radius < 1e-6) return
 
-    let azim = Math.atan2(offset.y, offset.x)
-    let polar = Math.acos(THREE.MathUtils.clamp(offset.z / radius, -1, 1))
-    azim += yaw
-    polar = THREE.MathUtils.clamp(
-      polar + pitch,
-      CadControls.POLE,
-      Math.PI - CadControls.POLE
-    )
-    const sp = Math.sin(polar)
-    offset.set(radius * sp * Math.cos(azim), radius * sp * Math.sin(azim), radius * Math.cos(polar))
+    const up = this.persp.up.clone().normalize()
+    // right = view direction (pivot - camera) crossed with up - recomputed
+    // fresh from the CURRENT pose every call (never stored/accumulated), so
+    // there is nothing here for floating-point error to build up in.
+    const view = this.pivot.clone().sub(this.persp.position).normalize()
+    const right = new THREE.Vector3().crossVectors(view, up).normalize()
+    if (right.lengthSq() < 1e-9) right.set(1, 0, 0) // view exactly parallel to up (degenerate) - arbitrary fallback
+
+    const qYaw = new THREE.Quaternion().setFromAxisAngle(up, yaw)
+    const qPitch = new THREE.Quaternion().setFromAxisAngle(right, pitch)
+    const q = qYaw.multiply(qPitch)
+
+    offset.applyQuaternion(q)
+    up.applyQuaternion(q).normalize()
 
     this.persp.position.copy(this.pivot).add(offset)
-    this.applyUp()
+    this.persp.up.copy(up)
+    this.persp.lookAt(this.pivot)
     this.syncOrtho() // see frame()'s comment - do not wait on the next rAF tick
   }
 
-  /** Set camera.up to world +Z rolled by rollAngle about the view axis, then aim. */
-  private applyUp(): void {
-    const view = new THREE.Vector3().subVectors(this.pivot, this.persp.position).normalize()
-    const up = UP.clone()
-    if (Math.abs(up.dot(view)) > 0.999) up.set(0, 1, 0) // looking straight up/down
-    if (this.rollAngle) up.applyAxisAngle(view, this.rollAngle)
-    this.persp.up.copy(up).normalize()
-    this.persp.lookAt(this.pivot)
-  }
-
-  /** View-cube 90-degree roll arrows: same view direction, rotated on screen. */
+  /** View-cube 90-degree roll arrows: roll the camera's own up about the
+   *  current view axis - same free-tumble path as applyOrbit, just with the
+   *  rotation applied to up alone (position/pivot don't move for a roll). */
   roll(quarterTurns: 1 | -1): void {
-    this.rollAngle += (quarterTurns * Math.PI) / 2
-    const twoPi = Math.PI * 2
-    this.rollAngle = ((this.rollAngle % twoPi) + twoPi) % twoPi
-    this.applyUp()
+    const view = this.pivot.clone().sub(this.persp.position).normalize()
+    const q = new THREE.Quaternion().setFromAxisAngle(view, (quarterTurns * Math.PI) / 2)
+    this.persp.up.applyQuaternion(q).normalize()
+    this.persp.lookAt(this.pivot)
+    this.syncOrtho()
   }
 
+  /** Reset to the "horizon level" up used by frame()/named views - world +Z,
+   *  or +Y if the view is looking straight up/down (where +Z would be
+   *  degenerate as an up vector). */
   resetRoll(): void {
-    this.rollAngle = 0
+    const view = this.pivot.clone().sub(this.persp.position).normalize()
+    const up = Math.abs(UP.dot(view)) > 0.999 ? new THREE.Vector3(0, 1, 0) : UP.clone()
+    this.persp.up.copy(up)
+    this.persp.lookAt(this.pivot)
+    this.syncOrtho()
   }
 
   private panDelta(dx: number, dy: number): THREE.Vector3 {
