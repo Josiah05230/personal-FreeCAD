@@ -1779,6 +1779,23 @@ code {
   flex: 1;
 }
 
+.sb-offline {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  border-radius: 3px;
+  padding: 1px 7px;
+  font-weight: 600;
+}
+
+.sb-unpushed {
+  color: var(--text-dim);
+  background: var(--chrome-3);
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+  padding: 1px 7px;
+}
+
 .sb-spinner {
   width: 12px;
   height: 12px;
@@ -2632,6 +2649,29 @@ code {
   border-radius: 4px;
   padding: 3px 10px;
   cursor: pointer;
+}
+
+/* upstream-change notices stack below any sketch hintbar (and each other)
+ * rather than sitting on top of one another - each is wide enough for its
+ * label + several action buttons. */
+.upstream-notice {
+  max-width: 72ch;
+  flex-wrap: wrap;
+}
+.upstream-notice:nth-of-type(1) {
+  top: 54px;
+}
+.upstream-notice:nth-of-type(2) {
+  top: 96px;
+}
+.upstream-notice:nth-of-type(3) {
+  top: 138px;
+}
+
+.review-banner {
+  background: #7a3ec9e6;
+  max-width: 72ch;
+  top: 12px;
 }
 
 /* ---------- plane picker (legacy) ---------- */

@@ -23,8 +23,18 @@ import { promisify } from 'util'
 
 const run = promisify(execFile)
 
-async function git(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await run('git', args, { cwd, maxBuffer: 16 * 1024 * 1024 })
+// network operations (pull/push/fetch/ls-remote) can hang indefinitely
+// against a dead/unreachable remote - local-only operations (log, status,
+// commit, ...) never need this and always stay fast, so the timeout is
+// opt-in per call rather than global.
+const NETWORK_TIMEOUT_MS = 8000
+
+async function git(cwd: string, args: string[], opts: { timeout?: number } = {}): Promise<string> {
+  const { stdout } = await run('git', args, {
+    cwd,
+    maxBuffer: 16 * 1024 * 1024,
+    ...(opts.timeout ? { timeout: opts.timeout } : {})
+  })
   return stdout
 }
 
@@ -38,12 +48,22 @@ export class GitError extends Error {
   }
 }
 
-async function gitOrThrow(cwd: string, args: string[]): Promise<string> {
+async function gitOrThrow(
+  cwd: string,
+  args: string[],
+  opts: { timeout?: number } = {}
+): Promise<string> {
   try {
-    return await git(cwd, args)
+    return await git(cwd, args, opts)
   } catch (e) {
-    const err = e as { stderr?: string; stdout?: string; message?: string }
-    const msg = (err.stderr || err.stdout || err.message || String(e)).trim()
+    const err = e as { stderr?: string; stdout?: string; message?: string; killed?: boolean }
+    // execFile's own timeout kill leaves stdout/stderr empty and only
+    // `message`/`killed` say what happened - surface that distinctly
+    // (network operations use this to mean "offline"/"unreachable"
+    // rather than a real git error, e.g. auth failure or conflict).
+    const msg = err.killed
+      ? `git ${args[0]} timed out (unreachable remote?)`
+      : (err.stderr || err.stdout || err.message || String(e)).trim()
     throw new GitError(msg)
   }
 }
@@ -232,6 +252,19 @@ export async function init(filePath: string): Promise<{ root: string }> {
   return { root }
 }
 
+/** `git init --bare <dirPath>` (dirPath itself need not exist yet - git
+ *  creates it) - for building a real local push/pull target in a test,
+ *  without depending on a real GitHub remote. Not used by any production
+ *  UI flow; exists purely so a test can construct a self-contained
+ *  "remote" (the renderer has no Node integration to shell out to `git`
+ *  directly). Run from dirPath's PARENT, matching how every other function
+ *  here resolves cwd via dirname - dirPath itself may not exist yet, so it
+ *  can never be a valid cwd. */
+export async function initBare(dirPath: string): Promise<{ root: string }> {
+  await gitOrThrow(dirname(dirPath), ['init', '--bare', dirPath])
+  return { root: dirPath }
+}
+
 /** clone a remote (any URL git accepts - a GitHub HTTPS URL authenticates
  *  via the same system credential helper as push/pull) into `destDir`,
  *  which must not already exist. Returns the cloned repo's root. */
@@ -346,13 +379,27 @@ export async function push(filePath: string, remote = 'origin'): Promise<void> {
     hasUpstream = false
   }
   const args = hasUpstream ? ['push', remote, branch] : ['push', '-u', remote, branch]
-  await gitOrThrow(cwd, args)
+  await gitOrThrow(cwd, args, { timeout: NETWORK_TIMEOUT_MS })
+}
+
+/** Force-push, but only if the remote hasn't moved since our last fetch of
+ *  it (`--force-with-lease`) - protects a deliberate "push mine over
+ *  theirs" action against a THIRD person's change landing in the gap
+ *  between deciding to force-push and the push actually happening. Never
+ *  a silent/implicit fallback from a normal push - only called from an
+ *  explicit user action. */
+export async function pushForceWithLease(filePath: string, remote = 'origin'): Promise<void> {
+  const cwd = dirname(filePath)
+  const branch = (await git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim()
+  await gitOrThrow(cwd, ['push', '--force-with-lease', remote, branch], {
+    timeout: NETWORK_TIMEOUT_MS
+  })
 }
 
 export async function pull(filePath: string, remote = 'origin'): Promise<{ conflict: boolean }> {
   const cwd = dirname(filePath)
   try {
-    await git(cwd, ['pull', remote])
+    await git(cwd, ['pull', remote], { timeout: NETWORK_TIMEOUT_MS })
     return { conflict: false }
   } catch (e) {
     const err = e as { stdout?: string; stderr?: string }
@@ -365,7 +412,57 @@ export async function pull(filePath: string, remote = 'origin'): Promise<{ confl
 
 export async function fetch(filePath: string, remote = 'origin'): Promise<void> {
   const cwd = dirname(filePath)
-  await gitOrThrow(cwd, ['fetch', remote])
+  await gitOrThrow(cwd, ['fetch', remote], { timeout: NETWORK_TIMEOUT_MS })
+}
+
+/** Cheap reachability probe - a targeted fetch of just HEAD, rather than a
+ *  full pull/push, so "are we online" can be checked BEFORE attempting a
+ *  real sync operation (clearer intent than inferring offline-ness from a
+ *  pull/push timing out, and avoids leaving a half-attempted operation to
+ *  clean up). Never throws - the caller only needs true/false. */
+export async function isReachable(filePath: string, remote = 'origin'): Promise<boolean> {
+  const cwd = dirname(filePath)
+  try {
+    await git(cwd, ['ls-remote', '--exit-code', remote, 'HEAD'], { timeout: NETWORK_TIMEOUT_MS })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Did `remote/<branch>` move past local HEAD for this specific path, since
+ *  the last fetch? Caller is responsible for fetching first (this never
+ *  touches the network itself) - used by the upstream-change watch (an
+ *  assembly's linked components, or a part already open) to detect "someone
+ *  else pushed a newer version of exactly this file" without pulling/
+ *  merging anything. Empty array = nothing changed upstream for this path. */
+export async function changedUpstream(
+  filePath: string,
+  remote = 'origin'
+): Promise<GitCommit[]> {
+  const cwd = dirname(filePath)
+  try {
+    const branch = (await git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim()
+    const SEP = '\x1f'
+    const fmt = ['%H', '%h', '%s', '%an', '%aI', '%ar'].join(SEP)
+    const out = await git(cwd, [
+      'log',
+      `HEAD..${remote}/${branch}`,
+      `--pretty=format:${fmt}`,
+      '--',
+      filePath
+    ])
+    if (!out.trim()) return []
+    return out
+      .trim()
+      .split('\n')
+      .map((line) => {
+        const [hash, short, subject, author, isoDate, relDate] = line.split(SEP)
+        return { hash, short, subject, author, isoDate, relDate }
+      })
+  } catch {
+    return []
+  }
 }
 
 /** discard ALL uncommitted changes (tracked file edits + untracked files).

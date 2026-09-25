@@ -157,6 +157,13 @@ const merged = await waitFor(async () => {
 assert(merged, "feature-x's commit is now reachable from the current branch - a real merge happened");
 
 // --- push (through the real UI), against a real local bare remote ---
+// build the "remote" fresh every run (bug found 2026-09-25: this used to
+// silently depend on /tmp/gwtcad_git_e2e_remote.git already existing from
+// some earlier, unrelated setup - once that directory was cleaned up as
+// stale test-fixture debris, the push here failed with "does not appear
+// to be a git repository" and hasUpstream never got set, even though the
+// test itself never checked the push's own success/failure to notice).
+await window.cad.gitInitBare(REMOTE);
 await window.cad.gitAddRemote(DESIGN_PATH, 'origin', REMOTE);
 await sleep(100);
 document.querySelector('.gitpanel-refresh').click();
@@ -165,6 +172,10 @@ const pushBtn = Array.from(document.querySelectorAll('.git-btn')).find((b) => /^
 assert(!!pushBtn, 'Push button exists');
 pushBtn.click();
 await sleep(700);
+
+const pushErrorEl = document.querySelector('.git-error');
+note('git panel error after push click: ' + (pushErrorEl ? pushErrorEl.textContent : 'none'));
+assert(!pushErrorEl, 'the push itself did not fail (no error shown in the Git panel) - catches a bad/missing remote directly, instead of only surfacing as a confusing hasUpstream/ahead mismatch downstream');
 
 const statusAfterPush = await window.cad.gitStatus(DESIGN_PATH);
 assert(statusAfterPush.hasUpstream === true, 'push set up the upstream tracking branch');

@@ -270,6 +270,28 @@ export function App(): JSX.Element {
   const [companySettingsOpen, setCompanySettingsOpen] = useState(false)
   const [currentPn, setCurrentPn] = useState<string | null>(null)
   const [currentLifecycle, setCurrentLifecycle] = useState<string | null>(null)
+  // git auto-sync: offline is a reachability probe result (cleared the next
+  // time a probe succeeds), unpushedCount is "this doc has N local commits
+  // origin doesn't have yet" (set when an auto-push is skipped/rejected,
+  // cleared on the next successful push) - both persistent status-bar
+  // indicators, not transient toasts, since "you're offline" or "you have
+  // unpushed work" is exactly the kind of state a 5s-then-gone notice would
+  // hide right when it matters most.
+  const [gitOffline, setGitOffline] = useState(false)
+  const [unpushedCount, setUnpushedCount] = useState(0)
+  // the file path this session currently holds a standalone-open lock on
+  // (lockfile.ts, via window.cad.lockAcquire) - a ref, not state, since it
+  // only needs to be read synchronously right before switching/closing,
+  // never rendered.
+  const lockedPathRef = useRef<string | null>(null)
+  // true while "Review" (the upstream-change peek) has swapped the sidecar's
+  // active document to someone else's pushed version - save() checks this
+  // synchronously so a stray Ctrl+S mid-review can never save the peeked
+  // document over the real file. Declared here (not next to reviewingChange
+  // state, much later in this component) purely so save() - defined earlier
+  // - can reference it without a forward-declaration error; kept in sync by
+  // startReview/endReview.
+  const reviewingRef = useRef(false)
   const [canUndo, setCanUndo] = useState(false)
   const [canRedo, setCanRedo] = useState(false)
   const [pins, setPins] = useState<PinMap>(() => loadPinned())
@@ -3019,6 +3041,122 @@ export function App(): JSX.Element {
     [markDirty]
   )
 
+  // --- git auto-push (best-effort, retried in the background) ---
+  //
+  // pushRetryFailuresRef counts CONSECUTIVE failed retry attempts for the
+  // currently-tracked path, purely to know when to stop silently retrying
+  // and escalate to a real notice - it does not gate whether autoPushAfterSave
+  // itself runs (every save always attempts a push once).
+  const pushRetryFailuresRef = useRef(0)
+  const PUSH_RETRY_ESCALATE_AFTER = 5 // ~5 failed retries at the 60s interval below
+
+  const attemptPush = useCallback(async (p: string): Promise<boolean> => {
+    const st = await window.cad.gitStatus(p).catch(() => ({ isRepo: false }) as GitStatus)
+    if (!st.isRepo || !st.hasUpstream) return true // nothing to push against - treat as success
+    const reachable = await window.cad.gitIsReachable(p).catch(() => false)
+    if (!reachable) {
+      setGitOffline(true)
+      return false
+    }
+    setGitOffline(false)
+    try {
+      await window.cad.gitCommitAll(p, `${basename(p)}: saved via GWT-CAD`)
+    } catch {
+      // most commonly "nothing to commit" (save() didn't actually change
+      // any tracked bytes, e.g. re-saving with no edits) - not a failure,
+      // there may still be an EARLIER unpushed commit to retry below
+    }
+    try {
+      await window.cad.gitPush(p)
+      return true
+    } catch {
+      return false // rejected (someone else pushed first) or timed out - the retry loop handles it
+    }
+  }, [])
+
+  // --- git auto-sync (pull on open, push on save) + standalone lock ---
+  //
+  // Every helper here degrades the SAME way on failure: never block the
+  // actual file operation (open/save always succeed against local disk
+  // regardless of git's state), only ever surface a persistent status-bar
+  // indicator or a one-off notice - matching the user's own ask ("if it
+  // can't connect, have a temporary warning show up... at least if/when it
+  // can connect").
+  const releaseStandaloneLock = useCallback(async () => {
+    const held = lockedPathRef.current
+    if (!held) return
+    lockedPathRef.current = null
+    await window.cad.lockRelease(held).catch(() => undefined)
+  }, [])
+
+  // Pull latest for `p`'s repo (if it's in one with a remote) BEFORE the
+  // sidecar opens it - pulling AFTER open would leave the in-memory
+  // FreeCAD document stale relative to a file that just changed under it
+  // on disk. Returns false only when the user should be stopped from
+  // opening at all (a real merge conflict they need to resolve first) -
+  // every other outcome (offline, no repo, clean pull) returns true.
+  const autoPullBeforeOpen = useCallback(async (p: string): Promise<boolean> => {
+    const st = await window.cad.gitStatus(p).catch(() => ({ isRepo: false }) as GitStatus)
+    if (!st.isRepo || !st.hasUpstream) return true
+    const reachable = await window.cad.gitIsReachable(p).catch(() => false)
+    if (!reachable) {
+      setGitOffline(true)
+      return true // proceed with whatever's on local disk - never block on offline
+    }
+    setGitOffline(false)
+    try {
+      const res = await window.cad.gitPull(p)
+      if (res.conflict) {
+        return window.confirm(
+          `${basename(p)} has a merge conflict pulling the latest version.\n\n` +
+            `Click OK to open it anyway with your local copy (unresolved conflict markers ` +
+            `may be present - use the Git panel to resolve), or Cancel to stop here.`
+        )
+      }
+      return true
+    } catch (e) {
+      // a real git error (not a conflict, not offline - e.g. auth) - report
+      // but still don't block opening; the file on disk is still usable
+      flashSketchNotice(`Couldn't sync ${basename(p)} before opening: ${(e as Error).message}`)
+      return true
+    }
+  }, [flashSketchNotice])
+
+  // Standalone-open lock: only for a part opened DIRECTLY (never one merely
+  // referenced live inside an open assembly - see the upstream-watch
+  // effect below for that softer case). Returns false to cancel opening
+  // (the user chose not to proceed past someone else's active lock).
+  const acquireStandaloneLock = useCallback(async (p: string): Promise<boolean> => {
+    const st = await window.cad.gitStatus(p).catch(() => ({ isRepo: false }) as GitStatus)
+    if (!st.isRepo || !st.hasUpstream) return true // scratch file / no remote - no locking to do
+    const result = await window.cad.lockAcquire(p).catch(() => ({ status: 'unreachable' as const }))
+    if (result.status === 'acquired') {
+      lockedPathRef.current = p
+      return true
+    }
+    if (result.status === 'reclaimed') {
+      lockedPathRef.current = p
+      const ago = new Date(result.previousOpenedAt).toLocaleString()
+      flashSketchNotice(
+        `Reclaimed an abandoned lock on ${basename(p)} from ${result.previousHolder} (opened ${ago})`
+      )
+      return true
+    }
+    if (result.status === 'unreachable') {
+      flashSketchNotice(
+        `Couldn't confirm ${basename(p)} isn't already open elsewhere - working offline`
+      )
+      return true // never block purely because we couldn't reach the remote
+    }
+    // held by someone else, and not stale
+    const opened = new Date(result.lock.openedAt).toLocaleString()
+    return window.confirm(
+      `${result.lock.holder} has ${basename(p)} open (opened ${opened}, on ${result.lock.machine}).\n\n` +
+        `Click OK to open it anyway (your changes won't auto-push while someone else has it - ` +
+        `use the Git panel to push manually once they're done), or Cancel to leave it alone.`
+    )
+  }, [flashSketchNotice])
+
   // ---- file ops ----
   const saveAs = useCallback(async () => {
     const p = await window.cad.saveDialog(docPath ?? undefined)
@@ -3038,19 +3176,84 @@ export function App(): JSX.Element {
       t.map((x) => (x.id === activeTab ? { ...x, name: basename(p), dirty: false, path: p } : x))
     )
     void window.cad.captureThumb(p).catch(() => undefined)
-  }, [docPath, activeTab, currentPn])
+    // a Save As into a company repo location is effectively "now editing
+    // this file standalone" for lock purposes, and needs its first push
+    // just like any other save.
+    await acquireStandaloneLock(p).catch(() => true)
+    const pushed = await attemptPush(p).catch(() => false)
+    setUnpushedCount(pushed ? 0 : 1)
+  }, [docPath, activeTab, currentPn, acquireStandaloneLock, attemptPush])
 
   const save = useCallback(async () => {
+    if (reviewingRef.current) {
+      window.alert('Finish reviewing (click "Done reviewing") before saving.')
+      return
+    }
     if (!docPath) return saveAs()
     await api.save()
     markDirty(false)
     void window.cad.captureThumb(docPath).catch(() => undefined)
-  }, [docPath, saveAs, markDirty])
+    // best-effort, never blocks/fails the save itself - the file is already
+    // safely on disk by this point regardless of what happens next.
+    const pushed = await attemptPush(docPath).catch(() => false)
+    if (pushed) {
+      pushRetryFailuresRef.current = 0
+      setUnpushedCount(0)
+    } else {
+      setUnpushedCount((n) => n + 1)
+    }
+  }, [docPath, saveAs, markDirty, attemptPush])
+
+  // background retry: while this doc has unpushed local commits, keep
+  // trying every 60s (pulling first, so a transient rejection - someone
+  // else pushed a second earlier - usually clears on its own) - escalates
+  // to a real notice only after several consecutive failures, per the
+  // user's own choice ("retry in background, warn if stuck") rather than
+  // interrupting on every routine transient rejection.
+  useEffect(() => {
+    if (unpushedCount === 0 || !docPath) return
+    const p = docPath
+    const id = window.setInterval(() => {
+      void (async () => {
+        if (reviewingRef.current) return // the sidecar's active document is a peeked file right now, not p
+        const reachable = await window.cad.gitIsReachable(p).catch(() => false)
+        if (!reachable) {
+          setGitOffline(true)
+          return
+        }
+        setGitOffline(false)
+        await window.cad.gitPull(p).catch(() => undefined)
+        const pushed = await attemptPush(p).catch(() => false)
+        if (pushed) {
+          pushRetryFailuresRef.current = 0
+          setUnpushedCount(0)
+          return
+        }
+        pushRetryFailuresRef.current += 1
+        if (pushRetryFailuresRef.current >= PUSH_RETRY_ESCALATE_AFTER) {
+          pushRetryFailuresRef.current = 0 // reset so this doesn't fire every interval forever
+          flashSketchNotice(`Couldn't sync ${basename(p)} for a while - check the Git panel`)
+        }
+      })()
+    }, 60000)
+    return () => window.clearInterval(id)
+  }, [unpushedCount, docPath, attemptPush, flashSketchNotice])
 
   const openDesign = useCallback(
     async (path?: string) => {
+      if (reviewingRef.current) {
+        window.alert('Finish reviewing (click "Done reviewing") before opening another file.')
+        return
+      }
       const p = path ?? (await window.cad.openDialog())
       if (!p) return
+      // release whatever standalone lock this session held on the PREVIOUS
+      // document before touching the new one - the sidecar only ever has
+      // one document open at a time, so switching files always means
+      // "done with the old one."
+      await releaseStandaloneLock()
+      if (!(await autoPullBeforeOpen(p))) return
+      if (!(await acquireStandaloneLock(p))) return
       // the sidecar holds one document: opening replaces it. Reflect that as a
       // fresh tab rather than mutating whatever tab is in front.
       const opened = await api.open(p)
@@ -3091,7 +3294,7 @@ export function App(): JSX.Element {
       }
       await refreshScene()
     },
-    [refreshScene, tabs]
+    [refreshScene, tabs, releaseStandaloneLock, autoPullBeforeOpen, acquireStandaloneLock]
   )
 
   const exportModel = useCallback(async () => {
@@ -3802,6 +4005,183 @@ export function App(): JSX.Element {
     void refreshAssemblyPins()
   }, [docPath, asmTree?.assembly, refreshAssemblyPins])
 
+  // --- upstream-change watch (soft - live assembly components + the
+  // currently-open document itself) ---
+  //
+  // This is deliberately separate from refreshAssemblyPins' own drift
+  // tracking above: that covers components explicitly PINNED to a ref
+  // (pin.ref set) - this covers the common LIVE/unpinned case (no drift
+  // detection existed for those at all before), plus the open document
+  // itself in case someone force-took its standalone lock and pushed past
+  // it. Every check is read-only (fetch only) so it's safe to run
+  // constantly regardless of what's open.
+  interface UpstreamNotice extends UpstreamChange {
+    /** for an assembly component: its componentId + display label, so the
+     *  notice can name it and Sync can target the right file. Absent for
+     *  the open-document-itself case. */
+    componentId?: string
+    label: string
+  }
+  const [upstreamNotices, setUpstreamNotices] = useState<UpstreamNotice[]>([])
+  const [reviewingChange, setReviewingChange] = useState<UpstreamNotice | null>(null)
+  // NOTE: "Review" is a PEEK, not a true simultaneous side-by-side split -
+  // this app's sidecar holds exactly one live FreeCAD document at a time
+  // (see session.py), so a genuine two-pane comparison would need a second
+  // sidecar process, real new infrastructure well beyond this pass. Instead:
+  // temporarily swap the active document to the fetched upstream version
+  // (via the same document.open path any file uses), render it in the
+  // normal viewport with a clear banner, then swap back on "Done
+  // reviewing" - reuses the entire existing rendering pipeline, at the
+  // honest cost of being sequential rather than side-by-side.
+  const startReview = useCallback(
+    async (n: UpstreamNotice) => {
+      try {
+        const { path, commit } = await window.cad.gitWatchFetchUpstreamVersion(n.filePath)
+        await api.open(path)
+        await refreshScene()
+        reviewingRef.current = true
+        setReviewingChange({ ...n, commits: [{ ...n.commits[0], hash: commit }, ...n.commits.slice(1)] })
+      } catch (e) {
+        window.alert(`Couldn't fetch the upstream version to review: ${(e as Error).message}`)
+      }
+    },
+    [refreshScene]
+  )
+  const endReview = useCallback(async () => {
+    reviewingRef.current = false
+    setReviewingChange(null)
+    if (docPath) {
+      await api.open(docPath).catch(() => undefined)
+      await refreshScene()
+    }
+  }, [docPath, refreshScene])
+  // "Ignore" dismissals for THIS specific change (filePath:newestCommitHash)
+  // - a ref, not state, since it's only consulted inside checkUpstreamChanges
+  // and should never itself trigger a re-render. A FURTHER change after
+  // dismissal (a new newest commit hash) re-fires normally.
+  const dismissedUpstreamRef = useRef<Set<string>>(new Set())
+
+  const checkUpstreamChanges = useCallback(async () => {
+    // paused while reviewing (the sidecar's active document is a temporary
+    // peeked file, not docPath - checking against it here would be
+    // comparing the wrong thing and could surface a nonsense notice).
+    if (reviewingRef.current) return
+    const targets: { filePath: string; componentId?: string; label: string }[] = []
+    if (docPath) targets.push({ filePath: docPath, label: basename(docPath) })
+    if (docPath && asmTree) {
+      const pins = await window.cad.asmPinRead(docPath).catch(() => ({}) as AsmPinFile)
+      for (const c of asmTree.components) {
+        if (!c.linkedPath) continue
+        const pin = pins[c.id]
+        if (pin?.ref) continue // pinned components already get drift tracking above
+        targets.push({ filePath: c.linkedPath, componentId: c.id, label: c.label })
+      }
+    }
+    if (targets.length === 0) return
+    const results = await window.cad.gitWatchCheckMany(targets.map((t) => t.filePath))
+    const byPath = new Map(results.map((r) => [r.filePath, r]))
+    const notices: UpstreamNotice[] = []
+    for (const t of targets) {
+      const r = byPath.get(t.filePath)
+      if (!r) continue
+      // "Ignore" dismisses THIS specific change - re-fires if it changes
+      // again (a new newest-commit hash for the same path).
+      if (dismissedUpstreamRef.current.has(`${r.filePath}:${r.commits[0]?.hash}`)) continue
+      notices.push({ ...r, componentId: t.componentId, label: t.label })
+    }
+    setUpstreamNotices(notices)
+  }, [docPath, asmTree])
+
+  useEffect(() => {
+    checkUpstreamChanges()
+    const id = window.setInterval(() => void checkUpstreamChanges(), 60000)
+    return () => window.clearInterval(id)
+  }, [checkUpstreamChanges])
+
+  // clears the notice for now (the change was actually resolved - Sync
+  // pulled it, or a force-push overwrote it) - NOT a permanent dismissal,
+  // so if the file changes again upstream later, a fresh notice fires
+  // normally (this only clears the CURRENT one from view).
+  const clearUpstreamNotice = useCallback((filePath: string) => {
+    setUpstreamNotices((prev) => prev.filter((n) => n.filePath !== filePath))
+  }, [])
+
+  // "Ignore": a real, deliberate dismissal of THIS specific change - stays
+  // dismissed until the file changes again (a new newest-commit hash),
+  // unlike clearUpstreamNotice which is just "this is resolved now."
+  const ignoreUpstreamNotice = useCallback((n: UpstreamNotice) => {
+    dismissedUpstreamRef.current.add(`${n.filePath}:${n.commits[0]?.hash}`)
+    setUpstreamNotices((prev) => prev.filter((x) => x.filePath !== n.filePath))
+  }, [])
+
+  // Sync: fast-forward pull that file's repo now - safe for an assembly
+  // component (not open/edited locally), and for the open document itself
+  // ONLY if the user has no uncommitted local changes (checked via
+  // gitStatus.dirty) - otherwise this would silently discard local edits,
+  // which Sync must never do; the user gets a clear alert instead of a
+  // silent no-op or a lost edit.
+  const syncUpstreamChange = useCallback(
+    async (n: UpstreamNotice) => {
+      const st = await window.cad.gitStatus(n.filePath).catch(() => ({ isRepo: false }) as GitStatus)
+      if (st.dirty && n.filePath === docPath) {
+        window.alert(
+          `${n.label} has unsaved/uncommitted local changes - save first, or use "Push mine over theirs anyway" instead of Sync.`
+        )
+        return
+      }
+      const res = await window.cad.gitPull(n.filePath).catch((e) => {
+        window.alert(`Sync failed: ${(e as Error).message}`)
+        return null
+      })
+      if (res?.conflict) {
+        window.alert(`${n.label}: pulling created a merge conflict - resolve it via the Git panel.`)
+        return
+      }
+      clearUpstreamNotice(n.filePath)
+      if (n.filePath === docPath) {
+        // the open document's own file changed on disk - reload it so the
+        // in-memory FreeCAD document reflects what was just pulled
+        await api.open(docPath)
+        await refreshScene()
+      } else {
+        // an assembly component's source changed - re-resolve the live
+        // link so the assembly picks up the new geometry on next recompute
+        await refreshScene()
+      }
+    },
+    [docPath, clearUpstreamNotice, refreshScene]
+  )
+
+  // "Push mine over theirs anyway" - only offered for the OPEN document
+  // itself (never for an assembly component, which isn't being edited in
+  // place here) - a labeled, explicit force-with-lease push. Nothing is
+  // destroyed: the overwritten commit stays fully reachable in git history
+  // (GitPanel's log) and can be rolled back to at any time.
+  const forcePushOverUpstream = useCallback(
+    async (n: UpstreamNotice) => {
+      if (n.filePath !== docPath) return
+      if (
+        !window.confirm(
+          `This will push your version of ${n.label} over ${n.commits[0]?.author}'s changes.\n\n` +
+            `Nothing is destroyed - their version stays in git history and can be recovered via the ` +
+            `Git panel - but anyone else who already pulled their version will need to reconcile it ` +
+            `by hand. Continue?`
+        )
+      ) {
+        return
+      }
+      try {
+        await window.cad.gitCommitAll(n.filePath, `${basename(n.filePath)}: saved via GWT-CAD`).catch(() => undefined)
+        await window.cad.gitPushForceWithLease(n.filePath)
+        clearUpstreamNotice(n.filePath)
+        flashSketchNotice(`Pushed your version of ${n.label} - theirs is still recoverable in git history`)
+      } catch (e) {
+        window.alert(`Force push failed: ${(e as Error).message}`)
+      }
+    },
+    [docPath, clearUpstreamNotice, flashSketchNotice]
+  )
+
   const groundComponent = useCallback(
     async (id: string) => {
       await api.assemblyGround(id)
@@ -3888,6 +4268,7 @@ export function App(): JSX.Element {
         return w ? vpApi.current?.testProjectToScreen(w) ?? null : null
       },
       cameraDebug: () => vpApi.current?.testCameraDebug() ?? null,
+      applyOrbit: (yaw: number, pitch: number) => vpApi.current?.testApplyOrbit(yaw, pitch),
       symbolWorldScale: () => vpApi.current?.testSymbolWorldScale() ?? null,
       pendingConState: () => vpApi.current?.testPendingConState() ?? null,
       constrainedIndices: () => vpApi.current?.testConstrainedIndices() ?? [],
@@ -3899,6 +4280,13 @@ export function App(): JSX.Element {
         vpApi.current?.setProjection(p)
         setProjection(p)
       },
+
+      // --- git auto-sync (test hooks - real UI has no path-driven Open
+      // besides the native dialog, so a test needs a way to call the exact
+      // same openDesign/save the File menu uses, with an explicit path) ---
+      openDesignPath: (path: string) => openDesign(path),
+      saveDoc: () => save(),
+      gitSyncDebug: () => ({ offline: gitOffline, unpushedCount, docPath }),
 
       // --- ops (ribbon -> dialog -> apply) ---
       openOp: (k: OpKind) => openOp(k),
@@ -4111,7 +4499,11 @@ export function App(): JSX.Element {
     timelineSel,
     asmTree,
     canUndo,
-    canRedo
+    canRedo,
+    openDesign,
+    save,
+    gitOffline,
+    unpushedCount
   ])
 
   // ---- boot ----
@@ -4986,6 +5378,36 @@ export function App(): JSX.Element {
                       <button onClick={() => setSketchNotice(null)}>Dismiss</button>
                     </div>
                   )}
+                  {reviewingChange ? (
+                    <div className="hintbar warn review-banner">
+                      <span>
+                        Reviewing {reviewingChange.label} as of{' '}
+                        {reviewingChange.commits[0]?.hash?.slice(0, 7)} by{' '}
+                        {upstreamNotices.find((x) => x.filePath === reviewingChange.filePath)
+                          ?.commits[0]?.author ?? 'them'}{' '}
+                        - this is a PEEK at their version, not your working copy (nothing you do
+                        here is saved).
+                      </span>
+                      <button onClick={() => void endReview()}>Done reviewing</button>
+                    </div>
+                  ) : (
+                    upstreamNotices.map((n) => (
+                      <div className="hintbar warn upstream-notice" key={n.filePath}>
+                        <span>
+                          {n.label} was updated by {n.commits[0]?.author}
+                          {n.commits.length > 1 ? ` (+${n.commits.length - 1} more)` : ''}
+                        </span>
+                        <button onClick={() => void syncUpstreamChange(n)}>Sync</button>
+                        <button onClick={() => void startReview(n)}>Review</button>
+                        {n.filePath === docPath && (
+                          <button onClick={() => void forcePushOverUpstream(n)}>
+                            Push mine over theirs anyway
+                          </button>
+                        )}
+                        <button onClick={() => ignoreUpstreamNotice(n)}>Ignore</button>
+                      </div>
+                    ))
+                  )}
                   {planePickMode && (
                     <div className="hintbar">
                       Click an origin plane, construction plane, or a flat face to
@@ -5277,6 +5699,16 @@ export function App(): JSX.Element {
                 : 'connecting…'}
         </span>
         {appVersion && <span title="GWT-CAD version">GWT-CAD v{appVersion}</span>}
+        {gitOffline && (
+          <span className="sb-offline" title="Can't reach the git remote - changes are staying local until you're back online">
+            Offline - working locally
+          </span>
+        )}
+        {!gitOffline && unpushedCount > 0 && (
+          <span className="sb-unpushed" title="Saved locally but not yet pushed - retrying in the background">
+            {unpushedCount} unpushed change{unpushedCount === 1 ? '' : 's'}
+          </span>
+        )}
         <span className="sb-spacer" />
         <span>{selection.length ? `${selection.length} selected` : ''}</span>
         <span>{docPath ? basename(docPath) : 'unsaved'}</span>

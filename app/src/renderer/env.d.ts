@@ -62,6 +62,21 @@ interface ResolvedPin {
   commit?: string
   drift?: boolean
 }
+interface LockInfo {
+  holder: string
+  machine: string
+  pid: number
+  openedAt: string
+}
+type LockAcquireResult =
+  | { status: 'acquired' }
+  | { status: 'reclaimed'; previousHolder: string; previousOpenedAt: string }
+  | { status: 'held'; lock: LockInfo }
+  | { status: 'unreachable' }
+interface UpstreamChange {
+  filePath: string
+  commits: GitCommit[]
+}
 
 interface CadBridge {
   isE2E: boolean
@@ -87,6 +102,7 @@ interface CadBridge {
   gitChangedFiles(filePath: string): Promise<GitFileChange[]>
   gitRemotes(filePath: string): Promise<GitRemote[]>
   gitInit(filePath: string): Promise<{ root: string }>
+  gitInitBare(dirPath: string): Promise<{ root: string }>
   gitClone(url: string, destDir: string): Promise<{ root: string }>
   gitAdd(filePath: string, paths?: string[]): Promise<void>
   gitUnstage(filePath: string, paths?: string[]): Promise<void>
@@ -108,10 +124,19 @@ interface CadBridge {
   gitMerge(filePath: string, from: string): Promise<{ conflict: boolean }>
   gitAbortMerge(filePath: string): Promise<void>
   gitPush(filePath: string, remote?: string): Promise<void>
+  gitPushForceWithLease(filePath: string, remote?: string): Promise<void>
   gitPull(filePath: string, remote?: string): Promise<{ conflict: boolean }>
   gitFetch(filePath: string, remote?: string): Promise<void>
+  gitIsReachable(filePath: string, remote?: string): Promise<boolean>
+  gitChangedUpstream(filePath: string, remote?: string): Promise<GitCommit[]>
   gitDiscardAll(filePath: string): Promise<void>
   gitAddRemote(filePath: string, name: string, url: string): Promise<void>
+  lockAcquire(filePath: string): Promise<LockAcquireResult>
+  lockRelease(filePath: string): Promise<void>
+  lockCurrent(filePath: string): Promise<LockInfo | null>
+  gitWatchCheckOne(filePath: string): Promise<UpstreamChange | null>
+  gitWatchCheckMany(filePaths: string[]): Promise<UpstreamChange[]>
+  gitWatchFetchUpstreamVersion(filePath: string): Promise<{ path: string; commit: string }>
   asmPinRead(asmPath: string): Promise<AsmPinFile>
   asmPinSet(asmPath: string, componentId: string, pin: ComponentPin | null): Promise<void>
   asmPinResolve(pin: ComponentPin): Promise<ResolvedPin>

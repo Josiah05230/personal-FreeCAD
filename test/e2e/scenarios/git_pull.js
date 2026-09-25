@@ -36,6 +36,12 @@ await idle();
 await window.cad.gitInit(DESIGN_PATH);
 await window.cad.gitAdd(DESIGN_PATH);
 await window.cad.gitCommit(DESIGN_PATH, 'initial commit');
+// build the "remote" fresh every run (same bug class fixed in git_ops.js,
+// 2026-09-25: this used to silently depend on the remote directory already
+// existing from outside the test - "remote origin already exists" if a
+// stale one is left over, or a confusing downstream failure if it's
+// missing entirely, rather than a clear error right here).
+await window.cad.gitInitBare(REMOTE);
 await window.cad.gitAddRemote(DESIGN_PATH, 'origin', REMOTE);
 await window.cad.gitPush(DESIGN_PATH);
 const st = await window.cad.gitStatus(DESIGN_PATH);

@@ -6,6 +6,8 @@ import { Sidecar, loadConfig } from './sidecar'
 import * as gitw from './git'
 import * as asmPin from './assemblyPin'
 import * as mcmaster from './mcmaster'
+import * as lockfile from './lockfile'
+import * as gitWatch from './gitWatch'
 
 // repo root is one level above app/ in dev; in a packaged build this is
 // remapped by the installer (Milestone 5).
@@ -13,6 +15,12 @@ const REPO_ROOT = resolve(app.getAppPath(), '..')
 
 let win: BrowserWindow | null = null
 let sidecar: Sidecar | null = null
+/** the file path this process currently holds a standalone-open lock on
+ *  (lockfile.ts), if any - tracked here so before-quit can release it
+ *  synchronously without an IPC round-trip during teardown. A crash skips
+ *  this entirely; lockfile.ts's staleness threshold is the real fallback
+ *  for that case, this is only the graceful-exit path. */
+let activeLockedPath: string | null = null
 
 /** Does this directory contain any .FCStd within `depth` levels? (bounded) -
  * used only to badge a folder row, never to hide it. */
@@ -218,6 +226,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('git:changedFiles', (_e, filePath: string) => gitw.changedFiles(filePath))
   ipcMain.handle('git:remotes', (_e, filePath: string) => gitw.remotes(filePath))
   ipcMain.handle('git:init', (_e, filePath: string) => gitw.init(filePath))
+  ipcMain.handle('git:initBare', (_e, dirPath: string) => gitw.initBare(dirPath))
   ipcMain.handle('git:clone', (_e, url: string, destDir: string) => gitw.clone(url, destDir))
   ipcMain.handle('git:add', (_e, filePath: string, paths?: string[]) => gitw.add(filePath, paths))
   ipcMain.handle('git:unstage', (_e, filePath: string, paths?: string[]) => gitw.unstage(filePath, paths))
@@ -241,8 +250,17 @@ app.whenReady().then(async () => {
   ipcMain.handle('git:merge', (_e, filePath: string, from: string) => gitw.merge(filePath, from))
   ipcMain.handle('git:abortMerge', (_e, filePath: string) => gitw.abortMerge(filePath))
   ipcMain.handle('git:push', (_e, filePath: string, remote?: string) => gitw.push(filePath, remote))
+  ipcMain.handle('git:pushForceWithLease', (_e, filePath: string, remote?: string) =>
+    gitw.pushForceWithLease(filePath, remote)
+  )
   ipcMain.handle('git:pull', (_e, filePath: string, remote?: string) => gitw.pull(filePath, remote))
   ipcMain.handle('git:fetch', (_e, filePath: string, remote?: string) => gitw.fetch(filePath, remote))
+  ipcMain.handle('git:isReachable', (_e, filePath: string, remote?: string) =>
+    gitw.isReachable(filePath, remote)
+  )
+  ipcMain.handle('git:changedUpstream', (_e, filePath: string, remote?: string) =>
+    gitw.changedUpstream(filePath, remote)
+  )
   ipcMain.handle('git:discardAll', (_e, filePath: string) => gitw.discardAll(filePath))
   ipcMain.handle('git:addRemote', (_e, filePath: string, name: string, url: string) =>
     gitw.addRemote(filePath, name, url)
@@ -262,6 +280,28 @@ app.whenReady().then(async () => {
     asmPin.resolveRefToCommit(filePath, ref)
   )
   ipcMain.handle('asmPin:currentCommit', (_e, filePath: string) => asmPin.currentCommitFor(filePath))
+
+  // --- standalone-open lock (blocking - "X has this part open") ---
+  // activeLockedPath is tracked here (not just in the renderer's own state)
+  // so before-quit below can release it synchronously without a risky
+  // round-trip IPC call while the app is already tearing down.
+  ipcMain.handle('lock:acquire', async (_e, filePath: string) => {
+    const result = await lockfile.acquireLock(filePath)
+    if (result.status === 'acquired' || result.status === 'reclaimed') activeLockedPath = filePath
+    return result
+  })
+  ipcMain.handle('lock:release', async (_e, filePath: string) => {
+    await lockfile.releaseLock(filePath)
+    if (activeLockedPath === filePath) activeLockedPath = null
+  })
+  ipcMain.handle('lock:current', (_e, filePath: string) => lockfile.currentLock(filePath))
+
+  // --- upstream-change watch (soft - assembly components + already-open files) ---
+  ipcMain.handle('gitWatch:checkOne', (_e, filePath: string) => gitWatch.checkOne(filePath))
+  ipcMain.handle('gitWatch:checkMany', (_e, filePaths: string[]) => gitWatch.checkMany(filePaths))
+  ipcMain.handle('gitWatch:fetchUpstreamVersion', (_e, filePath: string) =>
+    gitWatch.fetchUpstreamVersion(filePath)
+  )
 
   // --- McMaster-Carr embedded browser panel ---
   ipcMain.handle(
@@ -583,7 +623,26 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => {
+let releasingLockOnQuit = false
+app.on('before-quit', (e) => {
+  // best-effort, bounded: release the standalone-open lock (if held) before
+  // actually exiting, so a normal quit never leaves a lock for someone
+  // else to wait out the staleness threshold on. Only delays quit once -
+  // releaseLock's own network calls are already timeout-bounded (8s), so
+  // this adds at most that long, never blocks indefinitely, and a second
+  // quit request (e.g. the user impatiently quitting twice) falls through
+  // immediately rather than looping.
+  if (activeLockedPath && !releasingLockOnQuit) {
+    releasingLockOnQuit = true
+    e.preventDefault()
+    const path = activeLockedPath
+    activeLockedPath = null
+    void lockfile
+      .releaseLock(path)
+      .catch(() => undefined)
+      .then(() => app.quit())
+    return
+  }
   sidecar?.stop()
   void mcmaster.cleanup()
 })

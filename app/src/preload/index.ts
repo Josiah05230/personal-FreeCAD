@@ -62,6 +62,21 @@ export interface ResolvedPin {
   commit?: string
   drift?: boolean
 }
+export interface LockInfo {
+  holder: string
+  machine: string
+  pid: number
+  openedAt: string
+}
+export type LockAcquireResult =
+  | { status: 'acquired' }
+  | { status: 'reclaimed'; previousHolder: string; previousOpenedAt: string }
+  | { status: 'held'; lock: LockInfo }
+  | { status: 'unreachable' }
+export interface UpstreamChange {
+  filePath: string
+  commits: GitCommit[]
+}
 
 const cad = {
   /** true when launched by the E2E harness (`--e2e <scenario>`) - the renderer
@@ -106,6 +121,11 @@ const cad = {
   gitRemotes: (filePath: string) =>
     ipcRenderer.invoke('git:remotes', filePath) as Promise<GitRemote[]>,
   gitInit: (filePath: string) => ipcRenderer.invoke('git:init', filePath) as Promise<{ root: string }>,
+  /** test-only: git init --bare, for building a self-contained local push
+   *  target without a real GitHub remote (the renderer has no Node
+   *  integration to shell out to `git` directly). Not used by any
+   *  production UI. */
+  gitInitBare: (dirPath: string) => ipcRenderer.invoke('git:initBare', dirPath) as Promise<{ root: string }>,
   gitClone: (url: string, destDir: string) =>
     ipcRenderer.invoke('git:clone', url, destDir) as Promise<{ root: string }>,
   gitAdd: (filePath: string, paths?: string[]) =>
@@ -131,10 +151,26 @@ const cad = {
   gitAbortMerge: (filePath: string) => ipcRenderer.invoke('git:abortMerge', filePath) as Promise<void>,
   gitPush: (filePath: string, remote?: string) =>
     ipcRenderer.invoke('git:push', filePath, remote) as Promise<void>,
+  /** force-push with --force-with-lease, ONLY from an explicit "push mine
+   *  over theirs anyway" user action (see the upstream-change watch) -
+   *  never a silent fallback from a normal push. */
+  gitPushForceWithLease: (filePath: string, remote?: string) =>
+    ipcRenderer.invoke('git:pushForceWithLease', filePath, remote) as Promise<void>,
   gitPull: (filePath: string, remote?: string) =>
     ipcRenderer.invoke('git:pull', filePath, remote) as Promise<{ conflict: boolean }>,
   gitFetch: (filePath: string, remote?: string) =>
     ipcRenderer.invoke('git:fetch', filePath, remote) as Promise<void>,
+  /** cheap online/offline probe (a targeted fetch of just HEAD) - check
+   *  this BEFORE attempting an auto-pull/auto-push so the app can degrade
+   *  cleanly instead of hanging or surfacing a raw network error. */
+  gitIsReachable: (filePath: string, remote?: string) =>
+    ipcRenderer.invoke('git:isReachable', filePath, remote) as Promise<boolean>,
+  /** commits present on origin/<branch> for this exact path that local
+   *  HEAD doesn't have yet - caller must fetch first (this never touches
+   *  the network). Empty = nothing changed upstream. Used by the
+   *  upstream-change watch (assembly components + already-open files). */
+  gitChangedUpstream: (filePath: string, remote?: string) =>
+    ipcRenderer.invoke('git:changedUpstream', filePath, remote) as Promise<GitCommit[]>,
   gitDiscardAll: (filePath: string) => ipcRenderer.invoke('git:discardAll', filePath) as Promise<void>,
   gitAddRemote: (filePath: string, name: string, url: string) =>
     ipcRenderer.invoke('git:addRemote', filePath, name, url) as Promise<void>,
@@ -148,6 +184,29 @@ const cad = {
     ipcRenderer.invoke('asmPin:resolveRefToCommit', filePath, ref) as Promise<string>,
   asmPinCurrentCommit: (filePath: string) =>
     ipcRenderer.invoke('asmPin:currentCommit', filePath) as Promise<string | null>,
+
+  /** standalone-open blocking lock - "X has this part open" (see
+   *  lockfile.ts). Only for a part opened DIRECTLY, never for a component
+   *  merely referenced live inside an open assembly (that gets the softer
+   *  gitWatch* below instead). */
+  lockAcquire: (filePath: string) => ipcRenderer.invoke('lock:acquire', filePath) as Promise<LockAcquireResult>,
+  lockRelease: (filePath: string) => ipcRenderer.invoke('lock:release', filePath) as Promise<void>,
+  lockCurrent: (filePath: string) => ipcRenderer.invoke('lock:current', filePath) as Promise<LockInfo | null>,
+
+  /** soft upstream-change watch - assembly components (live/unpinned) and
+   *  already-open files. Read-only (fetch only, never pulls/merges). */
+  gitWatchCheckOne: (filePath: string) =>
+    ipcRenderer.invoke('gitWatch:checkOne', filePath) as Promise<UpstreamChange | null>,
+  gitWatchCheckMany: (filePaths: string[]) =>
+    ipcRenderer.invoke('gitWatch:checkMany', filePaths) as Promise<UpstreamChange[]>,
+  /** fetch the origin/<branch> version of a file to a local cache path, for
+   *  the "Review" action's side-by-side comparison - read-only against the
+   *  source repo (never touches its working tree/index). */
+  gitWatchFetchUpstreamVersion: (filePath: string) =>
+    ipcRenderer.invoke('gitWatch:fetchUpstreamVersion', filePath) as Promise<{
+      path: string
+      commit: string
+    }>,
 
   exportPdf: (html: string, outPath: string) =>
     ipcRenderer.invoke('drawing:exportPdf', html, outPath) as Promise<{ path: string }>,
