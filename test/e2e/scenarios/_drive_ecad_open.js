@@ -9,6 +9,12 @@ const PART_DIR = ECAD_ROOT + '/CM/F/CMF0010';
 const FCSTD_PATH = PART_DIR + '/CMF0010.FCStd';
 const PCB_PATH = PART_DIR + '/board.kicad_pcb';
 const PRO_PATH = PART_DIR + '/board.kicad_pro';
+// pre-built by run_ecad_open_test.sh (a real .kicad_sch with a GWT_PN
+// custom field on one placed symbol instance - see that script for why
+// this can't be built from inside the running app: it needs to read a
+// template file from disk, and no window.cad.readFile bridge exists
+// (nor should one, purely for a test fixture)).
+const SCH_PATH = PART_DIR + '/board.kicad_sch';
 
 note('--- dismiss the first-run welcome dialog ---');
 for (let i = 0; i < 5; i++) {
@@ -28,10 +34,15 @@ await rpc('pn.setCompanyConfig', {
   projects: { CM: { name: 'Test Co', repoPath: '/tmp/ecad_open_test/pn-cad-files' } }
 });
 
-note('--- reserve the F part directly via RPC (already verified through the real dialog in _drive_ecad_reserve.js) ---');
+note('--- reserve the F part + a real G-type component (for the BOM link) directly via RPC (already verified through the real dialog in _drive_ecad_reserve.js) ---');
 const reserved = await rpc('pn.reserve', {
   project: 'CM', type: 'F', seq: 1, name: 'sensor breakout', description: 'Test breakout board'
 });
+const reservedComponent = await rpc('pn.reserve', {
+  project: 'CM', type: 'G', seq: 1, name: 'connector', description: '2 PIN WP FEMALE connector'
+});
+note('reserved component: ' + JSON.stringify(reservedComponent));
+assert(reservedComponent.pn === 'CMG0010', 'reserved the expected component PN for the BOM link');
 note('reserved: ' + JSON.stringify(reserved));
 assert(reserved.pn === 'CMF0010', 'reserved the expected PN');
 
@@ -86,6 +97,14 @@ const openInKicadItem = Array.from(document.querySelectorAll('.filemenu-item')).
 assert(!!openInKicadItem, '"Open in KiCad" appeared in the File menu after opening a KiCad-linked F part');
 document.querySelector('.filemenu-scrim')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 await sleep(150);
+
+note('--- confirm the schematic\'s real BOM (GWT_PN-tagged component) was linked as this F part\'s kit BOM ---');
+const bom = await rpc('pn.bomFor', { pn: 'CMF0010' });
+note('BOM for CMF0010: ' + JSON.stringify(bom));
+assert(
+  bom.items.some((it) => it.pn === 'CMG0010' && it.componentName === '2 PIN WP FEMALE connector'),
+  'the real component (matched by its GWT_PN field in the schematic) appears in the F part\'s BOM'
+);
 
 note('--- restore the real company.json ---');
 await rpc('pn.setCompanyConfig', cfgBefore);

@@ -394,6 +394,87 @@ def kicad_import_step(path=None):
             pass
 
 
+@method("kicad.importBom")
+def kicad_import_bom(schPath, assemblyPn):
+    """Parses a .kicad_sch's real BOM (via kicad-cli sch export bom) and
+    saves it as this F (PCB Assembly) part's kit BOM (pn.saveBom) - the
+    ECAD-side equivalent of how a mechanical assembly's BOM comes from its
+    open document's App::Link tree (see methods.drawing_bom_rows /
+    pn.resolveBomFilenames).
+
+    A symbol only contributes a BOM row if it has a real GWT_PN custom
+    field set on the INSTANCE (not the library symbol's own template
+    definition, which kicad-cli's BOM export correctly ignores - confirmed
+    directly: a field set on the shared lib_symbols entry never appears in
+    the export, only one set on the placed symbol itself) matching a PN
+    that was actually reserved in the registry. Every other symbol (a
+    generic resistor with no company PN, say) is silently skipped - same
+    "no PN, no BOM entry" policy pn.resolveBomFilenames already enforces
+    for mechanical assemblies.
+
+    --group-by GWT_PN aggregates repeated components (3x the same
+    connector -> one row, qty 3) rather than one row per reference -
+    verified this actually aggregates correctly, not just passes the flag
+    through inertly."""
+    from . import partnumbers as _pn
+
+    if not schPath or not os.path.isfile(schPath):
+        raise RpcError(APP_ERROR, "kicad.importBom: file not found: %r" % schPath)
+    if not _kicad_cli_available():
+        raise RpcError(APP_ERROR, "kicad-cli not found on PATH - can't read this board's real BOM")
+
+    tmpdir = tempfile.mkdtemp(prefix="gwtcad-kicad-bom-")
+    bom_path = os.path.join(tmpdir, "bom.csv")
+    try:
+        r = subprocess.run(
+            [KICAD_CLI, "sch", "export", "bom", schPath, "--output", bom_path,
+             "--fields", "Reference,GWT_PN,QUANTITY", "--labels", "Refs,GwtPn,Qty",
+             "--group-by", "GWT_PN"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if not os.path.isfile(bom_path):
+            raise RpcError(APP_ERROR,
+                            "kicad-cli could not export a BOM from %s: %s" %
+                            (schPath, (r.stderr or r.stdout or "unknown error").strip()))
+
+        import csv
+        with open(bom_path, newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+
+        cfg = _pn._load_config()
+        _pn._sync_pull(_pn._registry_path(cfg))
+        registry_rows = _pn._read_registry(cfg)
+
+        items = []
+        skipped = []
+        for row in rows:
+            gwt_pn = (row.get("GwtPn") or "").strip()
+            if not gwt_pn:
+                continue  # a generic part with no company PN - not tracked
+            reg_row = _pn._row_for_pn(registry_rows, gwt_pn)
+            if reg_row is None:
+                skipped.append(gwt_pn)  # a GWT_PN field with a typo/unreserved PN
+                continue
+            items.append({
+                "pn": reg_row["pn"],
+                "componentName": reg_row.get("description", ""),
+                "qty": int(row.get("Qty") or 1),
+            })
+
+        result = _pn.pn_save_bom(assemblyPn, items)
+        result["skipped"] = skipped
+        return result
+    finally:
+        try:
+            os.remove(bom_path)
+        except OSError:
+            pass
+        try:
+            os.rmdir(tmpdir)
+        except OSError:
+            pass
+
+
 @method("kicad.import")
 def kicad_import(path=None, thickness=None):
     """Import (or re-import) a .kicad_pcb board outline + footprint placeholders."""

@@ -158,7 +158,11 @@ interface CadBridge {
   move(src: string, dest: string): Promise<{ src: string; dest: string }>
   trash(path: string): Promise<{ trashed: string }>
   openPath(path: string): Promise<{ opened: string }>
-  findKicadProject(dir: string): Promise<{ pcbPath: string | null; proPath: string | null }>
+  findKicadProject(dir: string): Promise<{
+    pcbPath: string | null
+    proPath: string | null
+    schPath: string | null
+  }>
   siblingDirs(path: string): Promise<string[]>
   captureThumb(design: string): Promise<{ path: string | null }>
   thumb(design: string): Promise<string | null>

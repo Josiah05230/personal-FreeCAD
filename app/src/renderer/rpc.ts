@@ -988,6 +988,12 @@ export const api = {
     rpc<{ bodies: BodyTree[]; path: string | null }>('io.tagMcMaster', { id, partNumber, meta }),
   kicadReimport: () =>
     rpc<{ kicad: { path: string; components: number } }>('kicad.reimport', {}),
+  /** parses a .kicad_sch's real BOM (via kicad-cli), matches each symbol's
+   *  GWT_PN custom field against the registry, saves the result as the
+   *  given F-part's kit BOM. skipped lists any GWT_PN value that didn't
+   *  match a real reserved PN (typo, or never reserved). */
+  kicadImportBom: (schPath: string, assemblyPn: string) =>
+    rpc<{ pn: string; itemCount: number; skipped: string[] }>('kicad.importBom', { schPath, assemblyPn }),
   kicadStatus: () =>
     rpc<{ path?: string; placements?: Record<string, unknown> }>('kicad.status', {}),
   exportModel2: (path: string) => rpc<{ path: string; objects: number }>('io.export', { path }),

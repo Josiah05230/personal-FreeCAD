@@ -75,7 +75,7 @@ _NO_TXN = {
     "history.undo", "history.redo",
     "io.export", "io.exportStep", "io.exportStl",
     "object.setVisibility", "visibility.setGroup",
-    "datum.planePreview", "kicad.status", "sketch.solve",
+    "datum.planePreview", "kicad.status", "kicad.importBom", "sketch.solve",
     "sketch.dragStart", "sketch.dragMove", "sketch.dragEnd",
     "assembly.dragStart", "assembly.dragMove",
     "assembly.explodeSet", "assembly.explodeState",

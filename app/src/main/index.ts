@@ -211,13 +211,15 @@ app.whenReady().then(async () => {
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
     let pcbPath: string | null = null
     let proPath: string | null = null
+    let schPath: string | null = null
     for (const e of entries) {
       if (e.isDirectory()) continue
       const lower = e.name.toLowerCase()
       if (lower.endsWith('.kicad_pcb')) pcbPath = join(dir, e.name)
       else if (lower.endsWith('.kicad_pro')) proPath = join(dir, e.name)
+      else if (lower.endsWith('.kicad_sch')) schPath = join(dir, e.name)
     }
-    return { pcbPath, proPath }
+    return { pcbPath, proPath, schPath }
   })
 
   // --e2e / fuzz: never pop a native file dialog (it would block the run) -

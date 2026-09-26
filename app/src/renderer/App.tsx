@@ -3728,7 +3728,7 @@ export function App(): JSX.Element {
   )
 
   const openPnFile = useCallback(
-    async (path: string, type: string) => {
+    async (path: string, type: string, pn: string) => {
       setPnBrowserOpen(false)
       setLinkedKicadProject(null)
       if (type !== 'F') {
@@ -3763,8 +3763,12 @@ export function App(): JSX.Element {
         setActiveTab(id)
         setDocPath(path)
         setDrawingPageId(null)
-        setCurrentPn(null)
+        setCurrentPn(pn)
         setCurrentLifecycle(null)
+        void api
+          .pnResolve(pn.slice(0, -1))
+          .then((r) => setCurrentLifecycle(r.row.lifecycle ?? null))
+          .catch(() => setCurrentLifecycle(null))
         setLinkedKicadProject(found.proPath)
         if (!imported.kicad.stepImport) {
           flashSketchNotice(
@@ -3772,6 +3776,25 @@ export function App(): JSX.Element {
               (imported.kicad.stepImportReason ? ` (${imported.kicad.stepImportReason})` : '') +
               ' - showing the board outline instead.'
           )
+        }
+        // the schematic's real BOM (GWT_PN-tagged components) becomes this
+        // F part's kit BOM, same idea as a mechanical assembly's BOM comes
+        // from its open document's App::Link tree - best-effort, never
+        // blocks opening the part if it fails (missing schematic, no
+        // kicad-cli, etc.).
+        if (found.schPath) {
+          await api
+            .kicadImportBom(found.schPath, pn)
+            .then((bomResult) => {
+              if (bomResult.skipped.length) {
+                flashSketchNotice(
+                  `BOM: ${bomResult.itemCount} component${bomResult.itemCount === 1 ? '' : 's'} linked - ` +
+                    `${bomResult.skipped.length} GWT_PN value${bomResult.skipped.length === 1 ? '' : 's'} ` +
+                    `didn't match a reserved PN (${bomResult.skipped.join(', ')})`
+                )
+              }
+            })
+            .catch(() => undefined)
         }
         await refreshScene()
       } catch (e) {
@@ -5731,7 +5754,7 @@ export function App(): JSX.Element {
                   {pnBrowserOpen && (
                     <PNBrowserPanel
                       onClose={() => setPnBrowserOpen(false)}
-                      onOpen={(p, type) => void openPnFile(p, type)}
+                      onOpen={(p, type, pn) => void openPnFile(p, type, pn)}
                     />
                   )}
                   {companySettingsOpen && (

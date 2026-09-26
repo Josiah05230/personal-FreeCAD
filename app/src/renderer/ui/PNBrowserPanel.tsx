@@ -13,7 +13,7 @@ export function PNBrowserPanel({
   onOpen
 }: {
   onClose: () => void
-  onOpen: (path: string, type: string) => void
+  onOpen: (path: string, type: string, pn: string) => void
 }): JSX.Element {
   const [parts, setParts] = useState<PartRecord[]>([])
   const [filter, setFilter] = useState('')
@@ -45,7 +45,7 @@ export function PNBrowserPanel({
     setErr(null)
     try {
       const r = await api.pnResolve(p.pn_seq)
-      onOpen(r.path, p.type)
+      onOpen(r.path, p.type, p.pn)
     } catch (e) {
       setErr((e as Error).message)
     } finally {
