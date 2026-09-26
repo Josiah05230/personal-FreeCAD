@@ -1,21 +1,40 @@
 # First-time setup
 
 Everything below is per-machine, one-time setup. None of it lives in git -
-company data paths and credentials are never checked in, so a fresh clone
-of this repo always needs these steps before the app is fully working.
+company data paths and credentials are never checked in, so a fresh
+install always needs these steps before the app is fully working.
 
 **The short version, for someone handing this to a new teammate:** you
-give them (1) GitHub collaborator access to `pn-registry` and
-`pn-cad-files`, and (2) the ONE file
-`~/.gwtcad/firebase-service-account.json`, shared via Drive/a password
-manager - not git. Everything else in this doc, they set up themselves by
-following the steps below (their own paths, their own installs - nothing
-else is machine-specific enough to hand over).
+give them (1) the installer for their OS (see step 1 - just a file, no
+GitHub access needed to install the app itself), (2) GitHub collaborator
+access to `pn-registry` and `pn-cad-files` (step 2 - this IS where GitHub
+access matters, since those are the company's real data repos), and (3)
+the ONE file `~/.gwtcad/firebase-service-account.json`, shared via Drive/a
+password manager - not git (step 3). Everything else in this doc, they set
+up themselves by following the steps below.
 
 Do them in order - each step's "how to check it worked" catches a mistake
 before it turns into a confusing failure two steps later.
 
 ## 1. Base app (required for everything)
+
+**Using the packaged installer (recommended for anyone who isn't
+developing the app itself):** grab the right file for your OS from the
+latest release -
+`GWT-CAD-<version>-amd64.deb` (Debian/Ubuntu), `GWT-CAD-<version>-x86_64.AppImage`
+(any Linux, no install needed - just `chmod +x` and run it), or
+`GWT-CAD-Setup-<version>.exe` (Windows). FreeCAD is bundled inside - there
+is nothing else to install, no `freecadcmd` path to find, no Node.js
+needed. Double-click it, or for the `.deb`: `sudo apt install ./GWT-CAD-*.deb`.
+
+**Check it worked:** the app opens (from your applications menu, or by
+running the AppImage/exe) and shows the first-run welcome dialog. If this
+is all you need, skip straight to step 2 - none of the `freecadcmd`/
+`npm install` steps below apply to you.
+
+---
+
+**Developing the app instead (building from source, contributing code):**
 
 1. Get FreeCAD 1.1+ - either extract the AppImage or use a system install
    that provides `freecadcmd`.
@@ -54,7 +73,9 @@ and teams > Add people > your GitHub username:
 - `github.com/Josiah05230/pn-registry` - the shared PN registry
   (`registry.csv`, `types.yaml`, `bom.csv`)
 - `github.com/Josiah05230/pn-cad-files` - the actual `.FCStd` files,
-  organized `<PN>/<PN>.FCStd`
+  organized `<project>/<type>/<PN>/<PN>.FCStd` (e.g. `CM/C/CMC0010/CMC0010.FCStd`) -
+  grouped by project then type so a person can browse to a family of
+  parts by hand without already knowing its exact PN
 
 You'll get an email/GitHub notification to accept the invite - do that
 first, or the clone below will fail with a permission error.
