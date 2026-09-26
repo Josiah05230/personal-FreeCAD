@@ -190,12 +190,21 @@ def set_appearance_preset(pid, preset):
 
 
 # Linked KiCad board: {"path": ..., "placements": {ref: [x, y, rot, side]}}
+# (tier-1 outline+placeholder import) and/or "stepImportTopLevelNames":
+# [obj names] (tier-2 real STEP import - see kicad.py's kicad_import_step) -
+# whichever tier was used LAST populates its own field; set_kicad_link
+# always clears both first, so importing via one tier then the other never
+# leaves a stale field from the tier that's no longer current.
 _kicad = {}
 
 
-def set_kicad_link(path, placements):
+def set_kicad_link(path, placements=None, stepImportTopLevelNames=None):
     _kicad.clear()
-    _kicad.update({"path": path, "placements": placements})
+    _kicad.update({
+        "path": path,
+        "placements": placements,
+        "stepImportTopLevelNames": stepImportTopLevelNames,
+    })
 
 
 def kicad_link():

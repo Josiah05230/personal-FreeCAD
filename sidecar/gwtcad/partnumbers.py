@@ -80,14 +80,22 @@ _MAX_PUSH_RETRIES = 5
 
 def _load_config():
     if not os.path.exists(_CONFIG_PATH):
-        return {"registryPath": None, "projects": {}}
+        return {"registryPath": None, "ecadRepoPath": None, "projects": {}}
     try:
         import json
         with open(_CONFIG_PATH) as f:
             cfg = json.load(f)
     except Exception:
-        return {"registryPath": None, "projects": {}}
+        return {"registryPath": None, "ecadRepoPath": None, "projects": {}}
     cfg.setdefault("registryPath", None)
+    # ecadRepoPath: ONE shared repo for every project's KiCad/PCB-assembly
+    # (type F) projects - mirrors registryPath (one shared registry), NOT
+    # the per-project `projects[code].repoPath` scheme mechanical files use.
+    # A company's PCB work is comparatively rare and cross-project reuse
+    # (a PowerSync board reused verbatim in a GrainWave product, say) is
+    # common enough that splitting it per project code would only add
+    # friction with no real benefit yet.
+    cfg.setdefault("ecadRepoPath", None)
     cfg.setdefault("projects", {})
     return cfg
 
@@ -107,10 +115,12 @@ def pn_get_company_config():
 
 
 @method("pn.setCompanyConfig")
-def pn_set_company_config(registryPath=None, projects=None):
+def pn_set_company_config(registryPath=None, ecadRepoPath=None, projects=None):
     cfg = _load_config()
     if registryPath is not None:
         cfg["registryPath"] = registryPath
+    if ecadRepoPath is not None:
+        cfg["ecadRepoPath"] = ecadRepoPath
     if projects is not None:
         cfg["projects"] = projects
     _save_config(cfg)
@@ -136,6 +146,18 @@ def _registry_path(cfg):
     if not path or not os.path.isdir(path):
         raise RpcError(APP_ERROR,
                         "no registry repo configured - set up company "
+                        "directories first")
+    return path
+
+
+def _ecad_repo_path(cfg):
+    """The one shared repo holding every project's KiCad/PCB-assembly (type
+    F) files - see _load_config's ecadRepoPath docstring for why this is
+    one shared repo rather than per-project like mechanical repoPath."""
+    path = cfg.get("ecadRepoPath")
+    if not path or not os.path.isdir(path):
+        raise RpcError(APP_ERROR,
+                        "no ECAD repo configured - set up company "
                         "directories first")
     return path
 
@@ -410,8 +432,17 @@ def _new_part_relpath(project, type, seq, rev):
     placement; pn.newRevision deliberately keeps a later revision NEXT TO
     wherever the current file actually lives (via _find_part_file's
     self-healing search) instead of recomputing this, so a part that's been
-    manually reorganized since is never fought with."""
+    manually reorganized since is never fought with.
+
+    Type F (PCB Assembly) is the one exception: its "file" is a whole
+    KiCad project (.kicad_pro/.kicad_pcb/.kicad_sch as a set, plus
+    whatever exports came with an import) with no single canonical
+    filename the way <pn>.FCStd is - so this returns just the FOLDER
+    (<project>/<type>/<pn>/, no filename), and the caller decides what to
+    actually place inside it (see kicad.py's import flow)."""
     pn = _fmt_pn(project, type, seq, rev)
+    if type == "F":
+        return os.path.join(project, type, pn)
     return os.path.join(project, type, pn, "%s.FCStd" % pn)
 
 

@@ -1,19 +1,31 @@
-"""Headless KiCad `.kicad_pcb` import - no `pcbnew`, just the S-expression.
+"""Headless KiCad import - two tiers.
 
-First slice of ECAD/MCAD interop: pull a board's Edge.Cuts outline and its
-footprint placements into the current document as a green board solid plus one
-labelled placeholder per component, so an assembly can reference real board
-geometry. Re-import replaces them in place (the "pull" half of a push/pull with
-KiCad running on another machine). Component STEP models and net/joint mapping
-are deferred.
+Tier 1 (this file's original slice of ECAD/MCAD interop): parse the
+`.kicad_pcb` S-expression directly - no `pcbnew`, no `kicad-cli` - and pull
+the Edge.Cuts outline plus one labelled placeholder box per footprint into
+the current document, so an assembly can reference real board geometry even
+with no KiCad 3D model library installed. Net/joint mapping is deferred.
+
+Tier 2 (kicad_import_step below): shells out to `kicad-cli pcb export step`
+(real per-component 3D models where the board's footprints have them,
+verified against a populated demo board to genuinely produce one separate
+Part::Feature per component, not one fused blob) then Import.insert's the
+result - this is the real, richly-detailed import, used as the DEFAULT when
+opening a PCB-assembly (type F) part. Tier 1 remains available as an
+explicit fallback (kicad.import) for a board with no 3D models, or if
+kicad-cli isn't installed on this machine.
 """
 import os
+import subprocess
+import tempfile
 
 from gwtcad.registry import method, RpcError, APP_ERROR
 from gwtcad import session
 
 BOARD_NAME = "_KICAD_BOARD"
 PARTS_NAME = "_KICAD_PARTS"
+
+KICAD_CLI = os.environ.get("GWTCAD_KICAD_CLI", "kicad-cli")  # assumed on PATH - see docs/first-time-setup.md
 
 
 # --------------------------------------------------------------------------- #
@@ -255,6 +267,130 @@ def _remove(d, name):
         try:
             d.removeObject(name)
         except Exception:
+            pass
+
+
+def _kicad_cli_available():
+    try:
+        r = subprocess.run([KICAD_CLI, "version"], capture_output=True, text=True, timeout=10)
+        return r.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+@method("kicad.importStep")
+def kicad_import_step(path=None):
+    """Real per-component import: kicad-cli pcb export step (each populated
+    footprint's own 3D model becomes its own solid - verified against a real
+    board with 3D models attached, NOT the case for every KiCad demo/template
+    board, some of which genuinely have no 3D models on their footprints at
+    all) into a temp .step, then Import.insert it into the current document.
+
+    This is the DEFAULT way to open a PCB-assembly (type F) part - richer
+    than kicad.import's outline+placeholder tier, at the cost of actually
+    needing kicad-cli on this machine and the board's footprints having real
+    3D models assigned. Falls back to kicad.import automatically (never
+    raises for THAT reason) if kicad-cli is missing or the export produces
+    nothing usable - a missing 3D model library degrades to a placeholder
+    board, it never blocks opening the part entirely."""
+    if not path or not os.path.isfile(path):
+        raise RpcError(APP_ERROR, "kicad.importStep: file not found: %r" % path)
+
+    if not _kicad_cli_available():
+        result = kicad_import(path)
+        result["kicad"]["stepImport"] = False
+        result["kicad"]["stepImportReason"] = "kicad-cli not found on PATH"
+        return result
+
+    tmpdir = tempfile.mkdtemp(prefix="gwtcad-kicad-step-")
+    step_path = os.path.join(tmpdir, "board.step")
+    try:
+        r = subprocess.run(
+            [KICAD_CLI, "pcb", "export", "step", path, "--output", step_path, "--force"],
+            capture_output=True, text=True, timeout=120,
+        )
+        # kicad-cli's exit code is NOT a reliable success signal on its own -
+        # confirmed it returns 2 (not 0) on a genuinely successful export
+        # that only had a warning to report (e.g. a legacy zone-fill
+        # strategy note). The output file actually existing is the real
+        # signal; a nonzero code with no file is the real failure case.
+        if not os.path.isfile(step_path):
+            result = kicad_import(path)
+            result["kicad"]["stepImport"] = False
+            result["kicad"]["stepImportReason"] = (r.stderr or r.stdout or "export failed").strip()
+            return result
+
+        import Import
+
+        d = session.doc()
+        _remove(d, BOARD_NAME)
+        _remove(d, PARTS_NAME)
+        # a re-import must not pile up a second copy of the last STEP import.
+        # App::Part containers (Import.insert's Top/Bot/Step_Models groups)
+        # can't be wrapped in an App::DocumentObjectGroup afterward - their
+        # children are already properly scoped inside them, and forcing them
+        # into a plain group breaks that scope (confirmed: FreeCAD warns
+        # "go out of the allowed scope" and silently refuses the reparent).
+        # So instead of a real FreeCAD group, just remember the top-level
+        # object names THIS import created, in link order, and remove those
+        # PLUS everything reachable from them via OutList (recursively) -
+        # NOT just .Group: an App::Part's own Origin (with its axes/planes)
+        # is only referenced via OutList, never listed in .Group, so a
+        # .Group-only walk silently leaks that origin + its 6 children on
+        # every re-import (confirmed directly - Import.insert also never
+        # reuses object names across repeated calls, so leaked objects
+        # accumulate under new names forever, never colliding/overwriting).
+        prior_names = (session.kicad_link() or {}).get("stepImportTopLevelNames") or []
+        to_remove = []
+        seen = set()
+
+        def _collect(name):
+            if name in seen:
+                return
+            seen.add(name)
+            o = d.getObject(name)
+            if o is None:
+                return
+            for child in list(o.OutList):
+                _collect(child.Name)
+            to_remove.append(name)
+
+        for name in prior_names:
+            _collect(name)
+        # children before parents (already the order _collect appends in,
+        # since it recurses into OutList before appending the object itself)
+        for name in to_remove:
+            try:
+                d.removeObject(name)
+            except Exception:
+                pass
+
+        before = set(o.Name for o in d.Objects)
+        Import.insert(step_path, d.Name)
+        new_objs = [o for o in d.Objects if o.Name not in before]
+        top_level_new = [o for o in new_objs if not o.InList]
+
+        d.recompute()
+        session.set_kicad_link(path, stepImportTopLevelNames=[o.Name for o in top_level_new])
+
+        from gwtcad.methods import tree_get
+
+        return {
+            **tree_get(),
+            "kicad": {
+                "path": path,
+                "stepImport": True,
+                "componentCount": sum(1 for o in new_objs if o.TypeId == "Part::Feature"),
+            },
+        }
+    finally:
+        try:
+            os.remove(step_path)
+        except OSError:
+            pass
+        try:
+            os.rmdir(tmpdir)
+        except OSError:
             pass
 
 

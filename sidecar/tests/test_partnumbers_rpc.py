@@ -225,3 +225,59 @@ def test_list_available_seq_fills_holes_left_by_obsoleted_parts(company_config):
     assert 2 in result["available"]
     assert 1 not in result["available"]
     assert 3 not in result["available"]
+
+
+def test_ecad_repo_path_defaults_to_none(company_config):
+    cfg = pn._load_config()
+    assert cfg["ecadRepoPath"] is None
+
+
+def test_set_company_config_persists_ecad_repo_path(company_config, tmp_path):
+    ecad_dir = tmp_path / "ecad-cad-files"
+    ecad_dir.mkdir()
+    pn.pn_set_company_config(ecadRepoPath=str(ecad_dir))
+
+    cfg = pn._load_config()
+    assert cfg["ecadRepoPath"] == str(ecad_dir)
+
+
+def test_set_company_config_omitting_ecad_repo_path_leaves_it_unchanged(company_config, tmp_path):
+    ecad_dir = tmp_path / "ecad-cad-files"
+    ecad_dir.mkdir()
+    pn.pn_set_company_config(ecadRepoPath=str(ecad_dir))
+
+    pn.pn_set_company_config(registryPath=pn._load_config()["registryPath"])  # unrelated update
+
+    cfg = pn._load_config()
+    assert cfg["ecadRepoPath"] == str(ecad_dir)
+
+
+def test_ecad_repo_path_raises_when_not_configured(company_config):
+    cfg = pn._load_config()
+    with pytest.raises(RpcError):
+        pn._ecad_repo_path(cfg)
+
+
+def test_ecad_repo_path_raises_when_configured_dir_does_not_exist(company_config, tmp_path):
+    pn.pn_set_company_config(ecadRepoPath=str(tmp_path / "does-not-exist"))
+    cfg = pn._load_config()
+    with pytest.raises(RpcError):
+        pn._ecad_repo_path(cfg)
+
+
+def test_ecad_repo_path_returns_configured_dir(company_config, tmp_path):
+    ecad_dir = tmp_path / "ecad-cad-files"
+    ecad_dir.mkdir()
+    pn.pn_set_company_config(ecadRepoPath=str(ecad_dir))
+    cfg = pn._load_config()
+    assert pn._ecad_repo_path(cfg) == str(ecad_dir)
+
+
+def test_new_part_relpath_for_type_f_is_a_bare_folder():
+    relpath = pn._new_part_relpath("CM", "F", 10, 0)
+    assert relpath == os.path.join("CM", "F", "CMF0100")
+
+
+def test_new_part_relpath_for_mechanical_type_still_includes_filename():
+    relpath = pn._new_part_relpath("CM", "C", 10, 0)
+    assert relpath == os.path.join("CM", "C", "CMC0100", "CMC0100.FCStd")
