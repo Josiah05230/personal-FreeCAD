@@ -1846,6 +1846,10 @@ export const api = {
 
 export interface CompanyConfig {
   registryPath: string | null
+  /** one shared repo for every project's KiCad/PCB-assembly (type F) work -
+   *  mirrors registryPath (one shared repo), NOT the per-project repoPath
+   *  scheme mechanical files use (see partnumbers.py's _load_config) */
+  ecadRepoPath: string | null
   projects: Record<string, { name: string; repoPath: string }>
 }
 

@@ -81,8 +81,16 @@ export function NewPartDialog({
         mfgPn.trim() || undefined,
         purchasingLink.trim() || undefined
       )
-      const repoPath = cfg?.projects[project]?.repoPath
-      if (!repoPath) throw new Error('project has no repo path configured')
+      // type F (PCB Assembly) files live in the one shared ECAD repo, not
+      // the project's own mechanical repoPath - see CompanySettingsPanel.
+      const repoPath = type === 'F' ? cfg?.ecadRepoPath : cfg?.projects[project]?.repoPath
+      if (!repoPath) {
+        throw new Error(
+          type === 'F'
+            ? 'no ECAD repo configured - set it up under Company Directories first'
+            : 'project has no repo path configured'
+        )
+      }
       const path = `${repoPath}/${res.repoRelpath}`
       onCreated({ pn: res.pn, path, name: res.name, description: res.description })
     } catch (e) {

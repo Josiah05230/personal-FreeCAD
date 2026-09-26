@@ -273,11 +273,46 @@ def test_ecad_repo_path_returns_configured_dir(company_config, tmp_path):
     assert pn._ecad_repo_path(cfg) == str(ecad_dir)
 
 
-def test_new_part_relpath_for_type_f_is_a_bare_folder():
+def test_new_part_relpath_for_type_f_includes_fcstd_filename_too():
+    # a purchased breakout-board module with no real KiCad source still
+    # needs somewhere to save a mocked-up FreeCAD model - a real KiCad
+    # project just lives alongside this FCStd in the same folder.
     relpath = pn._new_part_relpath("CM", "F", 10, 0)
-    assert relpath == os.path.join("CM", "F", "CMF0100")
+    assert relpath == os.path.join("CM", "F", "CMF0100", "CMF0100.FCStd")
 
 
 def test_new_part_relpath_for_mechanical_type_still_includes_filename():
     relpath = pn._new_part_relpath("CM", "C", 10, 0)
     assert relpath == os.path.join("CM", "C", "CMC0100", "CMC0100.FCStd")
+
+
+def test_repo_for_path_recognizes_the_shared_ecad_repo(company_config, tmp_path):
+    ecad_dir = tmp_path / "ecad-cad-files"
+    ecad_dir.mkdir()
+    pn.pn_set_company_config(ecadRepoPath=str(ecad_dir))
+
+    inside = ecad_dir / "CM" / "F" / "CMF0100"
+    inside.mkdir(parents=True)
+    result = pn.pn_repo_for_path(str(inside))
+
+    assert result["project"] is None  # the ECAD repo has no single project code
+    assert result.get("ecad") is True
+    assert result["repoPath"] == str(ecad_dir)
+
+
+def test_repo_for_path_prefers_a_mechanical_project_match_over_ecad(company_config, cad_repo, tmp_path):
+    ecad_dir = tmp_path / "ecad-cad-files"
+    ecad_dir.mkdir()
+    pn.pn_set_company_config(ecadRepoPath=str(ecad_dir))
+
+    result = pn.pn_repo_for_path(str(cad_repo))
+    assert result["project"] == "CM"
+    assert "ecad" not in result
+
+
+def test_repo_for_path_none_for_a_path_outside_every_configured_repo(company_config, tmp_path):
+    pn.pn_set_company_config(ecadRepoPath=str(tmp_path / "ecad-cad-files"))
+    outside = tmp_path / "somewhere-else"
+    outside.mkdir()
+    result = pn.pn_repo_for_path(str(outside))
+    assert result == {"project": None}

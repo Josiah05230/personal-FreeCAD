@@ -434,15 +434,16 @@ def _new_part_relpath(project, type, seq, rev):
     self-healing search) instead of recomputing this, so a part that's been
     manually reorganized since is never fought with.
 
-    Type F (PCB Assembly) is the one exception: its "file" is a whole
-    KiCad project (.kicad_pro/.kicad_pcb/.kicad_sch as a set, plus
-    whatever exports came with an import) with no single canonical
-    filename the way <pn>.FCStd is - so this returns just the FOLDER
-    (<project>/<type>/<pn>/, no filename), and the caller decides what to
-    actually place inside it (see kicad.py's import flow)."""
+    Type F (PCB Assembly) gets the SAME <pn>.FCStd shape, not a bare
+    folder - a purchased breakout-board module with no real KiCad source
+    still needs somewhere to save a mocked-up FreeCAD model (mirroring how
+    supplier_models.py mocks up purchased mechanical parts), and a real
+    KiCad project (.kicad_pro/.kicad_pcb/.kicad_sch, plus whatever exports
+    came with an import) just lives ALONGSIDE that FCStd in the same
+    folder - exactly like a mechanical part's exports sit next to its
+    FCStd today. The folder is what's actually ECAD-repo-specific here,
+    not the filename convention."""
     pn = _fmt_pn(project, type, seq, rev)
-    if type == "F":
-        return os.path.join(project, type, pn)
     return os.path.join(project, type, pn, "%s.FCStd" % pn)
 
 
@@ -1061,7 +1062,16 @@ def pn_repo_for_path(path):
     """Which configured project repo (if any) a filesystem path falls under
     - used by the New Design flow to decide whether saving there requires a
     PN. Returns {"project": None} for anything outside every configured repo
-    (untracked scratch work stays untracked)."""
+    (untracked scratch work stays untracked).
+
+    The shared ECAD repo is checked too (not just per-project mechanical
+    repoPath) - someone hand-saving a PCB-assembly mockup FCStd there
+    should get the same "reserve a PN for this?" prompt a mechanical repo
+    location gets. It has no single project code of its own (it's shared
+    across every project), so a match there returns project=None but a
+    real ecad=True flag instead - the caller decides what to do with that
+    (the New Design flow doesn't act on it today; it's here for a future
+    "reserve an F PN" prompt from a hand-picked ECAD repo location)."""
     cfg = _load_config()
     path = os.path.abspath(os.path.expanduser(path))
     candidates = list((cfg.get("projects") or {}).items())
@@ -1074,9 +1084,16 @@ def pn_repo_for_path(path):
         if path == repo_abs or path.startswith(repo_abs + os.sep):
             if best is None or len(repo_abs) > len(best[1]):
                 best = (code, repo_abs)
-    if best is None:
-        return {"project": None}
-    return {"project": best[0], "repoPath": best[1]}
+    if best is not None:
+        return {"project": best[0], "repoPath": best[1]}
+
+    ecad_repo = cfg.get("ecadRepoPath")
+    if ecad_repo:
+        ecad_abs = os.path.abspath(ecad_repo)
+        if path == ecad_abs or path.startswith(ecad_abs + os.sep):
+            return {"project": None, "ecad": True, "repoPath": ecad_abs}
+
+    return {"project": None}
 
 
 @method("pn.checkLocation")

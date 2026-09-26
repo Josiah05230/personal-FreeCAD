@@ -32,6 +32,12 @@ export function CompanySettingsPanel({ onClose }: { onClose: () => void }): JSX.
     save({ ...cfg, registryPath: p })
   }
 
+  const setEcadRepoPath = async (): Promise<void> => {
+    const p = await pickDir()
+    if (!p || !cfg) return
+    save({ ...cfg, ecadRepoPath: p })
+  }
+
   const setProjectPath = async (code: string): Promise<void> => {
     const p = await pickDir()
     if (!p || !cfg) return
@@ -82,6 +88,19 @@ export function CompanySettingsPanel({ onClose }: { onClose: () => void }): JSX.
           A single shared git repo holding registry.csv (every company PN) and
           types.yaml (the project-defined type-letter map). All project repos
           read/write the same registry repo, so PNs stay unique company-wide.
+        </div>
+
+        <div className="settings-section">ECAD (KiCad) repo</div>
+        <div className="settings-row">
+          <span title={cfg.ecadRepoPath ?? ''}>{cfg.ecadRepoPath ?? 'Not set'}</span>
+          <button onClick={() => void setEcadRepoPath()}>Choose…</button>
+        </div>
+        <div className="settings-hint">
+          One shared repo for every PCB-assembly (type F) project - the whole
+          KiCad project (.kicad_pro/.kicad_pcb/.kicad_sch) plus any exports,
+          organized the same way as mechanical parts (project/type/PN). Only
+          one repo company-wide, not one per project - a PCB design is far
+          more likely to get reused across projects than a mechanical part is.
         </div>
 
         <div className="settings-section">Projects</div>
