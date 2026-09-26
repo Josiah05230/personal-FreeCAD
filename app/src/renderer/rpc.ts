@@ -994,6 +994,18 @@ export const api = {
    *  match a real reserved PN (typo, or never reserved). */
   kicadImportBom: (schPath: string, assemblyPn: string) =>
     rpc<{ pn: string; itemCount: number; skipped: string[] }>('kicad.importBom', { schPath, assemblyPn }),
+
+  // --- universal Import from File (import_dispatch.py) ---
+  importInspect: (path: string) => rpc<ImportInspection>('importDispatch.inspect', { path }),
+  importPlaceEcad: (extractDir: string, relpaths: string[], destDir: string) =>
+    rpc<{
+      placed: string[]
+      skipped: string[]
+      pcbPath: string | null
+      schPath: string | null
+      proPath: string | null
+    }>('importDispatch.placeEcad', { extractDir, relpaths, destDir }),
+  importCleanup: (extractDir: string) => rpc<{ ok: boolean }>('importDispatch.cleanup', { extractDir }),
   kicadStatus: () =>
     rpc<{ path?: string; placements?: Record<string, unknown> }>('kicad.status', {}),
   exportModel2: (path: string) => rpc<{ path: string; objects: number }>('io.export', { path }),
@@ -1865,6 +1877,18 @@ export const api = {
       sync: Array<{ pn: string; ok: boolean; path?: string; skipped?: string; error?: string }>
       drawings: Array<{ pn: string; ok: boolean; pdfUploaded?: boolean; skipped?: string; errors?: string[]; error?: string }>
     }>('supplierModels.syncAndGenerateAll', {})
+}
+
+/** kicad = part of the KiCad project; footprint = a 3D model a footprint in
+ *  the board references (stays with the board); mechanical = standalone 3D
+ *  model (its own PN); attachment = anything else (rides with the board). */
+export type ImportRole = 'kicad' | 'footprint' | 'mechanical' | 'attachment'
+export interface ImportInspection {
+  extractDir: string
+  sourceName: string
+  hasKicad: boolean
+  pcb: string | null
+  files: { relpath: string; role: ImportRole; matchedModel: string | null }[]
 }
 
 export interface CompanyConfig {

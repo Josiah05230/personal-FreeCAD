@@ -14,17 +14,21 @@ export function NewPartDialog({
   onClose,
   onCreated,
   initialProject,
+  initialType,
   prefill
 }: {
   onClose: () => void
   onCreated: (info: { pn: string; path: string; name: string; description: string }) => void
   initialProject?: string
+  /** preselects the type dropdown - e.g. "F" for the PCB-assembly half of
+   *  an Import from File that contained a KiCad project */
+  initialType?: string
   prefill?: { name?: string; description?: string; mfg?: string; mfgPn?: string; purchasingLink?: string }
 }): JSX.Element {
   const [cfg, setCfg] = useState<CompanyConfig | null>(null)
   const [types, setTypes] = useState<Record<string, string>>({})
   const [project, setProject] = useState<string>(initialProject ?? '')
-  const [type, setType] = useState<string>('')
+  const [type, setType] = useState<string>(initialType ?? '')
   const [available, setAvailable] = useState<number[]>([])
   const [seq, setSeq] = useState<number | null>(null)
   const [name, setName] = useState(prefill?.name ?? '')

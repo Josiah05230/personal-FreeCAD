@@ -107,3 +107,21 @@ def test_import_step_falls_back_when_kicad_cli_missing(monkeypatch, real_board_w
     # never raise just because the richer tier isn't available.
     d = session.doc(create=False)
     assert len(d.Objects) > 0
+
+
+@pytest.mark.skipif(not _kicad_cli_available(), reason="kicad-cli not installed on this machine")
+def test_falling_back_to_outline_tier_removes_previous_step_bodies(monkeypatch, real_board_with_component):
+    # a board first imported with real 3D models, then re-synced on a
+    # machine without kicad-cli: the old STEP bodies must not linger next
+    # to the new outline+placeholder objects.
+    session.reset()
+    kicad.kicad_import_step(real_board_with_component)
+    d = session.doc(create=False)
+    assert any("L_0603_1608Metric" in o.Label for o in d.Objects)
+
+    monkeypatch.setattr(kicad, "KICAD_CLI", "/nonexistent/kicad-cli-definitely-not-here")
+    kicad.kicad_import_step(real_board_with_component)
+
+    labels = [o.Label for o in d.Objects]
+    assert not any("L_0603_1608Metric" in lbl for lbl in labels), labels
+    assert d.getObject(kicad.BOARD_NAME) is not None

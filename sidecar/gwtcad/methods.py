@@ -22,6 +22,7 @@ from . import partnumbers as _partnumbers
 from . import export as _export
 from . import supplier_models as _supplier_models
 from . import recovery as _recovery
+from . import import_dispatch as _import_dispatch  # noqa: F401 (registers importDispatch.*)
 from .tessellate import tessellate_shape
 from .vocab import op_name, next_label
 from . import expr as _expr

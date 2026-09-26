@@ -8,6 +8,10 @@ export interface FileActions {
   onExport: () => void
   onImport: () => void
   onNewPart: () => void
+  /** Import from File: a zip / STEP / mesh / KiCad project - classifies it,
+   *  lets the user confirm, then assigns PN(s) (one mechanical and/or one
+   *  F PCB assembly) through the normal New Part dialog */
+  onImportFromFile: () => void
   onNewRevision?: () => void
   /** Only set when the open document is an F (PCB Assembly) part with a
    *  real KiCad project alongside it - launches it with the OS's own
@@ -114,6 +118,7 @@ export function FileMenu({
             {item('Save As…', actions.onSaveAs)}
             <div className="filemenu-sep" />
             {item('New Part…', actions.onNewPart)}
+            {item('New Part from File…', actions.onImportFromFile)}
             {actions.onNewRevision && item('New Revision', actions.onNewRevision)}
             {actions.onOpenInKicad && item('Open in KiCad', actions.onOpenInKicad)}
             {actions.onSetLifecycle && actions.currentLifecycle && (

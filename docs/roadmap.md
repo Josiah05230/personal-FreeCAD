@@ -123,6 +123,18 @@ numbering system with git as its concurrency control:
       indicator), a standalone-open blocking lock with staleness-based reclaim,
       and a soft upstream-change watch (Sync / Review-as-a-peek / Push-mine-
       over-theirs) for assembly components and already-open files
+- [x] ECAD: a shared `ecad-cad-files` repo for type-F PCB assemblies (same
+      `<project>/<type>/<PN>/` layout, holding the FCStd plus the whole KiCad
+      project). Opening an F part imports the board's real per-component 3D
+      geometry via `kicad-cli pcb export step` (outline + placeholder fallback
+      without it), and its BOM from the schematic's `GWT_PN` symbol fields.
+      "Open in KiCad" launches it; "Re-sync KiCad PCB" commits the KiCad edits,
+      pulls, pushes and re-imports
+- [x] File > New Part from File…: a zip / STEP / mesh / KiCad project is
+      classified before anything is saved (a STEP a footprint references stays
+      with the board; anything else becomes its own mechanical PN), every
+      classification can be overridden, then PN(s) are assigned through the
+      normal New Part dialog
 - [x] A real automated test suite for this subsystem (`sidecar/tests/`, run via
       `sidecar/scripts/run_tests.sh`) - added after a flat-path assumption broke
       silently during the folder reorg above and was only caught by a manual

@@ -270,6 +270,39 @@ def _remove(d, name):
             pass
 
 
+def _remove_prior_step_import(d):
+    """Remove every object the LAST kicad.importStep created (tracked by
+    top-level name in session.kicad_link, plus everything reachable from
+    them via OutList - NOT just .Group: an App::Part's own Origin with its
+    axes/planes is only referenced via OutList, and Import.insert never
+    reuses names across calls, so a .Group-only walk leaks a growing pile
+    of orphans on every re-import). Called by BOTH import tiers, so
+    switching tiers (e.g. a re-sync on a machine without kicad-cli) never
+    leaves the other tier's objects behind."""
+    prior_names = (session.kicad_link() or {}).get("stepImportTopLevelNames") or []
+    to_remove = []
+    seen = set()
+
+    def _collect(name):
+        if name in seen:
+            return
+        seen.add(name)
+        o = d.getObject(name)
+        if o is None:
+            return
+        for child in list(o.OutList):
+            _collect(child.Name)
+        to_remove.append(name)
+
+    for name in prior_names:
+        _collect(name)
+    for name in to_remove:
+        try:
+            d.removeObject(name)
+        except Exception:
+            pass
+
+
 def _kicad_cli_available():
     try:
         r = subprocess.run([KICAD_CLI, "version"], capture_output=True, text=True, timeout=10)
@@ -325,45 +358,10 @@ def kicad_import_step(path=None):
         d = session.doc()
         _remove(d, BOARD_NAME)
         _remove(d, PARTS_NAME)
-        # a re-import must not pile up a second copy of the last STEP import.
-        # App::Part containers (Import.insert's Top/Bot/Step_Models groups)
-        # can't be wrapped in an App::DocumentObjectGroup afterward - their
-        # children are already properly scoped inside them, and forcing them
-        # into a plain group breaks that scope (confirmed: FreeCAD warns
-        # "go out of the allowed scope" and silently refuses the reparent).
-        # So instead of a real FreeCAD group, just remember the top-level
-        # object names THIS import created, in link order, and remove those
-        # PLUS everything reachable from them via OutList (recursively) -
-        # NOT just .Group: an App::Part's own Origin (with its axes/planes)
-        # is only referenced via OutList, never listed in .Group, so a
-        # .Group-only walk silently leaks that origin + its 6 children on
-        # every re-import (confirmed directly - Import.insert also never
-        # reuses object names across repeated calls, so leaked objects
-        # accumulate under new names forever, never colliding/overwriting).
-        prior_names = (session.kicad_link() or {}).get("stepImportTopLevelNames") or []
-        to_remove = []
-        seen = set()
-
-        def _collect(name):
-            if name in seen:
-                return
-            seen.add(name)
-            o = d.getObject(name)
-            if o is None:
-                return
-            for child in list(o.OutList):
-                _collect(child.Name)
-            to_remove.append(name)
-
-        for name in prior_names:
-            _collect(name)
-        # children before parents (already the order _collect appends in,
-        # since it recurses into OutList before appending the object itself)
-        for name in to_remove:
-            try:
-                d.removeObject(name)
-            except Exception:
-                pass
+        # tracked by name rather than wrapped in a DocumentObjectGroup:
+        # Import.insert's App::Part containers can't be reparented into a
+        # plain group (FreeCAD refuses: "go out of the allowed scope").
+        _remove_prior_step_import(d)
 
         before = set(o.Name for o in d.Objects)
         Import.insert(step_path, d.Name)
@@ -496,6 +494,7 @@ def kicad_import(path=None, thickness=None):
     d = session.doc()
     _remove(d, BOARD_NAME)
     _remove(d, PARTS_NAME)
+    _remove_prior_step_import(d)
 
     bo = d.addObject("Part::Feature", BOARD_NAME)
     bo.Label = "PCB - %s" % os.path.splitext(os.path.basename(path))[0]

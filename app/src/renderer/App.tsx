@@ -42,6 +42,7 @@ import { SettingsPanel } from './ui/SettingsPanel'
 import { MaterialsPanel } from './ui/MaterialsPanel'
 import { McMasterPanel } from './ui/McMasterPanel'
 import { NewPartDialog } from './ui/NewPartDialog'
+import { ImportFromFileDialog, type ImportPlan } from './ui/ImportFromFileDialog'
 import { PNBrowserPanel } from './ui/PNBrowserPanel'
 import { CompanySettingsPanel } from './ui/CompanySettingsPanel'
 import { AppearancePanel } from './ui/AppearancePanel'
@@ -60,6 +61,7 @@ import { loadMeshPrefs } from './meshPrefs'
 import type { MeasureResult, SketchRefGeom, SketchConstraint } from './rpc'
 import type { SketchTool, SketchConstraintType } from './viewport/SketchController'
 import type { SketchFrameDTO } from './rpc'
+import type { ImportInspection } from './rpc'
 import { basename, dirname, sketchEntitiesToPolys } from './util'
 import { perfProfile } from './perfProfile'
 import { CmdQueue } from './cmdQueue'
@@ -260,6 +262,14 @@ export function App(): JSX.Element {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [newPartOpen, setNewPartOpen] = useState(false)
   const [newPartProject, setNewPartProject] = useState<string | undefined>(undefined)
+  const [newPartType, setNewPartType] = useState<string | undefined>(undefined)
+  // Import from File: the classification dialog's input, then the confirmed
+  // plan carried across one or two New Part dialogs (mechanical PN first,
+  // then the F/PCB-assembly PN). A ref, not state, so createPart always
+  // sees the CURRENT stage even when the second dialog opens from inside the
+  // first createPart call.
+  const [importInspection, setImportInspection] = useState<ImportInspection | null>(null)
+  const pendingImportRef = useRef<{ plan: ImportPlan; stage: 'mechanical' | 'ecad' } | null>(null)
   const [newPartPrefill, setNewPartPrefill] = useState<
     { name?: string; description?: string; mfg?: string; mfgPn?: string; purchasingLink?: string } | undefined
   >(undefined)
@@ -3383,26 +3393,68 @@ export function App(): JSX.Element {
     const p = await window.cad.openDialog([{ name: 'KiCad PCB', extensions: ['kicad_pcb'] }])
     if (!p) return
     try {
-      const r = await api.kicadImport(p)
+      const r = await api.kicadImportStep(p)
       await afterEdit()
       vpApi.current?.fit()
       window.alert(
-        `PCB imported: ${r.kicad.components} components, ` +
-          `${r.kicad.size[0]} x ${r.kicad.size[1]} x ${r.kicad.size[2]} mm`
+        r.kicad.stepImport
+          ? `PCB imported with real 3D models: ${r.kicad.componentCount ?? 0} bodies`
+          : `PCB imported as an outline + placeholders (${r.kicad.stepImportReason ?? 'no 3D models'}): ` +
+              `${r.kicad.components ?? 0} components`
       )
     } catch (e) {
       window.alert((e as Error).message)
     }
   }, [afterEdit])
 
+  // Re-sync KiCad PCB: the KiCad files are edited in KiCad itself, which
+  // knows nothing about the company repo - so this is where they get
+  // committed/pulled/pushed. Order matters: commit what was saved in KiCad
+  // FIRST (a pull refuses to run over a dirty tree), then pull teammates'
+  // changes, then push, then re-import so the model reflects the merged
+  // board. A real merge conflict stops before re-importing - it has to be
+  // resolved in the Git panel (or KiCad) first.
   const reimportKicad = useCallback(async () => {
     try {
-      await api.kicadReimport()
+      const link = await api.kicadStatus()
+      const board = link.path
+      if (!board) throw new Error('No KiCad board linked yet - use Import KiCad PCB or open an F part first.')
+      const st = await window.cad.gitStatus(board).catch(() => ({ isRepo: false }) as GitStatus)
+      if (st.isRepo) {
+        if (st.dirty) {
+          await window.cad.gitCommitAll(board, `${basename(board)}: KiCad changes (synced from GWT-CAD)`)
+        }
+        if (st.hasUpstream && (await window.cad.gitIsReachable(board).catch(() => false))) {
+          const pulled = await window.cad.gitPull(board)
+          if (pulled.conflict) {
+            window.alert(
+              `Pulling the latest ${basename(board)} hit a merge conflict - resolve it in the Git panel, ` +
+                `then Re-sync again. Your KiCad changes are committed locally and safe.`
+            )
+            return
+          }
+          await attemptPush(board)
+        } else if (st.hasUpstream) {
+          setGitOffline(true)
+        }
+      }
+      const r = await api.kicadImportStep(board)
+      const dir = dirname(board)
+      const found = await window.cad.findKicadProject(dir).catch(() => null)
+      let bomNote = ''
+      if (found?.schPath && currentPn?.[2] === 'F') {
+        const bom = await api.kicadImportBom(found.schPath, currentPn).catch(() => null)
+        if (bom) bomNote = `, BOM ${bom.itemCount} item${bom.itemCount === 1 ? '' : 's'}`
+      }
       await afterEdit()
+      flashSketchNotice(
+        `Re-synced ${basename(board)}` +
+          (r.kicad.stepImport ? ` (${r.kicad.componentCount ?? 0} bodies${bomNote})` : ` (outline only${bomNote})`)
+      )
     } catch (e) {
       window.alert((e as Error).message)
     }
-  }, [afterEdit])
+  }, [afterEdit, attemptPush, currentPn, flashSketchNotice])
 
   const selRefs = useCallback(
     () => selection.map(selectionToRef).filter(Boolean) as import('./rpc').GeomRef[],
@@ -3543,9 +3595,11 @@ export function App(): JSX.Element {
     async (info: { pn: string; path: string; name: string; description: string }) => {
       setNewPartOpen(false)
       setLinkedKicadProject(null)
+      setNewPartType(undefined)
       const mcmaster = pendingMcMaster
       setPendingMcMaster(undefined)
       setNewPartPrefill(undefined)
+      const pendingImport = pendingImportRef.current
       try {
         await api.resetDocument()
         await api.pnTagDocument(info.pn, info.name, info.description)
@@ -3558,6 +3612,37 @@ export function App(): JSX.Element {
           }
           await api.save()
         }
+        let kicadProject: string | null = null
+        if (pendingImport?.stage === 'mechanical') {
+          for (const modelPath of pendingImport.plan.mechanical) {
+            await api.importModel(modelPath)
+          }
+          await api.save()
+        } else if (pendingImport?.stage === 'ecad' && pendingImport.plan.ecad) {
+          // KiCad project + its footprint models + attachments land next to
+          // this F part's FCStd; then the FCStd itself gets the board's real
+          // per-component geometry and the schematic's GWT_PN BOM - the same
+          // two steps opening an existing F part already does.
+          const placed = await api.importPlaceEcad(
+            pendingImport.plan.extractDir,
+            pendingImport.plan.ecad,
+            dirname(info.path)
+          )
+          if (placed.pcbPath) {
+            const imported = await api.kicadImportStep(placed.pcbPath)
+            await api.save()
+            if (!imported.kicad.stepImport) {
+              flashSketchNotice(
+                `Board imported without real component 3D models` +
+                  (imported.kicad.stepImportReason ? ` (${imported.kicad.stepImportReason})` : '')
+              )
+            }
+          }
+          if (placed.schPath) {
+            await api.kicadImportBom(placed.schPath, info.pn).catch(() => undefined)
+          }
+          kicadProject = placed.proPath
+        }
         const id = `d${Date.now()}`
         setTabs((t) => [...t, { id, name: basename(info.path), dirty: false, path: info.path }])
         setActiveTab(id)
@@ -3565,16 +3650,64 @@ export function App(): JSX.Element {
         setDrawingPageId(null)
         setCurrentPn(info.pn)
         setCurrentLifecycle('in_work') // pn.reserve always seeds new parts in_work
+        setLinkedKicadProject(kicadProject)
         await refreshScene()
+        if (pendingImport) {
+          // commits + pushes EVERYTHING just written into the repo (the
+          // KiCad files included), same auto-push a normal Save does
+          void attemptPush(info.path)
+          if (pendingImport.stage === 'mechanical' && pendingImport.plan.ecad) {
+            pendingImportRef.current = { plan: pendingImport.plan, stage: 'ecad' }
+            setNewPartPrefill({ name: `${pendingImport.plan.sourceName} PCB` })
+            setNewPartType('F')
+            setNewPartOpen(true)
+          } else {
+            pendingImportRef.current = null
+            void api.importCleanup(pendingImport.plan.extractDir).catch(() => undefined)
+          }
+        }
       } catch (e) {
+        if (pendingImport) {
+          pendingImportRef.current = null
+          void api.importCleanup(pendingImport.plan.extractDir).catch(() => undefined)
+        }
         window.alert(
           `${info.pn} was reserved in the registry but the file could not be saved: ` +
             `${(e as Error).message}. The PN is still reserved - use Save As to retry at the same path.`
         )
       }
     },
-    [refreshScene, pendingMcMaster]
+    [refreshScene, pendingMcMaster, attemptPush, flashSketchNotice]
   )
+
+  // File > Import from File...: pick anything (zip, STEP/mesh, a KiCad
+  // board/project file), see how it was classified, confirm, then assign
+  // PN(s) through the normal New Part dialog.
+  const importFromFile = useCallback(async (path?: string) => {
+    const p =
+      path ??
+      (await window.cad.openDialog([
+        {
+          name: 'CAD / ECAD files',
+          extensions: ['zip', 'step', 'stp', 'iges', 'igs', 'brep', 'stl', 'obj', '3mf', 'kicad_pcb', 'kicad_pro']
+        }
+      ]))
+    if (!p) return
+    try {
+      setImportInspection(await api.importInspect(p))
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
+  }, [])
+
+  const confirmImport = useCallback((plan: ImportPlan) => {
+    setImportInspection(null)
+    const stage = plan.mechanical.length ? 'mechanical' : 'ecad'
+    pendingImportRef.current = { plan, stage }
+    setNewPartPrefill({ name: plan.sourceName })
+    setNewPartType(stage === 'ecad' ? 'F' : undefined)
+    setNewPartOpen(true)
+  }, [])
 
   const newRevision = useCallback(async () => {
     if (!currentPn || !docPath) return
@@ -4408,6 +4541,8 @@ export function App(): JSX.Element {
       // crash-recovery (test hook - the real timer waits 2 minutes; a test
       // needs to trigger the exact same autosave on demand)
       triggerAutosave: () => api.autosave(),
+      // Import from File with an explicit path (the real menu opens a native dialog)
+      importFromFilePath: (path: string) => importFromFile(path),
 
       // --- ops (ribbon -> dialog -> apply) ---
       openOp: (k: OpKind) => openOp(k),
@@ -5210,9 +5345,18 @@ export function App(): JSX.Element {
           onExport: exportModel,
           onImport: importStep,
           onNewPart: () => setNewPartOpen(true),
+          onImportFromFile: () => void importFromFile(),
           onNewRevision: currentPn ? newRevision : undefined,
           onOpenInKicad: linkedKicadProject
-            ? () => void window.cad.openPath(linkedKicadProject).catch((e) => window.alert((e as Error).message))
+            ? () =>
+                void window.cad
+                  .openPath(linkedKicadProject)
+                  .then(() =>
+                    flashSketchNotice(
+                      'Opened in KiCad - save there when done, then use Re-sync KiCad PCB to commit/push your changes and pull them into this model.'
+                    )
+                  )
+                  .catch((e) => window.alert((e as Error).message))
             : undefined,
           onPnBrowser: () => setPnBrowserOpen(true),
           onCheckSupplierModels: () => void checkSupplierModels(false),
@@ -5735,15 +5879,33 @@ export function App(): JSX.Element {
                       }}
                     />
                   )}
+                  {importInspection && (
+                    <ImportFromFileDialog
+                      inspection={importInspection}
+                      onCancel={() => {
+                        void api.importCleanup(importInspection.extractDir).catch(() => undefined)
+                        setImportInspection(null)
+                      }}
+                      onConfirm={confirmImport}
+                    />
+                  )}
                   {newPartOpen && (
                     <NewPartDialog
+                      key={`${newPartType ?? ''}:${newPartPrefill?.name ?? ''}`}
                       initialProject={newPartProject}
+                      initialType={newPartType}
                       prefill={newPartPrefill}
                       onClose={() => {
                         setNewPartOpen(false)
                         setNewPartProject(undefined)
                         setNewPartPrefill(undefined)
+                        setNewPartType(undefined)
                         setPendingMcMaster(undefined)
+                        const pending = pendingImportRef.current
+                        if (pending) {
+                          pendingImportRef.current = null
+                          void api.importCleanup(pending.plan.extractDir).catch(() => undefined)
+                        }
                       }}
                       onCreated={(info) => {
                         setNewPartProject(undefined)

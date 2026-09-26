@@ -7,7 +7,7 @@ install always needs these steps before the app is fully working.
 **The short version, for someone handing this to a new teammate:** you
 give them (1) the installer for their OS (see step 1 - just a file, no
 GitHub access needed to install the app itself), (2) GitHub collaborator
-access to `pn-registry` and `pn-cad-files` (step 2 - this IS where GitHub
+access to `pn-registry`, `pn-cad-files` and `ecad-cad-files` (steps 2/2b - this IS where GitHub
 access matters, since those are the company's real data repos), and (3)
 the ONE file `~/.gwtcad/firebase-service-account.json`, shared via Drive/a
 password manager - not git (step 3). Everything else in this doc, they set
@@ -98,9 +98,50 @@ Then in the app: **File > Company Directories…**
   isn't a separate clone per code). Type the code, a display name, then
   point it at `pn-cad-files`.
 
-**Check it worked:** File > Open by PN (or similar) shows real part
+**Check it worked:** File > Part Number Manager… shows real part
 numbers from the registry, not an empty list. Opening one actually loads
 the part.
+
+## 2b. ECAD / KiCad (needed only for PCB-assembly parts - type `F`)
+
+PCB assemblies (type `F` in `types.yaml`) keep their files in a THIRD
+repo, `ecad-cad-files` - one repo for every project's boards, laid out the
+same way as `pn-cad-files` (`CM/F/CMF0010/`). Each board's folder holds its
+`CMF0010.FCStd` (the 3D model GWT-CAD opens) plus the whole KiCad project
+(`.kicad_pro`/`.kicad_pcb`/`.kicad_sch`, footprint 3D models, gerbers...).
+
+1. Get access and clone it, same as step 2:
+   ```bash
+   git clone https://github.com/Josiah05230/ecad-cad-files.git ~/ecad-cad-files
+   ```
+2. **File > Company Directories… > ECAD (KiCad) repo > Choose…** and pick it.
+3. Install KiCad 8+ (it provides `kicad-cli`, which GWT-CAD uses headlessly
+   to turn a board into real per-component 3D geometry and to read its BOM):
+   ```bash
+   sudo apt install kicad        # Debian/Ubuntu - or kicad.org for Windows
+   kicad-cli version             # check it worked: prints a version
+   ```
+   Without it, boards still open - just as an outline with placeholder
+   boxes instead of real component models.
+
+**Getting a board in:** File > **New Part from File…** and pick a zip, a
+STEP, or any file of a KiCad project. GWT-CAD shows how it classified
+every file before anything is saved - a STEP that a footprint in the board
+references is kept with the board; any other STEP becomes its own
+mechanical part (e.g. an enclosure). Flip any file it guessed wrong, then
+assign the part number(s) - mechanical first, then the PCB assembly.
+
+**Linking a board's components to company part numbers:** in KiCad, give
+each company-tracked symbol a custom field named exactly `GWT_PN` with its
+PN (e.g. `CMG0010`) - on the placed symbol, not in the symbol library.
+Whenever the board is opened or re-synced, those become the board's BOM.
+Symbols without a `GWT_PN` (generic resistors, etc.) are left out.
+
+**Editing in KiCad:** open the board, File > **Open in KiCad**, edit and
+save there, then back in GWT-CAD run **Re-sync KiCad PCB** (Insert tab).
+That commits your KiCad changes, pulls anyone else's, pushes, and
+refreshes the 3D model and BOM - KiCad itself knows nothing about the
+company repos, so this is the step that keeps them in sync.
 
 ## 3. CAD-export pipeline (needed only for lifecycle promotion to `active`
    - everything else works without this)
