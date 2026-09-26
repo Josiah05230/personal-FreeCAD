@@ -399,7 +399,12 @@ export async function pushForceWithLease(filePath: string, remote = 'origin'): P
 export async function pull(filePath: string, remote = 'origin'): Promise<{ conflict: boolean }> {
   const cwd = dirname(filePath)
   try {
-    await git(cwd, ['pull', remote], { timeout: NETWORK_TIMEOUT_MS })
+    // explicit merge strategy: a bare `git pull` refuses ANY divergent
+    // history (both sides committed) on modern git unless the machine has
+    // pull.rebase configured - which a fresh install doesn't. Merge rather
+    // than rebase: for binary CAD files a conflict should keep both
+    // versions recoverable and use the Git panel's abort-merge path.
+    await git(cwd, ['pull', '--no-rebase', '--no-edit', remote], { timeout: NETWORK_TIMEOUT_MS })
     return { conflict: false }
   } catch (e) {
     const err = e as { stdout?: string; stderr?: string }
