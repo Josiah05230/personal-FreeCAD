@@ -732,8 +732,8 @@ code {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 24px;
-  padding: 0 12px;
+  min-height: 24px;
+  padding: 3px 12px;
   font-size: 11px;
   cursor: pointer;
 }
@@ -750,6 +750,14 @@ code {
   width: 12px;
   text-align: center;
   color: var(--accent-hi);
+  flex: 0 0 auto;
+}
+
+.dp-name-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .dp-name {
@@ -764,6 +772,16 @@ code {
   color: var(--text-dim);
 }
 
+/* PN registry name/description, shown under a design's filename - for
+   human readability regardless of whether the panel is searching. */
+.dp-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
 .dp-empty,
 .dp-error {
   padding: 8px 12px;
@@ -773,6 +791,56 @@ code {
 
 .dp-error {
   color: var(--danger);
+}
+
+.datapanel-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.datapanel-search input {
+  flex: 1;
+  min-width: 0;
+  background: var(--chrome-3);
+  border: 1px solid var(--line-soft);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 4px 7px;
+  font-size: 11px;
+  font-family: inherit;
+}
+
+.datapanel-search input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.dp-search-clear {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.dp-search-clear:hover {
+  color: var(--text);
+}
+
+.datapanel-footer {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 9.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ---------- git panel ---------- */

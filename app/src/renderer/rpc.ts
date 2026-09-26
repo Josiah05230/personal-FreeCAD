@@ -1859,6 +1859,10 @@ export interface PartRecord {
   lifecycle: string
   rev_date: string
   created: string
+  /** cached hint of where <pn>.FCStd lives within its project repo - not
+   *  authoritative (a file may have moved by hand), but good enough to
+   *  join a registry row to a Data Panel folder entry for display/search. */
+  repo_relpath?: string
 }
 
 /** One kit-item in an assembly's captured BOM (pn.bomFor / pn.saveBom / assembly.bomPns). */

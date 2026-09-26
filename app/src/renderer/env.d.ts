@@ -13,6 +13,13 @@ interface DirListing {
   parent: string
   items: DirEntry[]
 }
+interface SearchResult {
+  name: string
+  path: string
+  isDir: boolean
+  ext: string
+  depth: number
+}
 interface GitStatus {
   isRepo: boolean
   root?: string
@@ -85,6 +92,7 @@ interface CadBridge {
   appVersion(): Promise<string>
   onSidecarRespawned(fn: () => void): () => void
   listDir(dir?: string): Promise<DirListing>
+  searchDir(root: string, query: string): Promise<{ results: SearchResult[] }>
   saveDialog(defaultPath?: string): Promise<string | null>
   openDialog(filters?: { name: string; extensions: string[] }[]): Promise<string | null>
   openDirectoryDialog(): Promise<string | null>

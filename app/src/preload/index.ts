@@ -13,6 +13,15 @@ export interface DirListing {
   parent: string
   items: DirEntry[]
 }
+export interface SearchResult {
+  name: string
+  path: string
+  isDir: boolean
+  ext: string
+  /** how many levels below the search root this was found - 0 = the root
+   *  itself, matches the "highest level first" breadth-first search order */
+  depth: number
+}
 export interface GitStatus {
   isRepo: boolean
   root?: string
@@ -95,6 +104,11 @@ const cad = {
     return () => ipcRenderer.removeListener('cad:sidecarRespawned', h)
   },
   listDir: (dir?: string) => ipcRenderer.invoke('fs:listDir', dir) as Promise<DirListing>,
+  /** recursive design/folder search from `root` down - highest level
+   *  first, then each deeper level in turn (breadth-first), bounded so a
+   *  huge tree can't hang the UI. Used by the Data Panel's search box. */
+  searchDir: (root: string, query: string) =>
+    ipcRenderer.invoke('fs:searchDir', root, query) as Promise<{ results: SearchResult[] }>,
 
   saveDialog: (defaultPath?: string) =>
     ipcRenderer.invoke('dialog:save', defaultPath) as Promise<string | null>,

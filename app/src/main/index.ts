@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import { resolve, join, dirname, basename } from 'path'
-import { readdir, writeFile, readFile, mkdir, rename } from 'fs/promises'
+import { readdir, writeFile, readFile, mkdir, rename, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { Sidecar, loadConfig } from './sidecar'
 import * as gitw from './git'
@@ -22,6 +22,21 @@ let sidecar: Sidecar | null = null
  *  for that case, this is only the graceful-exit path. */
 let activeLockedPath: string | null = null
 
+/** Dirent.isDirectory() is false for a symlink even when it points at a
+ *  real directory (Node doesn't follow the link for that check) - so a
+ *  symlinked folder (e.g. a shared drive shortcut) would otherwise vanish
+ *  from every listing/search below. Follow the link with stat() to get
+ *  the real answer; a broken/dangling symlink just isn't a directory. */
+async function isEffectivelyDirectory(e: import('fs').Dirent, fullPath: string): Promise<boolean> {
+  if (e.isDirectory()) return true
+  if (!e.isSymbolicLink()) return false
+  try {
+    return (await stat(fullPath)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
 /** Does this directory contain any .FCStd within `depth` levels? (bounded) -
  * used only to badge a folder row, never to hide it. */
 async function hasDesign(dir: string, depth: number): Promise<boolean> {
@@ -34,14 +49,61 @@ async function hasDesign(dir: string, depth: number): Promise<boolean> {
   const subdirs: string[] = []
   for (const e of entries) {
     if (e.name.startsWith('.')) continue
+    const p = join(dir, e.name)
     if (e.isFile() && e.name.toLowerCase().endsWith('.fcstd')) return true
-    if (e.isDirectory()) subdirs.push(join(dir, e.name))
+    if (await isEffectivelyDirectory(e, p)) subdirs.push(p)
   }
   if (depth <= 0) return false
   for (const s of subdirs) {
     if (await hasDesign(s, depth - 1)) return true
   }
   return false
+}
+
+/** Search `root` for .FCStd files (and folders) whose name contains
+ *  `query` - the HIGHEST level first, then each deeper level in turn
+ *  (breadth-first), so a match right where the user is looking always
+ *  surfaces before something buried three folders down, even though both
+ *  get found. Bounded (maxResults, and a generous but finite level count)
+ *  so a huge/misconfigured tree can't hang the UI. */
+async function searchDir(
+  root: string,
+  query: string,
+  maxResults = 200
+): Promise<{ name: string; path: string; isDir: boolean; ext: string; depth: number }[]> {
+  const q = query.toLowerCase()
+  const results: { name: string; path: string; isDir: boolean; ext: string; depth: number }[] = []
+  let level: string[] = [root]
+  let depth = 0
+  const MAX_DEPTH = 12 // generous - a real company repo is a handful of levels deep at most
+  while (level.length > 0 && depth <= MAX_DEPTH && results.length < maxResults) {
+    const nextLevel: string[] = []
+    for (const dir of level) {
+      let entries
+      try {
+        entries = await readdir(dir, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const e of entries) {
+        if (e.name.startsWith('.')) continue
+        const p = join(dir, e.name)
+        if (await isEffectivelyDirectory(e, p)) {
+          nextLevel.push(p)
+          if (depth > 0 && e.name.toLowerCase().includes(q)) {
+            results.push({ name: e.name, path: p, isDir: true, ext: '', depth })
+          }
+        } else if (e.name.toLowerCase().endsWith('.fcstd') && e.name.toLowerCase().includes(q)) {
+          results.push({ name: e.name, path: p, isDir: false, ext: 'fcstd', depth })
+        }
+        if (results.length >= maxResults) break
+      }
+      if (results.length >= maxResults) break
+    }
+    level = nextLevel
+    depth += 1
+  }
+  return results
 }
 
 async function createWindow(): Promise<void> {
@@ -106,13 +168,16 @@ app.whenReady().then(async () => {
   ipcMain.handle('fs:listDir', async (_e, dir?: string) => {
     const target = dir && dir.length ? resolve(dir) : homedir()
     const entries = await readdir(target, { withFileTypes: true })
-    const raw = entries
-      .filter((e) => !e.name.startsWith('.'))
-      .map((e) => {
-        const isDir = e.isDirectory()
-        const ext = isDir ? '' : e.name.slice(e.name.lastIndexOf('.') + 1).toLowerCase()
-        return { name: e.name, path: join(target, e.name), isDir, ext }
-      })
+    const raw = await Promise.all(
+      entries
+        .filter((e) => !e.name.startsWith('.'))
+        .map(async (e) => {
+          const p = join(target, e.name)
+          const isDir = await isEffectivelyDirectory(e, p)
+          const ext = isDir ? '' : e.name.slice(e.name.lastIndexOf('.') + 1).toLowerCase()
+          return { name: e.name, path: p, isDir, ext }
+        })
+    )
 
     // files: only designs (this is a design browser, not a general file
     // manager). dirs: ALL of them, like a normal file browser - a folder with
@@ -128,6 +193,12 @@ app.whenReady().then(async () => {
       ...files.sort((a, b) => a.name.localeCompare(b.name))
     ]
     return { dir: target, parent: resolve(target, '..'), items }
+  })
+
+  ipcMain.handle('fs:searchDir', async (_e, root: string, query: string) => {
+    if (!query.trim()) return { results: [] }
+    const results = await searchDir(root, query.trim())
+    return { results }
   })
 
   // --e2e / fuzz: never pop a native file dialog (it would block the run) -
