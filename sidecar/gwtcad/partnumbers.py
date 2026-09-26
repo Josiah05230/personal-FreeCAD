@@ -401,6 +401,20 @@ def _filename_for(project, type, seq, rev):
     return "%s.FCStd" % _fmt_pn(project, type, seq, rev)
 
 
+def _new_part_relpath(project, type, seq, rev):
+    """Where a BRAND NEW part's file should land: <project>/<type>/<pn>/
+    <pn>.FCStd (e.g. CM/Z/CMZ0010/CMZ0010.FCStd) - grouped by project then
+    type so a person browsing the repo by hand can find a family of parts
+    without already knowing its PN, rather than every part sitting in one
+    flat, ever-growing folder. Only used for pn.reserve's very first
+    placement; pn.newRevision deliberately keeps a later revision NEXT TO
+    wherever the current file actually lives (via _find_part_file's
+    self-healing search) instead of recomputing this, so a part that's been
+    manually reorganized since is never fought with."""
+    pn = _fmt_pn(project, type, seq, rev)
+    return os.path.join(project, type, pn, "%s.FCStd" % pn)
+
+
 def _find_part_file(repo, filename, hint_relpath=None):
     """Where <filename> actually lives inside repo. Checks the cached hint
     first (fast path - true almost always, since files don't move on their
@@ -560,7 +574,7 @@ def pn_reserve(project, type, seq, name, description, mfg=None, mfgPn=None, purc
     seq = int(seq)
     repo = _registry_path(cfg)
     pn_seq = "%s%s%03d" % (project, type, seq)
-    relpath = _filename_for(project, type, seq, 0)
+    relpath = _new_part_relpath(project, type, seq, 0)
     pn = _fmt_pn(project, type, seq, 0)
     link = purchasingLink or _auto_purchasing_link(mfg, mfgPn)
 
