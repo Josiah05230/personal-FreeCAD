@@ -3257,6 +3257,28 @@ export function App(): JSX.Element {
       // the sidecar holds one document: opening replaces it. Reflect that as a
       // fresh tab rather than mutating whatever tab is in front.
       const opened = await api.open(p)
+      // a crash after this exact file was last saved may have left a newer
+      // autosave-recovery copy - offer it now, before the user starts
+      // building on top of the (older) real file's contents.
+      await api
+        .checkRecovery(p)
+        .then(async (rec) => {
+          if (!rec.available) return
+          const ageMin = Math.round((rec.ageSeconds ?? 0) / 60)
+          const recoverIt = window.confirm(
+            `${basename(p)} has unsaved work from ${ageMin < 1 ? 'less than a minute' : `about ${ageMin} minute${ageMin === 1 ? '' : 's'}`} ago ` +
+              `(likely lost when the app or geometry engine last crashed). Recover it now? ` +
+              `Recovering opens the newer version - Save afterward to keep it, or don't save to discard it.`
+          )
+          if (recoverIt && rec.recoveryPath) {
+            await api.open(rec.recoveryPath)
+            flashSketchNotice(`Recovered unsaved work from ${basename(p)} - Save to keep it.`)
+            markDirty()
+          } else {
+            await api.discardRecovery(p)
+          }
+        })
+        .catch(() => undefined)
       // if this file is already a tab (e.g. re-activating it, see onActivate
       // below), reuse that tab instead of piling up a duplicate
       const existing = tabs.find((x) => x.path === p)
@@ -3294,7 +3316,7 @@ export function App(): JSX.Element {
       }
       await refreshScene()
     },
-    [refreshScene, tabs, releaseStandaloneLock, autoPullBeforeOpen, acquireStandaloneLock]
+    [refreshScene, tabs, releaseStandaloneLock, autoPullBeforeOpen, acquireStandaloneLock, flashSketchNotice, markDirty]
   )
 
   const exportModel = useCallback(async () => {
@@ -4098,6 +4120,25 @@ export function App(): JSX.Element {
     return () => window.clearInterval(id)
   }, [checkUpstreamChanges])
 
+  // Periodic crash-recovery snapshot: FreeCAD/OCCT can hard-abort on bad
+  // geometry (see the sidecar-respawn notice above) with no warning, so
+  // this is the only thing standing between that and losing everything
+  // since the last real Save. Writes to a side-channel recovery path via
+  // Document.saveCopy (verified: never retargets the document's own
+  // FileName, so it can never redirect a later real Save) - only runs
+  // while there's an actual unsaved change to protect, and skips entirely
+  // during a review "peek" (reviewingRef) since that document was never
+  // meant to be saved at all.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (reviewingRef.current) return
+      const dirty = tabs.find((t) => t.id === activeTab)?.dirty ?? false
+      if (!dirty || !docPath) return
+      void api.autosave().catch(() => undefined)
+    }, 120000)
+    return () => window.clearInterval(id)
+  }, [tabs, activeTab, docPath])
+
   // clears the notice for now (the change was actually resolved - Sync
   // pulled it, or a force-push overwrote it) - NOT a permanent dismissal,
   // so if the file changes again upstream later, a fresh notice fires
@@ -4287,6 +4328,9 @@ export function App(): JSX.Element {
       openDesignPath: (path: string) => openDesign(path),
       saveDoc: () => save(),
       gitSyncDebug: () => ({ offline: gitOffline, unpushedCount, docPath }),
+      // crash-recovery (test hook - the real timer waits 2 minutes; a test
+      // needs to trigger the exact same autosave on demand)
+      triggerAutosave: () => api.autosave(),
 
       // --- ops (ribbon -> dialog -> apply) ---
       openOp: (k: OpKind) => openOp(k),

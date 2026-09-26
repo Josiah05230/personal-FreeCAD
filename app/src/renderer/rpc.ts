@@ -1639,6 +1639,16 @@ export const api = {
       'document.open',
       { path }
     ),
+  autosave: () => rpc<{ saved: boolean; recoveryPath?: string; reason?: string }>('document.autosave'),
+  checkRecovery: (path: string) =>
+    rpc<{
+      available: boolean
+      recoveryPath?: string
+      recoveryMtime?: number
+      realMtime?: number
+      ageSeconds?: number
+    }>('document.checkRecovery', { path }),
+  discardRecovery: (path: string) => rpc<{ ok: boolean }>('document.discardRecovery', { path }),
 
   exportStep: (path: string) => rpc<{ path: string; bodies: number }>('io.exportStep', { path }),
   exportStl: (path: string) => rpc<{ path: string; bodies: number }>('io.exportStl', { path }),

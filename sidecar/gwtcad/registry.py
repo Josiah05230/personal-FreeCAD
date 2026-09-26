@@ -71,6 +71,7 @@ _NO_TXN = {
     "expr.eval", "feature.primaryDim", "feature.exprs",
     "document.info", "assembly.tree",
     "session.reset", "document.open", "document.save", "document.saveAs",
+    "document.autosave", "document.checkRecovery", "document.discardRecovery",
     "history.undo", "history.redo",
     "io.export", "io.exportStep", "io.exportStl",
     "object.setVisibility", "visibility.setGroup",

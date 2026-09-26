@@ -21,6 +21,7 @@ from . import assembly as _assembly
 from . import partnumbers as _partnumbers
 from . import export as _export
 from . import supplier_models as _supplier_models
+from . import recovery as _recovery
 from .tessellate import tessellate_shape
 from .vocab import op_name, next_label
 from . import expr as _expr
@@ -5145,6 +5146,21 @@ def document_info():
         "path": session.path(),
         "objects": 0 if d is None else len(d.Objects),
     }
+
+
+@method("document.autosave")
+def document_autosave():
+    return _recovery.autosave_current()
+
+
+@method("document.checkRecovery")
+def document_check_recovery(path):
+    return _recovery.check_recovery(path)
+
+
+@method("document.discardRecovery")
+def document_discard_recovery(path):
+    return _recovery.discard_recovery(path)
 
 
 # --------------------------------------------------------------------------- #
