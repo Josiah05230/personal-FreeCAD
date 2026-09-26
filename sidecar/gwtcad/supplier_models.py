@@ -52,6 +52,28 @@ def _cad_repo_path(cfg, pn):
     return _pn._repo_path_for(cfg, project)
 
 
+def _part_folder(cfg, repo, pn, row=None):
+    """Where PN's own folder actually lives inside `repo` - NOT always
+    <repo>/<pn>/ (that assumption broke once parts got grouped into
+    <project>/<type>/<pn>/ subfolders). Honors the registry's repo_relpath
+    hint via the same self-healing lookup partnumbers.py itself uses, so
+    this never drifts from wherever pn.resolve would actually find the
+    part. Falls back to the new-part convention (<project>/<type>/<pn>/)
+    only when the part has no file on disk yet at all - the first-time
+    sync_supplier_models case, where there's nothing to look up yet."""
+    if row is None:
+        rows = _pn._read_registry(cfg)
+        row = _pn._current_row(rows, pn[:-1])
+    if row is not None:
+        seq_type = row.get("type") or pn[2:3]
+        filename = _pn._filename_for(row["project"], seq_type, int(row["seq"]), int(row["rev"]))
+        abspath, _relpath = _pn._find_part_file(repo, filename, row.get("repo_relpath"))
+        if abspath is not None:
+            return os.path.dirname(abspath)
+    project, type_ = pn[:2], pn[2:3]
+    return os.path.join(repo, project, type_, pn)
+
+
 _SHEET_W, _SHEET_H = 420.0, 297.0  # matches drawing.py's _SHEET_W_DEFAULT/_SHEET_H_DEFAULT and DrawingSheet.tsx's SHEET_W/SHEET_H
 _MARGIN = 10.0  # matches DrawingSheet.tsx's own MARGIN
 
@@ -484,7 +506,7 @@ def sync_supplier_models():
         _pn._sync_pull(repo)
         changed = False
         for pn, storage_path in items:
-            dest = os.path.join(repo, pn, "%s.stp" % pn)
+            dest = os.path.join(_part_folder(cfg, repo, pn), "%s.stp" % pn)
             if os.path.isfile(dest):
                 results.append({"pn": pn, "ok": True, "skipped": "already organized"})
                 continue
@@ -510,7 +532,7 @@ def sync_supplier_models():
                     meta_bytes = _storage.download_bytes(
                         storage_path.replace("_supplier_model.zip", "_supplier_meta.json"))
                     if meta_bytes is not None:
-                        with open(os.path.join(repo, pn, "%s_supplier_meta.json" % pn), "wb") as f:
+                        with open(os.path.join(os.path.dirname(dest), "%s_supplier_meta.json" % pn), "wb") as f:
                             f.write(meta_bytes)
                 except Exception:
                     pass
@@ -547,8 +569,9 @@ def generate_supplier_drawing(pn):
         raise RpcError(APP_ERROR, "unknown PN sequence: %s" % pn_seq)
 
     repo = _cad_repo_path(cfg, pn)
-    stp_path = os.path.join(repo, pn, "%s.stp" % pn)
-    fcstd_path = os.path.join(repo, pn, "%s.FCStd" % pn)
+    part_folder = _part_folder(cfg, repo, pn, row)
+    stp_path = os.path.join(part_folder, "%s.stp" % pn)
+    fcstd_path = os.path.join(part_folder, "%s.FCStd" % pn)
     if not os.path.isfile(stp_path):
         return {"pn": pn, "ok": True, "skipped": "no supplier .stp on file"}
     if os.path.isfile(fcstd_path):
@@ -573,7 +596,7 @@ def generate_supplier_drawing(pn):
             # manually-added vendor .stp has no sidecar at all), not an
             # error worth surfacing.
             meta = None
-            meta_path = os.path.join(repo, pn, "%s_supplier_meta.json" % pn)
+            meta_path = os.path.join(part_folder, "%s_supplier_meta.json" % pn)
             if os.path.isfile(meta_path):
                 try:
                     with open(meta_path) as f:
@@ -672,12 +695,13 @@ def ensure_drawing_or_block(pn):
         raise RpcError(APP_ERROR, "unknown PN sequence: %s" % pn_seq)
 
     repo = _cad_repo_path(cfg, pn)
-    fcstd_path = os.path.join(repo, pn, "%s.FCStd" % pn)
+    part_folder = _part_folder(cfg, repo, pn, row)
+    fcstd_path = os.path.join(part_folder, "%s.FCStd" % pn)
 
     if os.path.isfile(fcstd_path) and _has_drawing_page(fcstd_path):
         return {"pn": pn, "ok": True, "hadDrawing": True}
 
-    stp_path = os.path.join(repo, pn, "%s.stp" % pn)
+    stp_path = os.path.join(part_folder, "%s.stp" % pn)
     if os.path.isfile(stp_path):
         gen = generate_supplier_drawing(pn)
         if gen.get("ok") and gen.get("pdfUploaded"):
