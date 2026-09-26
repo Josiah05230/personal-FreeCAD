@@ -18,9 +18,10 @@ import os
 
 import requests
 
+from .paths import config_path
 from .registry import RpcError, APP_ERROR
 
-_KEY_PATH = os.path.expanduser("~/.gwtcad/firebase-service-account.json")
+_KEY_PATH = config_path("firebase-service-account.json")
 
 _BUCKET = "grainwavepartners.firebasestorage.app"
 

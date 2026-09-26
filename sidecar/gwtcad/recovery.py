@@ -25,9 +25,10 @@ import time
 
 import FreeCAD as App
 
+from .paths import config_path
 from . import session
 
-_RECOVERY_DIR = os.path.expanduser("~/.gwtcad/recovery")
+_RECOVERY_DIR = config_path("recovery")
 
 
 def _recovery_path(real_path):

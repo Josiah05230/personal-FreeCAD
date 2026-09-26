@@ -18,10 +18,11 @@ import os
 
 import FreeCAD as App
 
+from .paths import config_path
 from . import session
 from .registry import RpcError, APP_ERROR
 
-_TEMPLATES_PATH = os.path.expanduser("~/.gwtcad/table_templates.json")
+_TEMPLATES_PATH = config_path("table_templates.json")
 
 _DEFAULT_BOM_COLUMNS = [
     {"key": "item", "header": "ITEM", "source": "index"},

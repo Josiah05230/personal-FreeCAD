@@ -31,10 +31,11 @@ import json
 import os
 import uuid as _uuidlib
 
+from .paths import config_path
 from .registry import method, RpcError, APP_ERROR
 from . import session
 
-_LIBRARY_PATH = os.path.expanduser("~/.gwtcad/materials.json")
+_LIBRARY_PATH = config_path("materials.json")
 
 # Common physical properties across FreeCAD's material models, in a sensible
 # display order. Not every material's model supports every one of these -

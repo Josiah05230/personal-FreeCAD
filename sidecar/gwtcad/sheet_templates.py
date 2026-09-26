@@ -11,9 +11,10 @@ materials.py's ~/.gwtcad/materials.json - independent of any one document.
 import json
 import os
 
+from .paths import config_path
 from .registry import RpcError, APP_ERROR
 
-_PATH = os.path.expanduser("~/.gwtcad/sheet_templates.json")
+_PATH = config_path("sheet_templates.json")
 
 _ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 

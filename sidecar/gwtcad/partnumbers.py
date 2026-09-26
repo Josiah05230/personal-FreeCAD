@@ -39,9 +39,10 @@ import subprocess
 
 import yaml
 
+from .paths import config_path
 from .registry import method, RpcError, APP_ERROR
 
-_CONFIG_PATH = os.path.expanduser("~/.gwtcad/company.json")
+_CONFIG_PATH = config_path("company.json")
 
 # One row per revision. mfg/mfg_pn/purchasing_link are optional (blank for
 # self-designed parts, populated where known for purchased/off-the-shelf

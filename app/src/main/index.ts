@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import { resolve, join, dirname, basename } from 'path'
 import { readdir, writeFile, readFile, mkdir, rename, stat } from 'fs/promises'
-import { homedir } from 'os'
+import { homedir, tmpdir } from 'os'
 import { Sidecar, loadConfig } from './sidecar'
 import * as gitw from './git'
 import * as asmPin from './assemblyPin'
@@ -12,6 +12,17 @@ import * as gitWatch from './gitWatch'
 // repo root is one level above app/ in dev; in a packaged build this is
 // remapped by the installer (Milestone 5).
 const REPO_ROOT = resolve(app.getAppPath(), '..')
+
+// --e2e runs must never touch the real user's state: a separate Electron
+// profile (first-run flag, localStorage, window state) and a separate
+// ~/.gwtcad for the sidecar (company.json, templates, recovery copies).
+// Before this, test runs silently repointed a real company.json at /tmp
+// test repos and marked the first-run wizard done on the real profile.
+if (process.argv.includes('--e2e')) {
+  const e2eHome = join(tmpdir(), 'gwtcad-e2e')
+  app.setPath('userData', join(e2eHome, 'electron-profile'))
+  process.env.GWTCAD_CONFIG_DIR = join(e2eHome, 'dot-gwtcad')
+}
 
 let win: BrowserWindow | null = null
 let sidecar: Sidecar | null = null
