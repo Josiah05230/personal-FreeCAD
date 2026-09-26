@@ -201,6 +201,25 @@ app.whenReady().then(async () => {
     return { results }
   })
 
+  // Looks for a .kicad_pcb/.kicad_pro sitting alongside an F (PCB
+  // Assembly) part's FCStd - deliberately NOT fs:listDir, which filters to
+  // .FCStd-only by design (it backs the design-browsing DataPanel, not a
+  // general file lister). Non-recursive on purpose: the KiCad project is
+  // expected directly alongside the FCStd, same folder, per this feature's
+  // own <project>/<type>/<PN>/ convention - never anywhere deeper.
+  ipcMain.handle('fs:findKicadProject', async (_e, dir: string) => {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+    let pcbPath: string | null = null
+    let proPath: string | null = null
+    for (const e of entries) {
+      if (e.isDirectory()) continue
+      const lower = e.name.toLowerCase()
+      if (lower.endsWith('.kicad_pcb')) pcbPath = join(dir, e.name)
+      else if (lower.endsWith('.kicad_pro')) proPath = join(dir, e.name)
+    }
+    return { pcbPath, proPath }
+  })
+
   // --e2e / fuzz: never pop a native file dialog (it would block the run) -
   // behave as if the user hit Cancel.
   const E2E = process.argv.includes('--e2e')
@@ -439,6 +458,20 @@ app.whenReady().then(async () => {
   ipcMain.handle('fs:trash', async (_e, path: string) => {
     await shell.trashItem(resolve(path))
     return { trashed: path }
+  })
+
+  // Opens a file with the OS's own default handler for its type - used for
+  // "Open in KiCad" on an F (PCB Assembly) part's .kicad_pro: launches
+  // whatever the user's system has registered for that extension (real
+  // KiCad if installed) rather than hardcoding a kicad binary path/name,
+  // which would vary by OS/install method and go stale on every KiCad
+  // update. shell.openPath's own return value IS the error message (empty
+  // string on success) - never rejects, so this surfaces failures as a
+  // real error string instead of a silently-swallowed one.
+  ipcMain.handle('shell:openPath', async (_e, path: string) => {
+    const err = await shell.openPath(resolve(path))
+    if (err) throw new Error(err)
+    return { opened: path }
   })
 
   // sibling folders of `path`'s directory (targets for "Move to folder")

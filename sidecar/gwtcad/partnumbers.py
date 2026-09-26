@@ -162,6 +162,21 @@ def _ecad_repo_path(cfg):
     return path
 
 
+def _repo_path_for_type(cfg, project, type_):
+    """Which repo a PN's FILE actually lives in - type F (PCB Assembly)
+    lives in the one shared ecadRepoPath, every other type in its
+    project's own mechanical repoPath. Every call site that already has a
+    registry row in hand (pn.resolve, pn.newRevision, pn.relocate) MUST
+    route through this rather than _repo_path_for directly, or an F part's
+    file will silently be searched for in the wrong repo (confirmed this
+    is a real, easy-to-reintroduce bug: pn.resolve doing exactly that
+    raised "not found" against pn-cad-files for a part that was actually
+    sitting in ecad-cad-files all along)."""
+    if type_ == "F":
+        return _ecad_repo_path(cfg)
+    return _repo_path_for(cfg, project)
+
+
 # --------------------------------------------------------------------------- #
 # git helpers
 # --------------------------------------------------------------------------- #
@@ -666,7 +681,7 @@ def pn_new_revision(pnSeq, reason, mfg=None, mfgPn=None, purchasingLink=None):
     project, type, seq = cur["project"], cur["type"], int(cur["seq"])
     old_rev = int(cur["rev"])
     new_rev = old_rev + 1
-    proj_repo = _repo_path_for(cfg, project)
+    proj_repo = _repo_path_for_type(cfg, project, type)
 
     old_filename = _filename_for(project, type, seq, old_rev)
     old_abspath, old_relpath = _find_part_file(proj_repo, old_filename, cur.get("repo_relpath"))
@@ -1133,7 +1148,7 @@ def pn_relocate(pnSeq, newPath):
         cur = _current_row(rows, pnSeq)
         if cur is None:
             raise RpcError(APP_ERROR, "unknown PN sequence: %s" % pnSeq)
-        proj_repo = os.path.abspath(_repo_path_for(cfg, cur["project"]))
+        proj_repo = os.path.abspath(_repo_path_for_type(cfg, cur["project"], cur["type"]))
         new_abs = os.path.abspath(os.path.expanduser(newPath))
         if not (new_abs == proj_repo or new_abs.startswith(proj_repo + os.sep)):
             raise RpcError(APP_ERROR,
@@ -1174,7 +1189,7 @@ def pn_resolve(pnSeqOrFull):
     cur = _current_row(rows, pn_seq)
     if cur is None:
         raise RpcError(APP_ERROR, "unknown PN: %s" % pnSeqOrFull)
-    repo = _repo_path_for(cfg, cur["project"])
+    repo = _repo_path_for_type(cfg, cur["project"], cur["type"])
     filename = _filename_for(cur["project"], cur["type"], int(cur["seq"]), int(cur["rev"]))
     abspath, relpath = _find_part_file(repo, filename, cur.get("repo_relpath"))
     if abspath is None:

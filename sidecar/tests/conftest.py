@@ -51,6 +51,20 @@ def cad_repo(tmp_path):
 
 
 @pytest.fixture
+def ecad_repo(tmp_path):
+    """A local git repo (no remote) standing in for the shared ECAD repo -
+    same shape as cad_repo, but tests must opt in by requesting this
+    fixture AND setting ecadRepoPath themselves (company_config's default
+    company.json has no ecadRepoPath, matching a fresh install where it
+    hasn't been configured yet)."""
+    repo = _init_git_repo(tmp_path / "ecad")
+    (repo / ".gitkeep").write_text("")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "init")
+    return repo
+
+
+@pytest.fixture
 def company_config(monkeypatch, tmp_path, registry_repo, cad_repo):
     """Points partnumbers._CONFIG_PATH at a throwaway company.json under
     tmp_path, with project CM mapped to cad_repo - never the real

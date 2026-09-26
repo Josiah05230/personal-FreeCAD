@@ -967,6 +967,23 @@ export const api = {
       bodies: BodyTree[]
       kicad: { path: string; thickness: number; components: number; size: [number, number, number] }
     }>('kicad.import', { path }),
+  /** real per-component import via kicad-cli's STEP export, falling back to
+   *  kicadImport's outline+placeholder tier automatically (never throws
+   *  just because kicad-cli is missing or the board has no 3D models) -
+   *  see kicad.py's kicad_import_step docstring. */
+  kicadImportStep: (path: string) =>
+    rpc<{
+      bodies: BodyTree[]
+      kicad: {
+        path: string
+        stepImport: boolean
+        componentCount?: number
+        thickness?: number
+        components?: number
+        size?: [number, number, number]
+        stepImportReason?: string
+      }
+    }>('kicad.importStep', { path }),
   tagMcMaster: (id: string, partNumber: string, meta?: Record<string, unknown> | null) =>
     rpc<{ bodies: BodyTree[]; path: string | null }>('io.tagMcMaster', { id, partNumber, meta }),
   kicadReimport: () =>

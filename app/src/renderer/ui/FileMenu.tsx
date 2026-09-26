@@ -9,6 +9,10 @@ export interface FileActions {
   onImport: () => void
   onNewPart: () => void
   onNewRevision?: () => void
+  /** Only set when the open document is an F (PCB Assembly) part with a
+   *  real KiCad project alongside it - launches it with the OS's own
+   *  default handler for .kicad_pro (real KiCad, if installed). */
+  onOpenInKicad?: () => void
   onPnBrowser: () => void
   onCompanySettings: () => void
   /** On-demand version of the startup supplier-model sync (App.tsx runs it
@@ -111,6 +115,7 @@ export function FileMenu({
             <div className="filemenu-sep" />
             {item('New Part…', actions.onNewPart)}
             {actions.onNewRevision && item('New Revision', actions.onNewRevision)}
+            {actions.onOpenInKicad && item('Open in KiCad', actions.onOpenInKicad)}
             {actions.onSetLifecycle && actions.currentLifecycle && (
               <LifecycleSubmenu
                 current={actions.currentLifecycle}

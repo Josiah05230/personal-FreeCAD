@@ -273,6 +273,53 @@ def test_ecad_repo_path_returns_configured_dir(company_config, tmp_path):
     assert pn._ecad_repo_path(cfg) == str(ecad_dir)
 
 
+def test_repo_path_for_type_f_uses_ecad_repo_not_project_repo(company_config, cad_repo, tmp_path):
+    ecad_dir = tmp_path / "ecad-cad-files"
+    ecad_dir.mkdir()
+    pn.pn_set_company_config(ecadRepoPath=str(ecad_dir))
+    cfg = pn._load_config()
+    assert pn._repo_path_for_type(cfg, "CM", "F") == str(ecad_dir)
+
+
+def test_repo_path_for_type_mechanical_uses_project_repo(company_config, cad_repo):
+    cfg = pn._load_config()
+    assert pn._repo_path_for_type(cfg, "CM", "C") == str(cad_repo)
+
+
+def test_resolve_finds_type_f_part_in_the_ecad_repo_not_project_repo(company_config, cad_repo, tmp_path):
+    # the exact regression this test exists to prevent: pn.resolve looking
+    # for an F part's file under the MECHANICAL repo (cad_repo) instead of
+    # ecadRepoPath, and raising "not found" even though the file is right
+    # there in the correct (ECAD) repo all along.
+    ecad_dir = tmp_path / "ecad-cad-files"
+    ecad_dir.mkdir()
+    pn.pn_set_company_config(ecadRepoPath=str(ecad_dir))
+
+    reserved = pn.pn_reserve("CM", "F", 1, "sensor breakout", "test")
+    abspath = os.path.join(str(ecad_dir), reserved["repoRelpath"])
+    os.makedirs(os.path.dirname(abspath), exist_ok=True)
+    open(abspath, "w").close()
+
+    result = pn.pn_resolve("CMF001")
+    assert result["path"] == abspath
+
+
+def test_new_revision_for_type_f_part_uses_ecad_repo(company_config, cad_repo, ecad_repo):
+    # pn.newRevision commits+pushes the new file's repo (see
+    # _commit_and_push) - unlike the reserve-only tests above, this one
+    # needs ecad_repo to be a REAL git repo, not just a plain directory.
+    pn.pn_set_company_config(ecadRepoPath=str(ecad_repo))
+
+    reserved = pn.pn_reserve("CM", "F", 1, "sensor breakout", "v0")
+    abspath = os.path.join(str(ecad_repo), reserved["repoRelpath"])
+    os.makedirs(os.path.dirname(abspath), exist_ok=True)
+    open(abspath, "w").close()
+
+    result = pn.pn_new_revision("CMF001", reason="bumped")
+    assert result["path"].startswith(str(ecad_repo))
+    assert os.path.isfile(result["path"])
+
+
 def test_new_part_relpath_for_type_f_includes_fcstd_filename_too():
     # a purchased breakout-board module with no real KiCad source still
     # needs somewhere to save a mocked-up FreeCAD model - a real KiCad

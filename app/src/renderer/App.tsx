@@ -60,7 +60,7 @@ import { loadMeshPrefs } from './meshPrefs'
 import type { MeasureResult, SketchRefGeom, SketchConstraint } from './rpc'
 import type { SketchTool, SketchConstraintType } from './viewport/SketchController'
 import type { SketchFrameDTO } from './rpc'
-import { basename, sketchEntitiesToPolys } from './util'
+import { basename, dirname, sketchEntitiesToPolys } from './util'
 import { perfProfile } from './perfProfile'
 import { CmdQueue } from './cmdQueue'
 import { trace, traceSpan } from './trace'
@@ -270,6 +270,11 @@ export function App(): JSX.Element {
   const [companySettingsOpen, setCompanySettingsOpen] = useState(false)
   const [currentPn, setCurrentPn] = useState<string | null>(null)
   const [currentLifecycle, setCurrentLifecycle] = useState<string | null>(null)
+  // Set only when the currently open document is an F (PCB Assembly) part
+  // that has a real KiCad project sitting alongside its FCStd - powers the
+  // "Open in KiCad" button. null for a plain mechanical part, or an F part
+  // that's mockup-only (no real KiCad project yet).
+  const [linkedKicadProject, setLinkedKicadProject] = useState<string | null>(null)
   // git auto-sync: offline is a reachability probe result (cleared the next
   // time a probe succeeds), unpushedCount is "this doc has N local commits
   // origin doesn't have yet" (set when an auto-push is skipped/rejected,
@@ -3247,6 +3252,7 @@ export function App(): JSX.Element {
       }
       const p = path ?? (await window.cad.openDialog())
       if (!p) return
+      setLinkedKicadProject(null) // clears any stale "Open in KiCad" from a previous F part
       // release whatever standalone lock this session held on the PREVIOUS
       // document before touching the new one - the sidecar only ever has
       // one document open at a time, so switching files always means
@@ -3518,6 +3524,7 @@ export function App(): JSX.Element {
     setActiveTab(id)
     setDocPath(null)
     setDrawingPageId(null)
+    setLinkedKicadProject(null)
     void (async () => {
       await api.resetDocument()
       await refreshScene()
@@ -3535,6 +3542,7 @@ export function App(): JSX.Element {
   const createPart = useCallback(
     async (info: { pn: string; path: string; name: string; description: string }) => {
       setNewPartOpen(false)
+      setLinkedKicadProject(null)
       const mcmaster = pendingMcMaster
       setPendingMcMaster(undefined)
       setNewPartPrefill(undefined)
@@ -3720,11 +3728,57 @@ export function App(): JSX.Element {
   )
 
   const openPnFile = useCallback(
-    async (path: string) => {
+    async (path: string, type: string) => {
       setPnBrowserOpen(false)
-      await openDesign(path)
+      setLinkedKicadProject(null)
+      if (type !== 'F') {
+        await openDesign(path)
+        return
+      }
+      // an F (PCB Assembly) part's real source of truth is its KiCad
+      // project, when one exists alongside the FCStd - look for it and
+      // import real per-component STEP geometry instead of just opening
+      // the (possibly mockup-only, possibly stale) FCStd directly. NOT
+      // window.cad.listDir - that's filtered to .FCStd-only by design (it
+      // backs the design-browsing DataPanel), so it would never see a
+      // .kicad_pcb/.kicad_pro sitting right next to it.
+      const found = await window.cad.findKicadProject(dirname(path)).catch(() => ({ pcbPath: null, proPath: null }))
+      if (!found.pcbPath) {
+        // mockup-only F part (a purchased breakout board with no real
+        // KiCad source) - same open path as any other mechanical-shaped
+        // FCStd.
+        await openDesign(path)
+        return
+      }
+      // same three steps openDesign itself does before touching the
+      // sidecar's one live document - release the PREVIOUS doc's lock,
+      // pull latest, take a lock on this one.
+      await releaseStandaloneLock()
+      if (!(await autoPullBeforeOpen(path))) return
+      if (!(await acquireStandaloneLock(path))) return
+      try {
+        const imported = await api.kicadImportStep(found.pcbPath)
+        const id = `d${Date.now()}`
+        setTabs((t) => [...t, { id, name: basename(path), dirty: false, path }])
+        setActiveTab(id)
+        setDocPath(path)
+        setDrawingPageId(null)
+        setCurrentPn(null)
+        setCurrentLifecycle(null)
+        setLinkedKicadProject(found.proPath)
+        if (!imported.kicad.stepImport) {
+          flashSketchNotice(
+            `Opened ${basename(found.pcbPath)} without real component 3D models` +
+              (imported.kicad.stepImportReason ? ` (${imported.kicad.stepImportReason})` : '') +
+              ' - showing the board outline instead.'
+          )
+        }
+        await refreshScene()
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
     },
-    [openDesign]
+    [openDesign, releaseStandaloneLock, autoPullBeforeOpen, acquireStandaloneLock, refreshScene, flashSketchNotice]
   )
 
   const fitView = useCallback(() => vpApi.current?.fit(), [])
@@ -5134,6 +5188,9 @@ export function App(): JSX.Element {
           onImport: importStep,
           onNewPart: () => setNewPartOpen(true),
           onNewRevision: currentPn ? newRevision : undefined,
+          onOpenInKicad: linkedKicadProject
+            ? () => void window.cad.openPath(linkedKicadProject).catch((e) => window.alert((e as Error).message))
+            : undefined,
           onPnBrowser: () => setPnBrowserOpen(true),
           onCheckSupplierModels: () => void checkSupplierModels(false),
           onCompanySettings: () => setCompanySettingsOpen(true),
@@ -5674,7 +5731,7 @@ export function App(): JSX.Element {
                   {pnBrowserOpen && (
                     <PNBrowserPanel
                       onClose={() => setPnBrowserOpen(false)}
-                      onOpen={(p) => void openPnFile(p)}
+                      onOpen={(p, type) => void openPnFile(p, type)}
                     />
                   )}
                   {companySettingsOpen && (

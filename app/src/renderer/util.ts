@@ -3,6 +3,11 @@ export function basename(p: string): string {
   return parts[parts.length - 1] || p
 }
 
+export function dirname(p: string): string {
+  const cut = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
+  return cut > 0 ? p.slice(0, cut) : cut === 0 ? p.slice(0, 1) : p
+}
+
 interface SketchFrameLike {
   origin: [number, number, number]
   x: [number, number, number]

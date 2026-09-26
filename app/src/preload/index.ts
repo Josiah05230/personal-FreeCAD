@@ -233,6 +233,10 @@ const cad = {
     ipcRenderer.invoke('fs:move', src, dest) as Promise<{ src: string; dest: string }>,
   trash: (path: string) =>
     ipcRenderer.invoke('fs:trash', path) as Promise<{ trashed: string }>,
+  openPath: (path: string) =>
+    ipcRenderer.invoke('shell:openPath', path) as Promise<{ opened: string }>,
+  findKicadProject: (dir: string) =>
+    ipcRenderer.invoke('fs:findKicadProject', dir) as Promise<{ pcbPath: string | null; proPath: string | null }>,
   siblingDirs: (path: string) => ipcRenderer.invoke('fs:siblingDirs', path) as Promise<string[]>,
   captureThumb: (design: string) =>
     ipcRenderer.invoke('win:captureThumb', design) as Promise<{ path: string | null }>,
