@@ -200,9 +200,17 @@ def _supplier_title_block_text(mfg, mfg_pn, meta, registry_description=None):
     never invent a competing one). PART NAME still prefers the supplier's
     structured componentType field (e.g. "CONNECTOR") when available,
     since that's a category label, not a description, and has no registry
-    counterpart to diverge from."""
+    counterpart to diverge from. Falls back to "<mfg> <mfg_pn>" - the ONE
+    caller (generate_supplier_drawing) guarantees both are real, non-empty
+    values before this is ever called (a hard gate refuses to generate a
+    drawing at all otherwise - see that function), so there is
+    deliberately no further "or PART"-style placeholder fallback here: if
+    that guarantee is ever broken, this should fail loudly, not silently
+    write a meaningless generic label into a real drawing again (confirmed
+    live: that's exactly what happened before this gate existed - CMC0020
+    got a title block that said "PART")."""
     component_type = (meta or {}).get("componentType")
-    name = component_type.upper() if component_type else (" ".join(filter(None, [mfg, mfg_pn])) or "PART")
+    name = component_type.upper() if component_type else " ".join(filter(None, [mfg, mfg_pn]))
     return name, registry_description or ""
 
 
@@ -605,6 +613,25 @@ def _generate_supplier_drawing(pn):
     if os.path.isfile(fcstd_path):
         return {"pn": pn, "ok": True, "skipped": "drawing already exists"}
 
+    # A real vendor part number is REQUIRED before this function can write
+    # its "<PN> IS EQUIVALENT TO <MFG> <MFG_PN>" note - a .stp with no mfg
+    # AND no mfg_pn in the registry means nobody has ever actually recorded
+    # who this part comes from, so there is nothing true to write there.
+    # Confirmed live: an earlier version silently fell back to a literal
+    # "?" for mfg_pn (and "PART" for the title block's PART NAME) rather
+    # than refusing - which shipped a real, misleading placeholder onto a
+    # real generated drawing (CMC0020: "IS EQUIVALENT TO SUPPLIER ?").
+    # That must never happen again - a missing fact is a hard block the
+    # user has to resolve (fill in mfg/mfg_pn on the registry row, or this
+    # PN's .stp doesn't belong to a real supplier part and shouldn't be
+    # going through this pipeline at all), never a guessed-at fact quietly
+    # written into a document.
+    if not (row.get("mfg") or "").strip() or not (row.get("mfg_pn") or "").strip():
+        return {"pn": pn, "ok": False,
+                "errors": ["%s has a supplier .stp on file but no mfg/mfg_pn recorded in the "
+                           "registry - fill those in before a drawing can be generated "
+                           "(never auto-filled with a placeholder)." % pn]}
+
     result = {"pn": pn, "ok": True, "pdfUploaded": False, "errors": []}
     tmpdir = tempfile.mkdtemp(prefix="gwtcad-supplier-drawing-")
     try:
@@ -644,8 +671,13 @@ def _generate_supplier_drawing(pn):
             # states plainly that this PN is a supplier's part, not a GWT
             # design - anyone reading the drawing should know that at a
             # glance, not have to infer it from the title block alone.
-            notes = ["%s IS EQUIVALENT TO %s %s" % (
-                pn, (row.get("mfg") or "SUPPLIER").upper(), row.get("mfg_pn") or "?")]
+            # mfg/mfg_pn are both guaranteed non-empty here by the hard
+            # gate above - deliberately NOT using an `or "?"` / `or
+            # "SUPPLIER"` fallback, so that if that guarantee ever breaks
+            # this raises loudly (caught by this function's own
+            # except Exception below) instead of silently writing a
+            # placeholder into a real drawing again.
+            notes = ["%s IS EQUIVALENT TO %s %s" % (pn, row["mfg"].upper(), row["mfg_pn"])]
             _apply_grainwave_template(doc, page_id, part_obj, pn, title_name, title_description, notes=notes)
             _coarsen_views(doc)  # catches the iso view too
             doc.recompute()

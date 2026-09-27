@@ -36,6 +36,23 @@ def generated(company_config, cad_repo):
         App.closeDocument(d.Name)
 
 
+def test_refuses_to_generate_without_a_real_mfg_and_mfg_pn(company_config, cad_repo):
+    # regression: a .stp with no mfg/mfg_pn recorded on the registry row
+    # used to silently produce a drawing whose NOTES callout said
+    # "IS EQUIVALENT TO SUPPLIER ?" and whose title block PART NAME said
+    # "PART" - a real, misleading placeholder shipped on a real generated
+    # drawing (found live on CMC0020). This must be a hard block instead,
+    # never a guessed-at fact.
+    pn.pn_reserve("CM", "C", 99, "connector", "6-pin housing, no vendor info yet")
+    folder = os.path.join(str(cad_repo), "CM", "C", "CMC0990")
+    os.makedirs(folder)
+    shutil.copy(VENDOR_STEP, os.path.join(folder, "CMC0990.stp"))
+    result = sm.generate_supplier_drawing("CMC0990")
+    assert result["ok"] is False
+    assert not os.path.isfile(os.path.join(folder, "CMC0990.FCStd"))
+    assert any("?" not in e and "mfg" in e for e in result["errors"])
+
+
 def test_generation_restores_the_users_session_part_number(generated):
     result, _ = generated
     assert result["ok"], result
