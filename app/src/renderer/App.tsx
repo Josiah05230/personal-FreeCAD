@@ -62,7 +62,7 @@ import type { MeasureResult, SketchRefGeom, SketchConstraint } from './rpc'
 import type { SketchTool, SketchConstraintType } from './viewport/SketchController'
 import type { SketchFrameDTO } from './rpc'
 import type { ImportInspection } from './rpc'
-import { basename, dirname, sketchEntitiesToPolys } from './util'
+import { basename, dirname, kicadDirFor, sketchEntitiesToPolys } from './util'
 import { perfProfile } from './perfProfile'
 import { CmdQueue } from './cmdQueue'
 import { trace, traceSpan } from './trace'
@@ -3670,14 +3670,14 @@ export function App(): JSX.Element {
           }
           await api.save()
         } else if (pendingImport?.stage === 'ecad' && pendingImport.plan.ecad) {
-          // KiCad project + its footprint models + attachments land next to
-          // this F part's FCStd; then the FCStd itself gets the board's real
+          // KiCad project + its footprint models + attachments land in the
+          // part's <pn_seq>-kicad/ folder beside its FCStd; then the FCStd itself gets the board's real
           // per-component geometry and the schematic's GWT_PN BOM - the same
           // two steps opening an existing F part already does.
           const placed = await api.importPlaceEcad(
             pendingImport.plan.extractDir,
             pendingImport.plan.ecad,
-            dirname(info.path)
+            kicadDirFor(info.path)
           )
           if (placed.pcbPath) {
             const imported = await api.kicadImportStep(placed.pcbPath)
@@ -3920,13 +3920,16 @@ export function App(): JSX.Element {
         return
       }
       // an F (PCB Assembly) part's real source of truth is its KiCad
-      // project, when one exists alongside the FCStd - look for it and
-      // import real per-component STEP geometry instead of just opening
-      // the (possibly mockup-only, possibly stale) FCStd directly. NOT
-      // window.cad.listDir - that's filtered to .FCStd-only by design (it
-      // backs the design-browsing DataPanel), so it would never see a
-      // .kicad_pcb/.kicad_pro sitting right next to it.
-      const found = await window.cad.findKicadProject(dirname(path)).catch(() => ({ pcbPath: null, proPath: null }))
+      // project, when one exists in its <pn_seq>-kicad/ folder beside the
+      // FCStd (parts filed before the flat layout kept it right next to
+      // the FCStd instead) - look for it and import real per-component
+      // STEP geometry instead of just opening the (possibly mockup-only,
+      // possibly stale) FCStd directly. NOT window.cad.listDir - that
+      // backs the design-browsing DataPanel and filters by file type.
+      let found = await window.cad.findKicadProject(kicadDirFor(path)).catch(() => ({ pcbPath: null, proPath: null }))
+      if (!found.pcbPath) {
+        found = await window.cad.findKicadProject(dirname(path)).catch(() => ({ pcbPath: null, proPath: null }))
+      }
       if (!found.pcbPath) {
         // mockup-only F part (a purchased breakout board with no real
         // KiCad source) - same open path as any other mechanical-shaped

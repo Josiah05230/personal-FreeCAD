@@ -10,7 +10,7 @@ Two-stage pipeline, matching the split this feature's design settled on:
      cad-exports/<PN>/<PN>_supplier_model.zip. That side never touches git
      or FreeCAD - it has neither.
   2. This module (GWT-CAD, which has both) does the rest: sync_supplier_models
-     finds ZIPs not yet organized, unzips the .stp into pn-cad-files/<PN>/,
+     finds ZIPs not yet organized, unzips the .stp into pn-cad-files/<project>/<type>/,
      and commits+pushes; generate_supplier_drawing builds the reference
      FCStd+PDF for a PN that has a .stp but no drawing yet, uploading the
      PDF to cad-exports/<PN>/<PN>.pdf (same path export.py's promote-to-active
@@ -66,14 +66,15 @@ def _cad_repo_path(cfg, pn):
 
 
 def _part_folder(cfg, repo, pn, row=None):
-    """Where PN's own folder actually lives inside `repo` - NOT always
-    <repo>/<pn>/ (that assumption broke once parts got grouped into
-    <project>/<type>/<pn>/ subfolders). Honors the registry's repo_relpath
-    hint via the same self-healing lookup partnumbers.py itself uses, so
-    this never drifts from wherever pn.resolve would actually find the
-    part. Falls back to the new-part convention (<project>/<type>/<pn>/)
-    only when the part has no file on disk yet at all - the first-time
-    sync_supplier_models case, where there's nothing to look up yet."""
+    """The folder PN's files actually live in inside `repo` - NOT always
+    one fixed shape (the layout has moved from <pn>/ to <project>/<type>/
+    <pn>/ to today's flat <project>/<type>/). Honors the registry's
+    repo_relpath hint via the same self-healing lookup partnumbers.py
+    itself uses, so this never drifts from wherever pn.resolve would
+    actually find the part. Falls back to the new-part convention
+    (<project>/<type>/) only when the part has no file on disk yet at all -
+    the first-time sync_supplier_models case, where there's nothing to
+    look up yet."""
     if row is None:
         rows = _pn._read_registry(cfg)
         row = _pn._current_row(rows, pn[:-1])
@@ -84,7 +85,7 @@ def _part_folder(cfg, repo, pn, row=None):
         if abspath is not None:
             return os.path.dirname(abspath)
     project, type_ = pn[:2], pn[2:3]
-    return os.path.join(repo, project, type_, pn)
+    return os.path.join(repo, project, type_)
 
 
 _SHEET_W, _SHEET_H = 420.0, 297.0  # matches drawing.py's _SHEET_W_DEFAULT/_SHEET_H_DEFAULT and DrawingSheet.tsx's SHEET_W/SHEET_H
@@ -504,7 +505,7 @@ def _extract_stp_from_zip(zip_bytes):
 @method("supplierModels.sync")
 def sync_supplier_models():
     """Finds every cad-exports/<PN>/<PN>_supplier_model.zip that hasn't been
-    unzipped into pn-cad-files yet (checked by whether <PN>/<PN>.stp already
+    unzipped into pn-cad-files yet (checked by whether <PN>.stp already
     exists in the repo - idempotent, safe to call on every startup), and
     commits the extracted .stp for each. Returns a per-PN result list so a
     caller can report exactly what happened rather than a single pass/fail.

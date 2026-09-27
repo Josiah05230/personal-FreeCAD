@@ -22,15 +22,21 @@ def test_filename_for_matches_fmt_pn():
 
 def test_new_part_relpath_groups_by_project_then_type():
     relpath = pn._new_part_relpath("CM", "Z", 10, 0)
-    assert relpath == os.path.join("CM", "Z", "CMZ0100", "CMZ0100.FCStd")
+    assert relpath == os.path.join("CM", "Z", "CMZ0100.FCStd")
 
 
-def test_new_part_relpath_is_nested_not_flat():
-    # the exact regression this suite exists to prevent: a future edit
-    # that "simplifies" this back to a flat <pn>/<pn>.FCStd shape.
+def test_new_part_relpath_has_no_per_part_folder():
+    # the user asked for the parts themselves at the type level - no
+    # <pn>/ folder holding a single file (and no bare <pn>.FCStd at the
+    # repo root either).
     relpath = pn._new_part_relpath("CM", "C", 1, 0)
     parts = relpath.split(os.sep)
-    assert parts == ["CM", "C", "CMC0010", "CMC0010.FCStd"]
+    assert parts == ["CM", "C", "CMC0010.FCStd"]
+
+
+def test_kicad_project_relpath_is_per_sequence_beside_the_fcstd():
+    assert pn.kicad_project_relpath(os.path.join("PS", "F", "PSF0012.FCStd")) == \
+        os.path.join("PS", "F", "PSF001-kicad")
 
 
 def test_find_part_file_uses_hint_when_valid(tmp_path):

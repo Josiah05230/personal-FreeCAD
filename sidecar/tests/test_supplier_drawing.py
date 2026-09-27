@@ -26,7 +26,7 @@ def generated(company_config, cad_repo):
     if not os.path.isfile(VENDOR_STEP) or not shutil.which("rsvg-convert"):
         pytest.skip("needs KiCad 3D models + rsvg-convert")
     pn.pn_reserve("CM", "B", 1, "screw", "M3x6 socket head", mfg="McMaster-Carr", mfgPn="91292A111")
-    folder = os.path.join(str(cad_repo), "CM", "B", "CMB0010")
+    folder = os.path.join(str(cad_repo), "CM", "B")
     os.makedirs(folder)
     shutil.copy(VENDOR_STEP, os.path.join(folder, "CMB0010.stp"))
     session.set_part_number({"pn": "USER0010", "name": "users part", "description": "open doc"})
@@ -44,7 +44,7 @@ def test_refuses_to_generate_without_a_real_mfg_and_mfg_pn(company_config, cad_r
     # drawing (found live on CMC0020). This must be a hard block instead,
     # never a guessed-at fact.
     pn.pn_reserve("CM", "C", 99, "connector", "6-pin housing, no vendor info yet")
-    folder = os.path.join(str(cad_repo), "CM", "C", "CMC0990")
+    folder = os.path.join(str(cad_repo), "CM", "C")
     os.makedirs(folder)
     shutil.copy(VENDOR_STEP, os.path.join(folder, "CMC0990.stp"))
     result = sm.generate_supplier_drawing("CMC0990")
@@ -100,7 +100,7 @@ def test_open_recovers_part_number_and_never_inherits_the_previous_one(generated
 
 def test_open_falls_back_to_the_registry_by_filename(company_config, cad_repo):
     pn.pn_reserve("CM", "C", 2, "connector", "2 PIN WP FEMALE")
-    folder = os.path.join(str(cad_repo), "CM", "C", "CMC0020")
+    folder = os.path.join(str(cad_repo), "CM", "C")
     os.makedirs(folder)
     path = os.path.join(folder, "CMC0020.FCStd")
     d = App.newDocument("untagged")
@@ -165,7 +165,7 @@ def test_multi_body_vendor_model_keeps_each_body_separate(company_config, cad_re
         pytest.skip("needs rsvg-convert")
     import Part
     pn.pn_reserve("CM", "C", 3, "connector", "2 pin housing", mfg="TE", mfgPn="1-123")
-    folder = os.path.join(str(cad_repo), "CM", "C", "CMC0030")
+    folder = os.path.join(str(cad_repo), "CM", "C")
     os.makedirs(folder)
     stp = os.path.join(folder, "CMC0030.stp")
     Part.makeCompound([Part.makeBox(5, 5, 5), Part.makeBox(2, 2, 8, App.Vector(10, 0, 0))]).exportStep(stp)

@@ -14,11 +14,11 @@ from gwtcad import partnumbers as pn
 from gwtcad.registry import RpcError
 
 
-def test_reserve_assigns_pn_and_nested_relpath(company_config):
+def test_reserve_assigns_pn_and_type_level_relpath(company_config):
     result = pn.pn_reserve("CM", "Z", 10, "connector", "test part")
     assert result["pn"] == "CMZ0100"
     assert result["pnSeq"] == "CMZ010"
-    assert result["repoRelpath"] == os.path.join("CM", "Z", "CMZ0100", "CMZ0100.FCStd")
+    assert result["repoRelpath"] == os.path.join("CM", "Z", "CMZ0100.FCStd")
 
 
 def test_reserve_persists_row_to_registry_csv(company_config):
@@ -209,7 +209,7 @@ def test_history_returns_every_revision_oldest_first(company_config, cad_repo):
     os.makedirs(os.path.dirname(abspath), exist_ok=True)
     open(abspath, "w").close()
     pn.pn_new_revision("CMC001", reason="bump 1")
-    new_abspath = os.path.join(str(cad_repo), "CM", "C", "CMC0010", "CMC0011.FCStd")
+    new_abspath = os.path.join(str(cad_repo), "CM", "C", "CMC0011.FCStd")
     open(new_abspath, "w").close()
     pn.pn_new_revision("CMC001", reason="bump 2")
 
@@ -325,12 +325,12 @@ def test_new_part_relpath_for_type_f_includes_fcstd_filename_too():
     # needs somewhere to save a mocked-up FreeCAD model - a real KiCad
     # project just lives alongside this FCStd in the same folder.
     relpath = pn._new_part_relpath("CM", "F", 10, 0)
-    assert relpath == os.path.join("CM", "F", "CMF0100", "CMF0100.FCStd")
+    assert relpath == os.path.join("CM", "F", "CMF0100.FCStd")
 
 
 def test_new_part_relpath_for_mechanical_type_still_includes_filename():
     relpath = pn._new_part_relpath("CM", "C", 10, 0)
-    assert relpath == os.path.join("CM", "C", "CMC0100", "CMC0100.FCStd")
+    assert relpath == os.path.join("CM", "C", "CMC0100.FCStd")
 
 
 def test_repo_for_path_recognizes_the_shared_ecad_repo(company_config, tmp_path):

@@ -8,6 +8,15 @@ export function dirname(p: string): string {
   return cut > 0 ? p.slice(0, cut) : cut === 0 ? p.slice(0, 1) : p
 }
 
+/** An F (PCB Assembly) part's KiCad project folder: <pn_seq>-kicad/ beside
+ *  its flat <pn>.FCStd, shared by every revision of the board (mirrors
+ *  partnumbers.kicad_project_relpath). */
+export function kicadDirFor(fcstdPath: string): string {
+  const pn = basename(fcstdPath).replace(/\.fcstd$/i, '')
+  const sep = fcstdPath.includes('\\') && !fcstdPath.includes('/') ? '\\' : '/'
+  return `${dirname(fcstdPath)}${sep}${pn.slice(0, -1)}-kicad`
+}
+
 interface SketchFrameLike {
   origin: [number, number, number]
   x: [number, number, number]

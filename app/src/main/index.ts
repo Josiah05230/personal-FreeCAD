@@ -212,12 +212,11 @@ app.whenReady().then(async () => {
     return { results }
   })
 
-  // Looks for a .kicad_pcb/.kicad_pro sitting alongside an F (PCB
-  // Assembly) part's FCStd - deliberately NOT fs:listDir, which filters to
-  // .FCStd-only by design (it backs the design-browsing DataPanel, not a
-  // general file lister). Non-recursive on purpose: the KiCad project is
-  // expected directly alongside the FCStd, same folder, per this feature's
-  // own <project>/<type>/<PN>/ convention - never anywhere deeper.
+  // Looks for a .kicad_pcb/.kicad_pro directly in `dir` - an F (PCB
+  // Assembly) part's <pn_seq>-kicad/ folder (renderer's kicadDirFor) -
+  // deliberately NOT fs:listDir, which backs the design-browsing DataPanel
+  // and filters by file type. Non-recursive on purpose: the board is the
+  // project at the top of that folder, never something deeper.
   ipcMain.handle('fs:findKicadProject', async (_e, dir: string) => {
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
     let pcbPath: string | null = null

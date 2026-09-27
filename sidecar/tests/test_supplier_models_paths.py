@@ -60,7 +60,7 @@ def test_part_folder_falls_back_to_new_convention_when_file_does_not_exist_yet(t
     # sync_supplier_models' first-time case: nothing on disk yet at all.
     row = _row("CMC001", 0)
     folder = sm._part_folder({}, str(tmp_path), "CMC0010", row=row)
-    assert folder == os.path.join(str(tmp_path), "CM", "C", "CMC0010")
+    assert folder == os.path.join(str(tmp_path), "CM", "C")
 
 
 def test_part_folder_looks_up_row_itself_when_not_given(tmp_path, monkeypatch):
@@ -74,6 +74,6 @@ def test_part_folder_looks_up_row_itself_when_not_given(tmp_path, monkeypatch):
     pn._write_registry(cfg, rows)
 
     folder = sm._part_folder(cfg, str(tmp_path), "CMC0010")  # row=None -> looks it up
-    assert folder == os.path.join(str(tmp_path), "CM", "C", "CMC0010")
+    assert folder == os.path.join(str(tmp_path), "CM", "C")
 
 

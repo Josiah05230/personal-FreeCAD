@@ -457,27 +457,33 @@ def _filename_for(project, type, seq, rev):
 
 
 def _new_part_relpath(project, type, seq, rev):
-    """Where a BRAND NEW part's file should land: <project>/<type>/<pn>/
-    <pn>.FCStd (e.g. CM/Z/CMZ0010/CMZ0010.FCStd) - grouped by project then
-    type so a person browsing the repo by hand can find a family of parts
-    without already knowing its PN, rather than every part sitting in one
-    flat, ever-growing folder. Only used for pn.reserve's very first
-    placement; pn.newRevision deliberately keeps a later revision NEXT TO
+    """Where a BRAND NEW part's file should land: <project>/<type>/<pn>.FCStd
+    (e.g. CM/Z/CMZ0010.FCStd) - grouped by project then type so a person
+    browsing the repo by hand can find a family of parts without already
+    knowing its PN. No per-part folder: the user asked for the parts
+    themselves at the type level, and a folder holding one file only added
+    a click. A part's companions (<pn>.stp, <pn>_supplier_meta.json,
+    <pn>.FCStd.gwtcad.json) sit next to it, all prefixed by the PN, so
+    siblings never collide. pn.newRevision keeps a later revision NEXT TO
     wherever the current file actually lives (via _find_part_file's
-    self-healing search) instead of recomputing this, so a part that's been
-    manually reorganized since is never fought with.
+    self-healing search) instead of recomputing this, so a part that's
+    been manually reorganized since is never fought with.
 
-    Type F (PCB Assembly) gets the SAME <pn>.FCStd shape, not a bare
-    folder - a purchased breakout-board module with no real KiCad source
-    still needs somewhere to save a mocked-up FreeCAD model (mirroring how
-    supplier_models.py mocks up purchased mechanical parts), and a real
-    KiCad project (.kicad_pro/.kicad_pcb/.kicad_sch, plus whatever exports
-    came with an import) just lives ALONGSIDE that FCStd in the same
-    folder - exactly like a mechanical part's exports sit next to its
-    FCStd today. The folder is what's actually ECAD-repo-specific here,
-    not the filename convention."""
+    Type F (PCB Assembly) gets the SAME flat <pn>.FCStd; its KiCad project
+    (a folder of files by nature: .kicad_pro/.kicad_pcb/.kicad_sch, libs,
+    production exports) lives in <pn_seq>-kicad/ beside it - see
+    kicad_project_relpath."""
     pn = _fmt_pn(project, type, seq, rev)
-    return os.path.join(project, type, pn, "%s.FCStd" % pn)
+    return os.path.join(project, type, "%s.FCStd" % pn)
+
+
+def kicad_project_relpath(fcstd_relpath):
+    """The KiCad project folder for an F part's FCStd: <pn_seq>-kicad/ next
+    to it, shared by every revision of the board (git history keeps the
+    per-revision state, same as the FCStd copies do)."""
+    base = os.path.basename(fcstd_relpath)
+    pn = os.path.splitext(base)[0]
+    return os.path.join(os.path.dirname(fcstd_relpath), "%s-kicad" % pn[:-1])
 
 
 def _find_part_file(repo, filename, hint_relpath=None):
