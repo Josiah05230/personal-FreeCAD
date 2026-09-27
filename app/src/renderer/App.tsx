@@ -4095,9 +4095,12 @@ export function App(): JSX.Element {
       // STEP geometry instead of just opening the (possibly mockup-only,
       // possibly stale) FCStd directly. NOT window.cad.listDir - that
       // backs the design-browsing DataPanel and filters by file type.
-      let found = await window.cad.findKicadProject(kicadDirFor(path)).catch(() => ({ pcbPath: null, proPath: null }))
-      if (!found.pcbPath) {
-        found = await window.cad.findKicadProject(dirname(path)).catch(() => ({ pcbPath: null, proPath: null }))
+      // (a board moved in with its own layout keeps the project one level
+      // down, in <pn_seq>-kicad/kicad/)
+      let found: { pcbPath: string | null; proPath: string | null; schPath?: string | null } = { pcbPath: null, proPath: null }
+      for (const dir of [kicadDirFor(path), kicadDirFor(path) + '/kicad', dirname(path)]) {
+        found = await window.cad.findKicadProject(dir).catch(() => ({ pcbPath: null, proPath: null }))
+        if (found.pcbPath) break
       }
       if (!found.pcbPath) {
         // mockup-only F part (a purchased breakout board with no real

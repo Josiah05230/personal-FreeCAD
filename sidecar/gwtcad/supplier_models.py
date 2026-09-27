@@ -904,8 +904,15 @@ def refresh_drawing_for_revision(rebuild=True):
         if rebuild and pn and info and info.get("pn") != pn and info.get("sig") == page_signature(page):
             sources = _drawing_sources(doc, page)
             if sources:
-                # the equivalence note names the PN - carry it to this rev
-                notes = [pn + n[n.index(" IS EQUIVALENT TO "):] if " IS EQUIVALENT TO " in n else n
+                # the equivalence note names the PN and the supplier part:
+                # write it fresh from the registry (never carry a stale or
+                # placeholder supplier forward), else move the old one to this PN
+                cfg = _pn._load_config()
+                row = _pn._current_row(_pn._read_registry(cfg), pn[:-1]) if cfg.get("registryPath") else None
+                fresh = None
+                if row and (row.get("mfg") or "").strip() and (row.get("mfg_pn") or "").strip():
+                    fresh = "%s IS EQUIVALENT TO %s %s" % (pn, row["mfg"].upper(), row["mfg_pn"])
+                notes = [(fresh or pn + n[n.index(" IS EQUIVALENT TO "):]) if " IS EQUIVALENT TO " in n else n
                          for n in info.get("notes", [])]
                 name, description = info.get("titleName", ""), info.get("titleDescription", "")
                 _drawing.delete_page(doc, page.Name)
