@@ -79,13 +79,34 @@ export type AcquireResult =
  *  should have already pulled the repo (see gitSync.ts) so this sees the
  *  freshest known state before deciding - a stale local pull could show a
  *  lock as absent when someone just took it a moment ago. */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    // EPERM = alive but not ours to signal; ESRCH = gone
+    return (e as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
 export async function acquireLock(partFilePath: string): Promise<AcquireResult> {
   const cwd = dirname(partFilePath)
   const existing = readLock(partFilePath)
-  if (existing && !isStale(existing)) {
+  const me = { holder: userInfo().username || 'unknown', machine: hostname() }
+  const mine = !!existing && existing.holder === me.holder && existing.machine === me.machine
+  // This exact process already holds it (switching back to a tab, or an
+  // open racing a second open of the same file) - nothing to do. Before
+  // this, re-opening a file you already had open reported that YOU had it
+  // open "elsewhere".
+  if (mine && existing!.pid === process.pid) return { status: 'acquired' }
+  // Held by one of MY earlier GWT-CAD processes that's gone (closed or
+  // crashed without releasing): it's still me - re-stamp it quietly
+  // instead of blocking or waiting out the staleness window.
+  const mineButDead = mine && !pidAlive(existing!.pid)
+  if (existing && !isStale(existing) && !mineButDead) {
     return { status: 'held', lock: existing }
   }
-  const reclaiming = existing && isStale(existing)
+  const reclaiming = existing && isStale(existing) && !mine
 
   const lock: LockInfo = {
     holder: userInfo().username || 'unknown',
@@ -154,4 +175,40 @@ export async function releaseLock(partFilePath: string): Promise<void> {
 
 export function currentLock(partFilePath: string): LockInfo | null {
   return readLock(partFilePath)
+}
+
+
+/** Release several locks at once (quitting with several tabs open): one
+ *  commit + one push per repo instead of one round-trip per file. Same
+ *  "only locks THIS process holds" rule as releaseLock. */
+export async function releaseLocks(partFilePaths: string[]): Promise<void> {
+  const byRepo = new Map<string, string[]>()
+  for (const p of partFilePaths) {
+    const existing = readLock(p)
+    if (!existing || existing.pid !== process.pid || existing.machine !== hostname()) continue
+    try {
+      unlinkSync(lockPath(p))
+    } catch {
+      continue
+    }
+    let root = dirname(p)
+    try {
+      root = (await git(dirname(p), ['rev-parse', '--show-toplevel'])).trim()
+    } catch {
+      // not a repo - nothing to commit
+      continue
+    }
+    byRepo.set(root, [...(byRepo.get(root) ?? []), lockPath(p)])
+  }
+  await Promise.all(
+    [...byRepo.entries()].map(async ([root, locks]) => {
+      try {
+        await git(root, ['add', '--', ...locks])
+        await git(root, ['commit', '-m', `lock: released ${locks.length} file(s)`])
+        await git(root, ['push'], NETWORK_TIMEOUT_MS)
+      } catch {
+        // offline/rejected: local deletions stand; staleness covers the rest
+      }
+    })
+  )
 }

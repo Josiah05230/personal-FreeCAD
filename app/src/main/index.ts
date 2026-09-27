@@ -31,7 +31,7 @@ let sidecar: Sidecar | null = null
  *  synchronously without an IPC round-trip during teardown. A crash skips
  *  this entirely; lockfile.ts's staleness threshold is the real fallback
  *  for that case, this is only the graceful-exit path. */
-let activeLockedPath: string | null = null
+const activeLockedPaths = new Set<string>()
 
 /** Dirent.isDirectory() is false for a symlink even when it points at a
  *  real directory (Node doesn't follow the link for that check) - so a
@@ -385,17 +385,17 @@ app.whenReady().then(async () => {
   ipcMain.handle('asmPin:currentCommit', (_e, filePath: string) => asmPin.currentCommitFor(filePath))
 
   // --- standalone-open lock (blocking - "X has this part open") ---
-  // activeLockedPath is tracked here (not just in the renderer's own state)
-  // so before-quit below can release it synchronously without a risky
+  // activeLockedPaths is tracked here (not just in the renderer's own state)
+  // so before-quit below can release them all without a risky
   // round-trip IPC call while the app is already tearing down.
   ipcMain.handle('lock:acquire', async (_e, filePath: string) => {
     const result = await lockfile.acquireLock(filePath)
-    if (result.status === 'acquired' || result.status === 'reclaimed') activeLockedPath = filePath
+    if (result.status === 'acquired' || result.status === 'reclaimed') activeLockedPaths.add(filePath)
     return result
   })
   ipcMain.handle('lock:release', async (_e, filePath: string) => {
     await lockfile.releaseLock(filePath)
-    if (activeLockedPath === filePath) activeLockedPath = null
+    activeLockedPaths.delete(filePath)
   })
   ipcMain.handle('lock:current', (_e, filePath: string) => lockfile.currentLock(filePath))
 
@@ -749,13 +749,13 @@ app.on('before-quit', (e) => {
   // this adds at most that long, never blocks indefinitely, and a second
   // quit request (e.g. the user impatiently quitting twice) falls through
   // immediately rather than looping.
-  if (activeLockedPath && !releasingLockOnQuit) {
+  if (activeLockedPaths.size && !releasingLockOnQuit) {
     releasingLockOnQuit = true
     e.preventDefault()
-    const path = activeLockedPath
-    activeLockedPath = null
+    const paths = [...activeLockedPaths]
+    activeLockedPaths.clear()
     void lockfile
-      .releaseLock(path)
+      .releaseLocks(paths)
       .catch(() => undefined)
       .then(() => app.quit())
     return

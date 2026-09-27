@@ -298,7 +298,13 @@ export function App(): JSX.Element {
   // (lockfile.ts, via window.cad.lockAcquire) - a ref, not state, since it
   // only needs to be read synchronously right before switching/closing,
   // never rendered.
-  const lockedPathRef = useRef<string | null>(null)
+  // every file this session holds a standalone lock on - one per open tab,
+  // released when its tab closes (or all at once on quit, in main)
+  const heldLocksRef = useRef<Set<string>>(new Set())
+  // openDesign calls run one at a time (fast tab clicking used to overlap
+  // pulls/lock commits in the same repo); only the newest queued one runs
+  const openChainRef = useRef<Promise<void>>(Promise.resolve())
+  const openSeqRef = useRef(0)
   // true while "Review" (the upstream-change peek) has swapped the sidecar's
   // active document to someone else's pushed version - save() checks this
   // synchronously so a stray Ctrl+S mid-review can never save the peeked
@@ -3097,11 +3103,9 @@ export function App(): JSX.Element {
   // indicator or a one-off notice - matching the user's own ask ("if it
   // can't connect, have a temporary warning show up... at least if/when it
   // can connect").
-  const releaseStandaloneLock = useCallback(async () => {
-    const held = lockedPathRef.current
-    if (!held) return
-    lockedPathRef.current = null
-    await window.cad.lockRelease(held).catch(() => undefined)
+  const releaseStandaloneLock = useCallback(async (p: string) => {
+    if (!heldLocksRef.current.delete(p)) return
+    await window.cad.lockRelease(p).catch(() => undefined)
   }, [])
 
   // Pull latest for `p`'s repo (if it's in one with a remote) BEFORE the
@@ -3146,11 +3150,11 @@ export function App(): JSX.Element {
     if (!st.isRepo || !st.hasUpstream) return true // scratch file / no remote - no locking to do
     const result = await window.cad.lockAcquire(p).catch(() => ({ status: 'unreachable' as const }))
     if (result.status === 'acquired') {
-      lockedPathRef.current = p
+      heldLocksRef.current.add(p)
       return true
     }
     if (result.status === 'reclaimed') {
-      lockedPathRef.current = p
+      heldLocksRef.current.add(p)
       const ago = new Date(result.previousOpenedAt).toLocaleString()
       flashSketchNotice(
         `Reclaimed an abandoned lock on ${basename(p)} from ${result.previousHolder} (opened ${ago})`
@@ -3171,6 +3175,19 @@ export function App(): JSX.Element {
         `use the Git panel to push manually once they're done), or Cancel to leave it alone.`
     )
   }, [flashSketchNotice])
+
+  // pull + lock before the sidecar opens `p` - skipped entirely when this
+  // session already holds p's lock (switching back to an open tab): the
+  // lock proves nobody else pushed to it since, so there is nothing to pull
+  // and nothing to lock, and a tab switch stays a local-only operation.
+  const prepareToOpen = useCallback(
+    async (p: string): Promise<boolean> => {
+      if (heldLocksRef.current.has(p)) return true
+      if (!(await autoPullBeforeOpen(p))) return false
+      return acquireStandaloneLock(p)
+    },
+    [autoPullBeforeOpen, acquireStandaloneLock]
+  )
 
   // ---- file ops ----
   const saveAs = useCallback(async () => {
@@ -3254,7 +3271,7 @@ export function App(): JSX.Element {
     return () => window.clearInterval(id)
   }, [unpushedCount, docPath, attemptPush, flashSketchNotice])
 
-  const openDesign = useCallback(
+  const openDesignNow = useCallback(
     async (path?: string) => {
       if (reviewingRef.current) {
         window.alert('Finish reviewing (click "Done reviewing") before opening another file.')
@@ -3263,13 +3280,9 @@ export function App(): JSX.Element {
       const p = path ?? (await window.cad.openDialog())
       if (!p) return
       setLinkedKicadProject(null) // clears any stale "Open in KiCad" from a previous F part
-      // release whatever standalone lock this session held on the PREVIOUS
-      // document before touching the new one - the sidecar only ever has
-      // one document open at a time, so switching files always means
-      // "done with the old one."
-      await releaseStandaloneLock()
-      if (!(await autoPullBeforeOpen(p))) return
-      if (!(await acquireStandaloneLock(p))) return
+      // the previous document's tab stays open, so its lock is kept too -
+      // it is released when that tab closes
+      if (!(await prepareToOpen(p))) return
       // the sidecar holds one document: opening replaces it. Reflect that as a
       // fresh tab rather than mutating whatever tab is in front.
       const opened = await api.open(p)
@@ -3332,7 +3345,20 @@ export function App(): JSX.Element {
       }
       await refreshScene()
     },
-    [refreshScene, tabs, releaseStandaloneLock, autoPullBeforeOpen, acquireStandaloneLock, flashSketchNotice, markDirty]
+    [refreshScene, tabs, prepareToOpen, flashSketchNotice, markDirty]
+  )
+
+  const openDesign = useCallback(
+    (path?: string): Promise<void> => {
+      const seq = ++openSeqRef.current
+      const run = openChainRef.current.then(async () => {
+        if (seq !== openSeqRef.current && path) return // superseded by a newer click
+        await openDesignNow(path)
+      })
+      openChainRef.current = run.catch(() => undefined)
+      return run
+    },
+    [openDesignNow]
   )
 
   const exportModel = useCallback(async () => {
@@ -3883,12 +3909,9 @@ export function App(): JSX.Element {
         await openDesign(path)
         return
       }
-      // same three steps openDesign itself does before touching the
-      // sidecar's one live document - release the PREVIOUS doc's lock,
-      // pull latest, take a lock on this one.
-      await releaseStandaloneLock()
-      if (!(await autoPullBeforeOpen(path))) return
-      if (!(await acquireStandaloneLock(path))) return
+      // same pull + lock openDesign does before touching the sidecar's
+      // one live document
+      if (!(await prepareToOpen(path))) return
       try {
         const imported = await api.kicadImportStep(found.pcbPath)
         const id = `d${Date.now()}`
@@ -3934,7 +3957,7 @@ export function App(): JSX.Element {
         window.alert((e as Error).message)
       }
     },
-    [openDesign, releaseStandaloneLock, autoPullBeforeOpen, acquireStandaloneLock, refreshScene, flashSketchNotice]
+    [openDesign, prepareToOpen, refreshScene, flashSketchNotice]
   )
 
   const fitView = useCallback(() => vpApi.current?.fit(), [])
@@ -5482,9 +5505,26 @@ export function App(): JSX.Element {
                 setTabs((t) => t.filter((x) => x.id !== id))
                 return
               }
-              void openDesign(target.path)
+              // reopening replaces the sidecar's one document, so unsaved
+              // edits to the tab being left would be lost
+              const leaving = tabs.find((t) => t.id === activeTab)
+              if (
+                leaving?.dirty &&
+                !window.confirm(
+                  `${leaving.name} has unsaved changes that will be lost if you switch tabs.\n\n` +
+                    `Click OK to switch anyway, or Cancel to stay and save first.`
+                )
+              )
+                return
+              void openDesign(target.path).catch((e) => window.alert((e as Error).message))
             }}
-            onClose={(id) => setTabs((t) => (t.length > 1 ? t.filter((x) => x.id !== id) : t))}
+            onClose={(id) => {
+              if (tabs.length <= 1) return
+              const closing = tabs.find((t) => t.id === id)
+              setTabs((t) => t.filter((x) => x.id !== id))
+              const p = closing?.path
+              if (p && !tabs.some((t) => t.id !== id && t.path === p)) void releaseStandaloneLock(p)
+            }}
             onNew={newDesign}
           />
           <div className="workspace">
