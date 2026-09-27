@@ -4,6 +4,7 @@ Milestone 0 surface only: enough to build a demo solid headless, stream it to th
 viewport, and describe its feature tree. Real modelling operations arrive in
 Milestone 1.
 """
+import collections
 import math
 import os
 
@@ -35,15 +36,27 @@ _DATUM_TYPES = (
 # Tessellation cache: body name -> (signature, render buffer). OCCT meshing is
 # the slow part of scene.get; skip it when a body's shape is unchanged.
 _TESS_CACHE = {}
+# the caches of recently open files, so switching back to a tab reuses its
+# meshes instead of re-meshing (1-2s on a dense vendor model)
+_TESS_BY_PATH = collections.OrderedDict()
+_TESS_KEEP_FILES = 6
 
 
 def _shape_sig(shape):
+    # No Volume (~0.3s per refresh on a dense vendor model) and no BoundBox:
+    # OCCT's BoundBox depends on whether the shape has been meshed yet (up
+    # to ~1mm on curved faces), so a key taken on a freshly loaded shape
+    # never matched its own cached mesh. Counts + area + the bounds of the
+    # actual vertices are exact and change with any real edit.
     try:
-        bb = shape.BoundBox
-        return "%d|%d|%.5f|%.5f|%.3f,%.3f,%.3f,%.3f,%.3f,%.3f" % (
-            len(shape.Faces), len(shape.Edges), shape.Area, shape.Volume,
-            bb.XMin, bb.YMin, bb.ZMin, bb.XMax, bb.YMax, bb.ZMax,
-        )
+        pts = [v.Point for v in shape.Vertexes]
+        if pts:
+            xs, ys, zs = [p.x for p in pts], [p.y for p in pts], [p.z for p in pts]
+            vb = (min(xs), min(ys), min(zs), max(xs), max(ys), max(zs))
+        else:
+            vb = (0.0,) * 6
+        return "%d|%d|%d|%.5f|%.4f,%.4f,%.4f,%.4f,%.4f,%.4f" % (
+            (len(shape.Faces), len(shape.Edges), len(pts), shape.Area) + vb)
     except Exception:
         return None
 
@@ -2263,6 +2276,7 @@ def _owner_mesh(owner, shape):
         buf = dict(cached[1])
     else:
         buf = tessellate_shape(shape)
+        sig = _shape_sig(shape)  # meshing tightens BoundBox; key on the after-state
         if sig is not None:
             _TESS_CACHE[owner.Name] = (sig, buf)
     buf["sig"] = sig
@@ -4421,6 +4435,10 @@ def scene_get():
                     buf = dict(cached[1])  # reuse the heavy positions/normals lists
                 else:
                     buf = tessellate_shape(shape)
+                    # meshing tightens the shape's BoundBox, so a key taken
+                    # before it never matched again and every refresh
+                    # re-meshed; key on the after-state
+                    sig = _shape_sig(shape)
                     if sig is not None:
                         _TESS_CACHE[o.Name] = (sig, buf)
                 buf["sig"] = sig
@@ -5149,7 +5167,16 @@ def document_open(path):
     path = os.path.abspath(os.path.expanduser(path))
     if not os.path.isfile(path):
         raise RpcError(APP_ERROR, "no such file: %s" % path)
+    prev = session.path()
+    if prev and _TESS_CACHE:
+        _TESS_BY_PATH[prev] = dict(_TESS_CACHE)
+        _TESS_BY_PATH.move_to_end(prev)
+        while len(_TESS_BY_PATH) > _TESS_KEEP_FILES:
+            _TESS_BY_PATH.popitem(last=False)
     _TESS_CACHE.clear()
+    # entries are still checked against each shape's signature, so a file
+    # that changed on disk (a pull) just re-meshes
+    _TESS_CACHE.update(_TESS_BY_PATH.get(path, {}))
     d = session.open_path(path)
     session.set_part_number(None)  # never inherit the previous file's PN
     try:
