@@ -53,13 +53,48 @@ def test_refuses_to_generate_without_a_real_mfg_and_mfg_pn(company_config, cad_r
     assert any("?" not in e and "mfg" in e for e in result["errors"])
 
 
+def test_part_name_is_the_one_word_registry_name_and_mfg_pn_is_only_in_the_note(generated):
+    # regression: PART NAME was "<mfg> <mfg_pn>" ("McMaster-Carr 91292A111",
+    # "Deutsch DT04-2P"); the user's rule is one word, mfg PN only in the note
+    result, path = generated
+    assert result["ok"], result
+    methods.document_open(path)
+    d = session.doc(create=False)
+    cells = []
+    for o in d.Objects:
+        if o.TypeId == "Spreadsheet::Sheet":
+            cells += [o.getContents(c).lstrip("'") for c in o.getUsedCells()]
+    assert "SCREW" in cells
+    assert not any("91292A111" in c or "McMaster" in c for c in cells)
+    notes = [t for o in d.Objects if o.TypeId == "TechDraw::DrawViewAnnotation" for t in o.Text]
+    assert any("IS EQUIVALENT TO MCMASTER-CARR 91292A111" in t for t in notes)
+
+
+@pytest.mark.parametrize("name,desc,why", [
+    ("flat head", "M3x5mm flat head screw", "one-word"),
+    ("", "M3x5mm flat head screw", "one-word"),
+    ("screw", "Flat head screw (92010A114)", "manufacturer part number"),
+])
+def test_refuses_a_title_that_breaks_the_drawing_rules(company_config, cad_repo, name, desc, why):
+    if not os.path.isfile(VENDOR_STEP):
+        pytest.skip("needs KiCad 3D models")
+    pn.pn_reserve("CM", "B", 3, name, desc, mfg="McMaster-Carr", mfgPn="92010A114")
+    folder = os.path.join(str(cad_repo), "CM", "B")
+    os.makedirs(folder)
+    shutil.copy(VENDOR_STEP, os.path.join(folder, "CMB0030.stp"))
+    result = sm.generate_supplier_drawing("CMB0030")
+    assert result["ok"] is False
+    assert any(why in e for e in result["errors"]), result
+    assert not os.path.isfile(os.path.join(folder, "CMB0030.FCStd"))
+
+
 def test_long_title_block_text_is_shrunk_to_fit_its_cell(company_config, cad_repo):
     # regression: CMB0020's registry description ran past the title block's
     # right border in the exported PDF ("...flat head screw (92010A11")
     if not os.path.isfile(VENDOR_STEP) or not shutil.which("rsvg-convert"):
         pytest.skip("needs KiCad 3D models + rsvg-convert")
     import re
-    long_desc = "Passivated 18-8 SS Phillips flat head screw (92010A114)"
+    long_desc = "Passivated 18-8 stainless steel Phillips drive flat head screw"
     pn.pn_reserve("CM", "B", 2, "screw", long_desc, mfg="McMaster-Carr", mfgPn="92010A114")
     folder = os.path.join(str(cad_repo), "CM", "B")
     os.makedirs(folder)
@@ -83,7 +118,8 @@ def test_long_title_block_text_is_shrunk_to_fit_its_cell(company_config, cad_rep
     from gwtcad import sheet_templates
     style = sheet_templates.load_sheet_template("GrainWave Technologies")["spec"]["titleBlockTable"]["style"]
     value_w = style["colWidths"][-1]
-    assert drawing._measure_text(long_desc, size_of(long_desc)) <= value_w - 3 + 1e-6
+    # font sizes are written to 4 decimals, so allow that much rounding
+    assert drawing._measure_text(long_desc, size_of(long_desc)) <= value_w - 3 + 0.01
 
 
 def test_generation_restores_the_users_session_part_number(generated):

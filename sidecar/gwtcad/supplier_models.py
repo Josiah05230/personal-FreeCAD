@@ -188,31 +188,32 @@ def _projection_group_footprint(doc, group_views):
     return [min_x, min_y, max_x, max_y]
 
 
-def _supplier_title_block_text(mfg, mfg_pn, meta, registry_description=None):
-    """PART NAME / DESCRIPTION text for a purchased part's title block.
+def _title_block_problem(pn, row):
+    """Why `row` can't title a drawing yet, or None. The user's standing
+    rules for every drawing: PART NAME is one word (the registry's name
+    column - "SCREW", "CONNECTOR"), and the manufacturer part number appears
+    ONLY in the IS EQUIVALENT TO note, never in the name or description.
+    Earlier versions titled supplier drawings "Deutsch DT04-2P" and kept
+    descriptions like "flat head screw (92010A114)". A row that breaks a
+    rule blocks the drawing until the registry is fixed - never patched
+    over with a guessed or placeholder name."""
+    name = (row.get("name") or "").strip()
+    if len(name.split()) != 1:
+        return ("%s needs a one-word part name in the registry (has %r) before a "
+                "drawing can be generated." % (pn, name))
+    mfg_pn = (row.get("mfg_pn") or "").strip()
+    if mfg_pn and mfg_pn.lower() in (row.get("description") or "").lower():
+        return ("%s's registry description contains its manufacturer part number %s - "
+                "that belongs only in the drawing note; take it out of the description "
+                "first." % (pn, mfg_pn))
+    return None
 
-    DESCRIPTION always equals the registry's own description column,
-    full stop - it must never diverge from what the portal/inventory
-    shows for the same PN (confirmed live: an earlier version of this
-    function derived its own "N PIN WP FEMALE"-style text from Aptiv's
-    componentType/cavities/gender metadata instead, which silently drifted
-    out of sync with CMC0010's real registry description - the registry
-    row is the single source of truth for this text, this function must
-    never invent a competing one). PART NAME still prefers the supplier's
-    structured componentType field (e.g. "CONNECTOR") when available,
-    since that's a category label, not a description, and has no registry
-    counterpart to diverge from. Falls back to "<mfg> <mfg_pn>" - the ONE
-    caller (generate_supplier_drawing) guarantees both are real, non-empty
-    values before this is ever called (a hard gate refuses to generate a
-    drawing at all otherwise - see that function), so there is
-    deliberately no further "or PART"-style placeholder fallback here: if
-    that guarantee is ever broken, this should fail loudly, not silently
-    write a meaningless generic label into a real drawing again (confirmed
-    live: that's exactly what happened before this gate existed - CMC0020
-    got a title block that said "PART")."""
-    component_type = (meta or {}).get("componentType")
-    name = component_type.upper() if component_type else " ".join(filter(None, [mfg, mfg_pn]))
-    return name, registry_description or ""
+
+def _title_block_text(row):
+    """PART NAME / DESCRIPTION for a generated drawing, straight from the
+    registry row (the portal shows the same description as Component name,
+    so the two can never disagree). Call _title_block_problem first."""
+    return row["name"].strip().upper(), (row.get("description") or "").strip()
 
 
 def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, notes=None):
@@ -660,8 +661,11 @@ def _generate_supplier_drawing(pn):
                 "errors": ["%s has a supplier .stp on file but no mfg/mfg_pn recorded in the "
                            "registry - fill those in before a drawing can be generated "
                            "(never auto-filled with a placeholder)." % pn]}
+    problem = _title_block_problem(pn, row)
+    if problem:
+        return {"pn": pn, "ok": False, "errors": [problem]}
 
-    result = {"pn": pn, "ok": True, "pdfUploaded": False, "errors": []}
+    result ={"pn": pn, "ok": True, "pdfUploaded": False, "errors": []}
     tmpdir = tempfile.mkdtemp(prefix="gwtcad-supplier-drawing-")
     try:
         doc = App.newDocument(pn)
@@ -681,22 +685,7 @@ def _generate_supplier_drawing(pn):
                 part_obj.append(o)
             doc.recompute()
 
-            # Metadata sidecar (componentType/cavities/gender - see
-            # tryFetchSupplierModel) organized alongside the .stp by
-            # sync_supplier_models, if the supplier's fetch produced one.
-            # Missing/unreadable is a normal, silent fallback case (a
-            # manually-added vendor .stp has no sidecar at all), not an
-            # error worth surfacing.
-            meta = None
-            meta_path = os.path.join(part_folder, "%s_supplier_meta.json" % pn)
-            if os.path.isfile(meta_path):
-                try:
-                    with open(meta_path) as f:
-                        meta = json.load(f)
-                except Exception:
-                    meta = None
-            title_name, title_description = _supplier_title_block_text(
-                row.get("mfg"), row.get("mfg_pn"), meta, row.get("description"))
+            title_name, title_description = _title_block_text(row)
 
             page_info = _drawing.create_page(doc, label="Drawing")
             page_id = page_info["id"]
@@ -919,12 +908,15 @@ def refresh_drawing_for_revision(rebuild=True):
                          for n in info.get("notes", []) if fresh or " IS EQUIVALENT TO " not in n]
                 dropped_note = not fresh and any(" IS EQUIVALENT TO " in n for n in info.get("notes", []))
                 # title text comes from the registry (the stamp may hold an old
-                # revision's text, or the old "PART" placeholder)
-                if row:
-                    name, description = _supplier_title_block_text(
-                        row.get("mfg"), row.get("mfg_pn"), None, row.get("description"))
-                else:
-                    name, description = info.get("titleName", ""), info.get("titleDescription", "")
+                # revision's text, or the old "PART"/"<mfg> <mfg_pn>" name);
+                # a row that can't title a drawing leaves the page as it is
+                problem = _title_block_problem(pn, row) if row else "%s has no registry row." % pn
+                if problem:
+                    _recompute_page_views(doc, page)
+                    _tables.refresh_live_cells(doc, page)
+                    out.append({"id": page.Name, "label": page.Label, "action": "updated", "warning": problem})
+                    continue
+                name, description = _title_block_text(row)
                 _drawing.delete_page(doc, page.Name)
                 new_page = _drawing.create_page(doc, label=label)
                 _apply_grainwave_template(doc, new_page["id"], sources, pn, name, description, notes=notes)
@@ -1152,7 +1144,7 @@ def _draw_part_in_doc(doc, fcstd_path, pn, row):
     notes = []
     if (row.get("mfg") or "").strip() and (row.get("mfg_pn") or "").strip() and row.get("mfg") != "GWT":
         notes = ["%s IS EQUIVALENT TO %s %s" % (pn, row["mfg"].upper(), row["mfg_pn"])]
-    name, description = row.get("name", ""), row.get("description", "")
+    name, description = _title_block_text(row)
     page = _drawing.create_page(doc, label="Drawing")
     _apply_grainwave_template(doc, page["id"], bodies, pn, name, description, notes=notes)
     _coarsen_views(doc)
@@ -1183,6 +1175,9 @@ def generate_part_drawing(pn):
         return {"pn": pn, "ok": True, "skipped": "no part file"}
     if _file_has_drawing(fcstd_path):
         return {"pn": pn, "ok": True, "skipped": "drawing already exists"}
+    problem = _title_block_problem(pn, row)
+    if problem:
+        return {"pn": pn, "ok": False, "errors": [problem]}
     real = os.path.realpath(fcstd_path)
     if any(d.FileName and os.path.realpath(d.FileName) == real for d in App.listDocuments().values()):
         return {"pn": pn, "ok": True, "skipped": "open in the app - generates on its next promotion"}
