@@ -25,6 +25,58 @@ import type { RenderSettings } from '../rpc'
 import { effectiveRender, resolveBackground } from '../appearance'
 import type { RenderImageOptions } from './types'
 import { trace } from '../trace'
+import { MoveGizmo } from './MoveGizmo'
+import type { BodyXformView, Vec3 } from '../moveXform'
+
+/** Move/Copy live preview: put every node of the target bodies at
+ *  `M * base` (base = the node's own transform before the preview touched it,
+ *  identity for a normal body), or - for Create Copy - leave them and draw
+ *  `copies` shallow clones at M^1..M^n. Nodes no longer targeted snap back to
+ *  their exact saved base, so Cancel restores the original position exactly. */
+function applyBodyXform(
+  content: THREE.Group | null,
+  ghosts: THREE.Group,
+  xf: BodyXformView | null,
+  M: THREE.Matrix4 | null
+): void {
+  // ghost clones share geometry + material with the real nodes - never dispose
+  ghosts.clear()
+  if (!content) return
+  const ids = new Set(xf?.ids ?? [])
+  const moving = !!xf && !!M && xf.copies === 0
+  const tmp = new THREE.Matrix4()
+  for (const o of content.children) {
+    const bid = o.userData?.bodyId as string | undefined
+    if (!bid) continue
+    const base = o.userData.xfBase as THREE.Matrix4 | undefined
+    if (moving && ids.has(bid)) {
+      if (!base) {
+        o.updateMatrix()
+        o.userData.xfBase = o.matrix.clone()
+      }
+      tmp.copy(M!).multiply(o.userData.xfBase as THREE.Matrix4)
+      tmp.decompose(o.position, o.quaternion, o.scale)
+      o.updateMatrixWorld(true)
+    } else if (base) {
+      base.decompose(o.position, o.quaternion, o.scale)
+      delete o.userData.xfBase
+      o.updateMatrixWorld(true)
+    }
+    if (xf && M && xf.copies > 0 && ids.has(bid)) {
+      const Mk = new THREE.Matrix4() // M^k, k = 1..copies
+      o.updateMatrix()
+      for (let k = 1; k <= xf.copies; k++) {
+        Mk.premultiply(M)
+        const c = o.clone(false)
+        tmp.copy(Mk).multiply(o.matrix)
+        tmp.decompose(c.position, c.quaternion, c.scale)
+        c.userData = { xformGhost: true }
+        ghosts.add(c)
+      }
+    }
+  }
+  ghosts.updateMatrixWorld(true)
+}
 
 function gradientBackground(top = '#20242b', mid = '#2b3038', bot = '#3a4048'): THREE.Texture {
   const c = document.createElement('canvas')
@@ -126,6 +178,9 @@ export function Viewport({
   onAssemblyDrag,
   refPickMode = false,
   onPickRef,
+  bodyXform = null,
+  onBodyXformDrag,
+  hoverBody = false,
   apiRef
 }: {
   meshes: RenderMesh[]
@@ -209,6 +264,17 @@ export function Viewport({
    *  before starting the pick. */
   refPickMode?: boolean
   onPickRef?: (sel: Selection) => void
+  /** Move/Copy dialog: preview the target bodies at the dialog's delta (no
+   *  engine round trip) and show the drag manipulator. null = no preview. */
+  bodyXform?: BodyXformView | null
+  /** the manipulator was dragged: total translation / angle since 'start' */
+  onBodyXformDrag?: (
+    ev: { handle: string; translate?: Vec3; angle?: number },
+    phase: 'start' | 'move' | 'end'
+  ) => void
+  /** hover highlights the whole body under the cursor (Move/Copy's Objects
+   *  box is armed), not the face */
+  hoverBody?: boolean
 }): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   const cubeRef = useRef<HTMLDivElement>(null)
@@ -230,6 +296,22 @@ export function Viewport({
   onSketchProjectRef.current = onSketchProject
   const asmToolRef = useRef(asmTool)
   asmToolRef.current = asmTool
+  const bodyXformRef = useRef(bodyXform)
+  bodyXformRef.current = bodyXform
+  const onBodyXformDragRef = useRef(onBodyXformDrag)
+  onBodyXformDragRef.current = onBodyXformDrag
+  const hoverBodyRef = useRef(hoverBody)
+  hoverBodyRef.current = hoverBody
+  const selectionRef = useRef(selection)
+  selectionRef.current = selection
+  /** a live manipulator drag: the preview delta it started from, and the
+   *  latest result waiting to be reported (throttled to one per frame) */
+  const gizmoDragRef = useRef<{
+    M0: THREE.Matrix4
+    handle: string
+    pending: { translate?: Vec3; angle?: number } | null
+    raf: number
+  } | null>(null)
   const onAssemblyDragRef = useRef(onAssemblyDrag)
   onAssemblyDragRef.current = onAssemblyDrag
   /** live body-drag gesture state: which component, the object(s) to move in
@@ -302,6 +384,9 @@ export function Viewport({
     /** pickable ghost of a dress-up feature's base edges/faces */
     dressGhost: THREE.Group
     preview: THREE.Group
+    /** Move/Copy manipulator + Create Copy ghost clones */
+    gizmo: MoveGizmo
+    xformGhost: THREE.Group
     sketch: SketchController | null
     framedOnce: boolean
     lastCenter: THREE.Vector3
@@ -347,6 +432,10 @@ export function Viewport({
     const ghosts = new THREE.Group()
     const dressGhost = new THREE.Group()
     const preview = new THREE.Group()
+    const gizmo = new MoveGizmo()
+    const xformGhost = new THREE.Group()
+    scene.add(xformGhost)
+    scene.add(gizmo.root)
     scene.add(overlay)
     scene.add(ghosts)
     scene.add(dressGhost)
@@ -377,6 +466,8 @@ export function Viewport({
       ghosts,
       dressGhost,
       preview,
+      gizmo,
+      xformGhost,
       sketch: null,
       framedOnce: false,
       lastCenter: new THREE.Vector3(),
@@ -558,6 +649,24 @@ export function Viewport({
         },
         testApplyOrbit: (yaw: number, pitch: number) => {
           stateRef.current?.controls.applyOrbit(yaw, pitch)
+        },
+        testBodyXformState: () => {
+          const s = stateRef.current
+          const nodes: Record<string, [number, number, number]> = {}
+          for (const o of s?.content?.children ?? []) {
+            if (o.userData?.pick !== 'face' || !o.userData.bodyId) continue
+            nodes[o.userData.bodyId as string] = [o.position.x, o.position.y, o.position.z]
+          }
+          const g = s?.gizmo.root
+          return {
+            nodes,
+            ghosts: s?.xformGhost.children.length ?? 0,
+            gizmo: g && g.visible ? [g.position.x, g.position.y, g.position.z] : null
+          }
+        },
+        testGizmoGrabPoint: (id: string) => {
+          const p = stateRef.current?.gizmo.grabPoint(id)
+          return p ? [p.x, p.y, p.z] : null
         }
       }
     }
@@ -632,6 +741,28 @@ export function Viewport({
     let banding = false
     let lastHoverKey: string | null = null
 
+    /** a ray through the cursor from the camera actually on screen */
+    const rayAt = (e: PointerEvent): THREE.Raycaster => {
+      const rc = new THREE.Raycaster()
+      const st = stateRef.current
+      if (!st) return rc
+      const r = host.getBoundingClientRect()
+      rc.setFromCamera(
+        new THREE.Vector2(
+          ((e.clientX - r.left) / r.width) * 2 - 1,
+          -((e.clientY - r.top) / r.height) * 2 + 1
+        ),
+        st.controls.camera
+      )
+      return rc
+    }
+    /** report the latest manipulator drag result to the app */
+    const flushGizmoDrag = (phase: 'move' | 'end'): void => {
+      const gd = gizmoDragRef.current
+      if (!gd?.pending) return
+      onBodyXformDragRef.current?.({ handle: gd.handle, ...gd.pending }, phase)
+    }
+
     // closest point on the ghost's normal line to the cursor ray, as mm along N0
     const normalParam = (e: PointerEvent): number => {
       const pv = previewDragRef.current
@@ -668,6 +799,34 @@ export function Viewport({
         sketch: !!st?.sketch,
         selectMode: winSelRef.current.mode
       })
+      // Move/Copy manipulator: grabbing a handle drags the preview and never
+      // picks what is behind it. Left button only - CadControls orbits / pans
+      // on middle + right, so a handle drag can never turn the camera.
+      if (e.button === 0 && st && !st.sketch && st.gizmo.active) {
+        const rc = rayAt(e)
+        const h = st.gizmo.pickHandle(rc)
+        if (h) {
+          const xf = bodyXformRef.current
+          const ring = xf?.gizmo?.rings?.find((r) => r.id === h.id)
+          // a ring that is not the dialog's current axis starts from zero
+          // (the dialog holds one axis + angle, not a compound rotation)
+          const M0 =
+            xf && (h.kind !== 'ring' || ring?.continues)
+              ? new THREE.Matrix4().fromArray(xf.matrix)
+              : new THREE.Matrix4()
+          st.gizmo.beginDrag(h, rc.ray)
+          gizmoDragRef.current = { M0, handle: h.id, pending: null, raf: 0 }
+          trace('move gizmo grab', { handle: h.id })
+          onBodyXformDragRef.current?.({ handle: h.id }, 'start')
+          try {
+            renderer.domElement.setPointerCapture(e.pointerId)
+          } catch {
+            /* ignore */
+          }
+          e.stopPropagation()
+          return
+        }
+      }
       // Offset-Plane handle drag takes priority (grab the arrow OR the plane)
       const pv = previewDragRef.current
       if (e.button === 0 && pv.handle && st) {
@@ -801,6 +960,26 @@ export function Viewport({
         banding,
         sketchTool: st?.sketch ? sketchToolRef.current : null
       })
+      const gd = gizmoDragRef.current
+      if (gd && st) {
+        if (gd.raf) cancelAnimationFrame(gd.raf)
+        const r = st.gizmo.dragTo(rayAt(e).ray)
+        if (r)
+          gd.pending = r.translate
+            ? { translate: [r.translate.x, r.translate.y, r.translate.z] }
+            : { angle: r.angle ?? 0 }
+        st.gizmo.endDrag()
+        trace('move gizmo release', { handle: gd.handle, result: gd.pending })
+        // clear BEFORE reporting: the app's resulting prop update must apply
+        gizmoDragRef.current = null
+        onBodyXformDragRef.current?.({ handle: gd.handle, ...(gd.pending ?? {}) }, 'end')
+        try {
+          renderer.domElement.releasePointerCapture(e.pointerId)
+        } catch {
+          /* ignore */
+        }
+        return
+      }
       const pv = previewDragRef.current
       if (pv.active) {
         pv.active = false
@@ -975,6 +1154,39 @@ export function Viewport({
     }
     const onMove = (e: PointerEvent): void => {
       const st = stateRef.current
+      const gd = gizmoDragRef.current
+      if (gd && st) {
+        const r = st.gizmo.dragTo(rayAt(e).ray)
+        if (!r) return
+        // apply locally right away (smooth), report to the dialog once a frame
+        const G = new THREE.Matrix4()
+        if (r.translate) {
+          G.makeTranslation(r.translate.x, r.translate.y, r.translate.z)
+          st.gizmo.followTranslate(r.translate)
+          gd.pending = { translate: [r.translate.x, r.translate.y, r.translate.z] }
+        } else {
+          const o = st.gizmo.root.position
+          G.makeTranslation(o.x, o.y, o.z)
+            .multiply(
+              new THREE.Matrix4().makeRotationAxis(
+                r.handle.dir,
+                THREE.MathUtils.degToRad(r.angle ?? 0)
+              )
+            )
+            .multiply(new THREE.Matrix4().makeTranslation(-o.x, -o.y, -o.z))
+          gd.pending = { angle: r.angle ?? 0 }
+        }
+        applyBodyXform(st.content, st.xformGhost, bodyXformRef.current, G.multiply(gd.M0))
+        if (st.content) st.picker.setSelection(selectionRef.current, st.content)
+        if (!gd.raf)
+          gd.raf = requestAnimationFrame(() => {
+            const g = gizmoDragRef.current
+            if (!g) return
+            g.raf = 0
+            flushGizmoDrag('move')
+          })
+        return
+      }
       const pv = previewDragRef.current
       if (pv.active && pv.handle) {
         const t = normalParam(e)
@@ -1076,6 +1288,18 @@ export function Viewport({
         return
       }
 
+      // Move/Copy manipulator: a handle under the cursor owns hover
+      if (st.gizmo.active) {
+        const h = st.gizmo.pickHandle(rayAt(e))
+        st.gizmo.setHover(h?.id ?? null)
+        if (h) {
+          renderer.domElement.style.cursor = 'grab'
+          if (st.content) st.picker.setHover(null, st.content)
+          return
+        }
+        renderer.domElement.style.cursor = ''
+      }
+
       if (!st.content) return
       // guided reference pick: highlight the face/edge/vertex under the
       // cursor, same feedback style as sketch-plane pick just below.
@@ -1097,7 +1321,10 @@ export function Viewport({
       }
       const hit = st.picker.pick(e, st.content)
       const allow = selFilterRef.current
-      const shown = hit && (!allow || allow.includes(hit.kind)) ? hit : null
+      let shown = hit && (!allow || allow.includes(hit.kind)) ? hit : null
+      // Move/Copy picking bodies: light up the whole body a click would take
+      if (shown && hoverBodyRef.current && 'bodyId' in shown && shown.kind !== 'body')
+        shown = { kind: 'body', bodyId: shown.bodyId }
       const hoverKey = shown ? `${shown.kind}:${(shown as { bodyId?: string }).bodyId ?? ''}:${(shown as { sub?: string }).sub ?? ''}` : null
       if (hoverKey !== lastHoverKey) {
         lastHoverKey = hoverKey
@@ -1124,6 +1351,7 @@ export function Viewport({
       // whatever size they were last built at instead of tracking the
       // current zoom (user report, 2026-09-11)
       stateRef.current?.sketch?.rescaleScreenSpace()
+      gizmo.updateScale(controls.camera, host.clientHeight)
       renderer.render(scene, controls.camera)
     }
     loop()
@@ -1143,6 +1371,7 @@ export function Viewport({
       renderer.domElement.removeEventListener('pointerup', onUp)
       renderer.domElement.removeEventListener('pointermove', onMove)
       cube.dispose()
+      gizmo.dispose()
       controls.dispose()
       renderer.dispose()
       host.removeChild(renderer.domElement)
@@ -1225,6 +1454,19 @@ export function Viewport({
     const st = stateRef.current
     if (st?.content) st.picker.setSelection(selection, st.content)
   }, [selection, meshes])
+
+  // Move/Copy live preview + manipulator. Runs after the scene reconcile, so a
+  // node rebuilt by a refresh gets the preview too; left alone mid-drag (the
+  // drag applies its own, fresher delta locally until release).
+  useEffect(() => {
+    const st = stateRef.current
+    if (!st || gizmoDragRef.current) return
+    const M = bodyXform ? new THREE.Matrix4().fromArray(bodyXform.matrix) : null
+    applyBodyXform(st.content, st.xformGhost, bodyXform, M)
+    st.gizmo.set(st.sketch ? null : bodyXform?.gizmo ?? null)
+    st.gizmo.updateScale(st.controls.camera, hostRef.current?.clientHeight ?? 0)
+    if (st.content) st.picker.setSelection(selection, st.content)
+  }, [bodyXform, meshes, sketches, datums, canvases, hiddenIds, selection])
 
   // dress-up ghost: the referenced base edges/faces, drawn as thick amber lines
   // that survive the dressed geometry. Rebuilt whenever the set changes.
