@@ -142,6 +142,9 @@ interface CadBridge {
   lockAcquire(filePath: string): Promise<LockAcquireResult>
   lockRelease(filePath: string): Promise<void>
   lockCurrent(filePath: string): Promise<LockInfo | null>
+  onLockPublishProblem(
+    fn: (filePath: string, r: { status: 'held'; lock: LockInfo } | { status: 'unreachable' }) => void
+  ): () => void
   gitWatchCheckOne(filePath: string): Promise<UpstreamChange | null>
   gitWatchCheckMany(filePaths: string[]): Promise<UpstreamChange[]>
   gitWatchFetchUpstreamVersion(filePath: string): Promise<{ path: string; commit: string }>

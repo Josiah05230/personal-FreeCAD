@@ -206,6 +206,17 @@ const cad = {
   lockAcquire: (filePath: string) => ipcRenderer.invoke('lock:acquire', filePath) as Promise<LockAcquireResult>,
   lockRelease: (filePath: string) => ipcRenderer.invoke('lock:release', filePath) as Promise<void>,
   lockCurrent: (filePath: string) => ipcRenderer.invoke('lock:current', filePath) as Promise<LockInfo | null>,
+  /** a lock acquired for an open finished publishing in the background
+   *  without success: someone else's lock landed first ('held'), or the
+   *  remote couldn't be reached ('unreachable') */
+  onLockPublishProblem: (
+    fn: (filePath: string, r: { status: 'held'; lock: LockInfo } | { status: 'unreachable' }) => void
+  ) => {
+    const h = (_e: unknown, filePath: string, r: { status: 'held'; lock: LockInfo } | { status: 'unreachable' }): void =>
+      fn(filePath, r)
+    ipcRenderer.on('lock:published', h)
+    return () => ipcRenderer.removeListener('lock:published', h)
+  },
 
   /** soft upstream-change watch - assembly components (live/unpinned) and
    *  already-open files. Read-only (fetch only, never pulls/merges). */

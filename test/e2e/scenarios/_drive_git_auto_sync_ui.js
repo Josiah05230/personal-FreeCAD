@@ -59,6 +59,40 @@ const log = await window.cad.gitLog(PART_PATH, 3);
 note('recent log: ' + JSON.stringify(log));
 assert(log.length > 0 && log[0].subject.includes('saved via GWT-CAD'), 'the auto-push commit message is the expected one');
 
+note('--- a second tab, then switching back and forth: no lock/pull churn, no "already open" error ---');
+const PART2 = '/tmp/sync_ui_test/cloneA/UITEST2/UITEST2.FCStd';
+const dialogs = [];
+const realAlert = window.alert, realConfirm = window.confirm;
+window.alert = (m) => { dialogs.push(String(m)); };
+window.confirm = (m) => { dialogs.push(String(m)); return true; };
+await G.openDesignPath(PART2);
+await idle();
+await sleep(2000); // PART2's lock push lands in the background
+const commitsBefore = (await window.cad.gitLog(PART_PATH, 50)).length;
+const tabByName = (n) => Array.from(document.querySelectorAll('.doctab')).find((t) => t.querySelector('.doctab-name').textContent.trim() === n);
+assert(!!tabByName('UITEST.FCStd') && !!tabByName('UITEST2.FCStd'), 'both parts have tabs');
+const t0 = Date.now();
+for (let i = 0; i < 3; i++) {
+  tabByName('UITEST.FCStd').click();
+  tabByName('UITEST2.FCStd').click();
+}
+tabByName('UITEST.FCStd').click();
+for (let i = 0; i < 100 && (await G.gitSyncDebug()).docPath !== PART_PATH; i++) await sleep(100);
+await idle();
+note('7 rapid tab clicks settled in ' + (Date.now() - t0) + 'ms');
+assert((await G.gitSyncDebug()).docPath === PART_PATH, 'the last-clicked tab is the open document');
+note('dialogs during switching: ' + JSON.stringify(dialogs));
+assert(dialogs.length === 0, 'no "already open" (or any) dialog while switching tabs');
+const commitsAfter = (await window.cad.gitLog(PART_PATH, 50)).length;
+assert(commitsAfter === commitsBefore, 'switching tabs made no lock commits (' + commitsBefore + ' -> ' + commitsAfter + ')');
+assert(!!(await window.cad.lockCurrent(PART2)), 'the tab not in front still holds its lock');
+
+note('--- closing a tab releases its lock ---');
+tabByName('UITEST2.FCStd').querySelector('.doctab-close').click();
+for (let i = 0; i < 50 && (await window.cad.lockCurrent(PART2)); i++) await sleep(100);
+assert((await window.cad.lockCurrent(PART2)) === null, 'closing UITEST2\'s tab released its lock');
+window.alert = realAlert; window.confirm = realConfirm;
+
 note('--- release the lock (simulating closing the app / opening a different file) ---');
 await window.cad.lockRelease(PART_PATH);
 const lockAfterRelease = await window.cad.lockCurrent(PART_PATH);

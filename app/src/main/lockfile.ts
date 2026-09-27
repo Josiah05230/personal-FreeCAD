@@ -48,6 +48,17 @@ export interface LockInfo {
   machine: string
   pid: number
   openedAt: string
+  /** absolute path of the file in the clone that took the lock - one user
+   *  on one machine with two clones is still two different openers */
+  path?: string
+}
+
+function isMine(lock: LockInfo, partFilePath: string): boolean {
+  return (
+    lock.holder === (userInfo().username || 'unknown') &&
+    lock.machine === hostname() &&
+    (lock.path === undefined || lock.path === partFilePath)
+  )
 }
 
 function lockPath(partFilePath: string): string {
@@ -89,11 +100,39 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-export async function acquireLock(partFilePath: string): Promise<AcquireResult> {
-  const cwd = dirname(partFilePath)
+// Lock git operations run one at a time. A lock's push finishes in the
+// background, and a release (or another acquire) starting before it lands
+// used to interleave commits/resets in the same repo.
+let lockQueue: Promise<unknown> = Promise.resolve()
+function serialized<T>(fn: () => Promise<T>): Promise<T> {
+  const run = lockQueue.then(fn)
+  lockQueue = run.catch(() => undefined)
+  return run
+}
+
+export async function acquireLock(
+  partFilePath: string,
+  onPublished?: (r: PublishResult) => void
+): Promise<AcquireResult> {
+  const local = await serialized(() => acquireLocally(partFilePath))
+  if (!('lock' in local && 'commit' in local)) return local
+  // the decision was made against a freshly pulled repo, so the file can
+  // open now; publishing the lock (a ~1s push) finishes in the background
+  // and reports back only if someone else won the race
+  const publish = serialized(() => publishLock(partFilePath, local.lock, local.commit))
+  if (onPublished) void publish.then(onPublished)
+  else {
+    const r = await publish
+    if (r.status !== 'published') return r
+  }
+  return local.result
+}
+
+async function acquireLocally(
+  partFilePath: string
+): Promise<AcquireResult | { result: AcquireResult; lock: LockInfo; commit: string }> {
   const existing = readLock(partFilePath)
-  const me = { holder: userInfo().username || 'unknown', machine: hostname() }
-  const mine = !!existing && existing.holder === me.holder && existing.machine === me.machine
+  const mine = !!existing && isMine(existing, partFilePath)
   // This exact process already holds it (switching back to a tab, or an
   // open racing a second open of the same file) - nothing to do. Before
   // this, re-opening a file you already had open reported that YOU had it
@@ -112,40 +151,76 @@ export async function acquireLock(partFilePath: string): Promise<AcquireResult> 
     holder: userInfo().username || 'unknown',
     machine: hostname(),
     pid: process.pid,
-    openedAt: new Date().toISOString()
+    openedAt: new Date().toISOString(),
+    path: partFilePath
   }
-  writeFileSync(lockPath(partFilePath), JSON.stringify(lock, null, 2), 'utf8')
-
+  let commit: string
   try {
-    await git(cwd, ['add', lockPath(partFilePath)])
-    await git(cwd, ['commit', '-m', `lock: ${lock.holder} opened ${dirname(partFilePath).split('/').pop()}`])
-    await git(cwd, ['push'], NETWORK_TIMEOUT_MS)
+    commit = await commitLock(partFilePath, lock)
   } catch {
-    // push rejected or unreachable - pull and re-check whether someone
-    // else's lock-commit actually won the race, rather than assuming
-    try {
-      await git(cwd, ['pull', '--rebase'], NETWORK_TIMEOUT_MS)
-    } catch {
-      // truly unreachable - degrade to a warning rather than block; the
-      // lock file we wrote stays local-only until connectivity returns
-      return { status: 'unreachable' }
-    }
-    const afterPull = readLock(partFilePath)
-    if (afterPull && afterPull.holder !== lock.holder && !isStale(afterPull)) {
-      return { status: 'held', lock: afterPull }
-    }
-    // our lock (or an equally-abandoned one) is still what's there after
-    // rebasing onto the latest - try the push once more
-    try {
-      await git(cwd, ['push'], NETWORK_TIMEOUT_MS)
-    } catch {
-      return { status: 'unreachable' }
-    }
+    return { status: 'unreachable' }
   }
-
-  return reclaiming
+  const result: AcquireResult = reclaiming
     ? { status: 'reclaimed', previousHolder: existing!.holder, previousOpenedAt: existing!.openedAt }
     : { status: 'acquired' }
+  return { result, lock, commit }
+}
+
+async function commitLock(partFilePath: string, lock: LockInfo): Promise<string> {
+  const cwd = dirname(partFilePath)
+  writeFileSync(lockPath(partFilePath), JSON.stringify(lock, null, 2), 'utf8')
+  await git(cwd, ['add', lockPath(partFilePath)])
+  await git(cwd, ['commit', '-m', `lock: ${lock.holder} opened ${dirname(partFilePath).split('/').pop()}`])
+  return (await git(cwd, ['rev-parse', 'HEAD'])).trim()
+}
+
+export type PublishResult =
+  | { status: 'published' }
+  | { status: 'held'; lock: LockInfo } // someone else's lock landed first
+  | { status: 'unreachable' } // committed locally, not confirmed remotely
+
+/** Push the lock commit. On a rejected push, drop our lock commit, pull,
+ *  and look again: someone else's fresh lock wins; otherwise re-commit and
+ *  push once more. (Rebasing our commit onto theirs would conflict, since
+ *  both sides add the same lock file.) */
+export async function publishLock(
+  partFilePath: string,
+  lock: LockInfo,
+  commit: string
+): Promise<PublishResult> {
+  const cwd = dirname(partFilePath)
+  try {
+    await git(cwd, ['push'], NETWORK_TIMEOUT_MS)
+    return { status: 'published' }
+  } catch {
+    // fall through
+  }
+  try {
+    // only undo our commit if nothing has been committed on top of it since
+    if ((await git(cwd, ['rev-parse', 'HEAD'])).trim() === commit) {
+      await git(cwd, ['reset', '--soft', 'HEAD~1'])
+      await git(cwd, ['reset', '-q', '--', lockPath(partFilePath)])
+      unlinkSync(lockPath(partFilePath))
+    }
+    await git(cwd, ['pull', '--no-rebase', '--no-edit'], NETWORK_TIMEOUT_MS)
+  } catch {
+    // truly unreachable - keep the lock local until connectivity returns
+    if (!existsSync(lockPath(partFilePath))) {
+      await commitLock(partFilePath, lock).catch(() => undefined)
+    }
+    return { status: 'unreachable' }
+  }
+  const afterPull = readLock(partFilePath)
+  if (afterPull && !isMine(afterPull, partFilePath) && !isStale(afterPull)) {
+    return { status: 'held', lock: afterPull }
+  }
+  try {
+    await commitLock(partFilePath, lock)
+    await git(cwd, ['push'], NETWORK_TIMEOUT_MS)
+    return { status: 'published' }
+  } catch {
+    return { status: 'unreachable' }
+  }
 }
 
 /** Release a lock this process holds (best-effort - offline just leaves the
@@ -153,10 +228,14 @@ export async function acquireLock(partFilePath: string): Promise<AcquireResult> 
  *  acquireLock is what actually protects against a lock surviving a failed
  *  release, e.g. a crash that skips this entirely). Safe to call even if no
  *  lock is held (no-ops). */
-export async function releaseLock(partFilePath: string): Promise<void> {
+export function releaseLock(partFilePath: string): Promise<void> {
+  return serialized(() => releaseLockNow(partFilePath))
+}
+
+async function releaseLockNow(partFilePath: string): Promise<void> {
   const existing = readLock(partFilePath)
   if (!existing) return
-  if (existing.pid !== process.pid || existing.machine !== hostname()) return // not ours to release
+  if (existing.pid !== process.pid || !isMine(existing, partFilePath)) return // not ours to release
   const cwd = dirname(partFilePath)
   try {
     unlinkSync(lockPath(partFilePath))
@@ -181,11 +260,15 @@ export function currentLock(partFilePath: string): LockInfo | null {
 /** Release several locks at once (quitting with several tabs open): one
  *  commit + one push per repo instead of one round-trip per file. Same
  *  "only locks THIS process holds" rule as releaseLock. */
-export async function releaseLocks(partFilePaths: string[]): Promise<void> {
+export function releaseLocks(partFilePaths: string[]): Promise<void> {
+  return serialized(() => releaseLocksNow(partFilePaths))
+}
+
+async function releaseLocksNow(partFilePaths: string[]): Promise<void> {
   const byRepo = new Map<string, string[]>()
   for (const p of partFilePaths) {
     const existing = readLock(p)
-    if (!existing || existing.pid !== process.pid || existing.machine !== hostname()) continue
+    if (!existing || existing.pid !== process.pid || !isMine(existing, p)) continue
     try {
       unlinkSync(lockPath(p))
     } catch {

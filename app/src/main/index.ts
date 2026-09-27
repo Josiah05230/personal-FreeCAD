@@ -389,7 +389,10 @@ app.whenReady().then(async () => {
   // so before-quit below can release them all without a risky
   // round-trip IPC call while the app is already tearing down.
   ipcMain.handle('lock:acquire', async (_e, filePath: string) => {
-    const result = await lockfile.acquireLock(filePath)
+    const result = await lockfile.acquireLock(filePath, (published) => {
+      if (published.status === 'held') activeLockedPaths.delete(filePath)
+      if (published.status !== 'published') win?.webContents.send('lock:published', filePath, published)
+    })
     if (result.status === 'acquired' || result.status === 'reclaimed') activeLockedPaths.add(filePath)
     return result
   })

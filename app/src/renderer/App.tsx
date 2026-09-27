@@ -3070,6 +3070,9 @@ export function App(): JSX.Element {
   // itself runs (every save always attempts a push once).
   const pushRetryFailuresRef = useRef(0)
   const PUSH_RETRY_ESCALATE_AFTER = 5 // ~5 failed retries at the 60s interval below
+  // git's own wording when the remote can't be reached at all (vs. auth/merge errors)
+  const OFFLINE_GIT_ERROR =
+    /could not resolve host|unable to access|could not read from remote|timed out|timeout|network is unreachable|connection (refused|reset|timed out)|SIGTERM|killed/i
 
   const attemptPush = useCallback(async (p: string): Promise<boolean> => {
     const st = await window.cad.gitStatus(p).catch(() => ({ isRepo: false }) as GitStatus)
@@ -3117,14 +3120,11 @@ export function App(): JSX.Element {
   const autoPullBeforeOpen = useCallback(async (p: string): Promise<boolean> => {
     const st = await window.cad.gitStatus(p).catch(() => ({ isRepo: false }) as GitStatus)
     if (!st.isRepo || !st.hasUpstream) return true
-    const reachable = await window.cad.gitIsReachable(p).catch(() => false)
-    if (!reachable) {
-      setGitOffline(true)
-      return true // proceed with whatever's on local disk - never block on offline
-    }
-    setGitOffline(false)
+    // no separate reachability probe first - that was one more ~0.6s
+    // round-trip on every open; a pull that can't reach the remote says so
     try {
       const res = await window.cad.gitPull(p)
+      setGitOffline(false)
       if (res.conflict) {
         return window.confirm(
           `${basename(p)} has a merge conflict pulling the latest version.\n\n` +
@@ -3134,9 +3134,14 @@ export function App(): JSX.Element {
       }
       return true
     } catch (e) {
+      const msg = (e as Error).message
+      if (OFFLINE_GIT_ERROR.test(msg)) {
+        setGitOffline(true)
+        return true // proceed with whatever's on local disk - never block on offline
+      }
       // a real git error (not a conflict, not offline - e.g. auth) - report
       // but still don't block opening; the file on disk is still usable
-      flashSketchNotice(`Couldn't sync ${basename(p)} before opening: ${(e as Error).message}`)
+      flashSketchNotice(`Couldn't sync ${basename(p)} before opening: ${msg}`)
       return true
     }
   }, [flashSketchNotice])
@@ -3175,6 +3180,26 @@ export function App(): JSX.Element {
         `use the Git panel to push manually once they're done), or Cancel to leave it alone.`
     )
   }, [flashSketchNotice])
+
+  // the lock push runs after the file is already open; hear about it only
+  // if it failed
+  useEffect(
+    () =>
+      window.cad.onLockPublishProblem((p, r) => {
+        if (r.status === 'held') {
+          heldLocksRef.current.delete(p)
+          window.alert(
+            `${r.lock.holder} opened ${basename(p)} (on ${r.lock.machine}) at the same moment you did, ` +
+              `and their lock landed first. Your changes won't auto-push while they have it - ` +
+              `use the Git panel to push manually once they're done.`
+          )
+        } else {
+          setGitOffline(true)
+          flashSketchNotice(`Couldn't confirm ${basename(p)} isn't already open elsewhere - working offline`)
+        }
+      }),
+    [flashSketchNotice]
+  )
 
   // pull + lock before the sidecar opens `p` - skipped entirely when this
   // session already holds p's lock (switching back to an open tab): the

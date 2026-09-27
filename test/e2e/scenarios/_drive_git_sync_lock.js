@@ -27,8 +27,14 @@ note('acquire A: ' + JSON.stringify(acqA));
 assert(acqA.status === 'acquired', 'clone A successfully acquired the lock (' + acqA.status + ')');
 
 note('--- clone B pulls and sees the lock file ---');
-await window.cad.gitPull(CLONE_B);
-const lockFromB = await window.cad.lockCurrent(CLONE_B);
+// the lock push finishes in the background after acquire returns (the file
+// opens without waiting on it), so give it a moment to land
+let lockFromB = null;
+for (let i = 0; i < 20 && !lockFromB; i++) {
+  await new Promise((r) => setTimeout(r, 250));
+  await window.cad.gitPull(CLONE_B);
+  lockFromB = await window.cad.lockCurrent(CLONE_B);
+}
 note('lock as seen from clone B: ' + JSON.stringify(lockFromB));
 assert(!!lockFromB, 'clone B can see the lock A wrote, after pulling');
 
@@ -44,6 +50,12 @@ await window.cad.gitPull(CLONE_B);
 const lockAfterRelease = await window.cad.lockCurrent(CLONE_B);
 note('lock after release, from clone B: ' + JSON.stringify(lockAfterRelease));
 assert(lockAfterRelease === null, 'the lock is gone from clone B after A released and B pulled');
+
+note('--- re-acquiring a lock this same process already holds is not "held by someone else" ---');
+const acqAgain = await window.cad.lockAcquire(CLONE_A);
+note('re-acquire A: ' + JSON.stringify(acqAgain));
+assert(acqAgain.status === 'acquired', 'switching back to your own open file never reports it as held (' + acqAgain.status + ')');
+await window.cad.lockRelease(CLONE_A);
 
 note('--- NOW clone B can acquire it cleanly ---');
 const acqB2 = await window.cad.lockAcquire(CLONE_B);
@@ -90,6 +102,25 @@ await window.cad.gitPull(CLONE_B);
 const checkAfterSync = await window.cad.gitWatchCheckOne(CLONE_B);
 note('watch check after sync: ' + JSON.stringify(checkAfterSync));
 assert(checkAfterSync === null, 'nothing left to report after clone B pulled the real change');
+
+note('--- race: B decides from a stale clone, A\'s lock lands first, B hears about it ---');
+await window.cad.gitPull(CLONE_A);
+const acqA2 = await window.cad.lockAcquire(CLONE_A);
+assert(acqA2.status === 'acquired', 'A takes the lock');
+await new Promise((r) => setTimeout(r, 2000)); // A's background push lands
+const problems = [];
+const off = window.cad.onLockPublishProblem((p, r) => problems.push({ p, r }));
+const acqB3 = await window.cad.lockAcquire(CLONE_B); // B has NOT pulled A's lock
+note('B acquire from a stale clone: ' + JSON.stringify(acqB3));
+for (let i = 0; i < 40 && !problems.length; i++) await new Promise((r) => setTimeout(r, 250));
+off();
+note('publish problems: ' + JSON.stringify(problems));
+assert(problems.length === 1 && problems[0].r.status === 'held', 'B is told A\'s lock landed first');
+const bStatus = await window.cad.gitStatus(CLONE_B);
+note('clone B status after losing the race: ' + JSON.stringify(bStatus));
+const lockInB = await window.cad.lockCurrent(CLONE_B);
+assert(lockInB && lockInB.holder === problems[0].r.lock.holder, 'clone B now holds A\'s lock file, not a conflicted mix');
+await window.cad.lockRelease(CLONE_A);
 
 note('--- offline: an unreachable remote is correctly detected, not hung ---');
 const t0 = Date.now();
