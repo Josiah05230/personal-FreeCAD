@@ -34,6 +34,7 @@ anything read before the pull.
 """
 import csv
 import os
+import time
 import shutil
 import subprocess
 
@@ -204,9 +205,25 @@ def _has_remote(repo):
     return ok and bool(out.strip())
 
 
+# repo -> time.monotonic() of its last successful pull
+_last_pull = {}
+# read-only lookups (resolve, list, BOM, ...) skip pulling a repo pulled this
+# recently - opening one part used to cost two ~0.6s GitHub round-trips just
+# for the title/lifecycle lookups. Writes always pull (see _sync_pull).
+READ_PULL_MAX_AGE_S = 60.0
+
+
 def _sync_pull(repo):
     if _has_remote(repo):
         _git(repo, "pull", "--rebase", "--autostash")
+        _last_pull[os.path.realpath(str(repo))] = time.monotonic()
+
+
+def _sync_pull_for_read(repo):
+    last = _last_pull.get(os.path.realpath(str(repo)))
+    if last is not None and time.monotonic() - last < READ_PULL_MAX_AGE_S:
+        return
+    _sync_pull(repo)
 
 
 def _commit_and_push(repo, message, retry_fn):
@@ -530,7 +547,7 @@ def pn_list_all(project=None, status=None):
     cfg = _load_config()
     if not cfg.get("registryPath"):
         return {"parts": []}
-    _sync_pull(_registry_path(cfg))
+    _sync_pull_for_read(_registry_path(cfg))
     rows = _current_rows(_read_registry(cfg))
     if project:
         rows = [r for r in rows if r.get("project") == project]
@@ -543,7 +560,7 @@ def pn_list_all(project=None, status=None):
 def pn_history(pnSeq):
     """Every revision ever recorded for a sequence, oldest first."""
     cfg = _load_config()
-    _sync_pull(_registry_path(cfg))
+    _sync_pull_for_read(_registry_path(cfg))
     rows = _rows_for_seq(_read_registry(cfg), pnSeq)
     rows.sort(key=lambda r: int(r["rev"]))
     return {"revisions": rows}
@@ -555,7 +572,7 @@ def pn_list_available_seq(project, type, count=20):
     left by obsoleted parts rather than only ever going past the highest one
     used - the user picks any free number, not just the next one."""
     cfg = _load_config()
-    _sync_pull(_registry_path(cfg))
+    _sync_pull_for_read(_registry_path(cfg))
     rows = _read_registry(cfg)
     used = {int(r["seq"]) for r in rows
             if r.get("project") == project and r.get("type") == type and r.get("seq")}
@@ -810,7 +827,7 @@ def pn_resolve_bom_filenames(filenames):
     document/assembly traversal and hands this pure filename+qty data,
     since partnumbers.py otherwise never touches FreeCAD documents."""
     cfg = _load_config()
-    _sync_pull(_registry_path(cfg))
+    _sync_pull_for_read(_registry_path(cfg))
     rows = _read_registry(cfg)
 
     resolved = []
@@ -871,7 +888,7 @@ def pn_bom_for(pn):
     both cases mean "no defined BOM" to callers, same as the portal side
     treats them."""
     cfg = _load_config()
-    _sync_pull(_registry_path(cfg))
+    _sync_pull_for_read(_registry_path(cfg))
     rows = [r for r in _read_bom(cfg) if r.get("pn") == pn]
     return {"items": [
         {"pn": r.get("item_pn", ""), "componentName": r.get("item_component_name", ""),
@@ -888,7 +905,7 @@ def pn_get_inventory(pn):
     used up" look the same here on purpose; the log is where you'd go to
     tell those apart."""
     cfg = _load_config()
-    _sync_pull(_registry_path(cfg))
+    _sync_pull_for_read(_registry_path(cfg))
     batches = [b for b in _read_inventory_batches(cfg) if b.get("pn") == pn]
     return _inventory_summary(batches)
 
@@ -899,7 +916,7 @@ def pn_list_inventory():
     purchase batch recorded (including ones now fully depleted, so a part
     that's run out still shows up at qtyOnHand 0 rather than disappearing)."""
     cfg = _load_config()
-    _sync_pull(_registry_path(cfg))
+    _sync_pull_for_read(_registry_path(cfg))
     batches = _read_inventory_batches(cfg)
     by_pn = {}
     for b in batches:
@@ -1185,7 +1202,7 @@ def pn_resolve(pnSeqOrFull):
     stale, and self-heals the hint when the search finds it somewhere else."""
     pn_seq = pnSeqOrFull[:-1] if pnSeqOrFull[-1:].isdigit() and len(pnSeqOrFull) > 6 else pnSeqOrFull
     cfg = _load_config()
-    _sync_pull(_registry_path(cfg))
+    _sync_pull_for_read(_registry_path(cfg))
     rows = _read_registry(cfg)
     cur = _current_row(rows, pn_seq)
     if cur is None:

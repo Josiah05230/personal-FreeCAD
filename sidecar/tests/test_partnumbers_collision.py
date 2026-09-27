@@ -128,3 +128,24 @@ def test_two_clones_racing_the_same_seq_one_wins_one_is_rejected(monkeypatch, tm
     assert len(pn._rows_for_seq(rows, "CMC001")) == 1
     assert rows[0]["name"] == "connector"
     assert rows[0]["reason"] == "Initial revision"
+
+
+def test_read_lookups_reuse_a_recent_pull_but_writes_always_pull(monkeypatch, tmp_path, shared_registry_remote, cad_repo):
+    # opening a part does several registry lookups; each used to be its own
+    # network pull. Reads within the throttle window reuse the last pull,
+    # while a reserve still sees a teammate's push immediately.
+    clone_a = _clone(shared_registry_remote, tmp_path / "clone_a")
+    clone_b = _clone(shared_registry_remote, tmp_path / "clone_b")
+    _company_for(monkeypatch, tmp_path, "b", clone_b, cad_repo)
+    pulls = []
+    real_git = pn._git
+    monkeypatch.setattr(pn, "_git", lambda repo, *a: (pulls.append(a) if a[:1] == ("pull",) else None, real_git(repo, *a))[1])
+    pn.pn_list_all()
+    pn.pn_list_all()
+    assert len(pulls) == 1
+
+    _company_for(monkeypatch, tmp_path, "a", clone_a, cad_repo)
+    pn.pn_reserve("CM", "C", 1, "connector", "A's part")
+    _company_for(monkeypatch, tmp_path, "b", clone_b, cad_repo)
+    with pytest.raises(RpcError):
+        pn.pn_reserve("CM", "C", 1, "connector", "B must see A's row")

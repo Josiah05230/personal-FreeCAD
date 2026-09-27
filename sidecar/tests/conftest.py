@@ -26,6 +26,15 @@ def _init_git_repo(path):
     return path
 
 
+@pytest.fixture(autouse=True)
+def fresh_pull_throttle():
+    # read lookups skip re-pulling a recently pulled repo; never let that
+    # carry over between tests
+    pn._last_pull.clear()
+    yield
+    pn._last_pull.clear()
+
+
 @pytest.fixture
 def registry_repo(tmp_path):
     """A local git repo (no remote) holding registry.csv + types.yaml,
