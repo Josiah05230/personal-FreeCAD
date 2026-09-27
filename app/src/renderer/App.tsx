@@ -63,6 +63,9 @@ import type { SketchTool, SketchConstraintType } from './viewport/SketchControll
 import type { SketchFrameDTO } from './rpc'
 import type { ImportInspection } from './rpc'
 import { basename, dirname, kicadDirFor, sketchEntitiesToPolys } from './util'
+import { askOptionalCopyIn, checkCopyIn, copyInTestHooks, guessPartType } from './copyIn'
+import type { CopyInResult } from './rpc'
+import { fileKind } from '../shared/fileTypes'
 import { perfProfile } from './perfProfile'
 import { CmdQueue } from './cmdQueue'
 import { trace, traceSpan } from './trace'
@@ -276,6 +279,15 @@ export function App(): JSX.Element {
   const [pendingMcMaster, setPendingMcMaster] = useState<
     { stepPath: string; meta: Record<string, unknown> } | undefined
   >(undefined)
+  // copy-in gate (copyIn.ts): an outside file headed into a company doc is
+  // waiting on the New Part dialog; resolve(null) = cancelled
+  const [copyInReq, setCopyInReq] = useState<{
+    src: string
+    project?: string
+    type?: string
+    required: boolean
+    resolve: (info: { pn: string; path: string; name: string; description: string } | null) => void
+  } | null>(null)
   const [pnBrowserOpen, setPnBrowserOpen] = useState(false)
   const [companySettingsOpen, setCompanySettingsOpen] = useState(false)
   const [currentPn, setCurrentPn] = useState<string | null>(null)
@@ -3411,6 +3423,55 @@ export function App(): JSX.Element {
     [openDesignNow]
   )
 
+  // ---- copy-in gate (copyIn.ts) ----
+  // Every "pull a file into the open document" path calls this first. For a
+  // company document and an outside file it either runs the New Part dialog
+  // + pn.copyIn (geometry/ECAD: required) or offers that vs "just use it"
+  // (images/pdf). Returns the path to actually use, the copy-in result when
+  // one happened, `outside` when the user chose to use an outside file as-is
+  // - or null when the user cancelled (abort the insert).
+  const bringIntoDoc = useCallback(
+    async (src: string): Promise<{ path: string; copied: CopyInResult | null; outside: boolean } | null> => {
+      const chk = await checkCopyIn(docPath, src).catch(() => ({ need: 'none' as const, kind: fileKind(src) }))
+      if (chk.need === 'none') return { path: src, copied: null, outside: false }
+      if (chk.need === 'optional') {
+        const how = await askOptionalCopyIn(basename(src))
+        if (!how) return null
+        if (how === 'use') return { path: src, copied: null, outside: true }
+      }
+      const owner = docPath ? await api.pnRepoForPath(docPath).catch(() => ({ project: null })) : { project: null }
+      const info = await new Promise<{ pn: string; path: string; name: string; description: string } | null>(
+        (resolve) =>
+          setCopyInReq({
+            src,
+            project: owner.project ?? undefined,
+            type: guessPartType(chk.kind),
+            required: chk.need === 'required',
+            resolve
+          })
+      )
+      if (!info) {
+        if (chk.need === 'required') {
+          flashSketchNotice(`Not inserted - ${basename(src)} has to become a company part first.`)
+        }
+        return null
+      }
+      try {
+        const r = await api.pnCopyIn(info.pn, info.name, info.description, info.path, src)
+        flashSketchNotice(
+          `${basename(src)} copied in as ${info.pn}` + (r.committed && !r.pushed ? ' (committed, not pushed yet)' : '')
+        )
+        return { path: r.copiedPath, copied: r, outside: false }
+      } catch (e) {
+        window.alert(
+          `${info.pn} was reserved but ${basename(src)} could not be copied in: ${(e as Error).message}`
+        )
+        return null
+      }
+    },
+    [docPath, flashSketchNotice]
+  )
+
   const exportModel = useCallback(async () => {
     const p = await window.cad.exportDialog(
       docPath ? docPath.replace(/\.FCStd$/i, '.step') : undefined
@@ -3441,47 +3502,67 @@ export function App(): JSX.Element {
     await window.cad.saveDebugLog(dump, `${stem}-trace-${Date.now()}.log`)
   }, [docPath])
 
+  // import a STEP/mesh into the open document - an outside file headed into
+  // a company doc is copied in as a new part first and imported from there
+  const importModelPath = useCallback(
+    async (p: string) => {
+      const b = await bringIntoDoc(p)
+      if (!b) return
+      try {
+        const prefs = loadMeshPrefs()
+        const r = await api.importModel(b.path, prefs.importFacetCap, prefs.autoSimplifyOnImport)
+        await afterEdit()
+        if (r.simplified.length) {
+          const s = r.simplified[0]
+          window.alert(
+            `Imported mesh was ${s.trisBefore.toLocaleString()} triangles - ` +
+              `auto-simplified to ${s.tris.toLocaleString()} (see Mesh Import settings to change the limit).`
+          )
+        }
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [afterEdit, bringIntoDoc]
+  )
+
   const importStep = useCallback(async () => {
     const p = await window.cad.openDialog([
       {
         name: '3D models',
-        extensions: ['step', 'stp', 'iges', 'igs', 'brep', 'stl', 'obj', '3mf', 'ply', 'off']
+        extensions: ['step', 'stp', 'iges', 'igs', 'brep', 'brp', 'stl', 'obj', '3mf', 'ply', 'off']
       }
     ])
     if (!p) return
-    try {
-      const prefs = loadMeshPrefs()
-      const r = await api.importModel(p, prefs.importFacetCap, prefs.autoSimplifyOnImport)
-      await afterEdit()
-      if (r.simplified.length) {
-        const s = r.simplified[0]
+    await importModelPath(p)
+  }, [importModelPath])
+
+  const importKicadPath = useCallback(
+    async (p: string) => {
+      const b = await bringIntoDoc(p)
+      if (!b) return
+      try {
+        const r = await api.kicadImportStep(b.copied?.pcbPath ?? b.path)
+        await afterEdit()
+        vpApi.current?.fit()
         window.alert(
-          `Imported mesh was ${s.trisBefore.toLocaleString()} triangles - ` +
-            `auto-simplified to ${s.tris.toLocaleString()} (see Mesh Import settings to change the limit).`
+          r.kicad.stepImport
+            ? `PCB imported with real 3D models: ${r.kicad.componentCount ?? 0} bodies`
+            : `PCB imported as an outline + placeholders (${r.kicad.stepImportReason ?? 'no 3D models'}): ` +
+                `${r.kicad.components ?? 0} components`
         )
+      } catch (e) {
+        window.alert((e as Error).message)
       }
-    } catch (e) {
-      window.alert((e as Error).message)
-    }
-  }, [afterEdit])
+    },
+    [afterEdit, bringIntoDoc]
+  )
 
   const importKicad = useCallback(async () => {
     const p = await window.cad.openDialog([{ name: 'KiCad PCB', extensions: ['kicad_pcb'] }])
     if (!p) return
-    try {
-      const r = await api.kicadImportStep(p)
-      await afterEdit()
-      vpApi.current?.fit()
-      window.alert(
-        r.kicad.stepImport
-          ? `PCB imported with real 3D models: ${r.kicad.componentCount ?? 0} bodies`
-          : `PCB imported as an outline + placeholders (${r.kicad.stepImportReason ?? 'no 3D models'}): ` +
-              `${r.kicad.components ?? 0} components`
-      )
-    } catch (e) {
-      window.alert((e as Error).message)
-    }
-  }, [afterEdit])
+    await importKicadPath(p)
+  }, [importKicadPath])
 
   // Re-sync KiCad PCB: the KiCad files are edited in KiCad itself, which
   // knows nothing about the company repo - so this is where they get
@@ -4104,22 +4185,52 @@ export function App(): JSX.Element {
     [calibrateId, refreshMeshesOnly]
   )
 
+  // a canvas embeds the image's bytes in the document (never its path), so
+  // "just use it" is already self-contained - the gate only adds the offer
+  // to copy an outside picture in as its own part
+  const insertCanvasPath = useCallback(
+    async (p: string) => {
+      const b = await bringIntoDoc(p)
+      if (!b) return
+      const dataUrl = await window.cad.readImage(b.path)
+      const img = new Image()
+      img.src = dataUrl
+      await img.decode().catch(() => undefined)
+      const w = 100
+      const h = img.naturalHeight && img.naturalWidth ? (100 * img.naturalHeight) / img.naturalWidth : 100
+      const r = await api.canvasInsert('XY', w, h, dataUrl)
+      await refreshMeshesOnly(true)
+      // calibration is part of placing a canvas, not a separate tool
+      if (r?.id) setCalibrateId(r.id)
+    },
+    [refreshMeshesOnly, bringIntoDoc]
+  )
+
   const insertCanvas = useCallback(async () => {
     const p = await window.cad.openDialog([
       { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }
     ])
     if (!p) return
-    const dataUrl = await window.cad.readImage(p)
-    const img = new Image()
-    img.src = dataUrl
-    await img.decode().catch(() => undefined)
-    const w = 100
-    const h = img.naturalHeight && img.naturalWidth ? (100 * img.naturalHeight) / img.naturalWidth : 100
-    const r = await api.canvasInsert('XY', w, h, dataUrl)
-    await refreshMeshesOnly(true)
-    // calibration is part of placing a canvas, not a separate tool
-    if (r?.id) setCalibrateId(r.id)
-  }, [refreshMeshesOnly])
+    await insertCanvasPath(p)
+  }, [insertCanvasPath])
+
+  // Drawing > Insert Image: TechDraw embeds the bytes too, but the image
+  // keeps pointing at its source path (the sheet reads it from there), so
+  // "just use it" on a company drawing copies the picture next to the
+  // document first - the drawing never references a path outside the repo.
+  const resolveDrawingImage = useCallback(
+    async (p: string): Promise<string | null> => {
+      const b = await bringIntoDoc(p)
+      if (!b) return null
+      if (b.outside && docPath) {
+        const stem = basename(docPath).replace(/\.FCStd$/i, '')
+        const r = await window.cad.copyInto(p, dirname(docPath), `${stem}_${basename(p)}`)
+        return r.path
+      }
+      return b.path
+    },
+    [bringIntoDoc, docPath]
+  )
 
   // ---- inspect ----
   const startMeasure = useCallback(() => {
@@ -4307,11 +4418,52 @@ export function App(): JSX.Element {
     [refreshScene, docPath]
   )
 
+  // user-picked component (ribbon / Data Panel): an outside part headed into
+  // a company assembly is copied in as a new part and the link points at
+  // that in-repo copy. addComponentFile itself stays ungated - pin relinks
+  // re-add a component the assembly already had.
+  const insertComponentPath = useCallback(
+    async (p: string) => {
+      const b = await bringIntoDoc(p)
+      if (!b) return
+      await addComponentFile(b.copied?.fcstdPath ?? b.path)
+    },
+    [addComponentFile, bringIntoDoc]
+  )
+
   const addComponent = useCallback(async () => {
     const p = await window.cad.openDialog()
     if (!p) return
-    await addComponentFile(p)
-  }, [addComponentFile])
+    await insertComponentPath(p)
+  }, [insertComponentPath])
+
+  // Data Panel double-click: do what the app does with that kind of file
+  // (labels in DataPanel.tsx's OPEN_LABEL); inserts go through the gate
+  const openDataPanelFile = useCallback(
+    async (p: string) => {
+      try {
+        switch (fileKind(p)) {
+          case 'model':
+          case 'mesh':
+            return await importModelPath(p)
+          case 'image':
+            return await insertCanvasPath(p)
+          case 'ecad':
+          case 'archive':
+            return await importFromFile(p)
+          case 'vector':
+          case 'document':
+            await window.cad.openPath(p)
+            return
+          default:
+            return await openDesign(p)
+        }
+      } catch (e) {
+        window.alert((e as Error).message)
+      }
+    },
+    [importModelPath, insertCanvasPath, importFromFile, openDesign]
+  )
 
   // set/clear/refresh a component's pin. Re-linking is done by removing and
   // re-adding the App::Link at the resolved path - simplest correct way to
@@ -4680,6 +4832,19 @@ export function App(): JSX.Element {
       triggerAutosave: () => api.autosave(),
       // Import from File with an explicit path (the real menu opens a native dialog)
       importFromFilePath: (path: string) => importFromFile(path),
+      // copy-in gate: the gated entry points with an explicit path (the
+      // real ones open a native dialog), the next optional-prompt answer,
+      // and whether the gate's New Part dialog is up
+      insertComponentPath: (p: string) => insertComponentPath(p),
+      importModelPath: (p: string) => importModelPath(p),
+      importKicadPath: (p: string) => importKicadPath(p),
+      insertCanvasPath: (p: string) => insertCanvasPath(p),
+      resolveDrawingImage: (p: string) => resolveDrawingImage(p),
+      openDataPanelFile: (p: string) => openDataPanelFile(p),
+      setCopyInChoice: (c: 'copy' | 'use' | 'cancel' | null) => {
+        copyInTestHooks.choice = c
+      },
+      copyInPending: () => (copyInReq ? { src: copyInReq.src, required: copyInReq.required, type: copyInReq.type ?? null } : null),
 
       // --- ops (ribbon -> dialog -> apply) ---
       openOp: (k: OpKind) => openOp(k),
@@ -4900,7 +5065,14 @@ export function App(): JSX.Element {
     gitOffline,
     unpushedCount,
     currentPn,
-    currentLifecycle
+    currentLifecycle,
+    insertComponentPath,
+    importModelPath,
+    importKicadPath,
+    insertCanvasPath,
+    resolveDrawingImage,
+    openDataPanelFile,
+    copyInReq
   ])
 
   // ---- boot ----
@@ -5516,7 +5688,12 @@ export function App(): JSX.Element {
       <div className="appbody">
         <DataPanel
           open={dataOpen}
-          onOpenFile={(p) => void openDesign(p)}
+          onOpenFile={(p) => void openDataPanelFile(p)}
+          onFileAction={(p, action) => {
+            if (action === 'insertComponent') void insertComponentPath(p)
+            else if (action === 'newPartFromFile') void importFromFile(p)
+            else void window.cad.openPath(p).catch((e) => window.alert((e as Error).message))
+          }}
           onNewDesignAt={(p) => {
             void (async () => {
               const dir = p.slice(0, p.length - basename(p).length - 1)
@@ -5670,6 +5847,7 @@ export function App(): JSX.Element {
                   onBack={() => setDrawingPageId(null)}
                   tool={drawingTool}
                   onToolChange={setDrawingTool}
+                  resolveImageSource={resolveDrawingImage}
                 />
               ) : (
                 <>
@@ -6068,6 +6246,30 @@ export function App(): JSX.Element {
                       onCreated={(info) => {
                         setNewPartProject(undefined)
                         void createPart(info)
+                      }}
+                    />
+                  )}
+                  {copyInReq && (
+                    <NewPartDialog
+                      key={`copyin:${copyInReq.src}`}
+                      title={copyInReq.required ? 'COPY IN AS A NEW PART' : 'NEW PART FROM FILE'}
+                      notice={
+                        `${basename(copyInReq.src)} is outside the company repos. ` +
+                        (copyInReq.required
+                          ? 'To use it in this document it has to become a company part: pick a PN and it is ' +
+                            'copied into the repo, and the document uses that copy. Close this to cancel the insert.'
+                          : 'It will be copied into the repo as this new part, and the document uses that copy.')
+                      }
+                      initialProject={copyInReq.project}
+                      initialType={copyInReq.type}
+                      prefill={{ name: basename(copyInReq.src).replace(/\.[^.]+$/, '') }}
+                      onClose={() => {
+                        copyInReq.resolve(null)
+                        setCopyInReq(null)
+                      }}
+                      onCreated={(info) => {
+                        copyInReq.resolve(info)
+                        setCopyInReq(null)
                       }}
                     />
                   )}

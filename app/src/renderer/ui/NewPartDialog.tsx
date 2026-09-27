@@ -15,7 +15,9 @@ export function NewPartDialog({
   onCreated,
   initialProject,
   initialType,
-  prefill
+  prefill,
+  notice,
+  title = 'NEW PART'
 }: {
   onClose: () => void
   onCreated: (info: { pn: string; path: string; name: string; description: string }) => void
@@ -24,6 +26,10 @@ export function NewPartDialog({
    *  an Import from File that contained a KiCad project */
   initialType?: string
   prefill?: { name?: string; description?: string; mfg?: string; mfgPn?: string; purchasingLink?: string }
+  /** why this dialog opened, shown above the form - e.g. an outside file
+   *  that has to become a company part before it can be inserted */
+  notice?: string
+  title?: string
 }): JSX.Element {
   const [cfg, setCfg] = useState<CompanyConfig | null>(null)
   const [types, setTypes] = useState<Record<string, string>>({})
@@ -43,6 +49,9 @@ export function NewPartDialog({
     void Promise.all([api.pnGetCompanyConfig(), api.pnListTypes()]).then(([c, t]) => {
       setCfg(c)
       setTypes(t.types)
+      // a guessed type (e.g. Z for an image) that this company's types.yaml
+      // doesn't define is no guess at all - leave the choice to the user
+      if (initialType && !(initialType in t.types)) setType('')
       if (initialProject) {
         setProject(initialProject)
         return
@@ -112,7 +121,7 @@ export function NewPartDialog({
   return (
     <div className="mcmaster-panel" style={{ left: '20%', right: '20%', top: '10%', bottom: '10%' }}>
       <div className="mcmaster-head">
-        <span style={{ padding: '0 6px', fontWeight: 600 }}>NEW PART</span>
+        <span style={{ padding: '0 6px', fontWeight: 600 }}>{title}</span>
         <div style={{ flex: 1 }} />
         <button onClick={onClose} title="Close">
           &times;
@@ -120,6 +129,7 @@ export function NewPartDialog({
       </div>
 
       <div className="settings-body">
+        {notice && <div className="settings-hint newpart-notice">{notice}</div>}
         {notConfigured && (
           <div className="settings-hint">
             No project repos are configured yet. Open Company Directories

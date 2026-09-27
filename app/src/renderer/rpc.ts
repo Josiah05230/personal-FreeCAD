@@ -1812,6 +1812,9 @@ export const api = {
     rpc<{ ok: boolean }>('pn.tagDocument', { pn, name, description }),
   pnRepoForPath: (path: string) =>
     rpc<{ project: string | null; repoPath?: string }>('pn.repoForPath', { path }),
+  /** copy an outside file in as the just-reserved part `pn` (see copy_in.py) */
+  pnCopyIn: (pn: string, name: string, description: string, fcstdPath: string, sourcePath: string) =>
+    rpc<CopyInResult>('pn.copyIn', { pn, name, description, fcstdPath, sourcePath }),
   pnCheckLocation: (pnSeq: string, openedPath: string) =>
     rpc<{ matches: boolean; expectedPath?: string; openedPath?: string }>('pn.checkLocation', {
       pnSeq,
@@ -1965,6 +1968,20 @@ export interface PnAssignment {
   name: string
   description: string
   path?: string
+}
+
+/** pn.copyIn: where an outside file landed once copied in as a new part */
+export interface CopyInResult {
+  /** the new part's .FCStd - link this into an assembly */
+  fcstdPath: string
+  /** the in-repo copy of the source itself - import/insert from this */
+  copiedPath: string
+  pcbPath: string | null
+  proPath: string | null
+  schPath: string | null
+  files: string[]
+  committed: boolean
+  pushed: boolean
 }
 
 export interface MaterialFamily {

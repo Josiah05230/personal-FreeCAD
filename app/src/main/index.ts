@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import { resolve, join, dirname, basename } from 'path'
-import { readdir, writeFile, readFile, mkdir, rename, stat } from 'fs/promises'
+import { readdir, writeFile, readFile, mkdir, rename, stat, realpath, copyFile } from 'fs/promises'
+import { constants as fsConstants } from 'fs'
 import { homedir, tmpdir } from 'os'
 import { Sidecar, loadConfig } from './sidecar'
 import * as gitw from './git'
@@ -8,6 +9,8 @@ import * as asmPin from './assemblyPin'
 import * as mcmaster from './mcmaster'
 import * as lockfile from './lockfile'
 import * as gitWatch from './gitWatch'
+import { FolderRelevance, searchDir } from './fileFilter'
+import { extOf, fileKind, isSkippedDir } from '../shared/fileTypes'
 
 // repo root is one level above app/ in dev; in a packaged build this is
 // remapped by the installer (Milestone 5).
@@ -48,74 +51,16 @@ async function isEffectivelyDirectory(e: import('fs').Dirent, fullPath: string):
   }
 }
 
-/** Does this directory contain any .FCStd within `depth` levels? (bounded) -
- * used only to badge a folder row, never to hide it. */
-async function hasDesign(dir: string, depth: number): Promise<boolean> {
-  let entries
-  try {
-    entries = await readdir(dir, { withFileTypes: true })
-  } catch {
-    return false
-  }
-  const subdirs: string[] = []
-  for (const e of entries) {
-    if (e.name.startsWith('.')) continue
-    const p = join(dir, e.name)
-    if (e.isFile() && e.name.toLowerCase().endsWith('.fcstd')) return true
-    if (await isEffectivelyDirectory(e, p)) subdirs.push(p)
-  }
-  if (depth <= 0) return false
-  for (const s of subdirs) {
-    if (await hasDesign(s, depth - 1)) return true
-  }
-  return false
+function imageMime(path: string): string {
+  const ext = extOf(path)
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
+  if (ext === 'svg') return 'image/svg+xml'
+  return ['png', 'webp', 'gif', 'bmp'].includes(ext) ? `image/${ext}` : 'image/jpeg'
 }
 
-/** Search `root` for .FCStd files (and folders) whose name contains
- *  `query` - the HIGHEST level first, then each deeper level in turn
- *  (breadth-first), so a match right where the user is looking always
- *  surfaces before something buried three folders down, even though both
- *  get found. Bounded (maxResults, and a generous but finite level count)
- *  so a huge/misconfigured tree can't hang the UI. */
-async function searchDir(
-  root: string,
-  query: string,
-  maxResults = 200
-): Promise<{ name: string; path: string; isDir: boolean; ext: string; depth: number }[]> {
-  const q = query.toLowerCase()
-  const results: { name: string; path: string; isDir: boolean; ext: string; depth: number }[] = []
-  let level: string[] = [root]
-  let depth = 0
-  const MAX_DEPTH = 12 // generous - a real company repo is a handful of levels deep at most
-  while (level.length > 0 && depth <= MAX_DEPTH && results.length < maxResults) {
-    const nextLevel: string[] = []
-    for (const dir of level) {
-      let entries
-      try {
-        entries = await readdir(dir, { withFileTypes: true })
-      } catch {
-        continue
-      }
-      for (const e of entries) {
-        if (e.name.startsWith('.')) continue
-        const p = join(dir, e.name)
-        if (await isEffectivelyDirectory(e, p)) {
-          nextLevel.push(p)
-          if (depth > 0 && e.name.toLowerCase().includes(q)) {
-            results.push({ name: e.name, path: p, isDir: true, ext: '', depth })
-          }
-        } else if (e.name.toLowerCase().endsWith('.fcstd') && e.name.toLowerCase().includes(q)) {
-          results.push({ name: e.name, path: p, isDir: false, ext: 'fcstd', depth })
-        }
-        if (results.length >= maxResults) break
-      }
-      if (results.length >= maxResults) break
-    }
-    level = nextLevel
-    depth += 1
-  }
-  return results
-}
+/** one per process: folder-relevance answers are reused across listings,
+ *  searches and panel reopenings (fileFilter.ts has the invalidation) */
+const folderRelevance = new FolderRelevance()
 
 async function createWindow(): Promise<void> {
   win = new BrowserWindow({
@@ -185,30 +130,46 @@ app.whenReady().then(async () => {
         .map(async (e) => {
           const p = join(target, e.name)
           const isDir = await isEffectivelyDirectory(e, p)
-          const ext = isDir ? '' : e.name.slice(e.name.lastIndexOf('.') + 1).toLowerCase()
-          return { name: e.name, path: p, isDir, ext }
+          return { name: e.name, path: p, isDir, ext: isDir ? '' : extOf(e.name) }
         })
     )
 
-    // files: only designs (this is a design browser, not a general file
-    // manager). dirs: ALL of them, like a normal file browser - a folder with
-    // no .FCStd in it yet (a fresh company/project folder, a folder full of
-    // other file types) must still be navigable, or the user has no way to
-    // reach it to create a design there. hasDesign only decides the badge.
-    const files = raw.filter((it) => !it.isDir && it.ext === 'fcstd')
-    const dirs = raw.filter((r) => r.isDir)
-    const hasDesignFlags = await Promise.all(dirs.map((d) => hasDesign(d.path, 3)))
-    const dirsBadged = dirs.map((d, i) => ({ ...d, hasDesign: hasDesignFlags[i] }))
+    // files: only what GWT-CAD can use (shared/fileTypes.ts - designs,
+    // STEP/mesh, KiCad, zip, images, pdf, dxf/svg; never FCBak/companion
+    // files). dirs: returned right away WITHOUT waiting on the recursive
+    // "anything usable beneath?" walk - `relevant` is filled in only from
+    // cache here (false = known to hold nothing usable; undefined = not
+    // known yet), and the renderer hides the false ones and asks
+    // fs:dirRelevance for the rest after painting the listing. Junk trees
+    // (node_modules, __pycache__, ...) never show at all.
+    const files = raw.filter((it) => !it.isDir && fileKind(it.name) !== null)
+    const dirs = raw.filter((r) => r.isDir && !isSkippedDir(r.name))
+    const known = await Promise.all(dirs.map((d) => folderRelevance.cached(d.path)))
     const items = [
-      ...dirsBadged.sort((a, b) => a.name.localeCompare(b.name)),
+      ...dirs
+        .map((d, i) => ({ ...d, relevant: known[i] }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
       ...files.sort((a, b) => a.name.localeCompare(b.name))
     ]
     return { dir: target, parent: resolve(target, '..'), items }
   })
 
+  // the slow half of fs:listDir: does each folder hold a usable file
+  // anywhere beneath it? true / false / null (walk budget ran out - the
+  // renderer keeps showing those). Folders are walked in parallel.
+  ipcMain.handle('fs:dirRelevance', async (_e, dirs: string[]) => {
+    const out: Record<string, boolean | null> = {}
+    await Promise.all(
+      (dirs ?? []).map(async (d) => {
+        out[d] = await folderRelevance.isRelevant(d)
+      })
+    )
+    return out
+  })
+
   ipcMain.handle('fs:searchDir', async (_e, root: string, query: string) => {
     if (!query.trim()) return { results: [] }
-    const results = await searchDir(root, query.trim())
+    const results = await searchDir(root, query.trim(), { relevance: folderRelevance })
     return { results }
   })
 
@@ -450,9 +411,38 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('fs:readImage', async (_e, path: string) => {
     const buf = await readFile(path)
-    const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
-    const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
-    return `data:${mime};base64,${buf.toString('base64')}`
+    return `data:${imageMime(path)};base64,${buf.toString('base64')}`
+  })
+
+  // absolute, symlink-resolved path (null if it doesn't exist) - the
+  // copy-into-company-repo gate compares these, so a repo reached through a
+  // symlink still counts as "inside"
+  ipcMain.handle('fs:realpath', async (_e, path: string) => {
+    try {
+      return await realpath(resolve(path))
+    } catch {
+      return null
+    }
+  })
+
+  // copy `src` into `destDir` as `name`, never overwriting: "x.png" becomes
+  // "x-2.png" if taken. Used to bring an outside image next to a company
+  // document instead of referencing it where it sits.
+  ipcMain.handle('fs:copyInto', async (_e, src: string, destDir: string, name: string) => {
+    await mkdir(destDir, { recursive: true })
+    const dot = name.lastIndexOf('.')
+    const stem = dot > 0 ? name.slice(0, dot) : name
+    const ext = dot > 0 ? name.slice(dot) : ''
+    for (let i = 1; i < 1000; i++) {
+      const dest = join(destDir, i === 1 ? name : `${stem}-${i}${ext}`)
+      try {
+        await copyFile(src, dest, fsConstants.COPYFILE_EXCL)
+        return { path: dest }
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+      }
+    }
+    throw new Error(`could not find a free name for ${name} in ${destDir}`)
   })
 
   ipcMain.handle('fs:mkdir', async (_e, dir: string) => {
@@ -517,6 +507,16 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('fs:thumb', async (_e, design: string) => {
+    // an image is its own thumbnail (small ones only - the panel shows it
+    // at icon size, a multi-MB photo isn't worth base64-ing per row)
+    if (fileKind(design) === 'image' || extOf(design) === 'svg') {
+      try {
+        if ((await stat(design)).size > 2_000_000) return null
+        return `data:${imageMime(design)};base64,${(await readFile(design)).toString('base64')}`
+      } catch {
+        return null
+      }
+    }
     try {
       const buf = await readFile(thumbPath(design))
       return `data:image/png;base64,${buf.toString('base64')}`

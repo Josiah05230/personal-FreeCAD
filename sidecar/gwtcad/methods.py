@@ -24,6 +24,7 @@ from . import export as _export
 from . import supplier_models as _supplier_models
 from . import recovery as _recovery
 from . import import_dispatch as _import_dispatch  # noqa: F401 (registers importDispatch.*)
+from . import copy_in as _copy_in  # noqa: F401 (registers pn.copyIn)
 from .tessellate import tessellate_shape
 from .vocab import op_name, next_label
 from . import expr as _expr
@@ -5115,11 +5116,13 @@ def _recover_part_number(d, path):
     return {"pn": row["pn"], "name": row.get("name", ""), "description": row.get("description", "")}
 
 
-def _apply_part_number_props(d):
+def _apply_part_number_props(d, pn=None):
     """Mirror the session's PN/Name/Description onto real FreeCAD document
     properties (group "GWT") so they're visible to anyone opening the raw
-    .FCStd, not just GWT-CAD. Called just before every save."""
-    pn = session.part_number()
+    .FCStd, not just GWT-CAD. Called just before every save. `pn` (same
+    {pn, name, description} shape) tags a document other than the
+    session's - copy_in.py's scratch part files."""
+    pn = pn or session.part_number()
     if not pn:
         return
     for prop, val in (("GwtPartNumber", pn.get("pn", "")),

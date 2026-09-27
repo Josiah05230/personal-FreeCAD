@@ -5,8 +5,10 @@ interface DirEntry {
   path: string
   isDir: boolean
   ext: string
-  /** dirs only: does this folder contain a .FCStd within a few levels? */
-  hasDesign?: boolean
+  /** dirs only: holds a GWT-CAD-usable file somewhere beneath (true),
+   *  known not to (false - hidden), gave up looking (null), or not checked
+   *  yet (undefined) */
+  relevant?: boolean | null
 }
 interface DirListing {
   dir: string
@@ -92,6 +94,7 @@ interface CadBridge {
   appVersion(): Promise<string>
   onSidecarRespawned(fn: () => void): () => void
   listDir(dir?: string): Promise<DirListing>
+  dirRelevance(dirs: string[]): Promise<Record<string, boolean | null>>
   searchDir(root: string, query: string): Promise<{ results: SearchResult[] }>
   saveDialog(defaultPath?: string): Promise<string | null>
   openDialog(filters?: { name: string; extensions: string[] }[]): Promise<string | null>
@@ -156,6 +159,8 @@ interface CadBridge {
   exportPdf(html: string, outPath: string): Promise<{ path: string }>
   writeText(text: string, outPath: string): Promise<{ path: string }>
   readImage(path: string): Promise<string>
+  realpath(path: string): Promise<string | null>
+  copyInto(src: string, destDir: string, name: string): Promise<{ path: string }>
   mkdir(dir: string): Promise<{ dir: string }>
   touch(path: string): Promise<{ path: string }>
   move(src: string, dest: string): Promise<{ src: string; dest: string }>
