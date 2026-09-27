@@ -1884,6 +1884,11 @@ code {
   padding: 1px 7px;
 }
 
+.sb-autosaved {
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+
 .sb-spinner {
   width: 12px;
   height: 12px;

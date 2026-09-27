@@ -753,6 +753,7 @@ const rpc = async <T,>(m: string, p: Record<string, unknown> = {}): Promise<T> =
   try {
     const r = await window.cad.rpc<T>(m, p)
     trace(`rpc #${n} ${m} ok`, { ms: Date.now() - t, r })
+    if (DOC_MUTATING.test(m)) for (const l of _mutatedListeners) l(m)
     return r
   } catch (e) {
     trace(`rpc #${n} ${m} ERR`, { ms: Date.now() - t, msg: (e as Error)?.message ?? String(e) })
@@ -762,11 +763,33 @@ const rpc = async <T,>(m: string, p: Record<string, unknown> = {}): Promise<T> =
   }
 }
 
+/** Document edits made by panels that don't report back to App (the
+ *  drawing sheet, parameters, materials) - App marks the tab dirty on these
+ *  so the Save state and autosave see them. Drawing reads, template saves
+ *  (~/.gwtcad, not the document) and refreshForRevision (its callers save
+ *  right after) are left out. Only the plain `rpc` path fires this - the
+ *  quiet path carries automatic calls (the drawing auto-fit on open). */
+const DOC_MUTATING =
+  /^(drawing\.(add|remove|set|move|make|merge|unmerge|update|convert|apply|pageCreate|pageDelete|pageRename)|params\.(set|delete)|material\.(assign|clear|customAssign))/
+const _mutatedListeners = new Set<(method: string) => void>()
+export function onDocMutated(fn: (method: string) => void): () => void {
+  _mutatedListeners.add(fn)
+  return () => _mutatedListeners.delete(fn)
+}
+
+/** quiet calls in flight - never shown as busy, but autosave waits for them */
+let _quietBusy = 0
+/** every RPC in flight right now, loud or quiet */
+export function rpcInFlight(): number {
+  return _busy + _quietBusy
+}
+
 /** Background calls that must not light the busy indicator (timeline prefetch). */
 const rpcQuiet = async <T,>(m: string, p: Record<string, unknown> = {}): Promise<T> => {
   const n = ++_rpcSeq
   trace(`rpcQ #${n} ${m}`, { busy: _busy, p })
   const t = Date.now()
+  _quietBusy++
   try {
     const r = await window.cad.rpc<T>(m, p)
     trace(`rpcQ #${n} ${m} ok`, { ms: Date.now() - t, r })
@@ -774,10 +797,16 @@ const rpcQuiet = async <T,>(m: string, p: Record<string, unknown> = {}): Promise
   } catch (e) {
     trace(`rpcQ #${n} ${m} ERR`, { ms: Date.now() - t, msg: (e as Error)?.message ?? String(e) })
     throw e
+  } finally {
+    _quietBusy--
   }
 }
 
 export const apiQuiet = {
+  // autosave: a background save must not flash "Working..."
+  save: () => rpcQuiet<{ path: string }>('document.save'),
+  pnCurrentRow: (pnSeqOrFull: string) =>
+    rpcQuiet<{ row: PartRecord | null }>('pn.currentRow', { pnSeqOrFull }),
   rollTo: (bodyId: string, featureId: string | null) =>
     rpcQuiet<{ tip: string | null }>('history.rollTo', { bodyId, featureId }),
   // appearances: pure view state, persisted to the companion - no trace noise

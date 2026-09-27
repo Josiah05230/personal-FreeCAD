@@ -1197,6 +1197,19 @@ def pn_relocate(pnSeq, newPath):
     return {"ok": True}
 
 
+@method("pn.currentRow")
+def pn_current_row(pnSeqOrFull):
+    """The PN's current registry row read from the LOCAL registry clone -
+    no pull, no file search. For the renderer's periodic autosave, which
+    runs on the one engine thread every few minutes and must never stall it
+    on a network pull (pn.resolve pulls when its last pull is >60s old).
+    Anything else that reads the registry (opening a part, the PN browser)
+    keeps the local clone fresh. {"row": None} for an unknown PN."""
+    pn_seq = pnSeqOrFull[:-1] if pnSeqOrFull[-1:].isdigit() and len(pnSeqOrFull) > 6 else pnSeqOrFull
+    cfg = _load_config()
+    return {"row": _current_row(_read_registry(cfg), pn_seq)}
+
+
 @method("pn.resolve")
 def pn_resolve(pnSeqOrFull):
     """Absolute path to a PN's current-rev file. Accepts either the bare

@@ -28,6 +28,12 @@ interface PromptRequest {
 }
 
 let _open: ((req: PromptRequest) => void) | null = null
+let _showing = false
+
+/** true while a prompt is on screen (autosave waits for it to close) */
+export function isPromptOpen(): boolean {
+  return _showing
+}
 
 /** under the --e2e / fuzz harness nobody answers a prompt - auto-cancel so the
  * run never hangs (a real user would hit Escape) */
@@ -105,6 +111,13 @@ export function PromptHost(): JSX.Element | null {
       _open = null
     }
   }, [])
+
+  useEffect(() => {
+    _showing = !!req
+    return () => {
+      _showing = false
+    }
+  }, [req])
 
   // Focus (and select) the first field so the user can just type and hit Enter.
   // A single focus() call can lose the race against pointer capture from the
