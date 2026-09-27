@@ -5,8 +5,10 @@ export interface DirEntry {
   path: string
   isDir: boolean
   ext: string
-  /** dirs only: does this folder contain a .FCStd within a few levels? */
-  hasDesign?: boolean
+  /** dirs only: holds a GWT-CAD-usable file somewhere beneath (true),
+   *  known not to (false - the Data Panel hides it), gave up looking
+   *  (null), or not checked yet (undefined) */
+  relevant?: boolean | null
 }
 export interface DirListing {
   dir: string
@@ -104,6 +106,10 @@ const cad = {
     return () => ipcRenderer.removeListener('cad:sidecarRespawned', h)
   },
   listDir: (dir?: string) => ipcRenderer.invoke('fs:listDir', dir) as Promise<DirListing>,
+  /** per folder: does it hold a GWT-CAD-usable file anywhere beneath?
+   *  null = the bounded walk gave up (treat as yes) */
+  dirRelevance: (dirs: string[]) =>
+    ipcRenderer.invoke('fs:dirRelevance', dirs) as Promise<Record<string, boolean | null>>,
   /** recursive design/folder search from `root` down - highest level
    *  first, then each deeper level in turn (breadth-first), bounded so a
    *  huge tree can't hang the UI. Used by the Data Panel's search box. */
@@ -238,6 +244,11 @@ const cad = {
   writeText: (text: string, outPath: string) =>
     ipcRenderer.invoke('drawing:writeText', text, outPath) as Promise<{ path: string }>,
   readImage: (path: string) => ipcRenderer.invoke('fs:readImage', path) as Promise<string>,
+  /** symlink-resolved absolute path, null if it doesn't exist */
+  realpath: (path: string) => ipcRenderer.invoke('fs:realpath', path) as Promise<string | null>,
+  /** copy src into destDir as name, never overwriting (x.png -> x-2.png) */
+  copyInto: (src: string, destDir: string, name: string) =>
+    ipcRenderer.invoke('fs:copyInto', src, destDir, name) as Promise<{ path: string }>,
   mkdir: (dir: string) => ipcRenderer.invoke('fs:mkdir', dir) as Promise<{ dir: string }>,
   touch: (path: string) => ipcRenderer.invoke('fs:touch', path) as Promise<{ path: string }>,
   move: (src: string, dest: string) =>

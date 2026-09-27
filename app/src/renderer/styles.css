@@ -766,10 +766,22 @@ code {
   white-space: nowrap;
 }
 
-/* a folder with no .FCStd in it yet - still fully navigable, just visually
-   quieter so folders that actually hold designs stand out */
-.dp-name-dim {
+/* a non-design file's extension tag (STEP, PDF, PNG, ...) in place of the
+   design glyph - wider than .dp-ic's 12px so four letters fit */
+.dp-ext {
+  width: 30px;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 14px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
   color: var(--text-dim);
+}
+.dp-ext-model,
+.dp-ext-mesh,
+.dp-ext-ecad {
+  color: var(--accent-hi);
 }
 
 /* PN registry name/description, shown under a design's filename - for

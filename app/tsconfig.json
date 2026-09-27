@@ -17,5 +17,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src/renderer", "src/preload"]
+  "include": ["src/renderer", "src/preload", "src/shared"]
 }
