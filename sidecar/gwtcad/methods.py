@@ -5887,8 +5887,9 @@ def assembly_tree():
 @method("assembly.bomPns")
 def assembly_bom_pns():
     """This assembly's kit BOM as registry PNs: {pn, componentName, qty} per
-    distinct sub-part, for however many App::Link components resolve to a
-    PN that was actually reserved. A component linking a file with no
+    distinct sub-part, for however many App::Link components (or embedded
+    bodies tagged with a GwtItemPn property) resolve to a PN that was
+    actually reserved. A component linking a file with no
     matching registry row (never PN'd, or a resolved cache-file path from a
     pinned component rather than the original source - see assembly.tree's
     linkedPath note) is silently skipped, not reported as an error - this
@@ -5907,6 +5908,14 @@ def assembly_bom_pns():
             continue
         filename = os.path.basename(path)
         counts[filename] = counts.get(filename, 0) + 1
+    # a part embedded in the assembly (its geometry copied in rather than
+    # linked - e.g. a scripted build) names its PN in a GwtItemPn property;
+    # each such body is one of that part
+    for o in d.Objects:
+        item_pn = (getattr(o, "GwtItemPn", "") or "").strip()
+        if item_pn:
+            filename = "%s.FCStd" % item_pn
+            counts[filename] = counts.get(filename, 0) + 1
     filenames = [{"filename": fn, "qty": qty} for fn, qty in counts.items()]
     return _partnumbers.pn_resolve_bom_filenames(filenames)
 
