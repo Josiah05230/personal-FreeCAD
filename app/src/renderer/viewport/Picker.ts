@@ -80,10 +80,19 @@ export class Picker {
     // (e.g. a fillet's two bounding edges spanning its own narrow face) must
     // NOT win just because it happens to come first - checked separately from,
     // and before, the plain nearest-hit walk below.
+    // Reported points are in the hit object's LOCAL frame, which is model
+    // space: body nodes normally sit at identity, but a Move/Copy live preview
+    // transforms them, and a point picked on a previewed body (point-to-point
+    // re-pick, say) must still name where that point really is in the model.
+    const local = (h: THREE.Intersection): [number, number, number] => {
+      const p = h.object.worldToLocal(h.point.clone())
+      return [p.x, p.y, p.z]
+    }
+
     for (const h of hits) {
       const ud = this.ownerOf(h.object, content).userData
       if (ud.pick === 'edge' && this.nearOnScreen(h.point, 6)) {
-        return { kind: 'edge', bodyId: ud.bodyId, index: 0, sub: ud.sub, point: [h.point.x, h.point.y, h.point.z] }
+        return { kind: 'edge', bodyId: ud.bodyId, index: 0, sub: ud.sub, point: local(h) }
       }
     }
 
@@ -99,14 +108,18 @@ export class Picker {
         const sub = (ud.vsub as string[] | undefined)?.[h.index]
         // only snap to a corner when the cursor is genuinely near it on screen,
         // so corners are not a huge invisible grab target over the whole model
-        if (sub && this.nearOnScreen(h.point, 8))
+        if (sub && this.nearOnScreen(h.point, 8)) {
+          // the vertex itself, not three's closest-point-on-the-ray (which is
+          // off the corner by up to the Points pick threshold)
+          const pa = (h.object as THREE.Points).geometry.getAttribute('position')
           return {
             kind: 'vertex',
             bodyId: ud.bodyId,
             index: 0,
             sub,
-            point: [h.point.x, h.point.y, h.point.z]
+            point: [pa.getX(h.index), pa.getY(h.index), pa.getZ(h.index)]
           }
+        }
       }
       if (ud.pick === 'edge') continue // handled in the pass above
       if (ud.pick === 'face' && h.faceIndex != null) {
@@ -125,7 +138,7 @@ export class Picker {
             bodyId: ud.bodyId,
             index: 0,
             sub,
-            point: [h.point.x, h.point.y, h.point.z],
+            point: local(h),
             normal
           }
         }
@@ -135,6 +148,24 @@ export class Picker {
   }
 
   private overlayFor(sel: Selection, content: THREE.Object3D, color: number): THREE.Object3D | null {
+    const ov = this.overlayForRaw(sel, content, color)
+    // a body / face / edge overlay reuses the node's own geometry, so it must
+    // also sit where the node sits - a Move/Copy preview transforms body nodes
+    if (ov && 'bodyId' in sel) {
+      const src = content.children.find((c) => c.userData.bodyId === sel.bodyId)
+      if (src && sel.kind === 'vertex') {
+        src.updateMatrix()
+        ov.position.applyMatrix4(src.matrix) // the dot is built at the model-space point
+      } else if (src) {
+        ov.position.copy(src.position)
+        ov.quaternion.copy(src.quaternion)
+        ov.scale.copy(src.scale)
+      }
+    }
+    return ov
+  }
+
+  private overlayForRaw(sel: Selection, content: THREE.Object3D, color: number): THREE.Object3D | null {
     if (sel.kind === 'vertex') {
       // a small dot ON the corner (blue on hover, orange when selected), kept to
       // roughly a constant ~5 px on screen at any zoom, and clamped small
