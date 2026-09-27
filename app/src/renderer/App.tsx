@@ -58,6 +58,7 @@ import {
   type HotkeyMap
 } from './ribbonPrefs'
 import { loadMeshPrefs } from './meshPrefs'
+import { moveParams, movePreviewView, type BodyXformView, type Vec3 } from './moveXform'
 import type { MeasureResult, SketchRefGeom, SketchConstraint } from './rpc'
 import type { SketchTool, SketchConstraintType } from './viewport/SketchController'
 import type { SketchFrameDTO } from './rpc'
@@ -125,7 +126,9 @@ const opSelKinds = (k: OpKind | null): SelKind[] | null => {
     case 'meshPlaneCut':
       return ['face', 'plane']
     case 'move':
-      return ['edge', 'vertex']
+      // Objects box: a body (row or any click on it); From / To / axis boxes:
+      // a corner, edge or face - the dialog routes each pick to its box
+      return ['body', 'face', 'edge', 'vertex']
     case 'datumPlane':
     case 'datumAxis':
     case 'datumPoint':
@@ -252,6 +255,16 @@ export function App(): JSX.Element {
   const [gitTarget, setGitTarget] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [op, setOp] = useState<OpKind | null>(null)
+  // Move/Copy live preview (client-side): the dialog's latest values + box
+  // picks, values pushed back into it by the manipulator, and the preview
+  // held on screen from OK until the engine's moved geometry lands
+  const [moveLive, setMoveLive] = useState<{
+    values: OpValues
+    slotSel: Record<string, Selection[]>
+  } | null>(null)
+  const [movePush, setMovePush] = useState<{ values: OpValues; seq: number } | null>(null)
+  const [moveHold, setMoveHold] = useState<{ xf: BodyXformView; meshes: RenderMesh[] } | null>(null)
+  const [opArmedSlot, setOpArmedSlot] = useState<string | null>(null)
 
   const [drawingPageId, setDrawingPageId] = useState<string | null>(null)
   const [drawingPages, setDrawingPages] = useState<DrawingPage[]>([])
@@ -677,6 +690,11 @@ export function App(): JSX.Element {
   measureModeRef.current = measureMode
   const opRef = useRef<OpKind | null>(null)
   opRef.current = op
+  const meshesRef = useRef(meshes)
+  meshesRef.current = meshes
+  // the modifier state of the latest pick BEFORE an open dialog forces it
+  // additive - Move's Objects box replaces on a plain click, adds on Ctrl
+  const lastPickAdditiveRef = useRef(false)
   // whether the open operation dialog would let you press OK (mirrors its own
   // `ready`); surfaced through the test bridge so E2E can catch "preview renders
   // but OK stays disabled" bugs.
@@ -689,11 +707,21 @@ export function App(): JSX.Element {
   const openOp = useCallback((k: OpKind | null) => {
     trace('ACTION openOp', { k, from: opRef.current, queueBusy: cmdRef.current.busy })
     setOp(k)
+    setMoveLive(null)
     if (k == null) setDressUpGhost([]) // dialog closed - drop the ghost overlay
+    // Move with nothing selected in a one-body document: that body is the
+    // obvious target (more bodies - pick them, as in Fusion)
+    if (k === 'move') {
+      const vis = meshesRef.current.filter((m) => m.visible !== false)
+      setSelection((cur) =>
+        cur.length || vis.length !== 1 ? cur : [{ kind: 'body', bodyId: vis[0].id }]
+      )
+    }
   }, [])
 
   const onSelectCore = useCallback(
     (sel: Selection | null, additive: boolean) => {
+      lastPickAdditiveRef.current = additive
       trace('ACTION pick', {
         sel: sel ? selKey(sel) : null,
         additive,
@@ -1503,6 +1531,10 @@ export function App(): JSX.Element {
       // close the dialog the instant the user commits - the engine rebuild and
       // scene refresh run behind the status spinner and reconcile when they land
       if (kind === 'datumPlane') setDatumGhostHold(true) // keep the ghost until the real datum lands
+      // Move: keep the bodies where the preview put them until the engine's
+      // moved geometry replaces them (no snap-back flash), manipulator gone
+      if (kind === 'move' && moveXformRef.current)
+        setMoveHold({ xf: { ...moveXformRef.current, gizmo: null }, meshes: meshesRef.current })
       setOp(null)
       const edgeSels = selection.filter((s) => s.kind === 'edge') as Array<{
         sub: string
@@ -1773,44 +1805,12 @@ export function App(): JSX.Element {
             )
             break
           case 'move': {
-            const tgt = selection.find((s) => s.kind === 'body' || s.kind === 'face') as
-              | { bodyId: string }
-              | undefined
-            const id = tgt?.bodyId ?? bodies[0]?.id
-            if (!id) break
-            const modeMap: Record<string, 'translate' | 'rotate' | 'pointToPoint'> = {
-              Translate: 'translate',
-              Rotate: 'rotate',
-              'Point to Point': 'pointToPoint'
-            }
-            const axisDirMap: Record<string, number[]> = {
-              X: [1, 0, 0],
-              Y: [0, 1, 0],
-              Z: [0, 0, 1]
-            }
-            const pts = selection.filter((s) => s.kind === 'vertex') as Array<{
-              point: [number, number, number]
-            }>
-            const edgeSel = selection.find((s) => s.kind === 'edge') as
-              | { bodyId: string; sub: string }
-              | undefined
-            const axisDir =
-              v.axis === 'Selected edge' && edgeSel
-                ? undefined // sidecar falls back to its default when axisDir omitted; keep simple
-                : axisDirMap[String(v.axis ?? 'Z')] ?? [0, 0, 1]
-            await api.moveCopy({
-              ids: [id],
-              mode: modeMap[String(v.mode ?? 'Translate')] ?? 'translate',
-              dx: Number(v.dx ?? 0),
-              dy: Number(v.dy ?? 0),
-              dz: Number(v.dz ?? 0),
-              axisDir,
-              angle: Number(v.angle ?? 0),
-              fromPoint: pts[0]?.point ?? [0, 0, 0],
-              toPoint: pts[1]?.point ?? [0, 0, 0],
-              createCopy: Boolean(v.createCopy),
-              copies: Math.max(1, Number(v.copies ?? 1))
-            })
+            // the same params the live preview drew (moveXform.ts); the
+            // dialog's boxes are authoritative, the flat selection is the
+            // fallback for bridge / scripted callers
+            const mp = moveParams(v, applySlotSelRef.current, selection, meshesRef.current, true)
+            if (!mp) throw new Error('Move: nothing to move.')
+            await api.moveCopy(mp)
             break
           }
           case 'scale': {
@@ -2121,6 +2121,7 @@ export function App(): JSX.Element {
         await afterEdit()
       } finally {
         setDatumGhostHold(false)
+        setMoveHold(null)
         livePreviewRef.current.committing = false
       }
     },
@@ -4567,6 +4568,9 @@ export function App(): JSX.Element {
         return w ? vpApi.current?.testProjectToScreen(w) ?? null : null
       },
       cameraDebug: () => vpApi.current?.testCameraDebug() ?? null,
+      // Move/Copy preview state + manipulator handle positions (test hooks)
+      moveXformState: () => vpApi.current?.testBodyXformState() ?? null,
+      moveGizmoGrabPoint: (id: string) => vpApi.current?.testGizmoGrabPoint(id) ?? null,
       applyOrbit: (yaw: number, pitch: number) => vpApi.current?.testApplyOrbit(yaw, pitch),
       symbolWorldScale: () => vpApi.current?.testSymbolWorldScale() ?? null,
       pendingConState: () => vpApi.current?.testPendingConState() ?? null,
@@ -5115,6 +5119,59 @@ export function App(): JSX.Element {
     seq: number
   } | null>(null)
   const planeDragSeq = useRef(0)
+
+  // --- Move/Copy live preview (client-side, the bodies' three.js nodes) ---
+  const moveLastGood = useRef<BodyXformView | null>(null)
+  const moveXform = useMemo<BodyXformView | null>(() => {
+    if (op !== 'move' || !moveLive) return null
+    const view = movePreviewView(moveLive.values, moveLive.slotSel, meshes)
+    // a half-typed number: keep showing the last good preview
+    if (view === undefined) return moveLastGood.current
+    moveLastGood.current = view
+    return view
+  }, [op, moveLive, meshes])
+  const moveXformRef = useRef(moveXform)
+  moveXformRef.current = moveXform
+  const moveLiveRef = useRef(moveLive)
+  moveLiveRef.current = moveLive
+  const onMoveValues = useCallback(
+    (kind: OpKind, values: OpValues, slotSel: Record<string, Selection[]>) => {
+      if (kind === 'move') setMoveLive({ values, slotSel })
+    },
+    []
+  )
+  // manipulator drag -> the dialog's fields (relative to where the drag began)
+  const moveDragBase = useRef<OpValues | null>(null)
+  const moveDragSeq = useRef(0)
+  const onBodyXformDrag = useCallback(
+    (ev: { handle: string; translate?: Vec3; angle?: number }, phase: 'start' | 'move' | 'end') => {
+      const cur = moveLiveRef.current?.values
+      if (!cur) return
+      if (phase === 'start') {
+        moveDragBase.current = { ...cur }
+        return
+      }
+      const b = moveDragBase.current ?? cur
+      const n = (x: unknown): number => (Number.isFinite(Number(x)) ? Number(x) : 0)
+      const r = (x: number, q: number): string => String(Math.round(x * q) / q)
+      let next: OpValues | null = null
+      if (ev.translate) {
+        next = {
+          dx: r(n(b.dx) + ev.translate[0], 100),
+          dy: r(n(b.dy) + ev.translate[1], 100),
+          dz: r(n(b.dz) + ev.translate[2], 100)
+        }
+      } else if (ev.angle != null) {
+        // dragging the current axis' ring adds to its angle; another ring
+        // switches the axis and starts from zero (one axis + angle per move)
+        const same = String(b.axis ?? 'Z') === ev.handle
+        next = { axis: ev.handle, angle: r((same ? n(b.angle) : 0) + ev.angle, 10) }
+      }
+      if (next) setMovePush({ values: next, seq: ++moveDragSeq.current })
+      if (phase === 'end') moveDragBase.current = null
+    },
+    []
+  )
   const sectionDragBase = useRef<number | null>(null)
   const onPreviewHandleDrag = useCallback(
     (deltaMm: number, phase: 'move' | 'end') => {
@@ -5592,7 +5649,18 @@ export function App(): JSX.Element {
                     pickPlanes={pickPlanes}
                     onPickPlane={(ref) => void beginSketch(ref)}
                     selectMode={selectMode}
-                    selFilter={measureMode ? [...selFilter, 'vertex', 'face', 'edge'] : selFilter}
+                    selFilter={
+                      measureMode || op === 'move' ? [...selFilter, 'vertex', 'face', 'edge'] : selFilter
+                    }
+                    bodyXform={
+                      op === 'move'
+                        ? moveXform
+                        : moveHold && moveHold.meshes === meshes
+                          ? moveHold.xf
+                          : null
+                    }
+                    onBodyXformDrag={onBodyXformDrag}
+                    hoverBody={op === 'move' && opArmedSlot === 'objects'}
                     previewPlane={op === 'datumPlane' || datumGhostHold ? previewPlane : sectionGhost}
                     onPreviewHandleDrag={onPreviewHandleDrag}
                     onWindowSelect={(sels, additive) =>
@@ -5860,6 +5928,13 @@ export function App(): JSX.Element {
                       handleDrag={planeHandleDrag}
                       initialValues={editInit}
                       editingLabel={editLabel}
+                      onValuesChange={onMoveValues}
+                      externalValues={op === 'move' ? movePush : null}
+                      pickAdditive={lastPickAdditiveRef}
+                      itemLabel={(it) =>
+                        it.kind === 'body' ? meshes.find((m) => m.id === it.bodyId)?.label : undefined
+                      }
+                      onArmedSlot={setOpArmedSlot}
                     />
                   )}
                   {measureMode && (
