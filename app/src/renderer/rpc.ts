@@ -407,7 +407,12 @@ export interface DrawingView {
   direction: string
   kind: 'part' | 'section' | 'detail' | 'broken'
   baseViewId?: string
+  /** always 1: bbox/visible/hidden are already final sheet-mm (TechDraw
+   *  applies the view's real, persisted Scale to the projected edges) */
   scale: number
+  /** a view the pre-fix UI created and only ever sized client-side - fit
+   *  it once and persist via drawingSetViewScale */
+  needsFit?: boolean
   visible: number[][][] // [poly][point][x,y]
   hidden: number[][][]
   bbox: [number, number, number, number]
@@ -894,7 +899,12 @@ export const apiQuiet = {
       'drawing.getDimensionFormats'
     ),
   drawingListCleanupLines: (viewId: string) =>
-    rpcQuiet<{ lines: CleanupLine[] }>('drawing.listCleanupLines', { viewId })
+    rpcQuiet<{ lines: CleanupLine[] }>('drawing.listCleanupLines', { viewId }),
+  drawingSetViewScale: (viewId: string, scale: number) =>
+    rpcQuiet<{ id: string; scale: number; needsFit: boolean; visible: number[][][]; hidden: number[][][]; bbox: [number, number, number, number] }>(
+      'drawing.setViewScale',
+      { viewId, scale }
+    ),
 }
 
 export interface SectionDTO {
@@ -1464,6 +1474,11 @@ export const api = {
     toKind: 'part' | 'section',
     extra?: Record<string, unknown>
   ) => rpc<DrawingView>('drawing.convertView', { pageId, viewId, toKind, ...extra }),
+  drawingSetViewScale: (viewId: string, scale: number) =>
+    rpc<{ id: string; scale: number; needsFit: boolean; visible: number[][][]; hidden: number[][][]; bbox: [number, number, number, number] }>(
+      'drawing.setViewScale',
+      { viewId, scale }
+    ),
   drawingRemoveView: (viewId: string) =>
     rpc<{ ok: boolean; removedDimensions: string[] }>('drawing.removeView', { viewId }),
   drawingSetViewPosition: (viewId: string, x: number, y: number) =>

@@ -5072,6 +5072,31 @@ def _write_sidecar(path):
         pass
 
 
+def _recover_part_number(d, path):
+    """A file opened with no PN in its companion state: take it from the
+    document's own GwtPartNumber properties, else - for a <PN>.FCStd that
+    matches a registry row - from the registry (purchased-part drawings
+    were generated without either, so their title blocks came up blank).
+    Session-only; nothing is written until the user saves. Never pulls
+    (reading the local registry is instant; a network pull on every open
+    is not)."""
+    pn = getattr(d, "GwtPartNumber", "") or ""
+    if pn:
+        return {"pn": pn, "name": getattr(d, "GwtPartName", "") or "",
+                "description": getattr(d, "GwtPartDescription", "") or ""}
+    stem = os.path.splitext(os.path.basename(path))[0]
+    try:
+        cfg = _partnumbers._load_config()
+        if not cfg.get("registryPath"):
+            return None
+        row = _partnumbers._row_for_pn(_partnumbers._read_registry(cfg), stem)
+    except Exception:
+        return None
+    if row is None:
+        return None
+    return {"pn": row["pn"], "name": row.get("name", ""), "description": row.get("description", "")}
+
+
 def _apply_part_number_props(d):
     """Mirror the session's PN/Name/Description onto real FreeCAD document
     properties (group "GWT") so they're visible to anyone opening the raw
@@ -5124,6 +5149,7 @@ def document_open(path):
         raise RpcError(APP_ERROR, "no such file: %s" % path)
     _TESS_CACHE.clear()
     d = session.open_path(path)
+    session.set_part_number(None)  # never inherit the previous file's PN
     try:
         sj = _sidecar_json(path)
         if os.path.isfile(sj):
@@ -5131,6 +5157,8 @@ def document_open(path):
                 session.load_state(json.load(f))
     except Exception:
         pass
+    if not session.part_number():
+        session.set_part_number(_recover_part_number(d, path) or None)
     d.recompute()
     try:
         from . import materials as _materials
@@ -5474,6 +5502,12 @@ def drawing_add_broken_view(pageId, baseViewId, breaks=None):
 def drawing_convert_view(pageId, viewId, toKind, **kw):
     d = session.doc()
     return _drawing.convert_view(d, pageId, viewId, toKind, **kw)
+
+
+@method("drawing.setViewScale")
+def drawing_set_view_scale(viewId, scale):
+    d = session.doc()
+    return _drawing.set_view_scale(d, viewId, scale)
 
 
 @method("drawing.removeView")

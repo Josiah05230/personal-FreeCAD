@@ -263,7 +263,15 @@ def page_contents(doc, page_id):
             direction = _get_tag(o, "_gwt_dir", "front")
             entry = {
                 "id": o.Name, "label": o.Label, "direction": direction,
-                "kind": kind, "scale": float(o.Scale),
+                # 1.0, NOT o.Scale: a plain view's projected edges are
+                # ALREADY scaled by TechDraw (confirmed: halving view.Scale
+                # halves the bbox), same as a projection-group item's - so
+                # bbox/visible/hidden are final sheet-mm for every view.
+                # Reporting o.Scale here made export_page_svg apply it a
+                # second time (a supplier drawing's iso came out ~5.6x too
+                # big, over the title block, in every portal PDF).
+                "kind": kind, "scale": 1.0,
+                "needsFit": _needs_fit(o, kind),
                 "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid),
             }
             # view.X/Y round-trip now (fixed 2026-09-20: a view's on-sheet
@@ -1146,6 +1154,44 @@ def _part_view_payload(view):
     return vis, hid
 
 
+def _needs_fit(view, kind):
+    """True for a plain view the pre-fix UI created: TechDraw Scale left at
+    exactly 1.0 (the UI only ever sized views client-side, never saved) and
+    never deliberately scaled since. The UI fits these ONCE on open and
+    persists the result via set_view_scale, so they look exactly as they
+    did before while the file (and every PDF) finally matches the screen.
+    Projection-group items and generator-scaled views are never refit."""
+    if kind != "part" or _get_tag(view, "_gwt_scaled", "") == "1":
+        return False
+    if view.TypeId != "TechDraw::DrawViewPart":
+        return False
+    return abs(float(view.Scale) - 1.0) < 1e-9
+
+
+def set_view_scale(doc, view_id, scale):
+    """Set a view's REAL TechDraw scale (persisted in the file) - the one
+    source of truth for how big a view is on the sheet, used by the app's
+    renderer and the PDF export alike. A projection-group item scales its
+    whole group (TechDraw enforces one shared Scale)."""
+    view = doc.getObject(view_id)
+    if view is None:
+        raise RpcError(APP_ERROR, "no such view: %s" % view_id)
+    scale = float(scale)
+    if scale <= 0:
+        raise RpcError(APP_ERROR, "scale must be positive")
+    target = view
+    if view.TypeId == "TechDraw::DrawProjGroupItem":
+        target = next((p for p in view.InList if p.TypeId == "TechDraw::DrawProjGroup"), view)
+    if hasattr(target, "ScaleType"):
+        target.ScaleType = "Custom"
+    target.Scale = scale
+    _tag(view, "_gwt_scaled", "1")
+    doc.recompute()
+    vis, hid = _part_view_payload(view)
+    return {"id": view.Name, "scale": 1.0, "needsFit": False,
+            "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid)}
+
+
 def make_view(doc, page_id, source_obj, direction="front", scale=1.0):
     """source_obj is normally a single body/object; also accepts a real list
     (an assembly's several App::Link components) - TechDraw's own Source
@@ -1168,7 +1214,7 @@ def make_view(doc, page_id, source_obj, direction="front", scale=1.0):
     vis, hid = _part_view_payload(view)
     return {
         "id": view.Name, "label": view.Label, "direction": direction,
-        "kind": "part", "scale": float(view.Scale),
+        "kind": "part", "scale": 1.0, "needsFit": _needs_fit(view, "part"),
         "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid),
     }
 
@@ -1252,7 +1298,7 @@ def make_projection_group(doc, page_id, source_obj, directions, anchor=None, sca
         vis, hid = _part_view_payload(item)
         out.append({
             "id": item.Name, "label": item.Label, "direction": d,
-            "kind": "part", "scale": float(grp.Scale),
+            "kind": "part", "scale": 1.0,
             "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid),
             "groupId": grp.Name,
             "isAnchor": (grp.Anchor is not None and item.Name == grp.Anchor.Name),
@@ -1313,7 +1359,7 @@ def make_section(doc, page_id, base_view_id, plane="XY", offset=0.0, flip=False)
     vis, hid = _part_view_payload(view)
     return {
         "id": view.Name, "label": view.Label, "direction": _get_tag(base, "_gwt_dir", "front"),
-        "kind": "section", "baseViewId": base.Name, "scale": float(view.Scale),
+        "kind": "section", "baseViewId": base.Name, "scale": 1.0,
         "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid),
     }
 
@@ -1349,7 +1395,7 @@ def make_detail(doc, page_id, base_view_id, anchor_xy, radius):
     vis, hid = _part_view_payload(view)
     return {
         "id": view.Name, "label": view.Label, "direction": _get_tag(base, "_gwt_dir", "front"),
-        "kind": "detail", "baseViewId": base.Name, "scale": float(view.Scale),
+        "kind": "detail", "baseViewId": base.Name, "scale": 1.0,
         "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid),
     }
 
@@ -1384,7 +1430,7 @@ def make_broken(doc, page_id, base_view_id, breaks):
     vis, hid = _part_view_payload(view)
     return {
         "id": view.Name, "label": view.Label, "direction": _get_tag(base, "_gwt_dir", "front"),
-        "kind": "broken", "breaks": brk, "scale": float(view.Scale),
+        "kind": "broken", "breaks": brk, "scale": 1.0,
         "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid),
     }
 
@@ -1420,11 +1466,12 @@ def convert_view(doc, page_id, view_id, to_kind, **kw):
         new.Label = "%s view" % direction.title()
         _tag(new, "_gwt_dir", direction)
         _tag(new, "_gwt_kind", "part")
+        _tag(new, "_gwt_scaled", "1")  # keeps the converted view's real size
         new.X, new.Y = x, y
         doc.recompute()
         vis, hid = _part_view_payload(new)
         payload = {"id": new.Name, "label": new.Label, "direction": direction,
-                   "kind": "part", "scale": float(new.Scale),
+                   "kind": "part", "scale": 1.0, "needsFit": False,
                    "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid)}
     elif to_kind == "section":
         payload = make_section(doc, page_id, source[0].Name if source else None,

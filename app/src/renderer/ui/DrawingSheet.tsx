@@ -727,10 +727,23 @@ export const DrawingSheet = forwardRef<
           ['top', 40, 170],
           ['iso', 220, 170]
         ]
-        setPlaced(
-          c.views.map((v, i) => {
+        // Views are drawn at their true sheet size (TechDraw's persisted
+        // Scale is already baked into bbox/visible/hidden). A view the
+        // pre-fix UI created was only ever sized client-side - fit it with
+        // that same old formula ONCE and save the result, so it looks
+        // exactly as it did while the file and PDFs finally match.
+        const views = await Promise.all(
+          c.views.map(async (v) => {
+            if (!v.needsFit) return v
             const [minX, minY, maxX, maxY] = v.bbox
             const fit = Math.min(120 / Math.max(maxX - minX, 1), 90 / Math.max(maxY - minY, 1), 2)
+            const r = await apiQuiet.drawingSetViewScale(v.id, fit).catch(() => null)
+            return r ? { ...v, ...r } : v
+          })
+        )
+        if (cancelled) return
+        setPlaced(
+          views.map((v, i) => {
             const [, defX, defY] = specs[i % specs.length]
             // x/y round-trip through the sidecar now (view.X/Y - fixed
             // 2026-09-20: dragging a view visibly moved it within the
@@ -741,7 +754,7 @@ export const DrawingSheet = forwardRef<
             // the cascade default still covers that case exactly as before.
             const x = v.x ?? defX - 24 + (i * 12) % 60
             const y = v.y ?? defY - 40 + (i * 12) % 60
-            return { view: v, x, y, scale: fit }
+            return { view: v, x, y, scale: 1 }
           })
         )
         setDims(c.dimensions)
@@ -809,19 +822,33 @@ export const DrawingSheet = forwardRef<
     }
   }, [images, imageData])
 
+  // A new view's size is decided ONCE, here, and written into the file as
+  // TechDraw's real Scale - so the screen, the saved drawing and every PDF
+  // export agree. (Previously the size was a client-only multiplier,
+  // recomputed per view on every load and never saved: views of the same
+  // part came out at different scales, and the PDF looked nothing like
+  // the screen.) Same 120x90mm box the old client-side fit used, so new
+  // views come out the size they always did.
+  const fitAndPersist = useCallback(async (v: DrawingView): Promise<DrawingView> => {
+    const [minX, minY, maxX, maxY] = v.bbox
+    const fit = Math.min(120 / Math.max(maxX - minX, 1), 90 / Math.max(maxY - minY, 1), 2)
+    const r = await api.drawingSetViewScale(v.id, fit).catch(() => null)
+    return r ? { ...v, ...r } : v
+  }, [])
+
   const addView = useCallback(
     async (dir: string): Promise<void> => {
-      const v = await makeView(dir)
-      if (!v) return
+      const made = await makeView(dir)
+      if (!made) return
+      const v = await fitAndPersist(made)
       const [minX, minY, maxX, maxY] = v.bbox
-      const fit = Math.min(120 / Math.max(maxX - minX, 1), 90 / Math.max(maxY - minY, 1), 2)
-      const { x, y } = findOpenSlot(placed.map(footprint), (maxX - minX) * fit, (maxY - minY) * fit)
+      const { x, y } = findOpenSlot(placed.map(footprint), maxX - minX, maxY - minY)
       const recreate = async (): Promise<DrawingView> => {
         const v2 = await makeView(dir)
         if (!v2) throw new Error('could not recreate this view')
-        return v2
+        return fitAndPersist(v2)
       }
-      setPlaced((cur) => [...cur, { view: v, x, y, scale: fit, recreate }])
+      setPlaced((cur) => [...cur, { view: v, x, y, scale: 1, recreate }])
       void refreshSnapTargets(v.id)
       pushUndo({
         undo: async () => {
@@ -829,14 +856,15 @@ export const DrawingSheet = forwardRef<
           setPlaced((cur) => cur.filter((pl) => pl.view.id !== v.id))
         },
         redo: async () => {
-          const v2 = await makeView(dir)
-          if (!v2) return
-          setPlaced((cur) => [...cur, { view: v2, x, y, scale: fit }])
+          const made2 = await makeView(dir)
+          if (!made2) return
+          const v2 = await fitAndPersist(made2)
+          setPlaced((cur) => [...cur, { view: v2, x, y, scale: 1 }])
           void refreshSnapTargets(v2.id)
         }
       })
     },
-    [makeView, refreshSnapTargets, placed, pushUndo]
+    [makeView, fitAndPersist, refreshSnapTargets, placed, pushUndo]
   )
 
   const autoLayout = useCallback(async (): Promise<void> => {
@@ -848,14 +876,13 @@ export const DrawingSheet = forwardRef<
       ['iso', 220, 170]
     ]
     for (const [dir, x, y] of specs) {
-      const v = await makeView(dir)
-      if (!v) continue
-      const [minX, minY, maxX, maxY] = v.bbox
-      const fit = Math.min(120 / Math.max(maxX - minX, 1), 90 / Math.max(maxY - minY, 1), 2)
-      setPlaced((cur) => [...cur, { view: v, x, y, scale: fit }])
+      const made = await makeView(dir)
+      if (!made) continue
+      const v = await fitAndPersist(made)
+      setPlaced((cur) => [...cur, { view: v, x, y, scale: 1 }])
       void refreshSnapTargets(v.id)
     }
-  }, [makeView, refreshSnapTargets])
+  }, [makeView, fitAndPersist, refreshSnapTargets])
 
   const loadSheetTemplate = useCallback(async (): Promise<void> => {
     try {
@@ -884,11 +911,10 @@ export const DrawingSheet = forwardRef<
       for (let i = 0; i < tpl.views.length; i++) {
         const dir = tpl.views[i]
         const [, x, y] = specs[i % specs.length]
-        const v = await makeView(dir)
-        if (!v) continue
-        const [minX, minY, maxX, maxY] = v.bbox
-        const fit = Math.min(120 / Math.max(maxX - minX, 1), 90 / Math.max(maxY - minY, 1), 2)
-        setPlaced((cur) => [...cur, { view: v, x, y, scale: fit }])
+        const made = await makeView(dir)
+        if (!made) continue
+        const v = await fitAndPersist(made)
+        setPlaced((cur) => [...cur, { view: v, x, y, scale: 1 }])
         void refreshSnapTargets(v.id)
       }
       if (tpl.titleBlockTable) {
