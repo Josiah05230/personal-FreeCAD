@@ -739,11 +739,13 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  sidecar?.stop()
+  // before-quit stops the sidecar (and waits for it)
   if (process.platform !== 'darwin') app.quit()
+  else void sidecar?.stop()
 })
 
 let releasingLockOnQuit = false
+let sidecarStoppedForQuit = false
 app.on('before-quit', (e) => {
   // best-effort, bounded: release the standalone-open lock (if held) before
   // actually exiting, so a normal quit never leaves a lock for someone
@@ -763,6 +765,12 @@ app.on('before-quit', (e) => {
       .then(() => app.quit())
     return
   }
-  sidecar?.stop()
   void mcmaster.cleanup()
+  // hold the quit until the sidecar has really exited (at most ~2s, then
+  // it's SIGKILLed) - quitting first left it running as an orphan
+  if (sidecar && !sidecarStoppedForQuit) {
+    e.preventDefault()
+    sidecarStoppedForQuit = true
+    void sidecar.stop().finally(() => app.quit())
+  }
 })

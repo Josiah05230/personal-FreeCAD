@@ -213,7 +213,12 @@ def main():
 
     def _stop(signum, frame):
         _log("signal %d, shutting down" % signum)
-        httpd.shutdown()
+        # NOT httpd.shutdown() here: this handler runs on the main thread,
+        # which is inside serve_forever(), and shutdown() waits for that
+        # loop to finish - it waited for itself forever, so every sidecar
+        # ignored the app's stop signal and outlived it (and, with its loop
+        # frozen, Server.service_actions' orphan check never ran either)
+        threading.Thread(target=httpd.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
@@ -222,6 +227,9 @@ def main():
     finally:
         httpd.server_close()
         _log("stopped")
+        # skip interpreter/FreeCAD teardown - the engine thread may be busy
+        # and there is nothing left to flush
+        os._exit(0)
 
 
 main()

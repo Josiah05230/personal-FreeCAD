@@ -197,17 +197,25 @@ export class Sidecar {
     return body.result as T
   }
 
-  stop(): void {
+  /** Resolves once the process has actually exited. (`p.killed` only means
+   *  a signal was SENT - checking it meant the SIGKILL fallback never ran,
+   *  and the timer was unref'd so the app exited before it could anyway.) */
+  stop(): Promise<void> {
     this.stopping = true
     const p = this.proc
-    if (p && !p.killed) {
-      p.kill('SIGTERM')
-      // escalate if it does not go quietly
-      setTimeout(() => {
-        if (!p.killed) p.kill('SIGKILL')
-      }, 2000).unref()
-    }
     this.proc = null
     this.endpoint = null
+    if (!p || p.exitCode !== null || p.signalCode !== null) return Promise.resolve()
+    return new Promise<void>((res) => {
+      const done = (): void => {
+        clearTimeout(escalate)
+        res()
+      }
+      p.once('exit', done)
+      const escalate = setTimeout(() => {
+        if (p.exitCode === null && p.signalCode === null) p.kill('SIGKILL')
+      }, 2000)
+      p.kill('SIGTERM')
+    })
   }
 }
