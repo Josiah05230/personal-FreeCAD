@@ -132,3 +132,32 @@ export function inPlaceBlocker(opts: {
   if (opts.row.lifecycle !== 'in_work') return `released (${opts.row.lifecycle ?? 'no lifecycle'})`
   return null
 }
+
+// ---- ECAD ----
+//
+// KiCad files are edited in KiCad, not here, so GWT-CAD can't save KiCad's
+// unsaved editor state (KiCad has its own auto-save for that). What it can
+// do is pick up what KiCad already SAVED into an in-work F part's
+// <pn_seq>-kicad/ folder and commit + push it on the same interval. Only
+// KiCad source files are taken - never KiCad's lock files (~*.lck), its
+// _autosave-* files or its -backups/ zips.
+
+const KICAD_SOURCE =
+  /\.(kicad_pcb|kicad_sch|kicad_pro|kicad_sym|kicad_mod|kicad_dru|kicad_wks)$|(^|\/)(fp|sym)-lib-table$/
+
+/** Repo-root-relative paths (from `git status --porcelain`) of the KiCad
+ *  source files changed under `kicadDirRel` (also repo-root-relative). */
+export function kicadSourceChanges(changed: Array<{ path: string }>, kicadDirRel: string): string[] {
+  const dir = kicadDirRel.replace(/\/+$/, '')
+  if (!dir) return []
+  return changed
+    .map((c) => c.path)
+    .filter((p) => {
+      if (p.includes(' -> ')) return false // a rename - left to a real Save / the Git panel
+      if (!p.startsWith(dir + '/')) return false
+      if (p.includes('-backups/')) return false
+      const name = p.slice(p.lastIndexOf('/') + 1)
+      if (name.startsWith('_autosave-') || name.startsWith('~')) return false
+      return KICAD_SOURCE.test(p)
+    })
+}

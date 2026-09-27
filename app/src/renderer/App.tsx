@@ -41,6 +41,7 @@ import { PromptHost, promptText, promptForm, queueE2EPromptAnswer, isPromptOpen 
 import {
   deferReason as autosaveDeferReason,
   inPlaceBlocker as autosaveInPlaceBlocker,
+  kicadSourceChanges as autosaveKicadChanges,
   installInputTracker,
   setAutosaveQuietMs
 } from './autosave'
@@ -4716,11 +4717,18 @@ export function App(): JSX.Element {
     enabled: null
   })
   // last outcome, for the test bridge and the trace
-  const autosaveLogRef = useRef<{ saves: number; last: string; lastSkip: string; lastDefer: string }>({
+  const autosaveLogRef = useRef<{
+    saves: number
+    last: string
+    lastSkip: string
+    lastDefer: string
+    lastKicad: string
+  }>({
     saves: 0,
     last: '',
     lastSkip: '',
-    lastDefer: ''
+    lastDefer: '',
+    lastKicad: ''
   })
 
   /** One autosave attempt. mode 'timer' waits for the user to be idle;
@@ -4812,14 +4820,70 @@ export function App(): JSX.Element {
     [attemptPush]
   )
 
+  // ECAD: commit + push what KiCad saved into an in-work F part's KiCad
+  // folder (autosave.ts kicadSourceChanges says which files). All git, in
+  // the main process - the engine is only asked for the registry row, and
+  // only when there is something to commit.
+  const kicadSyncRunningRef = useRef(false)
+  const syncKicadNow = useCallback(async (): Promise<string> => {
+    const pro = linkedKicadProject
+    const pn = currentPn
+    if (!pro || !pn) return 'no linked KiCad project'
+    if (kicadSyncRunningRef.current) return 'busy'
+    kicadSyncRunningRef.current = true
+    try {
+      const st = await window.cad.gitStatus(pro).catch(() => ({ isRepo: false }) as GitStatus)
+      if (!st.isRepo || !st.dirty || !st.root) return 'nothing changed'
+      const dir = (await window.cad.realpath(dirname(pro)).catch(() => null)) ?? dirname(pro)
+      const root = (await window.cad.realpath(st.root).catch(() => null)) ?? st.root
+      if (!dir.startsWith(root + '/')) return 'KiCad folder outside its repo'
+      const files = autosaveKicadChanges(await window.cad.gitChangedFiles(pro), dir.slice(root.length + 1))
+      if (files.length === 0) return 'nothing changed'
+      const row = await apiQuiet.pnCurrentRow(pn).then((r) => r.row, () => undefined)
+      const blocked = autosaveInPlaceBlocker({
+        pn,
+        row,
+        lockedByOther: !!docPath && lockedByOtherRef.current.has(docPath)
+      })
+      if (blocked) return blocked
+      await window.cad.gitAdd(
+        pro,
+        files.map((f) => `:(top)${f}`)
+      )
+      await window.cad.gitCommit(pro, `${pn}: KiCad changes (autosaved via GWT-CAD)`)
+      if (st.hasUpstream) {
+        const reachable = await window.cad.gitIsReachable(pro).catch(() => false)
+        const pushed = reachable && (await window.cad.gitPush(pro).then(() => true, () => false))
+        if (!reachable) setGitOffline(true)
+        // the 60s retry loop pushes it later
+        if (!pushed) setUnpushedCount((n) => n + 1)
+      }
+      return `committed ${files.length}`
+    } catch (e) {
+      return `failed: ${(e as Error).message}`
+    } finally {
+      kicadSyncRunningRef.current = false
+    }
+  }, [linkedKicadProject, currentPn, docPath])
+  const syncKicadRef = useRef(syncKicadNow)
+  syncKicadRef.current = syncKicadNow
+  const kicadNextCheckRef = useRef(0)
+
   useEffect(() => {
     const AUTOSAVE_TICK_MS = 1000
     const id = window.setInterval(() => {
       const test = autosaveTestRef.current
       const prefs = loadAutosavePrefs()
       const enabled = test.enabled ?? (window.cad.isE2E ? false : prefs.enabled)
-      if (!enabled || dirtySinceRef.current === null) return
+      if (!enabled) return
       const interval = test.intervalMs ?? prefs.intervalMin * 60000
+      if (Date.now() >= kicadNextCheckRef.current) {
+        kicadNextCheckRef.current = Date.now() + interval
+        void syncKicadRef.current().then((r) => {
+          autosaveLogRef.current.lastKicad = r
+        })
+      }
+      if (dirtySinceRef.current === null) return
       if (Date.now() - dirtySinceRef.current < interval) return
       void runAutosave('timer').then((r) => {
         // can't be written in place (released, locked, ...): look again a
@@ -5036,6 +5100,8 @@ export function App(): JSX.Element {
         if (cfg.quietMs !== undefined) setAutosaveQuietMs(cfg.quietMs)
       },
       autosaveNow: (mode: 'timer' | 'switch' = 'timer') => runAutosave(mode),
+      autosaveKicadNow: () => syncKicadRef.current(),
+      setLinkedKicadProject: (p: string | null) => setLinkedKicadProject(p),
       autosaveState: () => ({
         ...autosaveLogRef.current,
         dirtySince: dirtySinceRef.current,

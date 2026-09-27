@@ -57,7 +57,9 @@ const commitAll = async () => {
   await window.cad.gitAdd(CAD + '/x');
   await window.cad.gitCommit(CAD + '/x', 'baseline', 'Test', 'test@example.com').catch(() => undefined);
 };
-const repoDirty = async () => !!(await window.cad.gitStatus(CAD + '/x')).dirty;
+// has the part file itself changed since the last commit
+const repoDirty = async () =>
+  (await window.cad.gitChangedFiles(CAD + '/x')).some((c) => /CMC0010\.FCStd$/.test(c.path));
 
 note('--- an in-work company part, saved and committed ---');
 await rpc('session.reset');
@@ -186,8 +188,36 @@ assertEq(await G.autosaveNow(), 'saved', 'the same attempt saves once the operat
 RELEASE();
 await commitAll();
 
+note('--- ECAD: what KiCad saved is committed, KiCad junk is not ---');
+// hold the timer so only the explicit attempts below run (let one already
+// scheduled check go by first)
+HOLD();
+await sleep(INTERVAL + 300);
+const KDIR = CAD + '/CM/C/CMC001-kicad';
+await window.cad.mkdir(KDIR);
+await window.cad.writeText('(kicad_pcb (version 1))\n', KDIR + '/board.kicad_pcb');
+await window.cad.writeText('{}\n', KDIR + '/board.kicad_pro');
+await commitAll();
+G.setLinkedKicadProject(KDIR + '/board.kicad_pro');
+await sleep(100);
+assertEq(await G.autosaveKicadNow(), 'nothing changed', 'no KiCad changes, nothing to commit');
+await window.cad.writeText('(kicad_pcb (version 2))\n', KDIR + '/board.kicad_pcb');
+await window.cad.writeText('lock\n', KDIR + '/~board.kicad_pcb.lck');
+await window.cad.writeText('(kicad_sch)\n', KDIR + '/_autosave-board.kicad_sch');
+await window.cad.mkdir(KDIR + '/board-backups');
+await window.cad.writeText('zip\n', KDIR + '/board-backups/board-2026.zip');
+assertEq(await G.autosaveKicadNow(), 'committed 1', 'the board KiCad saved was committed');
+const klog = await window.cad.gitLog(KDIR + '/board.kicad_pcb', 1);
+assert(/KiCad changes/.test(klog[0]?.subject || ''), `as a KiCad autosave commit ("${klog[0]?.subject}")`);
+const left = (await window.cad.gitChangedFiles(KDIR + '/board.kicad_pro')).map((c) => c.path).sort();
+assert(
+  left.length > 0 && left.every((p) => /~board|_autosave-|-backups/.test(p)),
+  `lock / autosave / backup files were left alone (${JSON.stringify(left)})`
+);
+
 note('--- released part: never written in place ---');
 await rpc('pn.setLifecycle', { pnSeq: 'CMC001', lifecycle: 'active' });
+RELEASE();
 await extrude(await sketchRect(5, 5), 27);
 const saves3 = state().saves;
 await sleep(INTERVAL + 2000);
@@ -198,6 +228,9 @@ assert(!(await repoDirty()), 'the released file on disk is untouched');
 const rec = await G.triggerAutosave();
 assert(rec && rec.saved === true, 'the crash-recovery copy still works for it');
 assertEq((await rpc('pn.history', { pnSeq: 'CMC001' })).revisions.length, 1, 'no revision was made');
+await window.cad.writeText('(kicad_pcb (version 3))\n', KDIR + '/board.kicad_pcb');
+assertEq(await G.autosaveKicadNow(), 'released (active)', 'a released part\'s KiCad changes are not committed');
+G.setLinkedKicadProject(null);
 
 note('--- a file outside the company repos is autosaved in place ---');
 HOLD();
