@@ -35,6 +35,14 @@ const _e2e = (): boolean =>
   typeof window !== 'undefined' &&
   !!(window as unknown as { __E2E_ENV?: unknown }).__E2E_ENV
 
+/** E2E: answers a scenario queued (window.__gwtcad.answerNextPrompt), used
+ *  in order by the next prompts instead of auto-cancelling them. */
+const _e2eAnswers: Array<Record<string, string> | null> = []
+export function queueE2EPromptAnswer(values: Record<string, string> | null): void {
+  _e2eAnswers.push(values)
+}
+const _e2eAnswer = (): Record<string, string> | null => (_e2eAnswers.length ? _e2eAnswers.shift()! : null)
+
 /** Single-field convenience. Resolves to the string, or null if cancelled. */
 export function promptText(
   title: string,
@@ -42,7 +50,8 @@ export function promptText(
   placeholder = ''
 ): Promise<string | null> {
   return new Promise((resolve) => {
-    if (!_open || _e2e()) return resolve(null)
+    if (_e2e()) return resolve(_e2eAnswer()?.v ?? null)
+    if (!_open) return resolve(null)
     _open({
       title,
       fields: [{ key: 'v', label: title, value, placeholder }],
@@ -76,7 +85,8 @@ export function promptForm(
   okLabel = 'OK'
 ): Promise<Record<string, string> | null> {
   return new Promise((resolve) => {
-    if (!_open || _e2e()) return resolve(null)
+    if (_e2e()) return resolve(_e2eAnswer())
+    if (!_open) return resolve(null)
     _open({ title, fields, okLabel, resolve })
   })
 }

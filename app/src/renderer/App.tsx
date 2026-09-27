@@ -35,7 +35,7 @@ import { OperationDialog, type OpKind, type OpValues } from './ui/OperationDialo
 import { DrawingSheet, type DrawingSheetApi, type DrawingTool } from './ui/DrawingSheet'
 import { SketchRibbon } from './ui/SketchRibbon'
 import { MeasurePanel, SectionPanel, MassPropsPanel, type SectionState } from './ui/InspectPanels'
-import { PromptHost, promptText, promptForm } from './ui/PromptDialog'
+import { PromptHost, promptText, promptForm, queueE2EPromptAnswer } from './ui/PromptDialog'
 import { DimensionEditor, type DimensionEditorRequest } from './ui/DimensionEditor'
 import { ParametersPanel } from './ui/ParametersPanel'
 import { SettingsPanel } from './ui/SettingsPanel'
@@ -279,6 +279,10 @@ export function App(): JSX.Element {
   const [pnBrowserOpen, setPnBrowserOpen] = useState(false)
   const [companySettingsOpen, setCompanySettingsOpen] = useState(false)
   const [currentPn, setCurrentPn] = useState<string | null>(null)
+  // for callbacks that shadow currentPn with an explicit part (setLifecycle)
+  const currentPnState = currentPn
+  // save() is declared before the revision helpers it hands off to
+  const saveAsNextRevisionRef = useRef<() => Promise<void>>(async () => undefined)
   const [currentLifecycle, setCurrentLifecycle] = useState<string | null>(null)
   // Set only when the currently open document is an F (PCB Assembly) part
   // that has a real KiCad project sitting alongside its FCStd - powers the
@@ -3247,6 +3251,27 @@ export function App(): JSX.Element {
       return
     }
     if (!docPath) return saveAs()
+    // A released revision (active or discontinued) is never changed in
+    // place: saving edits to it makes the next revision instead. Checked
+    // against the registry at save time, not the lifecycle cached at open.
+    if (currentPn) {
+      const pnSeq = currentPn.slice(0, -1)
+      const row = await api
+        .pnResolve(pnSeq)
+        .then((r) => r.row)
+        .catch(() => null)
+      if (row && row.pn !== currentPn) {
+        window.alert(
+          `${currentPn} has been superseded by ${row.pn}. Open ${row.pn} to make changes - ` +
+            `a released revision is never edited in place.`
+        )
+        return
+      }
+      if (row && (row.lifecycle === 'active' || row.lifecycle === 'discontinued')) {
+        await saveAsNextRevisionRef.current()
+        return
+      }
+    }
     await api.save()
     markDirty(false)
     void window.cad.captureThumb(docPath).catch(() => undefined)
@@ -3259,7 +3284,7 @@ export function App(): JSX.Element {
     } else {
       setUnpushedCount((n) => n + 1)
     }
-  }, [docPath, saveAs, markDirty, attemptPush])
+  }, [docPath, saveAs, markDirty, attemptPush, currentPn])
 
   // background retry: while this doc has unpushed local commits, keep
   // trying every 60s (pulling first, so a transient rejection - someone
@@ -3760,25 +3785,37 @@ export function App(): JSX.Element {
     setNewPartOpen(true)
   }, [])
 
-  const newRevision = useCallback(async () => {
-    if (!currentPn || !docPath) return
-    const reason = await promptText('Reason for this revision (required)')
-    if (!reason || !reason.trim()) return
+  /** Make the next revision from the open document (its unsaved edits
+   *  included) and switch to it. Resolves to the new PN, or null when
+   *  cancelled or refused. `givenReason` skips the prompt (Save on a
+   *  released revision asks for it up front). */
+  const newRevision = useCallback(async (givenReason?: unknown): Promise<string | null> => {
+    if (!currentPn || !docPath) return null
+    const reason =
+      typeof givenReason === 'string' ? givenReason : await promptText('Reason for this revision (required)')
+    if (!reason || !reason.trim()) return null
     const pnSeq = currentPn.slice(0, -1)
+    const oldPath = docPath
     try {
       const res = await api.pnNewRevision(pnSeq, reason.trim())
+      const newPath = res.path ?? docPath
       await api.pnTagDocument(res.pn, res.name, res.description)
-      await api.saveAs(res.path ?? docPath)
+      await api.saveAs(newPath)
+      markDirty(false)
       setTabs((t) =>
         t.map((x) =>
-          x.id === activeTab
-            ? { ...x, name: basename(res.path ?? docPath), dirty: false, path: res.path ?? docPath }
-            : x
+          x.id === activeTab ? { ...x, name: basename(newPath), dirty: false, path: newPath } : x
         )
       )
-      setDocPath(res.path ?? docPath)
+      setDocPath(newPath)
       setCurrentPn(res.pn)
       setCurrentLifecycle('in_work') // pn.newRevision always resets to in_work
+      // the old revision is closed now; this tab holds the new one
+      if (newPath !== oldPath) {
+        void releaseStandaloneLock(oldPath)
+        await acquireStandaloneLock(newPath).catch(() => true)
+      }
+      void window.cad.captureThumb(newPath).catch(() => undefined)
       // Re-derive the kit BOM from the assembly at its new revision and
       // persist it - keeps bom.csv from ever drifting behind what's
       // actually in the CAD document. A part with no App::Link children
@@ -3789,17 +3826,24 @@ export function App(): JSX.Element {
       } catch (bomErr) {
         console.error('Failed to save BOM for new revision:', bomErr)
       }
+      const pushed = await attemptPush(newPath).catch(() => false)
+      setUnpushedCount(pushed ? 0 : 1)
+      return res.pn
     } catch (e) {
       window.alert((e as Error).message)
+      return null
     }
-  }, [currentPn, docPath, activeTab])
+  }, [currentPn, docPath, activeTab, markDirty, releaseStandaloneLock, acquireStandaloneLock, attemptPush])
 
   // Lifecycle can only be changed on the currently open document (see
   // pn.setLifecycle) - this guarantees the BOM re-capture below always
   // reflects the actual live assembly, with no separate "open this other
   // file in the background" resolution needed.
   const setLifecycle = useCallback(
-    async (lifecycle: 'in_work' | 'active' | 'discontinued') => {
+    // `forPn` names the part explicitly when it was just made in the same
+    // step (a revision saved as active) - currentPn state hasn't caught up
+    async (lifecycle: 'in_work' | 'active' | 'discontinued', forPn?: string) => {
+      const currentPn = forPn ?? currentPnState
       if (!currentPn) return
       const pnSeq = currentPn.slice(0, -1)
       try {
@@ -3810,6 +3854,22 @@ export function App(): JSX.Element {
         // see pnEnsureDrawingOrBlock's own docs for why the check lives at
         // this layer instead).
         if (lifecycle === 'active') {
+          // bring the drawing up to this revision first: a generated drawing
+          // nobody touched is rebuilt from the current geometry, an edited
+          // one is kept with its title block moved to this PN - then saved,
+          // so the gate below and the PDF export both see it
+          try {
+            const refreshed = await api.drawingRefreshForRevision()
+            if (refreshed.pages.length > 0) {
+              await api.save()
+              markDirty(false)
+              const rebuilt = refreshed.pages.filter((p) => p.action === 'regenerated').length
+              if (rebuilt > 0) flashSketchNotice(`${currentPn}: regenerated its drawing from the current model.`)
+              await refreshScene()
+            }
+          } catch (drawErr) {
+            console.error('drawing.refreshForRevision:', drawErr)
+          }
           const gate = await api.pnEnsureDrawingOrBlock(currentPn)
           if (!gate.ok) {
             window.alert(`Can't promote ${currentPn} to active: ${gate.reason}`)
@@ -3908,8 +3968,31 @@ export function App(): JSX.Element {
         window.alert((e as Error).message)
       }
     },
-    [currentPn, flashSketchNotice]
+    [currentPnState, flashSketchNotice, markDirty, refreshScene]
   )
+
+  // Save on a released revision: the edits become the next revision, in
+  // work unless the user makes it active right away.
+  const saveAsNextRevision = useCallback(async () => {
+    if (!currentPnState) return
+    const next = currentPnState.slice(0, -1) + String(Number(currentPnState.slice(-1)) + 1)
+    const form = await promptForm(
+      `${currentPnState} is released, so saving creates revision ${next}`,
+      [
+        { key: 'reason', label: 'What changed (required)', placeholder: 'e.g. fixed body placement' },
+        { key: 'status', label: `${next} status`, options: ['In work (draft)', 'Active'] }
+      ],
+      `Save as ${next}`
+    )
+    if (!form) return
+    if (!form.reason.trim()) {
+      window.alert('A revision needs a reason - nothing was saved.')
+      return
+    }
+    const made = await newRevision(form.reason.trim())
+    if (made && form.status === 'Active') await setLifecycle('active', made)
+  }, [currentPnState, newRevision, setLifecycle])
+  saveAsNextRevisionRef.current = saveAsNextRevision
 
   const openPnFile = useCallback(
     async (path: string, type: string, pn: string) => {
@@ -4588,6 +4671,9 @@ export function App(): JSX.Element {
       // same openDesign/save the File menu uses, with an explicit path) ---
       openDesignPath: (path: string) => openDesign(path),
       saveDoc: () => save(),
+      // the next prompt/promptForm resolves to these values instead of
+      // auto-cancelling (null = cancel)
+      answerNextPrompt: (values: Record<string, string> | null) => queueE2EPromptAnswer(values),
       gitSyncDebug: () => ({ offline: gitOffline, unpushedCount, docPath }),
       // crash-recovery (test hook - the real timer waits 2 minutes; a test
       // needs to trigger the exact same autosave on demand)
@@ -4744,6 +4830,8 @@ export function App(): JSX.Element {
         busy,
         notice: sketchNotice,
         docPath,
+        currentPn,
+        currentLifecycle,
         op,
         opReady: opReadyRef.current,
         sketchMode: !!sketchSession,
@@ -4810,7 +4898,9 @@ export function App(): JSX.Element {
     openDesign,
     save,
     gitOffline,
-    unpushedCount
+    unpushedCount,
+    currentPn,
+    currentLifecycle
   ])
 
   // ---- boot ----
