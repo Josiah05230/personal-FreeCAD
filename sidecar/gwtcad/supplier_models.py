@@ -718,7 +718,7 @@ def _generate_supplier_drawing(pn):
             _apply_grainwave_template(doc, page_id, part_obj, pn, title_name, title_description, notes=notes)
             _coarsen_views(doc)  # catches the iso view too
             doc.recompute()
-            _stamp_auto_drawing(doc, doc.getObject(page_id), title_name, title_description, notes)
+            _stamp_auto_drawing(doc, doc.getObject(page_id), pn, title_name, title_description, notes)
 
             # persist the PN into the file itself (plain doc.saveAs skips the
             # document.save RPC that normally does this) - otherwise every
@@ -836,12 +836,13 @@ def page_signature(page):
     return hashlib.sha1(json.dumps(_page_sig_items(page), sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def _stamp_auto_drawing(doc, page, title_name, title_description, notes):
-    """Mark a page as generated, with the fingerprint it had when it was.
-    A later fingerprint that still matches means nobody has edited it."""
+def _stamp_auto_drawing(doc, page, pn, title_name, title_description, notes):
+    """Mark a page as generated for `pn`, with the fingerprint it had when
+    it was. A later fingerprint that still matches means nobody has edited
+    it."""
     doc.recompute()
     _drawing._tag(page, "_gwt_autogen", json.dumps({
-        "kind": "supplier", "sig": page_signature(page),
+        "kind": "supplier", "pn": pn, "sig": page_signature(page),
         "titleName": title_name, "titleDescription": title_description, "notes": notes or [],
     }))
 
@@ -872,8 +873,9 @@ def _drawing_sources(doc, page):
 def refresh_drawing_for_revision():
     """Bring the open part's drawings up to date for its current revision
     (called when a revision is promoted to active). Per page:
-      - generated and untouched since (fingerprint matches): rebuilt from
-        the current geometry - same template, notes and title text;
+      - generated for an earlier revision and untouched since
+        (fingerprint matches): rebuilt from the current geometry - same
+        template, notes and title text;
       - edited by a person, or not generated here: kept as is - its views
         already follow the model - with table cells (the title block's
         =PN/=NAME/=DESCRIPTION) re-resolved so the sheet and its PDF show
@@ -888,7 +890,8 @@ def refresh_drawing_for_revision():
         _drawing._ensure_page_live(doc, page)
         info = _auto_drawing_info(page)
         label = page.Label
-        if pn and info and info.get("sig") == page_signature(page):
+        # drawn for an earlier revision and untouched since: rebuild it
+        if pn and info and info.get("pn") != pn and info.get("sig") == page_signature(page):
             sources = _drawing_sources(doc, page)
             if sources:
                 # the equivalence note names the PN - carry it to this rev
@@ -901,7 +904,7 @@ def refresh_drawing_for_revision():
                 _coarsen_views(doc)
                 doc.recompute()
                 page = doc.getObject(new_page["id"])
-                _stamp_auto_drawing(doc, page, name, description, notes)
+                _stamp_auto_drawing(doc, page, pn, name, description, notes)
                 out.append({"id": page.Name, "label": page.Label, "action": "regenerated"})
                 continue
         _tables.refresh_live_cells(doc, page)

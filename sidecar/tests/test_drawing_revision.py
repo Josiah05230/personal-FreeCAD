@@ -116,3 +116,12 @@ def test_promotion_gate_leaves_the_open_part_open(rev1):
     assert r["ok"] and r["hadDrawing"]
     assert session.doc(create=False) is not None
     assert session.doc(create=False).FileName == rev1["path"]
+
+
+def test_a_drawing_already_made_for_this_revision_is_not_rebuilt(rev1):
+    sm.refresh_drawing_for_revision()
+    d = session.doc(create=False)
+    before = sorted(o.Name for o in d.Objects)
+    out = sm.refresh_drawing_for_revision()
+    assert [p["action"] for p in out["pages"]] == ["kept"]
+    assert sorted(o.Name for o in d.Objects) == before
