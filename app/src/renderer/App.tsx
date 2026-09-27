@@ -3,6 +3,8 @@ import {
   api,
   apiQuiet,
   onBusyChange,
+  onDocMutated,
+  rpcInFlight,
   type BodyTree,
   type ImportedNode,
   type RenderMesh,
@@ -35,7 +37,15 @@ import { OperationDialog, type OpKind, type OpValues } from './ui/OperationDialo
 import { DrawingSheet, type DrawingSheetApi, type DrawingTool } from './ui/DrawingSheet'
 import { SketchRibbon } from './ui/SketchRibbon'
 import { MeasurePanel, SectionPanel, MassPropsPanel, type SectionState } from './ui/InspectPanels'
-import { PromptHost, promptText, promptForm, queueE2EPromptAnswer } from './ui/PromptDialog'
+import { PromptHost, promptText, promptForm, queueE2EPromptAnswer, isPromptOpen } from './ui/PromptDialog'
+import {
+  deferReason as autosaveDeferReason,
+  inPlaceBlocker as autosaveInPlaceBlocker,
+  kicadSourceChanges as autosaveKicadChanges,
+  installInputTracker,
+  setAutosaveQuietMs
+} from './autosave'
+import { loadAutosavePrefs } from './autosavePrefs'
 import { DimensionEditor, type DimensionEditorRequest } from './ui/DimensionEditor'
 import { ParametersPanel } from './ui/ParametersPanel'
 import { SettingsPanel } from './ui/SettingsPanel'
@@ -330,6 +340,9 @@ export function App(): JSX.Element {
   // every file this session holds a standalone lock on - one per open tab,
   // released when its tab closes (or all at once on quit, in main)
   const heldLocksRef = useRef<Set<string>>(new Set())
+  // files opened past someone else's lock ("open it anyway") - autosave
+  // never writes these
+  const lockedByOtherRef = useRef<Set<string>>(new Set())
   // openDesign calls run one at a time (fast tab clicking used to overlap
   // pulls/lock commits in the same repo); only the newest queued one runs
   const openChainRef = useRef<Promise<void>>(Promise.resolve())
@@ -553,8 +566,14 @@ export function App(): JSX.Element {
   const drawApi = useRef<DrawingSheetApi | null>(null)
   const bodyId = bodies[0]?.id ?? null
 
+  // bumped on every edit, so a background autosave can tell whether the
+  // user changed something while it was saving (then the tab stays dirty)
+  const dirtyGenRef = useRef(0)
   const markDirty = useCallback(
-    (d = true) => setTabs((t) => t.map((x) => (x.id === activeTab ? { ...x, dirty: d } : x))),
+    (d = true) => {
+      if (d) dirtyGenRef.current++
+      setTabs((t) => t.map((x) => (x.id === activeTab ? { ...x, dirty: d } : x)))
+    },
     [activeTab]
   )
 
@@ -3174,10 +3193,12 @@ export function App(): JSX.Element {
     const result = await window.cad.lockAcquire(p).catch(() => ({ status: 'unreachable' as const }))
     if (result.status === 'acquired') {
       heldLocksRef.current.add(p)
+      lockedByOtherRef.current.delete(p)
       return true
     }
     if (result.status === 'reclaimed') {
       heldLocksRef.current.add(p)
+      lockedByOtherRef.current.delete(p)
       const ago = new Date(result.previousOpenedAt).toLocaleString()
       flashSketchNotice(
         `Reclaimed an abandoned lock on ${basename(p)} from ${result.previousHolder} (opened ${ago})`
@@ -3192,11 +3213,13 @@ export function App(): JSX.Element {
     }
     // held by someone else, and not stale
     const opened = new Date(result.lock.openedAt).toLocaleString()
-    return window.confirm(
+    const openAnyway = window.confirm(
       `${result.lock.holder} has ${basename(p)} open (opened ${opened}, on ${result.lock.machine}).\n\n` +
         `Click OK to open it anyway (your changes won't auto-push while someone else has it - ` +
         `use the Git panel to push manually once they're done), or Cancel to leave it alone.`
     )
+    if (openAnyway) lockedByOtherRef.current.add(p)
+    return openAnyway
   }, [flashSketchNotice])
 
   // the lock push runs after the file is already open; hear about it only
@@ -3206,6 +3229,7 @@ export function App(): JSX.Element {
       window.cad.onLockPublishProblem((p, r) => {
         if (r.status === 'held') {
           heldLocksRef.current.delete(p)
+          lockedByOtherRef.current.add(p)
           window.alert(
             `${r.lock.holder} opened ${basename(p)} (on ${r.lock.machine}) at the same moment you did, ` +
               `and their lock landed first. Your changes won't auto-push while they have it - ` +
@@ -4633,15 +4657,245 @@ export function App(): JSX.Element {
   // while there's an actual unsaved change to protect, and skips entirely
   // during a review "peek" (reviewingRef) since that document was never
   // meant to be saved at all.
+  // (reads autosaveCtx below, so an edit - a new `tabs` array - doesn't
+  // restart the 2 minute interval; it used to, and steady editing never
+  // let it fire)
   useEffect(() => {
     const id = window.setInterval(() => {
       if (reviewingRef.current) return
-      const dirty = tabs.find((t) => t.id === activeTab)?.dirty ?? false
-      if (!dirty || !docPath) return
+      const { tabs: ts, activeTab: at, docPath: dp } = autosaveCtx.current
+      const dirty = ts.find((t) => t.id === at)?.dirty ?? false
+      if (!dirty || !dp) return
       void api.autosave().catch(() => undefined)
     }, 120000)
     return () => window.clearInterval(id)
-  }, [tabs, activeTab, docPath])
+  }, [])
+
+  // ---- background autosave to the real file (autosave.ts has the rules) ----
+  //
+  // Every AUTOSAVE_TICK_MS: if the active document has had an unsaved
+  // change for the configured interval (Settings, default 5 min), and it
+  // may be written in place (in-work company part or non-company file, not
+  // locked by someone else), save it - but only once the engine and the
+  // user are both idle; otherwise try again next tick. Never a dialog,
+  // never focus; the push afterwards is the usual best-effort attemptPush.
+  const autosaveCtx = useRef({
+    tabs,
+    activeTab,
+    docPath,
+    currentPn,
+    op,
+    sketching: !!sketchSession,
+    modalOpen: false,
+    engineReady: false
+  })
+  autosaveCtx.current = {
+    tabs,
+    activeTab,
+    docPath,
+    currentPn,
+    op,
+    sketching: !!sketchSession,
+    modalOpen: !!dimEditor || planePickMode || !!calibrateId || !!moveHold,
+    engineReady: status.phase === 'ready'
+  }
+  // when the active document first became dirty (null = clean)
+  const dirtySinceRef = useRef<number | null>(null)
+  const activeDirtyNow = tabs.find((t) => t.id === activeTab)?.dirty ?? false
+  useEffect(() => {
+    if (!activeDirtyNow) dirtySinceRef.current = null
+    else if (dirtySinceRef.current === null) dirtySinceRef.current = Date.now()
+  }, [activeDirtyNow, activeTab])
+  // panels that edit the document without telling App (drawing sheet,
+  // parameters, materials) still make it dirty
+  useEffect(() => onDocMutated(() => markDirty()), [markDirty])
+  useEffect(() => installInputTracker(), [])
+
+  const [lastAutosave, setLastAutosave] = useState<{ at: number; path: string } | null>(null)
+  const autosaveRunningRef = useRef(false)
+  // E2E: interval override (ms) + enable switch; null = use Settings.
+  // E2E runs default to OFF so a long scenario never autosaves by surprise.
+  const autosaveTestRef = useRef<{ intervalMs: number | null; enabled: boolean | null }>({
+    intervalMs: null,
+    enabled: null
+  })
+  // last outcome, for the test bridge and the trace
+  const autosaveLogRef = useRef<{
+    saves: number
+    last: string
+    lastSkip: string
+    lastDefer: string
+    lastKicad: string
+  }>({
+    saves: 0,
+    last: '',
+    lastSkip: '',
+    lastDefer: '',
+    lastKicad: ''
+  })
+
+  /** One autosave attempt. mode 'timer' waits for the user to be idle;
+   *  'switch' (leaving a tab) runs right away if the engine is idle. */
+  const runAutosave = useCallback(
+    async (mode: 'timer' | 'switch'): Promise<'saved' | 'deferred' | 'skipped'> => {
+      const log = autosaveLogRef.current
+      if (autosaveRunningRef.current) return 'deferred'
+      const ctx = autosaveCtx.current
+      const tab = ctx.tabs.find((t) => t.id === ctx.activeTab)
+      const path = ctx.docPath
+      if (!tab?.dirty) return 'skipped'
+      if (!path || tab.path !== path) {
+        log.lastSkip = 'never saved'
+        return 'skipped'
+      }
+      const idle = (): string | null => {
+        const c = autosaveCtx.current
+        const why = autosaveDeferReason({
+          engineReady: c.engineReady,
+          queueBusy: cmdRef.current.busy,
+          rpcInFlight: rpcInFlight(),
+          opOpen: c.op !== null,
+          sketching: c.sketching,
+          previewing: !!livePreviewRef.current.featureId,
+          promptOpen: isPromptOpen(),
+          modalOpen: c.modalOpen,
+          reviewing: reviewingRef.current
+        })
+        // leaving a tab is itself user input - only the engine has to be idle
+        if (mode === 'switch' && (why === 'user active' || why === 'mouse button held')) return null
+        return why
+      }
+      const why = idle()
+      if (why) {
+        log.lastDefer = why
+        return 'deferred'
+      }
+      autosaveRunningRef.current = true
+      try {
+        const pn = ctx.currentPn
+        const row = pn ? await apiQuiet.pnCurrentRow(pn).then((r) => r.row, () => undefined) : null
+        const blocked = autosaveInPlaceBlocker({
+          pn,
+          row,
+          lockedByOther: lockedByOtherRef.current.has(path)
+        })
+        if (blocked) {
+          log.lastSkip = blocked
+          return 'skipped'
+        }
+        // the registry read took a moment - re-check nothing started meanwhile
+        const why2 = idle()
+        const c2 = autosaveCtx.current
+        if (why2 || c2.docPath !== path || c2.activeTab !== tab.id) {
+          log.lastDefer = why2 ?? 'document changed'
+          return 'deferred'
+        }
+        const gen = dirtyGenRef.current
+        const t0 = Date.now()
+        await apiQuiet.save()
+        const ms = Date.now() - t0
+        // an edit that landed while saving keeps the tab dirty
+        if (dirtyGenRef.current === gen) {
+          setTabs((t) => t.map((x) => (x.id === tab.id && x.path === path ? { ...x, dirty: false } : x)))
+        }
+        log.saves++
+        log.last = `${basename(path)} ${ms}ms`
+        setLastAutosave({ at: Date.now(), path })
+        // commit + push in the background (main-process git, never the engine)
+        void attemptPush(path)
+          .catch(() => false)
+          .then((pushed) => {
+            if (pushed) {
+              pushRetryFailuresRef.current = 0
+              setUnpushedCount(0)
+            } else {
+              setUnpushedCount((n) => n + 1)
+            }
+          })
+        return 'saved'
+      } catch (e) {
+        log.lastSkip = `save failed: ${(e as Error).message}`
+        return 'skipped'
+      } finally {
+        autosaveRunningRef.current = false
+      }
+    },
+    [attemptPush]
+  )
+
+  // ECAD: commit + push what KiCad saved into an in-work F part's KiCad
+  // folder (autosave.ts kicadSourceChanges says which files). All git, in
+  // the main process - the engine is only asked for the registry row, and
+  // only when there is something to commit.
+  const kicadSyncRunningRef = useRef(false)
+  const syncKicadNow = useCallback(async (): Promise<string> => {
+    const pro = linkedKicadProject
+    const pn = currentPn
+    if (!pro || !pn) return 'no linked KiCad project'
+    if (kicadSyncRunningRef.current) return 'busy'
+    kicadSyncRunningRef.current = true
+    try {
+      const st = await window.cad.gitStatus(pro).catch(() => ({ isRepo: false }) as GitStatus)
+      if (!st.isRepo || !st.dirty || !st.root) return 'nothing changed'
+      const dir = (await window.cad.realpath(dirname(pro)).catch(() => null)) ?? dirname(pro)
+      const root = (await window.cad.realpath(st.root).catch(() => null)) ?? st.root
+      if (!dir.startsWith(root + '/')) return 'KiCad folder outside its repo'
+      const files = autosaveKicadChanges(await window.cad.gitChangedFiles(pro), dir.slice(root.length + 1))
+      if (files.length === 0) return 'nothing changed'
+      const row = await apiQuiet.pnCurrentRow(pn).then((r) => r.row, () => undefined)
+      const blocked = autosaveInPlaceBlocker({
+        pn,
+        row,
+        lockedByOther: !!docPath && lockedByOtherRef.current.has(docPath)
+      })
+      if (blocked) return blocked
+      await window.cad.gitAdd(
+        pro,
+        files.map((f) => `:(top)${f}`)
+      )
+      await window.cad.gitCommit(pro, `${pn}: KiCad changes (autosaved via GWT-CAD)`)
+      if (st.hasUpstream) {
+        const reachable = await window.cad.gitIsReachable(pro).catch(() => false)
+        const pushed = reachable && (await window.cad.gitPush(pro).then(() => true, () => false))
+        if (!reachable) setGitOffline(true)
+        // the 60s retry loop pushes it later
+        if (!pushed) setUnpushedCount((n) => n + 1)
+      }
+      return `committed ${files.length}`
+    } catch (e) {
+      return `failed: ${(e as Error).message}`
+    } finally {
+      kicadSyncRunningRef.current = false
+    }
+  }, [linkedKicadProject, currentPn, docPath])
+  const syncKicadRef = useRef(syncKicadNow)
+  syncKicadRef.current = syncKicadNow
+  const kicadNextCheckRef = useRef(0)
+
+  useEffect(() => {
+    const AUTOSAVE_TICK_MS = 1000
+    const id = window.setInterval(() => {
+      const test = autosaveTestRef.current
+      const prefs = loadAutosavePrefs()
+      const enabled = test.enabled ?? (window.cad.isE2E ? false : prefs.enabled)
+      if (!enabled) return
+      const interval = test.intervalMs ?? prefs.intervalMin * 60000
+      if (Date.now() >= kicadNextCheckRef.current) {
+        kicadNextCheckRef.current = Date.now() + interval
+        void syncKicadRef.current().then((r) => {
+          autosaveLogRef.current.lastKicad = r
+        })
+      }
+      if (dirtySinceRef.current === null) return
+      if (Date.now() - dirtySinceRef.current < interval) return
+      void runAutosave('timer').then((r) => {
+        // can't be written in place (released, locked, ...): look again a
+        // full interval later rather than every tick
+        if (r === 'skipped' && dirtySinceRef.current !== null) dirtySinceRef.current = Date.now()
+      })
+    }, AUTOSAVE_TICK_MS)
+    return () => window.clearInterval(id)
+  }, [runAutosave])
 
   // clears the notice for now (the change was actually resolved - Sync
   // pulled it, or a force-push overwrote it) - NOT a permanent dismissal,
@@ -4841,6 +5095,22 @@ export function App(): JSX.Element {
       // crash-recovery (test hook - the real timer waits 2 minutes; a test
       // needs to trigger the exact same autosave on demand)
       triggerAutosave: () => api.autosave(),
+      // background autosave to the real file: turn it on with a short
+      // interval (ms) / input-quiet window, run one attempt now, read state
+      autosaveConfig: (cfg: { enabled?: boolean | null; intervalMs?: number | null; quietMs?: number }) => {
+        if (cfg.enabled !== undefined) autosaveTestRef.current.enabled = cfg.enabled
+        if (cfg.intervalMs !== undefined) autosaveTestRef.current.intervalMs = cfg.intervalMs
+        if (cfg.quietMs !== undefined) setAutosaveQuietMs(cfg.quietMs)
+      },
+      autosaveNow: (mode: 'timer' | 'switch' = 'timer') => runAutosave(mode),
+      autosaveKicadNow: () => syncKicadRef.current(),
+      setLinkedKicadProject: (p: string | null) => setLinkedKicadProject(p),
+      autosaveState: () => ({
+        ...autosaveLogRef.current,
+        dirtySince: dirtySinceRef.current,
+        dirty: autosaveCtx.current.tabs.find((t) => t.id === autosaveCtx.current.activeTab)?.dirty ?? false,
+        indicator: document.querySelector('.sb-autosaved')?.textContent ?? null
+      }),
       // Import from File with an explicit path (the real menu opens a native dialog)
       importFromFilePath: (path: string) => importFromFile(path),
       // copy-in gate: the gated entry points with an explicit path (the
@@ -5083,7 +5353,8 @@ export function App(): JSX.Element {
     insertCanvasPath,
     resolveDrawingImage,
     openDataPanelFile,
-    copyInReq
+    copyInReq,
+    runAutosave
   ])
 
   // ---- boot ----
@@ -5865,17 +6136,27 @@ export function App(): JSX.Element {
                 return
               }
               // reopening replaces the sidecar's one document, so unsaved
-              // edits to the tab being left would be lost
+              // edits to the tab being left would be lost - autosave them
+              // first when that's allowed (in-work / non-company), else ask
               const leaving = tabs.find((t) => t.id === activeTab)
-              if (
-                leaving?.dirty &&
-                !window.confirm(
-                  `${leaving.name} has unsaved changes that will be lost if you switch tabs.\n\n` +
-                    `Click OK to switch anyway, or Cancel to stay and save first.`
+              const targetPath = target.path
+              void (async () => {
+                const autosaveOn =
+                  autosaveTestRef.current.enabled ??
+                  (window.cad.isE2E ? false : loadAutosavePrefs().enabled)
+                const saved =
+                  !!leaving?.dirty && autosaveOn && (await runAutosave('switch')) === 'saved'
+                if (
+                  leaving?.dirty &&
+                  !saved &&
+                  !window.confirm(
+                    `${leaving.name} has unsaved changes that will be lost if you switch tabs.\n\n` +
+                      `Click OK to switch anyway, or Cancel to stay and save first.`
+                  )
                 )
-              )
-                return
-              void openDesign(target.path).catch((e) => window.alert((e as Error).message))
+                  return
+                await openDesign(targetPath)
+              })().catch((e) => window.alert((e as Error).message))
             }}
             onClose={(id) => {
               if (tabs.length <= 1) return
@@ -6435,6 +6716,15 @@ export function App(): JSX.Element {
         {!gitOffline && unpushedCount > 0 && (
           <span className="sb-unpushed" title="Saved locally but not yet pushed - retrying in the background">
             {unpushedCount} unpushed change{unpushedCount === 1 ? '' : 's'}
+          </span>
+        )}
+        {lastAutosave && lastAutosave.path === docPath && (
+          <span
+            className="sb-autosaved"
+            title={`${basename(lastAutosave.path)} was saved in the background (Settings > Autosave)`}
+          >
+            Autosaved{' '}
+            {new Date(lastAutosave.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </span>
         )}
         <span className="sb-spacer" />
