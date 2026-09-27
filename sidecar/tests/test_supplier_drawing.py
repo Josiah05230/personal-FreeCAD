@@ -53,6 +53,39 @@ def test_refuses_to_generate_without_a_real_mfg_and_mfg_pn(company_config, cad_r
     assert any("?" not in e and "mfg" in e for e in result["errors"])
 
 
+def test_long_title_block_text_is_shrunk_to_fit_its_cell(company_config, cad_repo):
+    # regression: CMB0020's registry description ran past the title block's
+    # right border in the exported PDF ("...flat head screw (92010A11")
+    if not os.path.isfile(VENDOR_STEP) or not shutil.which("rsvg-convert"):
+        pytest.skip("needs KiCad 3D models + rsvg-convert")
+    import re
+    long_desc = "Passivated 18-8 SS Phillips flat head screw (92010A114)"
+    pn.pn_reserve("CM", "B", 2, "screw", long_desc, mfg="McMaster-Carr", mfgPn="92010A114")
+    folder = os.path.join(str(cad_repo), "CM", "B")
+    os.makedirs(folder)
+    shutil.copy(VENDOR_STEP, os.path.join(folder, "CMB0020.stp"))
+    assert sm.generate_supplier_drawing("CMB0020")["ok"]
+    methods.document_open(os.path.join(folder, "CMB0020.FCStd"))  # tags the session so =PN etc. resolve
+    d = session.doc(create=False)
+    try:
+        page = next(o for o in d.Objects if o.TypeId == "TechDraw::DrawPage")
+        svg = drawing.export_page_svg(d, page.Name)
+    finally:
+        App.closeDocument(d.Name)
+
+    def size_of(text):
+        m = re.search(r'<text[^>]*font-size="([\d.]+)"[^>]*><tspan[^>]*>%s</tspan>' % re.escape(text), svg)
+        assert m, text
+        return float(m.group(1))
+
+    # a short value keeps the table's own size, the long one is shrunk to fit
+    assert size_of("CMB0020") > size_of(long_desc)
+    from gwtcad import sheet_templates
+    style = sheet_templates.load_sheet_template("GrainWave Technologies")["spec"]["titleBlockTable"]["style"]
+    value_w = style["colWidths"][-1]
+    assert drawing._measure_text(long_desc, size_of(long_desc)) <= value_w - 3 + 1e-6
+
+
 def test_generation_restores_the_users_session_part_number(generated):
     result, _ = generated
     assert result["ok"], result

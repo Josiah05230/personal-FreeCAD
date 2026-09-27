@@ -730,6 +730,16 @@ def _measure_text(s, font_size):
     return w * font_size
 
 
+def _fit_cell_font_size(value, font_size, cell_w):
+    """Port of DrawingSheet.tsx's fitCellFontSize - shrink a table cell's
+    text just enough that its widest line stays inside the cell (1.5 mm
+    padding each side), instead of running past the border ("...flat head
+    screw (92010A11" cut off at the sheet edge in a title block)."""
+    avail = cell_w - 3.0
+    widest = max([_measure_text(l, font_size) for l in value.split("\n")] or [0.0])
+    return font_size * (avail / widest) if widest > avail and avail > 0 else font_size
+
+
 def _uv_to_local(bbox, scale, uv):
     """Port of DrawingSheet.tsx's uvToLocal - a view-UV point (the same
     projected frame page_contents' views[].visible/hidden polylines and every
@@ -1183,6 +1193,8 @@ def export_page_svg(doc, page_id):
                 lines = value.split("\n")
                 n_lines = len(lines)
                 x = col_x(ci) + 1.5
+                cell_w = sum(col_w(ci + k) for k in range(m["cs"] if m else 1))
+                cell_size = _fit_cell_font_size(value, text_size, cell_w)
                 tspans = "".join(
                     '<tspan x="%s" dy="%s">%s</tspan>'
                     % (_fmt(x), ("%gem" % (-(n_lines - 1) * 1.2)) if i == 0 else "1.2em", escape(line) or "&#160;")
@@ -1190,7 +1202,7 @@ def export_page_svg(doc, page_id):
                 )
                 parts.append(
                     '<text x="%s" y="%s" font-size="%s"%s%s%s>%s</text>'
-                    % (_fmt(x), _fmt(cell_y), _fmt(text_size), font_attr, bold_attr, italic_attr, tspans)
+                    % (_fmt(x), _fmt(cell_y), _fmt(cell_size), font_attr, bold_attr, italic_attr, tspans)
                 )
         parts.append("</g>")
 

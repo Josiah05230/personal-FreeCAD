@@ -133,6 +133,18 @@ function measureText(s: string, fontSize: number): number {
   return w * fontSize
 }
 
+/** Font size a table cell's text is drawn at: the table's own size, shrunk
+ *  just enough that the widest line stays inside the cell (1.5 mm padding
+ *  each side) instead of running across the grid line into the next cell
+ *  or off the sheet - a long registry description in a title block did
+ *  exactly that ("...flat head screw (92010A11" cut off at the border).
+ *  Mirrored by drawing.py's _fit_cell_font_size so the PDF matches. */
+function fitCellFontSize(value: string, fontSize: number, cellW: number): number {
+  const avail = cellW - 3
+  const widest = Math.max(0, ...value.split('\n').map((l) => measureText(l, fontSize)))
+  return widest > avail && avail > 0 ? fontSize * (avail / widest) : fontSize
+}
+
 const flip = (poly: number[][]): [number, number][] => poly.map((p) => [p[0], -p[1]])
 
 /** Find the next sheet position for a newly-placed view (w x h mm, already
@@ -4211,7 +4223,7 @@ export const DrawingSheet = forwardRef<
                           <text
                             x={colX(ci) + 1.5}
                             y={rowH * (ri + headerRows) + rowH - 1.5}
-                            fontSize={table.textSize}
+                            fontSize={fitCellFontSize(value, table.textSize, cellW)}
                             fontFamily={table.font}
                             fontWeight={table.bold ? 'bold' : undefined}
                             fontStyle={table.italic ? 'italic' : undefined}
