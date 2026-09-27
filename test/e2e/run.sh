@@ -30,8 +30,13 @@ if [ ${#SCENARIOS[@]} -eq 0 ]; then
 fi
 
 kill_strays() {
-  for p in $(pgrep -f 'GWT-CAD/app/node_modules/electron/dist/electron' 2>/dev/null) \
-           $(pgrep -f 'GWT-CAD/sidecar/server.py' 2>/dev/null); do
+  # only THIS checkout's test runs: an electron whose --e2e scenario path is
+  # under $ROOT, and a sidecar started from $ROOT/sidecar - never the user's
+  # own running GWT-CAD, nor another worktree's concurrent run (a worktree's
+  # node_modules may symlink to the main checkout's electron binary, so the
+  # binary path alone can't tell runs apart)
+  for p in $(pgrep -f -- "--e2e $ROOT/" 2>/dev/null) \
+           $(pgrep -f -- "$ROOT/sidecar/server.py" 2>/dev/null); do
     kill -9 "$p" 2>/dev/null
   done
   sleep 1
