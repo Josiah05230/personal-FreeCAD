@@ -586,6 +586,30 @@ def generate_supplier_drawing(pn):
         _session.set_part_number(prev or None)
 
 
+def _bodies_of(shape):
+    """The separate bodies in an imported STEP: every solid, plus every
+    shell that isn't part of one (surface-only vendor models), walking
+    nested compounds. Anything left (loose faces/edges) stays together as
+    one extra body; a shape with no solids or shells comes back whole."""
+    bodies, loose = [], []
+
+    def walk(s):
+        if s.ShapeType == "Compound" or s.ShapeType == "CompSolid":
+            for c in s.childShapes():
+                walk(c)
+        elif s.ShapeType in ("Solid", "Shell"):
+            bodies.append(s)
+        else:
+            loose.append(s)
+
+    walk(shape)
+    if not bodies:
+        return [shape]
+    if loose:
+        bodies.append(Part.makeCompound(loose))
+    return bodies
+
+
 def _generate_supplier_drawing(pn):
     """Build the minimal reference drawing for a purchased part that has a
     supplier-fetched .stp in pn-cad-files but no FCStd/drawing of its own
@@ -639,9 +663,17 @@ def _generate_supplier_drawing(pn):
         try:
             shape = Part.Shape()
             shape.read(stp_path)
-            part_obj = doc.addObject("Part::Feature", "SupplierModel")
-            part_obj.Shape = shape
-            part_obj.Label = row.get("mfg_pn") or pn
+            # one object per body, not one fused compound - a multi-part
+            # vendor model (housing + terminals + seal) used to come in as a
+            # single object, so CMC0020 showed 1 body where the STEP has 4
+            label = row.get("mfg_pn") or pn
+            bodies = _bodies_of(shape)
+            part_obj = []
+            for i, body in enumerate(bodies):
+                o = doc.addObject("Part::Feature", "SupplierModel")
+                o.Shape = body
+                o.Label = label if len(bodies) == 1 else "%s body %d" % (label, i + 1)
+                part_obj.append(o)
             doc.recompute()
 
             # Metadata sidecar (componentType/cavities/gender - see

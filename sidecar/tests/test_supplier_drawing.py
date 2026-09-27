@@ -155,3 +155,26 @@ def test_saving_keeps_the_open_page_live_but_the_file_lazy(generated):
     methods.document_save()
     assert page.KeepUpdated is True  # in memory: still live, no recompute forced
     assert _keep_updated_on_disk(path) == ["false"]  # on disk: lazy
+
+
+def test_multi_body_vendor_model_keeps_each_body_separate(company_config, cad_repo, tmp_path):
+    # regression: CMC0020's vendor STEP has 4 bodies but the generator
+    # fused them into one object
+    if not shutil.which("rsvg-convert"):
+        pytest.skip("needs rsvg-convert")
+    import Part
+    pn.pn_reserve("CM", "C", 3, "connector", "2 pin housing", mfg="TE", mfgPn="1-123")
+    folder = os.path.join(str(cad_repo), "CM", "C", "CMC0030")
+    os.makedirs(folder)
+    stp = os.path.join(folder, "CMC0030.stp")
+    Part.makeCompound([Part.makeBox(5, 5, 5), Part.makeBox(2, 2, 8, App.Vector(10, 0, 0))]).exportStep(stp)
+    result = sm.generate_supplier_drawing("CMC0030")
+    assert result["ok"], result
+    d = App.openDocument(os.path.join(folder, "CMC0030.FCStd"))
+    try:
+        bodies = [o for o in d.Objects if o.TypeId == "Part::Feature"]
+        assert [b.Label for b in bodies] == ["1-123 body 1", "1-123 body 2"]
+        grp = next(o for o in d.Objects if o.TypeId == "TechDraw::DrawProjGroup")
+        assert len(grp.Source) == 2
+    finally:
+        App.closeDocument(d.Name)
