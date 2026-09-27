@@ -91,6 +91,27 @@ def test_untouched_drawing_is_regenerated_for_the_new_revision(rev1):
     assert sm._auto_drawing_info(page)["sig"] == sm.page_signature(page)
 
 
+def test_rebuild_never_carries_a_placeholder_supplier_forward(rev1):
+    # regression: with no mfg/mfg_pn on the new revision's registry row, the
+    # rebuild kept the old note's supplier text (" IS EQUIVALENT TO SUPPLIER
+    # ?") and the old stamp's title text ("PART"). Drop the note and say so.
+    cfg = pn._load_config()
+    rows = pn._read_registry(cfg)
+    for r in rows:
+        if r["pn"] == "CMB0011":
+            r["mfg"], r["mfg_pn"] = "", ""
+    pn._write_registry(cfg, rows)
+
+    out = sm.refresh_drawing_for_revision()
+    page = out["pages"][0]
+    assert page["action"] == "regenerated"
+    assert "CMB0011" in page["warning"]
+    d = session.doc(create=False)
+    text = " ".join(_note_texts(d) + _title_cells(d))
+    assert "IS EQUIVALENT TO" not in text
+    assert "?" not in text and "SUPPLIER" not in text and "PART" not in _title_cells(d)
+
+
 def test_edited_drawing_is_kept_but_updated_to_the_new_revision(rev1):
     d = session.doc(create=False)
     page = _page(d)
