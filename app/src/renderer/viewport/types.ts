@@ -158,4 +158,14 @@ export interface ViewportApi {
    *  free-trackball rotation math without depending on synthetic pointer
    *  drag events) */
   testApplyOrbit: (yaw: number, pitch: number) => void
+  /** Move/Copy preview (test hook): each body's face-node translation, the
+   *  Create Copy ghost node count, and the manipulator origin (null = hidden) */
+  testBodyXformState: () => {
+    nodes: Record<string, [number, number, number]>
+    ghosts: number
+    gizmo: [number, number, number] | null
+  }
+  /** world point to grab a manipulator handle at ('X' / 'Y' / 'Z' arrows or
+   *  rings, 'XY' / 'YZ' / 'XZ' planes), null if not shown (test hook) */
+  testGizmoGrabPoint: (id: string) => [number, number, number] | null
 }

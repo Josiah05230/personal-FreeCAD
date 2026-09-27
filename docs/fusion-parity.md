@@ -56,7 +56,7 @@ Legend: [x] done and matches F360 - [~] present but needs correcting -
 | **Split Face** | split a face with a plane / surface / sketch / along a direction. | [ ] |
 | **Split Body** | body + splitting tool (plane/face/sketch/surface); keep both halves as bodies. | [~] `body.split` by plane only. MISSING face/sketch tool. |
 | **Silhouette Split** | split body/face by the silhouette from a view direction. | [ ] (niche) |
-| **Move/Copy** (M) | selection: bodies / components / faces / sketch objects / features. Modes: **Translate** (free XYZ manipulator), **Rotate** (axis + angle), **Point to Point**, **Point to Position**. **Create Copy** checkbox (+ copies count for translate/rotate). Set Pivot. | [~] `moveBody` (dx/dy/dz + rx/ry/rz at once) and separate `copyBody`. NOT F360: no modes, no point-to-point, no Create Copy on the move, no face/feature move. **THIS IS THE FLAGSHIP GAP.** |
+| **Move/Copy** (M) | selection: bodies / components / faces / sketch objects / features. Modes: **Translate** (free XYZ manipulator), **Rotate** (axis + angle), **Point to Point**, **Point to Position**. **Create Copy** checkbox (+ copies count for translate/rotate). Set Pivot. | [~] bodies (PartDesign + imported Part::Feature / mesh): Translate / Rotate (X/Y/Z through the selection centre, or a picked straight / circular edge) / Point to Point (vertex, edge end/mid/arc-centre snap, face point), Create Copy + count. Live client-side preview (Cancel / Esc restore exactly), on-canvas triad (arrows + plane squares, rotation rings) that writes the fields, Objects / Origin / Target / Axis boxes with an OK gate. MISSING: Point to Position, Set Pivot, free move (translate + rotate in one), face / feature / sketch-object move. |
 | **Align** | align a body/component/face by picking from-geometry then to-geometry. | [ ] |
 | **Physical Material / Appearance** | assign material / appearance. | [~] body colour only (Appearance-lite). |
 | **Change Parameters** | the parameters table. | [x] `Parameters` panel. |
@@ -376,3 +376,26 @@ partial-distance, Loft rails/guides.
 Still open (feature recognition): cylinder/cone recognition for rounds (fast
 follow once a reliable fitting approach is found), NURBS/organic surface
 fitting.
+
+---
+
+## Move/Copy interaction pass
+
+- User report on CMC0020 (4 imported `SupplierModel00N` bodies): "it doesn't
+  let me use the move command at all". The engine side worked; the dialog
+  showed nothing until OK, had no manipulator, only accepted edge/vertex
+  picks (bodies were filtered out), and Point to Point committed a silent
+  `[0,0,0] -> [0,0,0]` no-op because OK did not wait for the two picks.
+- Now: `moveXform.ts` is the single source for the preview matrix AND the
+  `body.moveCopy` params. The Viewport transforms the target bodies' nodes
+  (or draws Create Copy ghosts) with no sidecar round trip and restores each
+  node's saved transform on Cancel; on OK the preview is held until the moved
+  geometry lands. `viewport/MoveGizmo.ts` is the triad: left-drag only, so it
+  never reaches CadControls (orbit/pan are middle/right), and it wins over
+  picking. Move uses dialog selection boxes (`SlotSpec.showIf` /
+  `promoteToBody` / `replaceOnPick`): click anywhere on a body (or its
+  browser row) to target it, Ctrl-click to add/remove.
+- Picker reports pick points in model space (the hit node's local frame) and
+  vertex picks at the exact vertex, so picks on a previewed body are right.
+- E2E: `move_body.js` (41 checks; `E2E_MOVE_FCSTD=<scratch copy>` adds a
+  real-file pass, verified on a copy of CMC0020).

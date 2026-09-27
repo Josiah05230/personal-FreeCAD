@@ -107,7 +107,13 @@ const b0 = bodies().length;
 await openApply('move', { mode: 'Translate', dx: 50, dy: 0, dz: 0, createCopy: false });
 await openApply('move', { mode: 'Translate', dx: 25, createCopy: true, copies: 2 });
 assert(bodies().length >= b0 + 1, `Create Copy added bodies (${b0} -> ${bodies().length})`);
-await openApply('move', { mode: 'Rotate', axis: 'Z', angle: 45, createCopy: false }, { soft: true });
+// several bodies now: Move needs its target picked (F360 - only a one-body
+// document pre-targets its only body)
+await openApply(
+  'move',
+  { mode: 'Rotate', axis: 'Z', angle: 45, createCopy: false },
+  { soft: true, setup: async () => G.pick({ kind: 'body', bodyId: meshes()[0].id }, false) }
+);
 await openApply('scale', { uniform: true, factor: 1.5 }, { soft: true });
 
 // ---------------------------------------------------------------- Offset Face / Press Pull

@@ -75,6 +75,15 @@ export interface SlotSpec {
   min: number
   max?: number
   hint?: string
+  /** only shown (and only counted toward OK) while this passes for the
+   *  current field values - e.g. Move's From / To boxes in Point to Point */
+  showIf?: (v: Record<string, number | string | boolean>) => boolean
+  /** a face / edge / vertex click into this box takes its whole BODY (Move's
+   *  Objects box: click anywhere on a body to move it) */
+  promoteToBody?: boolean
+  /** a plain click REPLACES this box's items, Ctrl-click adds / removes one
+   *  (the usual selection feel); default is every pick accumulates */
+  replaceOnPick?: boolean
 }
 
 interface OpSpec {
@@ -420,7 +429,44 @@ const SPECS: Record<OpKind, OpSpec> = {
   move: {
     title: 'Move/Copy',
     needs: 'none',
-    hint: 'Acts on the selected body (or the first body). Translate: X/Y/Z. Rotate: axis + angle. Tick Create Copy to leave the original in place.',
+    hint: 'Drag the arrows / rings in the viewport, or type values - the bodies move live. Tick Create Copy to leave the originals in place.',
+    slots: [
+      {
+        key: 'objects',
+        label: 'Objects',
+        kinds: ['body'],
+        min: 1,
+        promoteToBody: true,
+        replaceOnPick: true,
+        hint: 'click a body (or its row in the browser); Ctrl-click adds / removes'
+      },
+      {
+        key: 'from',
+        label: 'Origin point',
+        kinds: ['vertex', 'edge', 'face'],
+        min: 1,
+        max: 1,
+        showIf: (v) => v.mode === 'Point to Point',
+        hint: 'a corner, an edge (snaps to its end / middle, or an arc centre), or a face point'
+      },
+      {
+        key: 'to',
+        label: 'Target point',
+        kinds: ['vertex', 'edge', 'face'],
+        min: 1,
+        max: 1,
+        showIf: (v) => v.mode === 'Point to Point'
+      },
+      {
+        key: 'axis',
+        label: 'Axis edge',
+        kinds: ['edge'],
+        min: 1,
+        max: 1,
+        showIf: (v) => v.mode === 'Rotate' && v.axis === 'Selected edge',
+        hint: 'a straight edge, or a circular edge (rotates about its centre)'
+      }
+    ],
     fields: [
       {
         key: 'mode',
@@ -442,14 +488,7 @@ const SPECS: Record<OpKind, OpSpec> = {
         wide: true,
         showIf: (v) => v.mode === 'Rotate'
       },
-      { key: 'angle', label: 'Angle', type: 'number', default: 90, step: 15, showIf: (v) => v.mode === 'Rotate' },
-      {
-        key: 'usePicks',
-        label: 'Use 2 picked points',
-        type: 'checkbox',
-        default: true,
-        showIf: (v) => v.mode === 'Point to Point'
-      },
+      { key: 'angle', label: 'Angle', type: 'number', default: 0, step: 15, showIf: (v) => v.mode === 'Rotate' },
       { key: 'createCopy', label: 'Create Copy', type: 'checkbox', default: false },
       { key: 'copies', label: 'Copies', type: 'number', default: 1, min: 1, step: 1, showIf: (v) => Boolean(v.createCopy) }
     ]
@@ -747,7 +786,12 @@ export function OperationDialog({
   onLivePreviewEnd,
   handleDrag,
   initialValues,
-  editingLabel
+  editingLabel,
+  onValuesChange,
+  externalValues,
+  pickAdditive,
+  itemLabel,
+  onArmedSlot
 }: {
   kind: OpKind | null
   selection: Selection[]
@@ -777,6 +821,19 @@ export function OperationDialog({
   initialValues?: OpValues | null
   /** feature label when editing - drives the title / button text */
   editingLabel?: string | null
+  /** every value / pick change, unthrottled (Move/Copy's client-side live
+   *  preview - no engine round trip, so it can track every keystroke) */
+  onValuesChange?: (kind: OpKind, values: OpValues, slotSel: Record<string, Selection[]>) => void
+  /** values pushed in from outside the dialog (the Move manipulator drag);
+   *  merged in whenever `seq` changes */
+  externalValues?: { values: OpValues; seq: number } | null
+  /** was the most recent viewport / browser pick a Ctrl / Shift / Cmd click?
+   *  (the app forces op picks additive; a replaceOnPick box needs the truth) */
+  pickAdditive?: { current: boolean }
+  /** display name for a selection item in a box's chip (a body's label) */
+  itemLabel?: (s: Selection) => string | undefined
+  /** which box the next pick goes into (null when none / not a slots op) */
+  onArmedSlot?: (key: string | null) => void
 }): JSX.Element | null {
   const spec = kind ? SPECS[kind] : null
   const [values, setValues] = useState<OpValues>({})
@@ -809,6 +866,10 @@ export function OperationDialog({
     : s.kind === 'body' ? `body:${s.bodyId}`
     : `${s.kind}:${s.bodyId}:${s.sub}`
   const prevSelRef = useRef<Selection[]>([])
+  // the classifier effect below reads the live values through a ref (slot
+  // visibility depends on them) without re-running on every keystroke
+  const valuesRef = useRef<OpValues>({})
+  const slotVisible = (sl: SlotSpec): boolean => !sl.showIf || sl.showIf(valuesRef.current)
 
   // reset per-dialog-open (a fresh kind, or reopening the same kind fresh)
   useEffect(() => {
@@ -839,33 +900,65 @@ export function OperationDialog({
       prevSelRef.current = selection
       return
     }
-    const activeKey = armedSlot ?? spec.slots[0].key
-    const activeSlot = spec.slots.find((s) => s.key === activeKey) ?? spec.slots[0]
+    const visSlots = spec.slots.filter(slotVisible)
+    if (!visSlots.length) {
+      prevSelRef.current = selection
+      return
+    }
+    const activeKey = armedSlot ?? visSlots[0].key
+    const activeSlot = visSlots.find((s) => s.key === activeKey) ?? visSlots[0]
     // undefined max = unlimited (e.g. Sweep's Path: several connected edges)
     const capOf = (s: SlotSpec): number => s.max ?? Infinity
+    // one real click (not a pre-selection carried into a fresh dialog), and
+    // not a Ctrl / Shift one - a replaceOnPick box swaps its items for it
+    const plainPick = added.length === 1 && !(pickAdditive?.current ?? true)
     let next = selection
     let changed = false
     let mapMutated = false
-    for (const item of added) {
-      const k = selKeyLocal(item)
-      if (!activeSlot.kinds.includes(item.kind)) {
+    const dropKey = (key: string): void => {
+      slotKeyOf.current.delete(key)
+      next = next.filter((s) => selKeyLocal(s) !== key)
+      changed = true
+    }
+    for (const raw of added) {
+      let item = raw
+      let k = selKeyLocal(item)
+      // a whole-body pick (a browser row) goes to the box that takes bodies,
+      // whichever box is armed
+      let slot = activeSlot
+      if (item.kind === 'body' && !slot.kinds.includes('body'))
+        slot = visSlots.find((s) => s.kinds.includes('body')) ?? slot
+      if (slot.promoteToBody && 'bodyId' in item && item.kind !== 'body') {
+        // a click on a face / edge / corner of a body means "that body"
+        const body: Selection = { kind: 'body', bodyId: item.bodyId }
+        next = next.filter((s) => selKeyLocal(s) !== k)
+        changed = true
+        item = body
+        k = selKeyLocal(body)
+        const had = slotKeyOf.current.get(k) === slot.key
+        if (had && !plainPick) {
+          // Ctrl-click on a body already in the box: take it out
+          dropKey(k)
+          mapMutated = true
+          continue
+        }
+        if (!next.some((s) => selKeyLocal(s) === k)) next = [...next, body]
+      }
+      if (!slot.kinds.includes(item.kind)) {
         // wrong kind for the armed box - reject the pick entirely rather than
         // guess a different box for it
         next = next.filter((s) => selKeyLocal(s) !== k)
         changed = true
         continue
       }
-      slotKeyOf.current.set(k, activeSlot.key)
+      slotKeyOf.current.set(k, slot.key)
       mapMutated = true
-      // a max:1 box replaces its previous item instead of accumulating -
-      // drop any OTHER item already recorded under this same box
-      if (capOf(activeSlot) === 1) {
+      // a max:1 box (or a plain click into a replaceOnPick box) replaces its
+      // previous item instead of accumulating - drop any OTHER item already
+      // recorded under this same box
+      if (capOf(slot) === 1 || (slot.replaceOnPick && plainPick)) {
         for (const [ok, ov] of Array.from(slotKeyOf.current.entries())) {
-          if (ov === activeSlot.key && ok !== k) {
-            slotKeyOf.current.delete(ok)
-            next = next.filter((s) => selKeyLocal(s) !== ok)
-            changed = true
-          }
+          if (ov === slot.key && ok !== k) dropKey(ok)
         }
       }
     }
@@ -884,7 +977,13 @@ export function OperationDialog({
       Array.from(slotKeyOf.current.values()).filter((v) => v === key).length
     const activeCount = countIn(activeSlot.key)
     if (activeCount >= capOf(activeSlot)) {
-      const nextSlot = spec.slots.find((s) => s.key !== activeSlot.key && countIn(s.key) < capOf(s))
+      // a shown box that still needs picks first; else one with a cap that
+      // still has room (Revolve's optional Axis). Never an open-ended box
+      // (Move's Objects) - a stray click there would silently re-target.
+      const others = visSlots.filter((s) => s.key !== activeSlot.key)
+      const nextSlot =
+        others.find((s) => countIn(s.key) < s.min) ??
+        others.find((s) => s.max != null && countIn(s.key) < s.max)
       if (nextSlot) setArmedSlot(nextSlot.key)
     }
     // always bump after a real map mutation - relying on setArmedSlot above
@@ -901,6 +1000,46 @@ export function OperationDialog({
     void slotVersion
     return selection.filter((s) => slotKeyOf.current.get(selKeyLocal(s)) === key)
   }
+
+  // a box appearing / disappearing with a mode change (Move: Point to Point
+  // shows From / To): arm the first shown box that still needs a pick, so the
+  // next click goes where the user now expects. Skipped on open (kind change).
+  valuesRef.current = values
+  const visSig = spec?.slots ? spec.slots.filter(slotVisible).map((sl) => sl.key).join(',') : ''
+  const visRef = useRef<{ kind: OpKind | null; sig: string }>({ kind: null, sig: '' })
+  useEffect(() => {
+    const prev = visRef.current
+    visRef.current = { kind, sig: visSig }
+    if (!spec?.slots || prev.kind !== kind || prev.sig === visSig) return
+    const vis = spec.slots.filter(slotVisible)
+    const armed = vis.find((sl) => sl.key === armedSlot)
+    const unsat = vis.find((sl) => slotItems(sl.key).length < sl.min)
+    if (!armed || (unsat && slotItems(armed.key).length >= armed.min))
+      setArmedSlot((unsat ?? vis[0])?.key ?? null)
+  }, [kind, visSig]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    onArmedSlot?.(spec?.slots ? armedSlot : null)
+  }, [armedSlot, kind]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => onArmedSlot?.(null), []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // the current box assignment, shown boxes only (a hidden box's leftovers -
+  // e.g. From / To after switching back to Translate - never reach the op)
+  const slotSelNow = (): Record<string, Selection[]> =>
+    spec?.slots
+      ? Object.fromEntries(spec.slots.map((sl) => [sl.key, slotVisible(sl) ? slotItems(sl.key) : []]))
+      : {}
+
+  // Move/Copy live preview: every change, straight through (client-side)
+  useEffect(() => {
+    if (kind !== 'move' || !onValuesChange) return
+    onValuesChange(kind, values, slotSelNow())
+  }, [kind, values, selection, slotVersion]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // values pushed from outside (manipulator drag)
+  useEffect(() => {
+    if (externalValues) setValues((v) => ({ ...v, ...externalValues.values }))
+  }, [externalValues?.seq]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /** click a box's header: arm it for the next pick. For a max:1 box that
    *  already holds an item, ALSO clear that item right away - a plain click
@@ -1050,9 +1189,7 @@ export function OperationDialog({
           out[f.key] = Number(raw)
         }
       }
-      const slotSel = spec.slots
-        ? Object.fromEntries(spec.slots.map((s) => [s.key, slotItems(s.key)]))
-        : undefined
+      const slotSel = spec.slots ? slotSelNow() : undefined
       onApply(kind, foldNegativeDirections(spec, out), exprs, slotSel)
     } catch (e) {
       window.alert((e as Error).message)
@@ -1118,7 +1255,9 @@ export function OperationDialog({
   // spec.slots ops (Sweep, Revolve): ready = every box with min > 0 has met
   // its min, counted from THIS dialog's own slot assignment - not re-guessed
   // from selection order/kind, so "ready" tracks exactly what the boxes show
-  const slotsReady = spec.slots ? spec.slots.every((s) => slotItems(s.key).length >= s.min) : false
+  const slotsReady = spec.slots
+    ? spec.slots.every((s) => !slotVisible(s) || slotItems(s.key).length >= s.min)
+    : false
 
   const ready =
     // editing a committed feature: its refs are already seeded, Update is always allowed
@@ -1178,7 +1317,7 @@ export function OperationDialog({
       {spec.hint && <div className="opdlg-hint">{spec.hint}</div>}
       {spec.slots && (
         <div className="opdlg-slots">
-          {spec.slots.map((s) => {
+          {spec.slots.filter(slotVisible).map((s) => {
             const items = slotItems(s.key)
             const satisfied = items.length >= s.min
             const armed = armedSlot === s.key
@@ -1208,7 +1347,7 @@ export function OperationDialog({
                   <div className="opdlg-slot-chips">
                     {items.map((it) => (
                       <span key={selKeyLocal(it)} className="opdlg-slot-chip">
-                        {slotItemLabel(it)}
+                        {itemLabel?.(it) ?? slotItemLabel(it)}
                       </span>
                     ))}
                     <button
