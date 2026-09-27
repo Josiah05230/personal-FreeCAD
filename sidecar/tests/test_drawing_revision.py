@@ -91,7 +91,7 @@ def test_untouched_drawing_is_regenerated_for_the_new_revision(rev1):
     assert sm._auto_drawing_info(page)["sig"] == sm.page_signature(page)
 
 
-def test_edited_drawing_is_kept_but_its_title_block_names_the_new_revision(rev1):
+def test_edited_drawing_is_kept_but_updated_to_the_new_revision(rev1):
     d = session.doc(create=False)
     page = _page(d)
     sm._drawing._ensure_page_live(d, page)
@@ -102,7 +102,7 @@ def test_edited_drawing_is_kept_but_its_title_block_names_the_new_revision(rev1)
     before = sorted(o.Name for o in d.Objects)
 
     out = sm.refresh_drawing_for_revision()
-    assert [p["action"] for p in out["pages"]] == ["kept"]
+    assert [p["action"] for p in out["pages"]] == ["updated"]
     assert sorted(o.Name for o in d.Objects) == before  # nothing rebuilt
     assert "CMB0011" in _title_cells(d)
     assert "CMB0010" not in _title_cells(d)
@@ -123,5 +123,46 @@ def test_a_drawing_already_made_for_this_revision_is_not_rebuilt(rev1):
     d = session.doc(create=False)
     before = sorted(o.Name for o in d.Objects)
     out = sm.refresh_drawing_for_revision()
-    assert [p["action"] for p in out["pages"]] == ["kept"]
+    assert [p["action"] for p in out["pages"]] == ["updated"]
     assert sorted(o.Name for o in d.Objects) == before
+
+
+def _view_bbox(d, view):
+    from gwtcad import drawing as dr
+    vis, hid = dr._part_view_payload(view)
+    return dr._view_bbox(vis, hid)
+
+
+def _iso(d):
+    return next(o for o in d.Objects if o.TypeId == "TechDraw::DrawViewPart"
+                and not any(p.TypeId == "TechDraw::DrawProjGroup" for p in o.InList))
+
+
+def test_edited_drawing_views_follow_the_new_revisions_geometry(rev1):
+    # the drawing must never show the previous revision's part: an edited
+    # (kept) page still redraws every view from the current model
+    d = session.doc(create=False)
+    page = _page(d)
+    sm._drawing._ensure_page_live(d, page)
+    iso = _iso(d)
+    iso.X = iso.X.Value + 15.0  # edited drawing
+    d.recompute()
+    before = _view_bbox(d, iso)
+    body = next(o for o in d.Objects if o.TypeId == "Part::Feature")
+    import Part
+    body.Shape = body.Shape.fuse(Part.makeBox(4, 4, 4, body.Shape.BoundBox.Center))
+    out = sm.refresh_drawing_for_revision()
+    assert [p["action"] for p in out["pages"]] == ["updated"]
+    after = _view_bbox(d, _iso(d))
+    assert after != before
+
+
+def test_an_in_work_revision_updates_without_rebuilding(rev1):
+    d = session.doc(create=False)
+    before = sorted(o.Name for o in d.Objects)
+    out = sm.refresh_drawing_for_revision(rebuild=False)
+    assert [p["action"] for p in out["pages"]] == ["updated"]
+    assert sorted(o.Name for o in d.Objects) == before
+    assert "CMB0011" in _title_cells(d)
+    # and going active later still rebuilds it (untouched since generation)
+    assert [p["action"] for p in sm.refresh_drawing_for_revision()["pages"]] == ["regenerated"]

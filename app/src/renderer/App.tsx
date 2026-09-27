@@ -3883,6 +3883,9 @@ export function App(): JSX.Element {
       const res = await api.pnNewRevision(pnSeq, reason.trim())
       const newPath = res.path ?? docPath
       await api.pnTagDocument(res.pn, res.name, res.description)
+      // the drawing must match this revision from the moment it exists:
+      // views redrawn from the current model, title block on the new PN
+      await api.drawingRefreshForRevision(false).catch((e) => console.error('drawing.refreshForRevision:', e))
       await api.saveAs(newPath)
       markDirty(false)
       setTabs((t) =>
@@ -3939,7 +3942,7 @@ export function App(): JSX.Element {
         if (lifecycle === 'active') {
           // bring the drawing up to this revision first: a generated drawing
           // nobody touched is rebuilt from the current geometry, an edited
-          // one is kept with its title block moved to this PN - then saved,
+          // one is kept with its views redrawn and title block on this PN - then saved,
           // so the gate below and the PDF export both see it
           try {
             const refreshed = await api.drawingRefreshForRevision()

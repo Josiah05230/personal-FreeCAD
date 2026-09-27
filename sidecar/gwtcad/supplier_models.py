@@ -869,18 +869,28 @@ def _drawing_sources(doc, page):
     return [o for o in solids if getattr(o, "Shape", None) is not None and not o.Shape.isNull()]
 
 
+def _recompute_page_views(doc, page):
+    """Force every view on `page` to recompute from the current model - a
+    lazy page (KeepUpdated off on disk) or a stale cached view must never
+    show the previous revision's geometry on this revision's drawing."""
+    _drawing._ensure_page_live(doc, page)
+    for o in _drawing._page_objects(page):
+        if o.TypeId.startswith("TechDraw::"):
+            o.touch()
+    doc.recompute()
+
+
 @method("drawing.refreshForRevision")
-def refresh_drawing_for_revision():
-    """Bring the open part's drawings up to date for its current revision
-    (called when a revision is promoted to active). Per page:
-      - generated for an earlier revision and untouched since
-        (fingerprint matches): rebuilt from the current geometry - same
-        template, notes and title text;
-      - edited by a person, or not generated here: kept as is - its views
-        already follow the model - with table cells (the title block's
-        =PN/=NAME/=DESCRIPTION) re-resolved so the sheet and its PDF show
-        the new revision's PN.
-    Returns {"pages": [{"id", "label", "action": "regenerated"|"kept"}]}."""
+def refresh_drawing_for_revision(rebuild=True):
+    """Bring the open part's drawings up to date for its current revision.
+    Every page, edited or not, gets its views recomputed from the current
+    geometry and its table cells (the title block's =PN/=NAME/=DESCRIPTION)
+    re-resolved, so a sheet never shows the previous revision's part or PN.
+    With `rebuild` (a revision going active), a page generated for an
+    earlier revision and untouched since (fingerprint matches) is instead
+    rebuilt from scratch - same template, notes and title text - so its
+    layout fits the new geometry.
+    Returns {"pages": [{"id", "label", "action": "regenerated"|"updated"}]}."""
     doc = _session.doc(create=False)
     if doc is None:
         raise RpcError(APP_ERROR, "no document")
@@ -891,7 +901,7 @@ def refresh_drawing_for_revision():
         info = _auto_drawing_info(page)
         label = page.Label
         # drawn for an earlier revision and untouched since: rebuild it
-        if pn and info and info.get("pn") != pn and info.get("sig") == page_signature(page):
+        if rebuild and pn and info and info.get("pn") != pn and info.get("sig") == page_signature(page):
             sources = _drawing_sources(doc, page)
             if sources:
                 # the equivalence note names the PN - carry it to this rev
@@ -907,9 +917,9 @@ def refresh_drawing_for_revision():
                 _stamp_auto_drawing(doc, page, pn, name, description, notes)
                 out.append({"id": page.Name, "label": page.Label, "action": "regenerated"})
                 continue
+        _recompute_page_views(doc, page)
         _tables.refresh_live_cells(doc, page)
-        doc.recompute()
-        out.append({"id": page.Name, "label": page.Label, "action": "kept"})
+        out.append({"id": page.Name, "label": page.Label, "action": "updated"})
     return {"pages": out}
 
 
