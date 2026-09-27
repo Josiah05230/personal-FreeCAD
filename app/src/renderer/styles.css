@@ -784,6 +784,14 @@ code {
   color: var(--accent-hi);
 }
 
+/* New Part dialog opened by the copy-in gate: why it's asking */
+.newpart-notice {
+  border-left: 3px solid var(--accent-hi);
+  padding-left: 8px;
+  margin-bottom: 8px;
+  color: var(--text);
+}
+
 /* PN registry name/description, shown under a design's filename - for
    human readability regardless of whether the panel is searching. */
 .dp-meta {

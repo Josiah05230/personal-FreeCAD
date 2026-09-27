@@ -481,8 +481,15 @@ export const DrawingSheet = forwardRef<
     onBack: () => void
     tool?: DrawingTool
     onToolChange?: (tool: DrawingTool) => void
+    /** Insert Image's picked file -> the path to actually place (an
+     *  in-company-repo copy when the drawing lives in a company repo and
+     *  the picked file doesn't), or null to abort. Default: as picked. */
+    resolveImageSource?: (path: string) => Promise<string | null>
   }
->(function DrawingSheet({ pageId, makeView, docPath, assembly, onBack, tool: toolProp, onToolChange }, ref) {
+>(function DrawingSheet(
+  { pageId, makeView, docPath, assembly, onBack, tool: toolProp, onToolChange, resolveImageSource },
+  ref
+) {
   const [placed, setPlaced] = useState<Placed[]>([])
   const [sel, setSel] = useState<number | null>(null)
   const [hover, setHover] = useState<number | null>(null)
@@ -1398,9 +1405,11 @@ export const DrawingSheet = forwardRef<
   )
 
   const insertImage = useCallback(async () => {
-    const path = await window.cad.openDialog([{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'bmp'] }])
-    if (!path) return
+    const picked = await window.cad.openDialog([{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'bmp'] }])
+    if (!picked) return
     try {
+      const path = resolveImageSource ? await resolveImageSource(picked) : picked
+      if (!path) return
       // width/height are left unset - the sidecar (add_image) defaults them
       // from the file's own native size, so a freshly-inserted image keeps
       // its real aspect ratio instead of an arbitrary placeholder box.
@@ -1424,7 +1433,7 @@ export const DrawingSheet = forwardRef<
     } catch (e) {
       window.alert((e as Error).message)
     }
-  }, [pageId, pushUndo])
+  }, [pageId, pushUndo, resolveImageSource])
 
   const moveImage = useCallback(
     (imageId: string, x: number, y: number, orig?: { x: number; y: number }) => {
