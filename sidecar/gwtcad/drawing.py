@@ -17,6 +17,7 @@ import base64
 import json
 import math
 import os
+import re
 import time
 from xml.sax.saxutils import escape
 
@@ -103,6 +104,7 @@ def _project_offset(view):
     against the min corner of the already-projected polylines (both are
     plain axis-aligned min/max over the same point set, immune to ordering).
     """
+    _wake_view(view)
     edges = list(view.getVisibleEdges() or []) + list(view.getHiddenEdges() or [])
     if not edges:
         return (0.0, 0.0)
@@ -155,6 +157,7 @@ def _view_uv_to_sheet(view, uv):
     with no References2D-style live binding at all; a caller only ever has
     a point relative to the view it clicked on, so this conversion has to
     happen at write time (see add_note's leader_point)."""
+    _wake_view(view)
     try:
         vis = _edges_to_polylines(view.getVisibleEdges()) if hasattr(view, "getVisibleEdges") else []
         hid = _edges_to_polylines(view.getHiddenEdges()) if hasattr(view, "getHiddenEdges") else []
@@ -200,8 +203,60 @@ def get_page(doc, page_id):
     if page_id:
         p = doc.getObject(page_id)
         if p is not None and p.TypeId == "TechDraw::DrawPage":
+            _ensure_page_live(doc, p)
             return p
     raise RpcError(APP_ERROR, "no such drawing page: %r" % page_id)
+
+
+def _ensure_page_live(doc, page):
+    """Pages are saved with KeepUpdated=False (see mark_pages_lazy_on_disk)
+    so opening a part doesn't pay for hidden-line removal on every drawing
+    view - that was ~all of the open time (CMB0010: 11s -> 0.01s). The first
+    time anything actually touches a page this session, switch it back on
+    and compute its views. Every drawing operation goes through get_page,
+    so this is the one place that needs to know."""
+    if getattr(page, "KeepUpdated", True):
+        return
+    page.KeepUpdated = True
+    for v in page.Views:
+        v.touch()
+    doc.recompute()
+
+
+_KEEP_UPDATED_TRUE = re.compile(
+    rb'(<Property name="KeepUpdated" type="App::PropertyBool"[^>]*>\s*<Bool value=")true(")')
+
+
+def mark_pages_lazy_on_disk(path):
+    """Rewrite a just-saved .FCStd so every drawing page loads with
+    KeepUpdated=False - the file on DISK loads instantly, while the open
+    document in memory stays fully live (toggling the in-memory property
+    around each save would instead force a full view recompute afterward).
+    FreeCAD's own GUI shows such a page as "not up to date" until someone
+    updates it; nothing is lost - view geometry is never stored in the file
+    anyway, only recomputed. No-op for a file without drawing pages."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as zf:
+            entries = [(i, zf.read(i.filename)) for i in zf.infolist()]
+    except (OSError, zipfile.BadZipFile):
+        return False
+    changed = False
+    out = []
+    for info, data in entries:
+        if info.filename == "Document.xml":
+            new_data, n = _KEEP_UPDATED_TRUE.subn(rb"\1false\2", data)
+            if n:
+                data, changed = new_data, True
+        out.append((info, data))
+    if not changed:
+        return False
+    tmp = path + ".lazytmp"
+    with zipfile.ZipFile(tmp, "w") as zf:
+        for info, data in out:
+            zf.writestr(info, data)
+    os.replace(tmp, path)
+    return True
 
 
 def create_page(doc, label=None):
@@ -1146,7 +1201,29 @@ def _break_line_points(axis, pos, min_x, min_y, max_x, max_y):
 # views
 # --------------------------------------------------------------------------- #
 
+def _page_of(view):
+    seen = set()
+    stack = [view]
+    while stack:
+        o = stack.pop()
+        if o.Name in seen:
+            continue
+        seen.add(o.Name)
+        for parent in o.InList:
+            if parent.TypeId == "TechDraw::DrawPage":
+                return parent
+            stack.append(parent)
+    return None
+
+
+def _wake_view(view):
+    page = _page_of(view)
+    if page is not None:
+        _ensure_page_live(view.Document, page)
+
+
 def _part_view_payload(view):
+    _wake_view(view)
     vis = _edges_to_polylines(view.getVisibleEdges()) if hasattr(view, "getVisibleEdges") else []
     hid = _edges_to_polylines(view.getHiddenEdges()) if hasattr(view, "getHiddenEdges") else []
     if not vis and not hid:

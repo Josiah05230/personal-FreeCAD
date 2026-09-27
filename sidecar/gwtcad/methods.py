@@ -5122,6 +5122,7 @@ def document_save_as(path):
     path = os.path.abspath(os.path.expanduser(path))
     _apply_part_number_props(d)
     d.saveAs(path)
+    _drawing.mark_pages_lazy_on_disk(path)
     session.set_path(path)
     _write_sidecar(path)
     return {"path": path}
@@ -5137,6 +5138,7 @@ def document_save():
         raise RpcError(APP_ERROR, "document has no path yet - use saveAs")
     _apply_part_number_props(d)
     d.save()
+    _drawing.mark_pages_lazy_on_disk(p)
     _write_sidecar(p)
     return {"path": p}
 

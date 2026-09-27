@@ -119,3 +119,39 @@ def test_set_view_scale_persists_and_marks_the_view(generated):
     after = drawing.set_view_scale(d, iso.Name, iso.Scale / 2)["bbox"]
     assert abs((after[2] - after[0]) - (before[2] - before[0]) / 2) < 0.5
     assert drawing._get_tag(iso, "_gwt_scaled", "") == "1"
+
+
+def _keep_updated_on_disk(path):
+    import re
+    import zipfile
+    xml = zipfile.ZipFile(path).read("Document.xml").decode()
+    return re.findall(r'name="KeepUpdated"[^>]*>\s*<Bool value="(\w+)"', xml)
+
+
+def test_saved_drawing_is_lazy_on_disk_and_computed_on_first_use(generated):
+    # opening a part used to pay for hidden-line removal on every drawing
+    # view (~all of the open time); pages are now stored KeepUpdated=False
+    # and computed only when the drawing is actually used
+    _, path = generated
+    assert _keep_updated_on_disk(path) == ["false"]
+
+    methods.document_open(path)
+    d = session.doc(create=False)
+    parts = [o for o in d.Objects if o.TypeId in ("TechDraw::DrawProjGroupItem", "TechDraw::DrawViewPart")]
+    assert parts and not any(v.getVisibleEdges() for v in parts), "views should not compute on open"
+
+    page = next(o for o in d.Objects if o.TypeId == "TechDraw::DrawPage")
+    views = drawing.page_contents(d, page.Name)["views"]
+    assert all(v["visible"] for v in views)
+    assert page.KeepUpdated is True
+
+
+def test_saving_keeps_the_open_page_live_but_the_file_lazy(generated):
+    _, path = generated
+    methods.document_open(path)
+    d = session.doc(create=False)
+    page = next(o for o in d.Objects if o.TypeId == "TechDraw::DrawPage")
+    drawing.page_contents(d, page.Name)  # makes it live
+    methods.document_save()
+    assert page.KeepUpdated is True  # in memory: still live, no recompute forced
+    assert _keep_updated_on_disk(path) == ["false"]  # on disk: lazy

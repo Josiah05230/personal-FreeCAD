@@ -688,6 +688,7 @@ def _generate_supplier_drawing(pn):
             from .methods import _apply_part_number_props
             _apply_part_number_props(doc)
             doc.saveAs(fcstd_path)
+            _drawing.mark_pages_lazy_on_disk(fcstd_path)
 
             svg = _drawing.export_page_svg(doc, page_id)
             svg_path = os.path.join(tmpdir, "%s.svg" % pn)
