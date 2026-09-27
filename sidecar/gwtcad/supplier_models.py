@@ -42,6 +42,19 @@ from . import firebase_storage as _storage
 from . import session as _session
 
 
+def _coarsen_views(doc):
+    """Supplier reference drawings use TechDraw's polygonal ("coarse")
+    hidden-line removal instead of the exact one. Exact HLR on vendor
+    models with helical threads (every McMaster screw) takes ~30s PER VIEW,
+    and FreeCAD redoes it on every file OPEN - CMB0010 took ~96s to open
+    (and generation, which recomputes the views several times while
+    fitting the layout, far longer). Coarse: ~11s open, visually the same
+    at drawing scale (compared rendered sheets side by side)."""
+    for o in doc.Objects:
+        if hasattr(o, "CoarseView") and not o.CoarseView:
+            o.CoarseView = True
+
+
 def _cad_repo_path(cfg, pn):
     # A supplier-fetched model has no meaningful "project" of its own beyond
     # whatever project code the PN itself carries (e.g. CMG0010 -> project
@@ -276,6 +289,7 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     probe = _drawing.make_projection_group(doc, page_id, part_obj, group_dirs, anchor="front", scale=1.0)
     grp = doc.getObject(probe["groupId"])
     grp.ScaleType = "Custom"
+    _coarsen_views(doc)
 
     # Relabel the "bottom" item as "Top" on the sheet - it occupies the
     # position and shows the face a reader expects from a "Top" view (see
@@ -551,6 +565,20 @@ def sync_supplier_models():
 
 @method("supplierModels.generateDrawing")
 def generate_supplier_drawing(pn):
+    """See _generate_supplier_drawing. Wrapped so the SESSION's part number
+    (shared with whatever document the user has open) is always put back:
+    generating tags the session with the generated PN so the title-block
+    cells resolve, and that used to leak into the user's open document -
+    its title block showed the last generated part, and its next Save
+    wrote that wrong PN into the user's file."""
+    prev = _session.part_number()
+    try:
+        return _generate_supplier_drawing(pn)
+    finally:
+        _session.set_part_number(prev or None)
+
+
+def _generate_supplier_drawing(pn):
     """Build the minimal reference drawing for a purchased part that has a
     supplier-fetched .stp in pn-cad-files but no FCStd/drawing of its own
     yet - an isometric view of the imported geometry plus a callout mapping
@@ -619,8 +647,14 @@ def generate_supplier_drawing(pn):
             notes = ["%s IS EQUIVALENT TO %s %s" % (
                 pn, (row.get("mfg") or "SUPPLIER").upper(), row.get("mfg_pn") or "?")]
             _apply_grainwave_template(doc, page_id, part_obj, pn, title_name, title_description, notes=notes)
+            _coarsen_views(doc)  # catches the iso view too
             doc.recompute()
 
+            # persist the PN into the file itself (plain doc.saveAs skips the
+            # document.save RPC that normally does this) - otherwise every
+            # later open had a blank title block
+            from .methods import _apply_part_number_props
+            _apply_part_number_props(doc)
             doc.saveAs(fcstd_path)
 
             svg = _drawing.export_page_svg(doc, page_id)
