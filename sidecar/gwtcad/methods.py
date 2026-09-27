@@ -5140,7 +5140,7 @@ def document_save_as(path):
     path = os.path.abspath(os.path.expanduser(path))
     _apply_part_number_props(d)
     d.saveAs(path)
-    _drawing.mark_pages_lazy_on_disk(path)
+    _drawing.mark_pages_lazy_on_disk(path, d)
     session.set_path(path)
     _write_sidecar(path)
     return {"path": path}
@@ -5156,7 +5156,7 @@ def document_save():
         raise RpcError(APP_ERROR, "document has no path yet - use saveAs")
     _apply_part_number_props(d)
     d.save()
-    _drawing.mark_pages_lazy_on_disk(p)
+    _drawing.mark_pages_lazy_on_disk(p, d)
     _write_sidecar(p)
     return {"path": p}
 
@@ -5178,6 +5178,7 @@ def document_open(path):
     # that changed on disk (a pull) just re-meshes
     _TESS_CACHE.update(_TESS_BY_PATH.get(path, {}))
     d = session.open_path(path)
+    _drawing.load_view_cache(d, path)
     session.set_part_number(None)  # never inherit the previous file's PN
     try:
         sj = _sidecar_json(path)

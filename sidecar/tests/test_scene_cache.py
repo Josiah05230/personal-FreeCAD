@@ -54,3 +54,32 @@ def test_refresh_and_switching_back_reuse_meshes_but_edits_remesh(tmp_path, mesh
     session.doc(create=False).recompute()
     methods.scene_get()
     assert meshing == [1], "a moved shape must re-mesh, not reuse the old mesh"
+
+
+def test_dimensioned_drawing_reopens_from_saved_geometry(tmp_path):
+    from gwtcad import drawing
+    path = tmp_path / "dim.FCStd"
+    d = App.newDocument("dimtest")
+    box = d.addObject("Part::Feature", "Box")
+    box.Shape = Part.makeBox(40, 20, 10)
+    page = drawing.create_page(d, label="Drawing")["id"]
+    view = drawing.make_view(d, page, box, direction="front", scale=2.0)
+    drawing.add_dimension(d, page, view["id"], [{"sub": "Vertex1"}, {"sub": "Vertex2"}])
+    d.recompute()
+    d.saveAs(str(path))
+    drawing.mark_pages_lazy_on_disk(str(path), d)
+    expected = drawing.page_contents(d, page)
+    App.closeDocument(d.Name)
+
+    methods.document_open(str(path))
+    d = session.doc(create=False)
+    got = drawing.page_contents(d, page)
+    assert d.getObject(page).KeepUpdated is False
+    [ed], [gd] = expected["dimensions"], got["dimensions"]
+    assert gd["value"] == pytest.approx(ed["value"])
+    for k in ("p1", "p2"):
+        if k in ed:
+            assert gd[k] == pytest.approx(ed[k])
+    assert got["views"][0]["bbox"] == pytest.approx(expected["views"][0]["bbox"])
+    for o in list(App.listDocuments().values()):
+        App.closeDocument(o.Name)

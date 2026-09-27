@@ -143,6 +143,7 @@ def test_saved_drawing_is_lazy_on_disk_and_computed_on_first_use(generated):
     page = next(o for o in d.Objects if o.TypeId == "TechDraw::DrawPage")
     views = drawing.page_contents(d, page.Name)["views"]
     assert all(v["visible"] for v in views)
+    drawing.set_view_scale(d, views[0]["id"], 1.0)  # any real drawing edit computes the page
     assert page.KeepUpdated is True
 
 
@@ -151,7 +152,7 @@ def test_saving_keeps_the_open_page_live_but_the_file_lazy(generated):
     methods.document_open(path)
     d = session.doc(create=False)
     page = next(o for o in d.Objects if o.TypeId == "TechDraw::DrawPage")
-    drawing.page_contents(d, page.Name)  # makes it live
+    drawing._ensure_page_live(d, page)  # as any drawing edit does
     methods.document_save()
     assert page.KeepUpdated is True  # in memory: still live, no recompute forced
     assert _keep_updated_on_disk(path) == ["false"]  # on disk: lazy
@@ -178,3 +179,85 @@ def test_multi_body_vendor_model_keeps_each_body_separate(company_config, cad_re
         assert len(grp.Source) == 2
     finally:
         App.closeDocument(d.Name)
+
+
+def _payload(d, page):
+    import json  # tuples vs lists: compare what the app actually receives
+    return json.loads(json.dumps({v["id"]: (v["visible"], v["hidden"], v["bbox"], v.get("x"))
+                                  for v in drawing.page_contents(d, page.Name)["views"]}))
+
+
+def test_drawing_opens_from_saved_geometry_without_recomputing(generated):
+    # the Drawing tab used to recompute hidden lines on first view (3-10s
+    # for a dense vendor model); geometry saved with the file is used instead
+    _, path = generated
+    live = App.openDocument(path)
+    page = next(o for o in live.Objects if o.TypeId == "TechDraw::DrawPage")
+    drawing._view_cache["doc"] = None  # force a real computation for reference
+    drawing._ensure_page_live(live, page)
+    expected = _payload(live, page)
+    App.closeDocument(live.Name)
+
+    methods.document_open(path)
+    d = session.doc(create=False)
+    page = next(o for o in d.Objects if o.TypeId == "TechDraw::DrawPage")
+    got = _payload(d, page)
+    assert got.keys() == expected.keys()
+    for vid, (vis, hid, bbox, x) in got.items():
+        evis, ehid, ebbox, ex = expected[vid]
+        # hidden-line removal isn't bit-for-bit repeatable (last digit)
+        assert (len(vis), len(hid)) == (len(evis), len(ehid)), vid
+        assert all(abs(a - b) < 1e-6 for a, b in zip(bbox, ebbox)), (vid, bbox, ebbox)
+        assert x == ex or abs(x - ex) < 1e-6
+    assert page.KeepUpdated is False, "reading the drawing should not have computed it"
+    parts = [o for o in d.Objects if o.TypeId in ("TechDraw::DrawProjGroupItem", "TechDraw::DrawViewPart")]
+    assert not any(v.getVisibleEdges() for v in parts)
+    svg = drawing.export_page_svg(d, page.Name)
+    assert "<polyline" in svg and page.KeepUpdated is False
+
+
+def test_changed_model_is_recomputed_not_served_stale(generated):
+    _, path = generated
+    methods.document_open(path)
+    d = session.doc(create=False)
+    page = next(o for o in d.Objects if o.TypeId == "TechDraw::DrawPage")
+    before = _payload(d, page)
+    body = next(o for o in d.Objects if o.TypeId == "Part::Feature")
+    shape = body.Shape.copy()
+    shape.scale(2.0)
+    body.Shape = shape
+    d.recompute()
+    after = _payload(d, page)
+    assert page.KeepUpdated is True, "a changed source must compute the page"
+    assert after != before
+
+
+def test_saving_again_keeps_the_geometry_for_the_next_open(generated):
+    _, path = generated
+    methods.document_open(path)
+    methods.document_save()  # page never computed this session: carried forward
+    methods.document_open(path)
+    d = session.doc(create=False)
+    page = next(o for o in d.Objects if o.TypeId == "TechDraw::DrawPage")
+    assert all(v["visible"] for v in drawing.page_contents(d, page.Name)["views"])
+    assert page.KeepUpdated is False
+
+
+
+
+
+def test_generated_iso_is_the_same_size_in_session_and_after_reopen(generated):
+    # regression: the iso's ScaleType stayed "Page", which ignores Scale in
+    # the generating session (so the layout and PDF used a 1x iso) and flips
+    # to "Custom" on reopen (8x everywhere else)
+    _, path = generated
+    import json, zipfile
+    saved = json.loads(zipfile.ZipFile(path).read("GwtDrawingCache.json"))["views"]
+    d = App.openDocument(path)
+    page = next(o for o in d.Objects if o.TypeId == "TechDraw::DrawPage")
+    drawing._view_cache["doc"] = None
+    drawing._ensure_page_live(d, page)
+    for v in drawing._part_views(d):
+        fresh = drawing._view_bbox(*drawing._compute_view_payload(v))
+        cached = drawing._view_bbox(saved[v.Name]["visible"], saved[v.Name]["hidden"])
+        assert all(abs(a - b) < 1e-6 for a, b in zip(fresh, cached)), (v.Name, fresh, cached)

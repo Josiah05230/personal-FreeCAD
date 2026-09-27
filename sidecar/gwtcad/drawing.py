@@ -104,7 +104,14 @@ def _project_offset(view):
     against the min corner of the already-projected polylines (both are
     plain axis-aligned min/max over the same point set, immune to ordering).
     """
+    cached = _cached_view(view)
+    if cached is not None:
+        return tuple(cached["offset"])
     _wake_view(view)
+    return _compute_project_offset(view)
+
+
+def _compute_project_offset(view):
     edges = list(view.getVisibleEdges() or []) + list(view.getHiddenEdges() or [])
     if not edges:
         return (0.0, 0.0)
@@ -157,10 +164,8 @@ def _view_uv_to_sheet(view, uv):
     with no References2D-style live binding at all; a caller only ever has
     a point relative to the view it clicked on, so this conversion has to
     happen at write time (see add_note's leader_point)."""
-    _wake_view(view)
     try:
-        vis = _edges_to_polylines(view.getVisibleEdges()) if hasattr(view, "getVisibleEdges") else []
-        hid = _edges_to_polylines(view.getHiddenEdges()) if hasattr(view, "getHiddenEdges") else []
+        vis, hid = _part_view_payload(view)
     except Exception:
         vis, hid = [], []
     minX, minY, maxX, maxY = _view_bbox(vis, hid)
@@ -199,11 +204,14 @@ def list_pages(doc):
     return out
 
 
-def get_page(doc, page_id):
+def get_page(doc, page_id, wake=True):
+    """wake=False for pure reads (page_contents, export) that can be served
+    from the saved view geometry cache without computing the page."""
     if page_id:
         p = doc.getObject(page_id)
         if p is not None and p.TypeId == "TechDraw::DrawPage":
-            _ensure_page_live(doc, p)
+            if wake:
+                _ensure_page_live(doc, p)
             return p
     raise RpcError(APP_ERROR, "no such drawing page: %r" % page_id)
 
@@ -227,18 +235,20 @@ _KEEP_UPDATED_TRUE = re.compile(
     rb'(<Property name="KeepUpdated" type="App::PropertyBool"[^>]*>\s*<Bool value=")true(")')
 
 
-def mark_pages_lazy_on_disk(path):
+def mark_pages_lazy_on_disk(path, doc=None):
     """Rewrite a just-saved .FCStd so every drawing page loads with
     KeepUpdated=False - the file on DISK loads instantly, while the open
     document in memory stays fully live (toggling the in-memory property
     around each save would instead force a full view recompute afterward).
     FreeCAD's own GUI shows such a page as "not up to date" until someone
-    updates it; nothing is lost - view geometry is never stored in the file
-    anyway, only recomputed. No-op for a file without drawing pages."""
+    updates it. With `doc` (the document just saved), also stores each
+    view's computed geometry (see "saved view geometry" above) so the
+    drawing itself opens without recomputing. No-op for a file without
+    drawing pages."""
     import zipfile
     try:
         with zipfile.ZipFile(path) as zf:
-            entries = [(i, zf.read(i.filename)) for i in zf.infolist()]
+            entries = [(i, zf.read(i.filename)) for i in zf.infolist() if i.filename != _CACHE_ENTRY]
     except (OSError, zipfile.BadZipFile):
         return False
     changed = False
@@ -249,13 +259,21 @@ def mark_pages_lazy_on_disk(path):
             if n:
                 data, changed = new_data, True
         out.append((info, data))
-    if not changed:
+    cache = _collect_view_cache(doc) if doc is not None else {}
+    if not changed and not cache:
         return False
     tmp = path + ".lazytmp"
-    with zipfile.ZipFile(tmp, "w") as zf:
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
         for info, data in out:
             zf.writestr(info, data)
+        if cache:
+            zf.writestr(_CACHE_ENTRY, json.dumps({"version": _CACHE_VERSION, "views": cache},
+                                                 separators=(",", ":")))
     os.replace(tmp, path)
+    if doc is not None:
+        # the in-memory document now matches what was just written
+        _view_cache["doc"] = doc.Name
+        _view_cache["views"] = cache
     return True
 
 
@@ -271,7 +289,7 @@ def create_page(doc, label=None):
 
 
 def delete_page(doc, page_id):
-    page = get_page(doc, page_id)
+    page = get_page(doc, page_id, wake=False)
     views = list(page.Views)
     tmpl = page.Template
     doc.removeObject(page.Name)
@@ -290,7 +308,7 @@ def delete_page(doc, page_id):
 
 
 def rename_page(doc, page_id, label):
-    page = get_page(doc, page_id)
+    page = get_page(doc, page_id, wake=False)
     page.Label = label
     session.rename_drawing(page_id, page.Label)
     return {"id": page.Name, "label": page.Label}
@@ -302,7 +320,7 @@ def page_contents(doc, page_id):
     the TechDraw/Spreadsheet objects themselves are the only persisted
     state (see module docstring), so this just re-derives the same payload
     shapes make_view/add_dimension/add_note/make_table already return."""
-    page = get_page(doc, page_id)
+    page = get_page(doc, page_id, wake=False)
     views, dimensions, notes, tables, images = [], [], [], [], []
     for o in page.Views:
         tid = o.TypeId
@@ -779,7 +797,7 @@ def export_page_svg(doc, page_id):
         not reproduced - there is nothing in page_contents/the .FCStd to read
         it from.
     """
-    page = get_page(doc, page_id)
+    page = get_page(doc, page_id, wake=False)
     contents = page_contents(doc, page_id)
     sheet_w, sheet_h = _sheet_size(page)
 
@@ -1223,12 +1241,181 @@ def _wake_view(view):
 
 
 def _part_view_payload(view):
+    cached = _cached_view(view)
+    if cached is not None:
+        return cached["visible"], cached["hidden"]
     _wake_view(view)
+    return _compute_view_payload(view)
+
+
+def _compute_view_payload(view):
     vis = _edges_to_polylines(view.getVisibleEdges()) if hasattr(view, "getVisibleEdges") else []
     hid = _edges_to_polylines(view.getHiddenEdges()) if hasattr(view, "getHiddenEdges") else []
     if not vis and not hid:
         raise RpcError(APP_ERROR, "drawing view produced no geometry")
     return vis, hid
+
+
+# --------------------------------------------------------------------------- #
+# saved view geometry
+#
+# Hidden-line removal is the slow part of a drawing (3-10s for a dense
+# vendor model), and TechDraw never stores its results in the file. So on
+# save, each view's computed edges go into an extra GwtDrawingCache.json
+# entry in the .FCStd zip (plain FreeCAD ignores it), keyed by everything
+# that shapes the projection: the view's own properties, the linked views
+# it depends on, and a signature of each source shape. A page that hasn't
+# been touched yet this session (still lazy, see _ensure_page_live) is
+# served from that cache; any mismatch - the model or the view changed -
+# falls back to computing it for real.
+# --------------------------------------------------------------------------- #
+
+_CACHE_ENTRY = "GwtDrawingCache.json"
+_CACHE_VERSION = 1
+# position/cosmetic properties that never change a view's projected edges
+_KEY_SKIP = {"X", "Y", "Label", "Label2", "Visibility", "LockPosition", "Caption",
+             "ExpressionEngine", "Views", "Anchor", "spacingX", "spacingY",
+             "AutoDistribute", "Rotation",
+             # how Scale was chosen, not the scale itself (which is keyed);
+             # TechDraw rewrites it on load
+             "ScaleType"}
+_view_cache = {"doc": None, "views": {}}
+
+
+def _norm(v, depth):
+    if isinstance(v, bool) or v is None or isinstance(v, (int, str)):
+        return v
+    if isinstance(v, float):
+        return round(v, 6)
+    if isinstance(v, (list, tuple)):
+        return [_norm(x, depth) for x in v]
+    if isinstance(v, App.Vector):
+        return [round(v.x, 6), round(v.y, 6), round(v.z, 6)]
+    if isinstance(v, App.Placement):
+        return [_norm(v.Base, depth), [round(q, 6) for q in v.Rotation.Q]]
+    if hasattr(v, "Value") and hasattr(v, "Unit"):  # Quantity
+        return round(float(v.Value), 6)
+    if hasattr(v, "TypeId") and hasattr(v, "Name"):  # a linked document object
+        return _object_key(v, depth + 1)
+    return None  # anything else (shapes, templates...) is covered elsewhere
+
+
+_shape_key_memo = {}
+
+
+def _shape_key(shape):
+    # hashCode identifies the underlying shape (new geometry = new code) and
+    # is free, while Area on a dense model is not
+    h = shape.hashCode()
+    hit = _shape_key_memo.get(h)
+    if hit is not None:
+        return hit
+    if len(_shape_key_memo) > 256:
+        _shape_key_memo.clear()
+    pts = [x.Point for x in shape.Vertexes]
+    vb = ((min(p.x for p in pts), min(p.y for p in pts), min(p.z for p in pts),
+           max(p.x for p in pts), max(p.y for p in pts), max(p.z for p in pts))
+          if pts else (0.0,) * 6)
+    key = [len(shape.Faces), len(shape.Edges), len(pts), round(shape.Area, 4)] + [round(c, 4) for c in vb]
+    _shape_key_memo[h] = key
+    return key
+
+
+def _object_key(o, depth=0):
+    if depth > 4:
+        return o.Name
+    if not o.TypeId.startswith("TechDraw::"):
+        shape = getattr(o, "Shape", None)
+        try:
+            if shape is None or shape.isNull():
+                return [o.Name]
+            return [o.Name, _norm(o.Placement, depth) if hasattr(o, "Placement") else None, _shape_key(shape)]
+        except Exception:
+            return [o.Name]
+    out = [o.TypeId]
+    for prop in sorted(o.PropertiesList):
+        if prop in _KEY_SKIP or prop.startswith("_gwt"):
+            continue
+        try:
+            out.append([prop, _norm(getattr(o, prop), depth)])
+        except Exception:
+            continue
+    return out
+
+
+def _view_key(view):
+    parts = [_object_key(view)]
+    for parent in view.InList:  # a projection group item's scale lives on its group
+        if parent.TypeId == "TechDraw::DrawProjGroup":
+            parts.append(_object_key(parent))
+    return json.dumps(parts, sort_keys=True, default=str)
+
+
+def _page_is_lazy(view):
+    page = _page_of(view)
+    return page is not None and not getattr(page, "KeepUpdated", True)
+
+
+def _cached_view(view):
+    """The saved geometry for `view`, if its page hasn't been computed this
+    session and nothing that shapes the view changed since it was saved."""
+    if _view_cache["doc"] != view.Document.Name or not _page_is_lazy(view):
+        return None
+    entry = _view_cache["views"].get(view.Name)
+    if entry is None or entry.get("key") != _view_key(view):
+        return None
+    return entry
+
+
+def load_view_cache(doc, path):
+    """Called right after opening `path` as `doc`."""
+    import zipfile
+    _view_cache["doc"] = doc.Name
+    _view_cache["views"] = {}
+    try:
+        with zipfile.ZipFile(path) as zf:
+            data = json.loads(zf.read(_CACHE_ENTRY))
+    except Exception:
+        return
+    if data.get("version") == _CACHE_VERSION:
+        _view_cache["views"] = data.get("views", {})
+
+
+def _part_views(doc):
+    return [o for o in doc.Objects
+            if o.TypeId in ("TechDraw::DrawViewPart", "TechDraw::DrawViewSection",
+                            "TechDraw::DrawViewDetail", "TechDraw::DrawBrokenView",
+                            "TechDraw::DrawProjGroupItem")]
+
+
+def _scale_pending_reload(view):
+    """A plain view with ScaleType "Page" ignores its own Scale until the
+    file is reopened, when TechDraw switches it to "Custom" - its in-memory
+    geometry is not what the next open will show."""
+    if view.TypeId == "TechDraw::DrawProjGroupItem" or getattr(view, "ScaleType", "") != "Page":
+        return False
+    page = _page_of(view)
+    page_scale = float(getattr(page, "Scale", 1.0)) if page is not None else 1.0
+    return abs(float(view.Scale) - page_scale) > 1e-9
+
+
+def _collect_view_cache(doc):
+    views = {}
+    for v in _part_views(doc):
+        if _scale_pending_reload(v):
+            continue  # what a reload computes differs from what's in memory
+        if _page_is_lazy(v):
+            entry = _cached_view(v)  # never computed this session: carry forward if still valid
+            if entry is not None:
+                views[v.Name] = {k: entry[k] for k in ("key", "visible", "hidden", "offset")}
+            continue
+        try:
+            vis, hid = _compute_view_payload(v)
+            views[v.Name] = {"key": _view_key(v), "visible": vis, "hidden": hid,
+                             "offset": list(_compute_project_offset(v))}
+        except Exception:
+            continue
+    return views
 
 
 def _needs_fit(view, kind):
@@ -1282,6 +1469,8 @@ def make_view(doc, page_id, source_obj, direction="front", scale=1.0):
     page.addView(view)
     view.Source = list(source_obj) if isinstance(source_obj, (list, tuple)) else [source_obj]
     view.Direction = App.Vector(*d)
+    if hasattr(view, "ScaleType"):
+        view.ScaleType = "Custom"  # "Page" ignores Scale until the file is reopened
     view.Scale = float(scale)
     view.Label = "%s view" % direction.title()
     _tag(view, "_gwt_dir", direction)

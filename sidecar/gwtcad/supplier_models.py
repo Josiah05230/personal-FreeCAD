@@ -417,6 +417,10 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
 
     iso_result = _drawing.make_view(doc, page_id, part_obj, direction="iso", scale=1.0)
     iso_view = doc.getObject(iso_result["id"])
+    # "Page" (the default) ignores Scale in this session but flips to
+    # "Custom" when the file is reopened - the iso was laid out and printed
+    # 1x here yet showed 8x everywhere else
+    iso_view.ScaleType = "Custom"
     iso_view.Scale = _fit_scale(iso_result["bbox"], _ISO_TARGET_W, _ISO_TARGET_H)
     doc.recompute()
     _drawing.set_view_position(doc, iso_result["id"], _ISO_X, _ISO_Y)
@@ -720,7 +724,7 @@ def _generate_supplier_drawing(pn):
             from .methods import _apply_part_number_props
             _apply_part_number_props(doc)
             doc.saveAs(fcstd_path)
-            _drawing.mark_pages_lazy_on_disk(fcstd_path)
+            _drawing.mark_pages_lazy_on_disk(fcstd_path, doc)
 
             svg = _drawing.export_page_svg(doc, page_id)
             svg_path = os.path.join(tmpdir, "%s.svg" % pn)
