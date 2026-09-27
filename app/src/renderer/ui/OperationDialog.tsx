@@ -977,9 +977,13 @@ export function OperationDialog({
       Array.from(slotKeyOf.current.values()).filter((v) => v === key).length
     const activeCount = countIn(activeSlot.key)
     if (activeCount >= capOf(activeSlot)) {
-      // only into a shown box that still needs picks - once every box is
-      // satisfied stay put, so a stray click cannot land in an unexpected box
-      const nextSlot = visSlots.find((s) => s.key !== activeSlot.key && countIn(s.key) < s.min)
+      // a shown box that still needs picks first; else one with a cap that
+      // still has room (Revolve's optional Axis). Never an open-ended box
+      // (Move's Objects) - a stray click there would silently re-target.
+      const others = visSlots.filter((s) => s.key !== activeSlot.key)
+      const nextSlot =
+        others.find((s) => countIn(s.key) < s.min) ??
+        others.find((s) => s.max != null && countIn(s.key) < s.max)
       if (nextSlot) setArmedSlot(nextSlot.key)
     }
     // always bump after a real map mutation - relying on setArmedSlot above
