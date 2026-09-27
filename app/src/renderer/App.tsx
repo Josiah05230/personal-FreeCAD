@@ -708,6 +708,7 @@ export function App(): JSX.Element {
     trace('ACTION openOp', { k, from: opRef.current, queueBusy: cmdRef.current.busy })
     setOp(k)
     setMoveLive(null)
+    setMovePush(null) // a fresh dialog must not replay the last drag's values
     if (k == null) setDressUpGhost([]) // dialog closed - drop the ghost overlay
     // Move with nothing selected in a one-body document: that body is the
     // obvious target (more bodies - pick them, as in Fusion)
