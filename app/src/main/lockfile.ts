@@ -4,7 +4,8 @@
  *  watch instead, see gitWatch.ts).
  *
  *  One lock file per part, committed to the SAME shared repo the part
- *  lives in (`<partDir>/.gwtcad-lock.json`) - visible to every clone via a
+ *  lives in (`<dir>/.<file>.gwtcad-lock.json`, per FILE since parts share
+ *  a folder in the flat <project>/<type>/ layout) - visible to every clone via a
  *  normal pull/fetch, no separate server or daemon needed. This mirrors
  *  assemblyPin.ts's companion-file convention (a plain JSON file next to
  *  the thing it describes) rather than inventing a new persistence
@@ -17,7 +18,7 @@
  *  exists as a fallback for. */
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
 import { hostname, userInfo } from 'os'
-import { dirname, join } from 'path'
+import { basename, dirname, join } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { GitError } from './git'
@@ -62,7 +63,7 @@ function isMine(lock: LockInfo, partFilePath: string): boolean {
 }
 
 function lockPath(partFilePath: string): string {
-  return join(dirname(partFilePath), '.gwtcad-lock.json')
+  return join(dirname(partFilePath), `.${basename(partFilePath)}.gwtcad-lock.json`)
 }
 
 function readLock(partFilePath: string): LockInfo | null {
@@ -86,7 +87,7 @@ export type AcquireResult =
   | { status: 'held'; lock: LockInfo }
   | { status: 'unreachable' } // couldn't confirm/deny - degrade to a warning, never block
 
-/** Attempt to acquire the lock for `partFilePath`'s part folder. Caller
+/** Attempt to acquire the lock for the part at `partFilePath`. Caller
  *  should have already pulled the repo (see gitSync.ts) so this sees the
  *  freshest known state before deciding - a stale local pull could show a
  *  lock as absent when someone just took it a moment ago. */
@@ -170,7 +171,7 @@ async function commitLock(partFilePath: string, lock: LockInfo): Promise<string>
   const cwd = dirname(partFilePath)
   writeFileSync(lockPath(partFilePath), JSON.stringify(lock, null, 2), 'utf8')
   await git(cwd, ['add', lockPath(partFilePath)])
-  await git(cwd, ['commit', '-m', `lock: ${lock.holder} opened ${dirname(partFilePath).split('/').pop()}`])
+  await git(cwd, ['commit', '-m', `lock: ${lock.holder} opened ${basename(partFilePath).replace(/\.fcstd$/i, '')}`])
   return (await git(cwd, ['rev-parse', 'HEAD'])).trim()
 }
 
