@@ -579,6 +579,10 @@ def reset():
     _drawing_seq[0] = 0
     _dim_formats.clear()
     _dim_format_default.clear()
+    # a new/reopened document starts untagged - without this the PREVIOUS
+    # part's PN leaked into whatever opened next (wrong title block, and
+    # the next Save wrote that wrong PN into the file)
+    _part_number.clear()
     return d
 
 
