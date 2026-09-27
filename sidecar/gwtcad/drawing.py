@@ -288,16 +288,40 @@ def create_page(doc, label=None):
     return {"id": page.Name, "label": page.Label}
 
 
+def _page_objects(page):
+    """Every view on a page, parents before children (projection groups
+    before their items), plus the spreadsheets behind table views."""
+    out, seen = [], set()
+
+    def add(o):
+        if o is None or o.Name in seen:
+            return
+        seen.add(o.Name)
+        out.append(o)
+        for child in getattr(o, "Views", []) or []:
+            add(child)
+        src = getattr(o, "Source", None)
+        if o.TypeId == "TechDraw::DrawViewSpreadsheet" and src is not None:
+            add(src)
+
+    for v in page.Views:
+        add(v)
+    return out
+
+
 def delete_page(doc, page_id):
+    """Children first: removing a page that still holds a projection group
+    segfaults FreeCAD 1.1.1 (found regenerating a supplier drawing)."""
     page = get_page(doc, page_id, wake=False)
-    views = list(page.Views)
+    objs = _page_objects(page)
     tmpl = page.Template
-    doc.removeObject(page.Name)
-    for v in views:
+    for o in reversed(objs):
         try:
-            doc.removeObject(v.Name)
+            if doc.getObject(o.Name) is not None:
+                doc.removeObject(o.Name)
         except Exception:
             pass
+    doc.removeObject(page.Name)
     if tmpl is not None:
         try:
             doc.removeObject(tmpl.Name)

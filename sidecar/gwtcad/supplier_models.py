@@ -718,6 +718,7 @@ def _generate_supplier_drawing(pn):
             _apply_grainwave_template(doc, page_id, part_obj, pn, title_name, title_description, notes=notes)
             _coarsen_views(doc)  # catches the iso view too
             doc.recompute()
+            _stamp_auto_drawing(doc, doc.getObject(page_id), title_name, title_description, notes)
 
             # persist the PN into the file itself (plain doc.saveAs skips the
             # document.save RPC that normally does this) - otherwise every
@@ -763,12 +764,150 @@ def _has_drawing_page(fcstd_path):
     """Opens fcstd_path (briefly) and checks for a real TechDraw::DrawPage -
     the actual gate condition for "this part has a drawing", not just "the
     file exists" (a designed part's FCStd obviously exists; that says
-    nothing about whether anyone's actually drawn it yet)."""
+    nothing about whether anyone's actually drawn it yet).
+
+    A file that's already open (the part being promoted is normally the
+    one on screen) is read in place and left open: App.openDocument hands
+    back that same document, so closing it here used to close the user's
+    open part out from under the session."""
+    real = os.path.realpath(fcstd_path)
+    for d in App.listDocuments().values():
+        if d.FileName and os.path.realpath(d.FileName) == real:
+            return any(o.TypeId == "TechDraw::DrawPage" for o in d.Objects)
     doc = App.openDocument(fcstd_path)
     try:
         return any(o.TypeId == "TechDraw::DrawPage" for o in doc.Objects)
     finally:
         App.closeDocument(doc.Name)
+
+
+# --------------------------------------------------------------------------- #
+# Drawings across a revision: an auto-generated drawing nobody has touched
+# is regenerated from the new revision's geometry when that revision goes
+# active; one a person has edited is kept (its views already follow the
+# model live) with only its title block brought up to the new PN.
+# --------------------------------------------------------------------------- #
+
+# what a person can change on a sheet: placement, scale, orientation, text,
+# dimension/table content. Computed geometry is left out on purpose - moving
+# a body changes the views' lines but is a model edit, not a drawing edit.
+_SIG_PROPS = ("X", "Y", "Scale", "Rotation", "Direction", "XDirection",
+              "Caption", "Text", "FormatSpec", "Arbitrary", "Type", "References2D",
+              "CellStart", "CellEnd", "TextSize", "Font", "spacingX", "spacingY",
+              "ProjectionType", "_gwt_rawrows", "_gwt_style")
+# a projection group's items are placed and scaled by the group (and
+# FreeCAD re-derives them on reopen: ScaleType Page -> Custom, X/Y from
+# AutoDistribute) - the group's own X/Y/Scale/spacing is what a person moves
+_SIG_SKIP_ON_GROUP_ITEMS = ("X", "Y", "Scale")
+
+
+def _sig_value(v):
+    if hasattr(v, "Value") and hasattr(v, "Unit"):  # Base.Quantity (X, Y, ...)
+        v = v.Value
+    if isinstance(v, float):
+        return round(v, 3)
+    if hasattr(v, "x") and hasattr(v, "y") and hasattr(v, "z"):
+        return (round(v.x, 4), round(v.y, 4), round(v.z, 4))
+    if isinstance(v, (list, tuple)):
+        return [_sig_value(x) for x in v]
+    if hasattr(v, "Name"):
+        return v.Name
+    return str(v)
+
+
+def _page_sig_items(page):
+    items = []
+    for o in sorted(_drawing._page_objects(page), key=lambda o: o.Name):
+        props = {}
+        for name in _SIG_PROPS:
+            if o.TypeId == "TechDraw::DrawProjGroupItem" and name in _SIG_SKIP_ON_GROUP_ITEMS:
+                continue
+            if name in o.PropertiesList:
+                try:
+                    props[name] = _sig_value(getattr(o, name))
+                except Exception:
+                    pass
+        items.append([o.Name, o.TypeId, props])
+    return items
+
+
+def page_signature(page):
+    import hashlib
+    return hashlib.sha1(json.dumps(_page_sig_items(page), sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _stamp_auto_drawing(doc, page, title_name, title_description, notes):
+    """Mark a page as generated, with the fingerprint it had when it was.
+    A later fingerprint that still matches means nobody has edited it."""
+    doc.recompute()
+    _drawing._tag(page, "_gwt_autogen", json.dumps({
+        "kind": "supplier", "sig": page_signature(page),
+        "titleName": title_name, "titleDescription": title_description, "notes": notes or [],
+    }))
+
+
+def _auto_drawing_info(page):
+    raw = _drawing._get_tag(page, "_gwt_autogen")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def _drawing_sources(doc, page):
+    """The model objects a page draws - taken from its own projection
+    group, so a regenerated page shows exactly what the original did."""
+    for o in _drawing._page_objects(page):
+        if o.TypeId == "TechDraw::DrawProjGroup" and o.Source:
+            return list(o.Source)
+    solids = [o for o in doc.Objects
+              if o.TypeId in ("Part::Feature", "PartDesign::Body") and getattr(o, "Visibility", True)
+              and not o.TypeId.startswith("TechDraw")]
+    return [o for o in solids if getattr(o, "Shape", None) is not None and not o.Shape.isNull()]
+
+
+@method("drawing.refreshForRevision")
+def refresh_drawing_for_revision():
+    """Bring the open part's drawings up to date for its current revision
+    (called when a revision is promoted to active). Per page:
+      - generated and untouched since (fingerprint matches): rebuilt from
+        the current geometry - same template, notes and title text;
+      - edited by a person, or not generated here: kept as is - its views
+        already follow the model - with table cells (the title block's
+        =PN/=NAME/=DESCRIPTION) re-resolved so the sheet and its PDF show
+        the new revision's PN.
+    Returns {"pages": [{"id", "label", "action": "regenerated"|"kept"}]}."""
+    doc = _session.doc(create=False)
+    if doc is None:
+        raise RpcError(APP_ERROR, "no document")
+    pn = (_session.part_number() or {}).get("pn")
+    out = []
+    for page in [o for o in doc.Objects if o.TypeId == "TechDraw::DrawPage"]:
+        _drawing._ensure_page_live(doc, page)
+        info = _auto_drawing_info(page)
+        label = page.Label
+        if pn and info and info.get("sig") == page_signature(page):
+            sources = _drawing_sources(doc, page)
+            if sources:
+                # the equivalence note names the PN - carry it to this rev
+                notes = [pn + n[n.index(" IS EQUIVALENT TO "):] if " IS EQUIVALENT TO " in n else n
+                         for n in info.get("notes", [])]
+                name, description = info.get("titleName", ""), info.get("titleDescription", "")
+                _drawing.delete_page(doc, page.Name)
+                new_page = _drawing.create_page(doc, label=label)
+                _apply_grainwave_template(doc, new_page["id"], sources, pn, name, description, notes=notes)
+                _coarsen_views(doc)
+                doc.recompute()
+                page = doc.getObject(new_page["id"])
+                _stamp_auto_drawing(doc, page, name, description, notes)
+                out.append({"id": page.Name, "label": page.Label, "action": "regenerated"})
+                continue
+        _tables.refresh_live_cells(doc, page)
+        doc.recompute()
+        out.append({"id": page.Name, "label": page.Label, "action": "kept"})
+    return {"pages": out}
 
 
 @method("pn.ensureDrawingOrBlock")

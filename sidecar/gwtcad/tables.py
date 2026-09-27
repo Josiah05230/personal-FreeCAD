@@ -284,6 +284,32 @@ def make_table(doc, page_id, rows, columns=None, template=None, table_id=None, s
     }
 
 
+def refresh_live_cells(doc, page):
+    """Re-resolve every table cell on `page` from its raw row data - the
+    spreadsheet holds resolved text, so a "=PN" title-block cell otherwise
+    keeps the PN it had when the table was last edited (a new revision's
+    sheet, and its exported PDF, would still name the old revision)."""
+    for v in list(page.Views):
+        if v.TypeId != "TechDraw::DrawViewSpreadsheet" or v.Source is None:
+            continue
+        sheet = v.Source
+        try:
+            columns = json.loads(getattr(sheet, "_gwt_columns", "") or "null")
+            rows = json.loads(getattr(sheet, "_gwt_rawrows", "") or "null")
+        except Exception:
+            continue
+        if not columns or rows is None:
+            continue
+        for r, row in enumerate(rows, start=2):
+            for i, col in enumerate(columns):
+                cell = "%s%d" % (chr(ord("A") + i), r)
+                value = _cell_value(row, col)
+                # getContents quotes text ("'CMB0010")
+                if sheet.getContents(cell).lstrip("'") != value:
+                    sheet.set(cell, value)
+    doc.recompute()
+
+
 def _apply_table_style(view, style):
     """Persist a table's position + display style so it round-trips with the
     .FCStd instead of resetting to a hardcoded corner/default every reopen
