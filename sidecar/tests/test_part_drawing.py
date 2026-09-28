@@ -65,3 +65,27 @@ def test_promoting_the_open_part_draws_it_in_place(bracket):
     assert d is not None and d.FileName == bracket  # still the open part
     assert any(o.TypeId == "TechDraw::DrawPage" for o in d.Objects)
     assert _pages(bracket) == 1
+
+
+def test_the_startup_scan_draws_in_a_separate_process(bracket, monkeypatch, tmp_path):
+    # the engine thread must never wait on hidden-line removal: the scan is
+    # a detached freecadcmd that finishes on its own
+    import time
+    monkeypatch.setenv("GWTCAD_CONFIG_DIR", str(tmp_path / "cfg"))
+    os.makedirs(str(tmp_path / "cfg"))
+    import shutil
+    shutil.copy(pn._CONFIG_PATH, str(tmp_path / "cfg" / "company.json"))
+    t = time.time()
+    pid = sm.start_missing_drawings_job()
+    assert pid and time.time() - t < 2
+    for _ in range(600):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+        time.sleep(0.25)
+    assert sm._file_has_drawing(bracket)

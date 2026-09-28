@@ -296,7 +296,7 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     # confirmed by comparing the rendered geometry against the earlier
     # "top" projection, not just the label.
     group_dirs = ["front", "bottom", "right"]
-    probe = _drawing.make_projection_group(doc, page_id, part_obj, group_dirs, anchor="front", scale=1.0)
+    probe = _drawing.make_projection_group(doc, page_id, part_obj, group_dirs, anchor="front", scale=1.0, coarse=True)
     grp = doc.getObject(probe["groupId"])
     grp.ScaleType = "Custom"
     _coarsen_views(doc)
@@ -417,7 +417,7 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     else:
         assert real_max_y <= _SHEET_H - _MARGIN + 1e-6, "group runs off the sheet's bottom edge: %s" % real_max_y
 
-    iso_result = _drawing.make_view(doc, page_id, part_obj, direction="iso", scale=1.0)
+    iso_result = _drawing.make_view(doc, page_id, part_obj, direction="iso", scale=1.0, coarse=True)
     iso_view = doc.getObject(iso_result["id"])
     # "Page" (the default) ignores Scale in this session but flips to
     # "Custom" when the file is reopened - the iso was laid out and printed
@@ -1224,9 +1224,10 @@ def generate_missing_drawings():
 @method("supplierModels.syncAndGenerateAll")
 def sync_and_generate_all():
     """Startup scan: organize every pending supplier model and draw every
-    PN that now has a .stp but no drawing, then give every other part with
-    geometry but no drawing one from its own file. The second half runs
-    even when the supplier half can't (no Firebase key, offline)."""
+    PN that now has a .stp but no drawing, then start a background job that
+    gives every other part with geometry but no drawing one from its own
+    file. That job runs in its own process (the engine thread stays free)
+    and even when the supplier half can't (no Firebase key, offline)."""
     sync_results, drawing_results = [], []
     try:
         sync_results = sync_supplier_models()
@@ -1238,5 +1239,28 @@ def sync_and_generate_all():
             drawing_results.append(generate_supplier_drawing(pn))
         except RpcError as e:
             drawing_results.append({"pn": pn, "ok": False, "error": e.message})
-    drawing_results.extend(generate_missing_drawings())
-    return {"sync": sync_results, "drawings": drawing_results}
+    return {"sync": sync_results, "drawings": drawing_results,
+            "missingDrawingsJob": start_missing_drawings_job()}
+
+
+def start_missing_drawings_job():
+    """generate_missing_drawings in a detached freecadcmd, so the engine
+    thread (and the app) never waits on it. Returns its pid, or None when
+    it couldn't start. The job itself keeps a single instance running."""
+    import subprocess
+    exe = os.path.join(App.getHomePath(), "bin", "freecadcmd")
+    if not os.path.isfile(exe):
+        return None
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = dict(os.environ, GWTCAD_SIDECAR_DIR=here)
+    env.pop("GWTCAD_PORT", None)
+    log = open(os.path.join(os.path.dirname(_pn._CONFIG_PATH), "draw-missing.log"), "a")
+    try:
+        p = subprocess.Popen([exe, os.path.join(here, "gwtcad", "draw_missing.py")], env=env,
+                             stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                             start_new_session=True)
+    except OSError:
+        return None
+    finally:
+        log.close()
+    return p.pid

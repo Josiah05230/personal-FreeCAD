@@ -1492,11 +1492,13 @@ def set_view_scale(doc, view_id, scale):
             "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid)}
 
 
-def make_view(doc, page_id, source_obj, direction="front", scale=1.0):
+def make_view(doc, page_id, source_obj, direction="front", scale=1.0, coarse=False):
     """source_obj is normally a single body/object; also accepts a real list
     (an assembly's several App::Link components) - TechDraw's own Source
     property natively unions the projected geometry of every object in it,
-    same mechanism the GUI uses for "select the whole assembly, add view"."""
+    same mechanism the GUI uses for "select the whole assembly, add view".
+    `coarse` uses polygonal hidden-line removal from the very first compute
+    (exact HLR on a threaded or spring-laden vendor model takes minutes)."""
     page = get_page(doc, page_id)
     direction = _norm_dir(direction)
     d = _DIRS[direction]
@@ -1509,6 +1511,8 @@ def make_view(doc, page_id, source_obj, direction="front", scale=1.0):
         view.ScaleType = "Custom"  # "Page" ignores Scale until the file is reopened
     view.Scale = float(scale)
     view.Label = "%s view" % direction.title()
+    if coarse and hasattr(view, "CoarseView"):
+        view.CoarseView = True
     _tag(view, "_gwt_dir", direction)
     _tag(view, "_gwt_kind", "part")
     doc.recompute()
@@ -1535,7 +1539,7 @@ _PROJ_GROUP_TYPES = {
 }
 
 
-def make_projection_group(doc, page_id, source_obj, directions, anchor=None, scale=1.0):
+def make_projection_group(doc, page_id, source_obj, directions, anchor=None, scale=1.0, coarse=False):
     """A REAL first/third-angle projection group (TechDraw::DrawProjGroup) -
     one Anchor view plus N projected views, all sharing ONE Scale enforced
     by TechDraw itself (there is no way for a projection group's members to
@@ -1583,6 +1587,8 @@ def make_projection_group(doc, page_id, source_obj, directions, anchor=None, sca
     items = []
     for d in dirs:
         item = grp.addProjection(_PROJ_GROUP_TYPES[d])
+        if coarse and hasattr(item, "CoarseView"):
+            item.CoarseView = True  # before its first compute - see make_view
         doc.recompute()
         _tag(item, "_gwt_dir", d)
         items.append((d, item))
