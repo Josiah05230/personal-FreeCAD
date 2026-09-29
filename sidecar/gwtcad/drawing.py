@@ -1630,8 +1630,6 @@ def make_projection_group(doc, page_id, source_obj, directions, anchor=None, sca
         item = grp.addProjection(_PROJ_GROUP_TYPES[d])
         if coarse and hasattr(item, "CoarseView"):
             item.CoarseView = True  # before its first compute - see make_view
-        if not coarse:
-            doc.recompute()
         _tag(item, "_gwt_dir", d)
         items.append((d, item))
     # ScaleType defaults to "Automatic" - TechDraw computes and OVERRIDES
@@ -1644,8 +1642,8 @@ def make_projection_group(doc, page_id, source_obj, directions, anchor=None, sca
         grp.ScaleType = "Custom"
     if abs(float(grp.Scale) - float(scale)) > 1e-12:
         grp.Scale = float(scale)
-    # coarse (generated) groups add every item first and compute once -
-    # each recompute in between re-laid-out and re-ran the earlier items
+    # every item is added first and the group computes once - a recompute
+    # after each addition re-laid-out and re-ran the earlier items
     doc.recompute()
 
     out = []

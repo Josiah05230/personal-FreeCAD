@@ -116,10 +116,10 @@ def test_edited_drawing_is_kept_but_updated_to_the_new_revision(rev1):
     d = session.doc(create=False)
     page = _page(d)
     sm._drawing._ensure_page_live(d, page)
-    iso = next(o for o in d.Objects if o.TypeId == "TechDraw::DrawViewPart"
-               and o.InList and not any(p.TypeId == "TechDraw::DrawProjGroup" for p in o.InList))
-    iso.X = iso.X.Value + 15.0  # the user dragged a view
+    iso = _iso(d)
+    iso.X = float(iso.X) + 15.0  # the user dragged the iso
     d.recompute()
+    dragged_center = float(iso.X) + float(iso.Width) / 2
     before = sorted(o.Name for o in d.Objects)
 
     out = sm.refresh_drawing_for_revision()
@@ -127,6 +127,8 @@ def test_edited_drawing_is_kept_but_updated_to_the_new_revision(rev1):
     assert sorted(o.Name for o in d.Objects) == before  # nothing rebuilt
     assert "CMB0011" in _title_cells(d)
     assert "CMB0010" not in _title_cells(d)
+    iso = _iso(d)  # re-rendered where the user left it
+    assert abs(float(iso.X) + float(iso.Width) / 2 - dragged_center) < 0.01
 
 
 def test_promotion_gate_leaves_the_open_part_open(rev1):
@@ -155,8 +157,14 @@ def _view_bbox(d, view):
 
 
 def _iso(d):
-    return next(o for o in d.Objects if o.TypeId == "TechDraw::DrawViewPart"
-                and not any(p.TypeId == "TechDraw::DrawProjGroup" for p in o.InList))
+    """The generated iso: a fastview-rendered image."""
+    return next(o for o in d.Objects if o.TypeId == "TechDraw::DrawViewImage"
+                and getattr(o, sm.ISO_RENDER_TAG, ""))
+
+
+def _front(d):
+    return next(o for o in d.Objects if o.TypeId == "TechDraw::DrawProjGroupItem"
+                and sm._drawing._get_tag(o, "_gwt_dir", "") == "front")
 
 
 def test_edited_drawing_views_follow_the_new_revisions_geometry(rev1):
@@ -166,16 +174,18 @@ def test_edited_drawing_views_follow_the_new_revisions_geometry(rev1):
     page = _page(d)
     sm._drawing._ensure_page_live(d, page)
     iso = _iso(d)
-    iso.X = iso.X.Value + 15.0  # edited drawing
+    iso.X = float(iso.X) + 15.0  # edited drawing
     d.recompute()
-    before = _view_bbox(d, iso)
+    before = _view_bbox(d, _front(d))
+    iso_before = (iso.ImageFile, round(float(iso.Width), 3), round(float(iso.Height), 3))
     body = next(o for o in d.Objects if o.TypeId == "Part::Feature")
     import Part
     body.Shape = body.Shape.fuse(Part.makeBox(4, 4, 4, body.Shape.BoundBox.Center))
     out = sm.refresh_drawing_for_revision()
     assert [p["action"] for p in out["pages"]] == ["updated"]
-    after = _view_bbox(d, _iso(d))
-    assert after != before
+    assert _view_bbox(d, _front(d)) != before
+    iso = _iso(d)
+    assert (iso.ImageFile, round(float(iso.Width), 3), round(float(iso.Height), 3)) != iso_before
 
 
 def test_an_in_work_revision_updates_without_rebuilding(rev1):

@@ -188,13 +188,16 @@ def test_generation_restores_the_users_session_part_number(generated):
     assert session.part_number()["pn"] == "USER0010"
 
 
-def test_generated_file_stores_its_part_number_and_uses_coarse_views(generated):
+def test_generated_file_stores_its_part_number_and_picks_its_hidden_line_mode(generated):
+    # coarse (polygon) HLR only for freeform-heavy models - on analytic
+    # geometry exact is the fast one (a perfboard: 0.6s exact, 101s coarse)
     _, path = generated
     d = App.openDocument(path)
     assert d.GwtPartNumber == "CMB0010"
     assert d.GwtPartDescription == "M3x6 socket head"
+    sources = [o for o in d.Objects if o.TypeId == "Part::Feature"]
     views = [o for o in d.Objects if hasattr(o, "CoarseView")]
-    assert views and all(o.CoarseView for o in views)
+    assert views and all(o.CoarseView == bool(sm._hlr_coarse(sources)) for o in views)
 
 
 def test_reopened_drawing_reports_every_view_at_true_size(generated):
@@ -243,7 +246,9 @@ def test_set_view_scale_persists_and_marks_the_view(generated):
     _, path = generated
     methods.document_open(path)
     d = session.doc(create=False)
-    iso = next(o for o in d.Objects if o.TypeId == "TechDraw::DrawViewPart")
+    page = next(o for o in d.Objects if o.TypeId == "TechDraw::DrawPage")
+    part = next(o for o in d.Objects if o.TypeId == "Part::Feature")
+    iso = d.getObject(drawing.make_view(d, page.Name, part, direction="iso", scale=1.0)["id"])
     before = drawing.set_view_scale(d, iso.Name, iso.Scale)["bbox"]
     after = drawing.set_view_scale(d, iso.Name, iso.Scale / 2)["bbox"]
     assert abs((after[2] - after[0]) - (before[2] - before[0]) / 2) < 0.5

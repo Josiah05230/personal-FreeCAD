@@ -258,6 +258,25 @@ def _add_overall_dimensions(doc, page_id, group_views):
         _drawing.set_dimension_geom(doc, dim["id"], label)
 
 
+_ANALYTIC_SURFACES = ("Plane", "Cylinder", "Cone", "Sphere", "Toroid")
+
+
+def _hlr_coarse(sources):
+    """Whether this model's views should use coarse (polygon) hidden-line
+    removal. Exact HLR is fast on analytic geometry and crawls on freeform
+    surfaces (a screw's helical thread: ~30s per view); coarse is the reverse
+    - a perfboard's 540 hole cylinders took 101s coarse vs 0.6s exact for one
+    view, because every circle becomes dozens of segments. So: coarse only
+    when freeform faces are a real share of the model."""
+    total = free = 0
+    for o in sources:
+        for f in o.Shape.Faces:
+            total += 1
+            if f.Surface.__class__.__name__ not in _ANALYTIC_SURFACES:
+                free += 1
+    return free > 40 or (total and free > 0.2 * total)
+
+
 def _iso_extent(bb):
     """Width/height of a bounding box's iso projection (the eight corners
     onto the view plane) - the iso view's size at scale 1, near enough to
@@ -357,19 +376,35 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     # confirmed by comparing the rendered geometry against the earlier
     # "top" projection, not just the label.
     group_dirs = ["front", "bottom", "right"]
+    sources = part_obj if isinstance(part_obj, (list, tuple)) else [part_obj]
+    bb3 = sources[0].Shape.BoundBox
+    for o in sources[1:]:
+        bb3.add(o.Shape.BoundBox)
+    heavy = sum(len(o.Shape.Faces) for o in sources) > _FAST_VIEW_FACES
+    if heavy:
+        # image views carry no live dimensions - state the size instead
+        notes = list(notes or []) + ["OVERALL SIZE %.1f x %.1f x %.1f MM" % (
+            bb3.XLength, bb3.YLength, bb3.ZLength)]
+
     _place_sheet_furniture(doc, page_id, tpl, title_block, rows, columns, style,
                            table_x, table_y, table_h, notes)
 
     # Start at the scale the 3D bounding box already implies (a front view
     # is the part's X by Z extent), so hidden-line removal - the slow part -
     # runs at roughly the final size instead of first at 1x and then again.
-    sources = part_obj if isinstance(part_obj, (list, tuple)) else [part_obj]
-    bb3 = sources[0].Shape.BoundBox
-    for o in sources[1:]:
-        bb3.add(o.Shape.BoundBox)
     budget_w = (_ISO_X - _GROUP_MIN_CLEARANCE - _GROUP_EDGE_BREATHING_ROOM) - _GROUP_LEFT
     budget_h = ((table_y - _GROUP_MIN_CLEARANCE - _VIEW_LABEL_FOOTPRINT - _GROUP_EDGE_BREATHING_ROOM) - _GROUP_TOP
                 if table_y is not None else _SHEET_H - _MARGIN - _GROUP_TOP)
+    if heavy:
+        # thousands of faces: TechDraw's hidden-line views take minutes
+        # (an ESP8266 module 371s, a large perfboard over 10 min); fastview
+        # draws all four from one mesh in seconds. TechDraw stays the
+        # fallback if it fails.
+        try:
+            _fast_group_views(doc, page_id, sources, bb3, budget_w, budget_h)
+            return
+        except Exception:
+            pass
     # front + right side by side, top above front, one gap each way
     span_w = max(bb3.XLength + bb3.YLength, 1e-6)
     span_h = max(bb3.ZLength + bb3.YLength, 1e-6)
@@ -381,8 +416,12 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     # wants front/top/right toward the sheet edges, not huddled together)
     est_sp_x = max(_GROUP_SPACING, (budget_w - est_scale * span_w) * 0.97)
     est_sp_y = max(_GROUP_SPACING, (budget_h - est_scale * span_h) * 0.97)
+    coarse = _hlr_coarse(sources)
     probe = _drawing.make_projection_group(doc, page_id, part_obj, group_dirs, anchor="front",
-                                           scale=est_scale, coarse=True, spacing=(est_sp_x, est_sp_y))
+                                           scale=est_scale, coarse=coarse, spacing=(est_sp_x, est_sp_y))
+    if not coarse:
+        for v in probe["views"]:
+            _drawing._tag(doc.getObject(v["id"]), "_gwt_exact", "1")  # _coarsen_views leaves these
     grp = doc.getObject(probe["groupId"])
     grp.ScaleType = "Custom"
     _coarsen_views(doc)
@@ -530,9 +569,22 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     # this starting scale always fits; rescale only if it leaves real room
     iso_w, iso_h = _iso_extent(bb3)
     iso_est = min(_ISO_TARGET_W / iso_w, _ISO_TARGET_H / iso_h, 8.0) * 0.97
-    iso_result = _drawing.make_view(doc, page_id, part_obj, direction="iso", scale=iso_est, coarse=True,
+    # The iso is a small 3D reference drawn by fastview's own hidden-line
+    # renderer (a depth buffer over a coarse mesh): TechDraw's HLR took
+    # minutes on a heavy model - 161s for an ESP8266 module, never finishing
+    # on a large perfboard - where this takes seconds for anything. TechDraw
+    # stays the fallback if the renderer fails.
+    try:
+        if _render_iso_image(doc, page_id, sources) is not None:
+            return
+    except Exception:
+        pass
+    iso_src = sources
+    iso_result = _drawing.make_view(doc, page_id, iso_src, direction="iso", scale=iso_est, coarse=coarse,
                                     x=_ISO_X, y=_ISO_Y)
     iso_view = doc.getObject(iso_result["id"])
+    if not coarse:
+        _drawing._tag(iso_view, "_gwt_exact", "1")
     # "Page" (the default) ignores Scale in this session but flips to
     # "Custom" when the file is reopened - the iso was laid out and printed
     # 1x here yet showed 8x everywhere else
@@ -541,6 +593,102 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     if grow > 1.15:
         iso_view.Scale = iso_est * grow
         doc.recompute()
+
+
+ISO_RENDER_TAG = "_gwt_isoRender"  # any fastview-drawn view image (name kept for files already tagged)
+_FAST_VIEW_FACES = 1500  # above this, TechDraw's hidden-line views take minutes
+
+
+def _render_view_image(doc, page_id, sources, direction, x, y, centered, scale=None,
+                       max_w=None, max_h=None, mesh=None, image=None, label=None):
+    """Draw one view of `sources` with fastview and place it (or, given
+    `image`, replace that image in place): at `scale`, or fitted to
+    max_w x max_h; (x, y) is its centre when `centered`, else its top-left.
+    The image is tagged with how it was made so a later revision can
+    re-render it from the new geometry."""
+    import tempfile
+    from . import fastview as _fastview
+    svg, w, h = _fastview.render_view_svg([o.Shape for o in sources], direction, max_w, max_h,
+                                          scale=scale, mesh=mesh)
+    path = os.path.join(tempfile.mkdtemp(prefix="gwtcad-view-"), "view.svg")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(svg)
+    if image is not None:
+        # re-rendering keeps it wherever it sits now (a person may have
+        # moved it); a centred image stays centred on its current centre
+        x, y = ((float(image.X) + float(image.Width) / 2, float(image.Y) + float(image.Height) / 2)
+                if centered else (float(image.X), float(image.Y)))
+    px, py = (x - w / 2.0, y - h / 2.0) if centered else (x, y)
+    if image is None:
+        dto = _drawing.add_image(doc, page_id, path, x=px, y=py, width=w, height=h)
+        image = doc.getObject(dto["id"])
+        if label:
+            image.Label = label
+    else:
+        image.ImageFile = path
+        image.X, image.Y, image.Width, image.Height = px, py, w, h
+        doc.recompute()
+    _drawing._tag(image, ISO_RENDER_TAG, json.dumps({
+        "src": [o.Name for o in sources], "dir": list(direction), "x": x, "y": y,
+        "centered": centered, "scale": scale, "maxW": max_w, "maxH": max_h}))
+    return image
+
+
+def _render_iso_image(doc, page_id, sources, mesh=None):
+    return _render_view_image(doc, page_id, sources, _drawing._DIRS["iso"], _ISO_X, _ISO_Y, True,
+                              max_w=_ISO_TARGET_W, max_h=_ISO_TARGET_H, mesh=mesh, label="Iso view")
+
+
+def _fast_group_views(doc, page_id, sources, bb3, budget_w, budget_h):
+    """Front / top / right (third angle) and the iso of a heavy model, all
+    drawn by fastview from one mesh: seconds where TechDraw took minutes.
+    Same layout rules as the TechDraw group - one scale, spread toward the
+    sheet edges within the budget."""
+    from . import fastview as _fastview
+    mesh = _fastview.model_mesh([o.Shape for o in sources])
+    min_gap = 15.0
+    span_w = max(bb3.XLength + bb3.YLength, 1e-6)
+    span_h = max(bb3.ZLength + bb3.YLength, 1e-6)
+    scale = min((budget_w - min_gap) / span_w, (budget_h - min_gap) / span_h, 8.0)
+    fw, fh = bb3.XLength * scale, bb3.ZLength * scale
+    th = bb3.YLength * scale
+    gx = max(min_gap, budget_w - (fw + bb3.YLength * scale))
+    gy = max(min_gap, budget_h - (th + fh))
+    left, top = _GROUP_LEFT, _GROUP_TOP
+    views = (("Top view", (0, 0, 1), left, top),
+             ("Front view", (0, -1, 0), left, top + th + gy),
+             ("Right view", (1, 0, 0), left + fw + gx, top + th + gy))
+    for label, direction, x, y in views:
+        _render_view_image(doc, page_id, sources, direction, x, y, False, scale=scale, mesh=mesh, label=label)
+    _render_iso_image(doc, page_id, sources, mesh=mesh)
+    return scale
+
+
+def rerender_iso_images(doc, page):
+    """Re-draw every fastview view image on `page` from its sources' current
+    geometry (a new revision must not show the previous one's part)."""
+    from . import fastview as _fastview
+    meshes = {}
+    for v in list(page.Views):
+        raw = _drawing._get_tag(v, ISO_RENDER_TAG) if v.TypeId == "TechDraw::DrawViewImage" else ""
+        if not raw:
+            continue
+        try:
+            info = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(info, list):  # first-generation tag: an iso, source names only
+            info = {"src": info, "dir": list(_drawing._DIRS["iso"]), "x": _ISO_X, "y": _ISO_Y,
+                    "centered": True, "scale": None, "maxW": _ISO_TARGET_W, "maxH": _ISO_TARGET_H}
+        srcs = [doc.getObject(n) for n in info["src"] if doc.getObject(n) is not None]
+        if not srcs:
+            continue
+        key = tuple(o.Name for o in srcs)
+        if key not in meshes:
+            meshes[key] = _fastview.model_mesh([o.Shape for o in srcs])
+        _render_view_image(doc, page.Name, srcs, tuple(info["dir"]), info["x"], info["y"], info["centered"],
+                           scale=info.get("scale"), max_w=info.get("maxW"), max_h=info.get("maxH"),
+                           mesh=meshes[key], image=v)
 
 
 def _place_sheet_furniture(doc, page_id, tpl, title_block, rows, columns, style,
@@ -939,11 +1087,17 @@ def _page_sig_items(page):
         for name in _SIG_PROPS:
             if o.TypeId == "TechDraw::DrawProjGroupItem" and name in _SIG_SKIP_ON_GROUP_ITEMS:
                 continue
+            # a fastview image changes size when re-rendered; what a person
+            # moves is where it sits - fingerprint its centre (below)
+            if name in ("X", "Y") and getattr(o, ISO_RENDER_TAG, ""):
+                continue
             if name in o.PropertiesList:
                 try:
                     props[name] = _sig_value(getattr(o, name))
                 except Exception:
                     pass
+        if getattr(o, ISO_RENDER_TAG, ""):
+            props["center"] = [round(float(o.X) + float(o.Width) / 2, 2), round(float(o.Y) + float(o.Height) / 2, 2)]
         items.append([o.Name, o.TypeId, props])
     return items
 
@@ -995,6 +1149,7 @@ def _recompute_page_views(doc, page):
         if o.TypeId.startswith("TechDraw::"):
             o.touch()
     doc.recompute()
+    rerender_iso_images(doc, page)
 
 
 @method("drawing.refreshForRevision")
