@@ -2701,12 +2701,21 @@ def _note_dto(ann):
 # images
 # --------------------------------------------------------------------------- #
 
+def _image_path(img):
+    """The image file to show: the copy embedded in the .FCStd
+    (ImageIncluded, extracted on open) when there is one - ImageFile is only
+    the ORIGINAL path, e.g. a /tmp file a generated iso view was drawn to,
+    gone after a reboot."""
+    inc = str(getattr(img, "ImageIncluded", "") or "")
+    return inc if inc and os.path.isfile(inc) else str(img.ImageFile)
+
+
 def _image_dto(img):
     return {
         "id": img.Name, "x": float(img.X), "y": float(img.Y),
         "width": float(img.Width), "height": float(img.Height),
         "rotation": float(str(img.Rotation).split()[0]) if img.Rotation else 0.0,
-        "path": str(img.ImageFile),
+        "path": _image_path(img),
     }
 
 

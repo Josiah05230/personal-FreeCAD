@@ -151,7 +151,10 @@ _GROUP_MIN_CLEARANCE = 15.0
 # right up to the edge of what the hard assertion allows - the assertion
 # alone only guarantees "no overlap", not "looks comfortably spaced".
 _GROUP_EDGE_BREATHING_ROOM = 15.0
-_ISO_X, _ISO_Y, _ISO_TARGET_W, _ISO_TARGET_H = 330.0, 30.0, 65.0, 50.0
+# the iso box's CENTRE: its top (centre - 25) sits 4mm inside the sheet
+# border - at 30 a full-height iso ran 5mm above the border (CME0030)
+_ISO_X, _ISO_TARGET_W, _ISO_TARGET_H = 330.0, 65.0, 50.0
+_ISO_Y = _MARGIN + 4.0 + _ISO_TARGET_H / 2.0
 
 
 def _fit_scale(bbox, target_w, target_h, cap=8.0):
