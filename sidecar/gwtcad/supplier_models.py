@@ -1003,19 +1003,7 @@ def _generate_supplier_drawing(pn):
             doc.saveAs(fcstd_path)
             _drawing.mark_pages_lazy_on_disk(fcstd_path, doc)
 
-            svg = _drawing.export_page_svg(doc, page_id)
-            svg_path = os.path.join(tmpdir, "%s.svg" % pn)
-            with open(svg_path, "w", encoding="utf-8") as f:
-                f.write(svg)
-
-            pdf_path = os.path.join(tmpdir, "%s.pdf" % pn)
-            import subprocess
-            r = subprocess.run(["rsvg-convert", "-f", "pdf", "-o", pdf_path, svg_path],
-                                capture_output=True, text=True, timeout=60)
-            if r.returncode != 0 or not os.path.isfile(pdf_path):
-                raise RuntimeError("rsvg-convert failed: %s" % (r.stderr or r.stdout))
-
-            _storage.upload_file(pdf_path, "cad-exports/%s/%s.pdf" % (pn, pn), "application/pdf")
+            upload_page_pdf(doc, page_id, pn)
             result["pdfUploaded"] = True
         finally:
             App.closeDocument(doc.Name)
@@ -1433,6 +1421,26 @@ def _drawable_bodies(doc):
     return out
 
 
+def upload_page_pdf(doc, page_id, pn):
+    """Export a drawing page to PDF and put it where the GrainWavePartners
+    portal reads it (cad-exports/<PN>/<PN>.pdf). Raises on failure."""
+    import shutil
+    import subprocess
+    tmpdir = tempfile.mkdtemp(prefix="gwtcad-drawing-pdf-")
+    try:
+        svg_path = os.path.join(tmpdir, "%s.svg" % pn)
+        with open(svg_path, "w", encoding="utf-8") as f:
+            f.write(_drawing.export_page_svg(doc, page_id))
+        pdf_path = os.path.join(tmpdir, "%s.pdf" % pn)
+        r = subprocess.run(["rsvg-convert", "-f", "pdf", "-o", pdf_path, svg_path],
+                           capture_output=True, text=True, timeout=60)
+        if r.returncode != 0 or not os.path.isfile(pdf_path):
+            raise RuntimeError("rsvg-convert failed: %s" % (r.stderr or r.stdout))
+        _storage.upload_file(pdf_path, "cad-exports/%s/%s.pdf" % (pn, pn), "application/pdf")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def _draw_part_in_doc(doc, fcstd_path, pn, row):
     """Add the GrainWave drawing for `pn` to `doc` from its own solids and
     save it. False when there is nothing solid to draw."""
@@ -1450,6 +1458,13 @@ def _draw_part_in_doc(doc, fcstd_path, pn, row):
     _apply_part_number_props(doc)
     doc.save()
     _drawing.mark_pages_lazy_on_disk(fcstd_path, doc)
+    # the portal shows cad-exports/<PN>/<PN>.pdf; drawings made here used to
+    # stay inside the .FCStd, so 40 parts had a drawing nobody could see.
+    # Best effort: no Firebase key or offline must not cost the drawing.
+    try:
+        upload_page_pdf(doc, page["id"], pn)
+    except Exception as e:
+        App.Console.PrintWarning("%s: drawing saved, PDF not uploaded: %s\n" % (pn, e))
     return True
 
 

@@ -50,6 +50,23 @@ def test_a_designed_part_gets_a_drawing_from_its_own_geometry(bracket):
     assert d.GwtPartNumber == "CMJ0010"
 
 
+def test_a_part_drawing_is_published_to_the_portal(bracket, monkeypatch):
+    # regression: drawings made from a part's own .FCStd were only saved
+    # into the file, so 40 parts had a drawing the portal never showed
+    uploads = []
+    monkeypatch.setattr(sm._storage, "upload_file", lambda path, dest, ctype: uploads.append((dest, os.path.getsize(path))))
+    assert sm.generate_part_drawing("CMJ0010").get("generated")
+    assert [u[0] for u in uploads] == ["cad-exports/CMJ0010/CMJ0010.pdf"] and uploads[0][1] > 0
+
+
+def test_a_failed_upload_still_keeps_the_drawing(bracket, monkeypatch):
+    def offline(*a, **k):
+        raise RuntimeError("no Firebase key")
+    monkeypatch.setattr(sm._storage, "upload_file", offline)
+    assert sm.generate_part_drawing("CMJ0010").get("generated")
+    assert _pages(bracket) == 1
+
+
 def test_the_startup_scan_draws_only_parts_that_lack_one(bracket):
     out = sm.generate_missing_drawings()
     assert [x["pn"] for x in out] == ["CMJ0010"] and out[0].get("generated")
