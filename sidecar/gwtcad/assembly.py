@@ -89,7 +89,12 @@ def add_component(doc, path, name=None):
     solid_bodies = [b for b in bodies if _has_solid(b)]
     loose_shapes = [o for o in src.Objects
                     if o.TypeId in ("Part::Feature", "Mesh::Feature", "App::Link")]
-    target = (solid_bodies[0] if solid_bodies else
+    # A sub-assembly: link its whole Assembly object. Without this, inserting
+    # an assembly file linked only its FIRST component (e.g. just the board
+    # of a board + harness + connector sub-assembly), found 2026-09-28.
+    assemblies = [o for o in src.Objects if o.TypeId == "Assembly::AssemblyObject"]
+    target = (assemblies[0] if assemblies else
+              solid_bodies[0] if solid_bodies else
               loose_shapes[0] if loose_shapes else
               bodies[0] if bodies else
               src.Objects[0] if src.Objects else None)
