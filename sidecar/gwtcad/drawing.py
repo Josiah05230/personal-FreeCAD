@@ -1508,7 +1508,7 @@ def set_view_scale(doc, view_id, scale):
             "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid)}
 
 
-def make_view(doc, page_id, source_obj, direction="front", scale=1.0, coarse=False):
+def make_view(doc, page_id, source_obj, direction="front", scale=1.0, coarse=False, x=None, y=None):
     """source_obj is normally a single body/object; also accepts a real list
     (an assembly's several App::Link components) - TechDraw's own Source
     property natively unions the projected geometry of every object in it,
@@ -1529,6 +1529,11 @@ def make_view(doc, page_id, source_obj, direction="front", scale=1.0, coarse=Fal
     view.Label = "%s view" % direction.title()
     if coarse and hasattr(view, "CoarseView"):
         view.CoarseView = True
+    if x is not None and y is not None:
+        # placed before the first compute: moving a view later re-runs its
+        # hidden-line removal
+        view.X, view.Y = float(x), float(y)
+        _tag(view, "_gwt_placed", "1")
     _tag(view, "_gwt_dir", direction)
     _tag(view, "_gwt_kind", "part")
     doc.recompute()
@@ -1555,7 +1560,8 @@ _PROJ_GROUP_TYPES = {
 }
 
 
-def make_projection_group(doc, page_id, source_obj, directions, anchor=None, scale=1.0, coarse=False):
+def make_projection_group(doc, page_id, source_obj, directions, anchor=None, scale=1.0, coarse=False,
+                          spacing=None):
     """A REAL first/third-angle projection group (TechDraw::DrawProjGroup) -
     one Anchor view plus N projected views, all sharing ONE Scale enforced
     by TechDraw itself (there is no way for a projection group's members to
@@ -1598,6 +1604,12 @@ def make_projection_group(doc, page_id, source_obj, directions, anchor=None, sca
     # Right view lands to the RIGHT, matching what "Right" actually sounds
     # like it should mean to a reader not steeped in drafting convention).
     grp.ProjectionType = "Third angle"
+    if spacing is not None:
+        # set before the items exist - changing it later relays and
+        # recomputes every item
+        grp.spacingX = grp.spacingY = float(spacing)
+    grp.ScaleType = "Custom"
+    grp.Scale = float(scale)
     doc.recompute()
 
     items = []
@@ -1605,16 +1617,22 @@ def make_projection_group(doc, page_id, source_obj, directions, anchor=None, sca
         item = grp.addProjection(_PROJ_GROUP_TYPES[d])
         if coarse and hasattr(item, "CoarseView"):
             item.CoarseView = True  # before its first compute - see make_view
-        doc.recompute()
+        if not coarse:
+            doc.recompute()
         _tag(item, "_gwt_dir", d)
         items.append((d, item))
     # ScaleType defaults to "Automatic" - TechDraw computes and OVERRIDES
     # Scale itself in that mode (confirmed live: assigning grp.Scale under
     # Automatic silently has no effect, grp.Scale reads back as whatever
     # TechDraw's own auto-fit picked, not the caller's value) - "Custom"
-    # is required for an explicit scale to actually stick.
-    grp.ScaleType = "Custom"
-    grp.Scale = float(scale)
+    # is required for an explicit scale to actually stick. (Assigning an
+    # unchanged value still marks the group for a full recompute.)
+    if grp.ScaleType != "Custom":
+        grp.ScaleType = "Custom"
+    if abs(float(grp.Scale) - float(scale)) > 1e-12:
+        grp.Scale = float(scale)
+    # coarse (generated) groups add every item first and compute once -
+    # each recompute in between re-laid-out and re-ran the earlier items
     doc.recompute()
 
     out = []

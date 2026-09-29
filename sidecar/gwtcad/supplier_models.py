@@ -257,6 +257,25 @@ def _add_overall_dimensions(doc, page_id, group_views):
         _drawing.set_dimension_geom(doc, dim["id"], label)
 
 
+def _iso_extent(bb):
+    """Width/height of a bounding box's iso projection (the eight corners
+    onto the view plane) - the iso view's size at scale 1, near enough to
+    draw it once at its final scale."""
+    import math
+    d = App.Vector(*_drawing._DIRS["iso"]).normalize()
+    u = App.Vector(0, 0, 1).cross(d)
+    u = u.normalize() if u.Length > 1e-9 else App.Vector(1, 0, 0)
+    v = d.cross(u).normalize()
+    xs, ys = [], []
+    for x in (bb.XMin, bb.XMax):
+        for y in (bb.YMin, bb.YMax):
+            for z in (bb.ZMin, bb.ZMax):
+                p = App.Vector(x, y, z)
+                xs.append(p.dot(u))
+                ys.append(p.dot(v))
+    return max(max(xs) - min(xs), 1e-6), max(max(ys) - min(ys), 1e-6)
+
+
 def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, notes=None):
     """Ports DrawingSheet.tsx's loadSheetTemplate (the real "Load Template"
     action a user drives by hand in the GUI) into a headless, scripted
@@ -337,7 +356,27 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     # confirmed by comparing the rendered geometry against the earlier
     # "top" projection, not just the label.
     group_dirs = ["front", "bottom", "right"]
-    probe = _drawing.make_projection_group(doc, page_id, part_obj, group_dirs, anchor="front", scale=1.0, coarse=True)
+    _place_sheet_furniture(doc, page_id, tpl, title_block, rows, columns, style,
+                           table_x, table_y, table_h, notes)
+
+    # Start at the scale the 3D bounding box already implies (a front view
+    # is the part's X by Z extent), so hidden-line removal - the slow part -
+    # runs at roughly the final size instead of first at 1x and then again.
+    sources = part_obj if isinstance(part_obj, (list, tuple)) else [part_obj]
+    bb3 = sources[0].Shape.BoundBox
+    for o in sources[1:]:
+        bb3.add(o.Shape.BoundBox)
+    budget_w = (_ISO_X - _GROUP_MIN_CLEARANCE - _GROUP_EDGE_BREATHING_ROOM) - _GROUP_LEFT
+    budget_h = ((table_y - _GROUP_MIN_CLEARANCE - _VIEW_LABEL_FOOTPRINT - _GROUP_EDGE_BREATHING_ROOM) - _GROUP_TOP
+                if table_y is not None else _SHEET_H - _MARGIN - _GROUP_TOP)
+    # front + right side by side, top above front, one gap each way
+    span_w = max(bb3.XLength + bb3.YLength, 1e-6)
+    span_h = max(bb3.ZLength + bb3.YLength, 1e-6)
+    est_scale = min((budget_w - _GROUP_SPACING) / span_w, (budget_h - _GROUP_SPACING) / span_h,
+                    _PART_TARGET_W / max(bb3.XLength, 1e-6), _PART_TARGET_H / max(bb3.ZLength, 1e-6), 8.0)
+    est_scale = max(est_scale, 1e-3)
+    probe = _drawing.make_projection_group(doc, page_id, part_obj, group_dirs, anchor="front",
+                                           scale=est_scale, coarse=True, spacing=_GROUP_SPACING)
     grp = doc.getObject(probe["groupId"])
     grp.ScaleType = "Custom"
     _coarsen_views(doc)
@@ -367,18 +406,21 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     # bottom landed only ~0.85mm above table_y - technically safe per the
     # assertion below, but visually flush rather than "slightly further
     # from the edges").
-    budget_w = (_ISO_X - _GROUP_MIN_CLEARANCE - _GROUP_EDGE_BREATHING_ROOM) - _GROUP_LEFT
-    budget_h = ((table_y - _GROUP_MIN_CLEARANCE - _VIEW_LABEL_FOOTPRINT - _GROUP_EDGE_BREATHING_ROOM) - _GROUP_TOP
-                if table_y is not None else _SHEET_H - _MARGIN - _GROUP_TOP)
 
     anchor_id = next(v["id"] for v in probe["views"] if v["isAnchor"])
     anchor_item = doc.getObject(anchor_id)
 
+    last = {}
+
     def _measure(scale, spacing_x, spacing_y):
-        grp.Scale = scale
-        grp.spacingX = spacing_x
-        grp.spacingY = spacing_y
-        doc.recompute()
+        # every recompute re-runs hidden-line removal on all three views -
+        # skip it when nothing actually changed
+        if last.get("v") != (scale, spacing_x, spacing_y):
+            grp.Scale = scale
+            grp.spacingX = spacing_x
+            grp.spacingY = spacing_y
+            doc.recompute()
+            last["v"] = (scale, spacing_x, spacing_y)
         views_now = []
         for v in probe["views"]:
             item = doc.getObject(v["id"])
@@ -402,20 +444,22 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     # enforces one shared Scale across the group), so it converges against
     # whichever axis is tightest, while spacingX/spacingY each grow to use
     # their own axis's real remaining room.
-    vis, hid = _drawing._part_view_payload(anchor_item)
-    anchor_bbox_at_1 = _drawing._view_bbox(vis, hid)
-    part_w0 = max(anchor_bbox_at_1[2] - anchor_bbox_at_1[0], 1e-6)
-    part_h0 = max(anchor_bbox_at_1[3] - anchor_bbox_at_1[1], 1e-6)
-    scale = min(_PART_TARGET_W / part_w0, _PART_TARGET_H / part_h0, 8.0)
+    # the probe is already at the estimated scale and final spacing: measure
+    # it as it stands, and only recompute if it doesn't fit
+    scale = est_scale
     spacing_x = spacing_y = _GROUP_SPACING
+    last["v"] = (scale, spacing_x, spacing_y)
     fp = _measure(scale, spacing_x, spacing_y)
-    for _ in range(8):
+    for _ in range(3):
         fp_w, fp_h = fp[2] - fp[0], fp[3] - fp[1]
         ratio_w = budget_w / max(fp_w, 1e-6)
         ratio_h = budget_h / max(fp_h, 1e-6)
         scale_ratio = min(ratio_w, ratio_h)
-        if 0.97 <= ratio_w <= 1.03 and 0.97 <= ratio_h <= 1.03:
-            break  # both axes within 3% of their real budget
+        # fits on both axes, and the tighter one has at most 10% to spare -
+        # chasing an exact fill made the old loop bounce up to 8 times, each
+        # a full hidden-line pass
+        if ratio_w >= 0.97 and ratio_h >= 0.97 and scale_ratio <= 1.10:
+            break
         scale *= min(scale_ratio, 1.0) if scale_ratio < 1.0 else scale_ratio
         spacing_x *= ratio_w
         spacing_y *= ratio_h
@@ -458,18 +502,30 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     else:
         assert real_max_y <= _SHEET_H - _MARGIN + 1e-6, "group runs off the sheet's bottom edge: %s" % real_max_y
 
-    iso_result = _drawing.make_view(doc, page_id, part_obj, direction="iso", scale=1.0, coarse=True)
     _add_overall_dimensions(doc, page_id, probe["views"])
 
+    # an iso view is never wider or taller than the part's 3D diagonal, so
+    # this starting scale always fits; rescale only if it leaves real room
+    iso_w, iso_h = _iso_extent(bb3)
+    iso_est = min(_ISO_TARGET_W / iso_w, _ISO_TARGET_H / iso_h, 8.0) * 0.97
+    iso_result = _drawing.make_view(doc, page_id, part_obj, direction="iso", scale=iso_est, coarse=True,
+                                    x=_ISO_X, y=_ISO_Y)
     iso_view = doc.getObject(iso_result["id"])
     # "Page" (the default) ignores Scale in this session but flips to
     # "Custom" when the file is reopened - the iso was laid out and printed
     # 1x here yet showed 8x everywhere else
     iso_view.ScaleType = "Custom"
-    iso_view.Scale = _fit_scale(iso_result["bbox"], _ISO_TARGET_W, _ISO_TARGET_H)
-    doc.recompute()
-    _drawing.set_view_position(doc, iso_result["id"], _ISO_X, _ISO_Y)
+    grow = _fit_scale(iso_result["bbox"], _ISO_TARGET_W, _ISO_TARGET_H, cap=8.0 / iso_est)
+    if grow > 1.15:
+        iso_view.Scale = iso_est * grow
+        doc.recompute()
 
+
+def _place_sheet_furniture(doc, page_id, tpl, title_block, rows, columns, style,
+                           table_x, table_y, table_h, notes):
+    """Notes, title-block table, logo and legal note. Placed BEFORE any
+    view exists: adding them after made FreeCAD recompute the page and re-run
+    hidden-line removal on the views already on it."""
     if notes:
         numbered = "NOTES:\n" + "\n".join("%d. %s" % (i, n) for i, n in enumerate(notes, start=1))
         note_text_size = 4.0
@@ -531,6 +587,7 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
         note_text_size = max(1.4, min(2.2, (note_h * 0.85) / line_span))
         _drawing.add_note(doc, page_id, legal_note, x=note_x, y=note_top + note_text_size,
                            font="osifont", textSize=note_text_size)
+
 
 
 def _extract_stp_from_zip(zip_bytes):
@@ -1159,8 +1216,9 @@ def _file_has_drawing(fcstd_path):
 
 
 def _drawable_bodies(doc):
-    """The solids a part's own drawing should show: top-level visible bodies
-    and shapes (not TechDraw, not helpers hidden inside a Body)."""
+    """The geometry a part's own drawing should show: top-level visible
+    bodies and shapes with faces (not TechDraw, not helpers hidden inside a
+    Body)."""
     out = []
     for o in doc.Objects:
         if o.TypeId not in ("PartDesign::Body", "Part::Feature") and not o.TypeId.startswith("Part::"):
@@ -1172,7 +1230,8 @@ def _drawable_bodies(doc):
         if not getattr(o, "Visibility", True):
             continue
         shape = getattr(o, "Shape", None)
-        if shape is None or shape.isNull() or not shape.Solids:
+        # surface models (imported shells, no closed solid) draw just as well
+        if shape is None or shape.isNull() or not (shape.Solids or shape.Faces):
             continue
         out.append(o)
     return out
@@ -1190,8 +1249,6 @@ def _draw_part_in_doc(doc, fcstd_path, pn, row):
     name, description = _title_block_text(row)
     page = _drawing.create_page(doc, label="Drawing")
     _apply_grainwave_template(doc, page["id"], bodies, pn, name, description, notes=notes)
-    _coarsen_views(doc)
-    doc.recompute()
     _stamp_auto_drawing(doc, doc.getObject(page["id"]), pn, name, description, notes)
     from .methods import _apply_part_number_props
     _apply_part_number_props(doc)
@@ -1201,7 +1258,7 @@ def _draw_part_in_doc(doc, fcstd_path, pn, row):
 
 
 @method("drawing.generateForPart")
-def generate_part_drawing(pn):
+def generate_part_drawing(pn, commit=True):
     """Give a part that already has its own .FCStd (a designed part, or a
     purchased part modelled directly) a drawing from that file's geometry:
     the same GrainWave template, layout and untouched-fingerprint the
@@ -1233,14 +1290,15 @@ def generate_part_drawing(pn):
         _session.set_part_number(saved_pn)
     if not made:
         return {"pn": pn, "ok": True, "skipped": "no solid geometry"}
-    _pn._sync_pull(repo)
-    _pn._commit_and_push(repo, "%s: add auto-generated drawing" % pn, lambda: True)
-    return {"pn": pn, "ok": True, "generated": True}
+    if commit:
+        _pn._sync_pull(repo)
+        _pn._commit_and_push(repo, "%s: add auto-generated drawing" % pn, lambda: True)
+    return {"pn": pn, "ok": True, "generated": True, "path": fcstd_path, "repo": repo}
 
 
-def generate_missing_drawings():
-    """Every current-revision part (in work or active) whose .FCStd has
-    geometry but no drawing gets one. Files are screened by reading their
+def missing_drawing_candidates():
+    """(pn, path) for every current-revision part (in work or active) whose
+    .FCStd has no drawing, lightest file first. Screened from each file's
     Document.xml, so parts that already have a drawing cost next to
     nothing."""
     cfg = _pn._load_config()
@@ -1255,12 +1313,22 @@ def generate_missing_drawings():
         except RpcError:
             continue
         path, _rel = _pn._find_part_file(repo, "%s.FCStd" % row["pn"], row.get("repo_relpath"))
-        if path is None or _file_has_drawing(path):
-            continue
+        if path is not None and not _file_has_drawing(path):
+            out.append((row["pn"], path))
+    out.sort(key=lambda t: os.path.getsize(t[1]))
+    return out
+
+
+def generate_missing_drawings():
+    """Draw every missing_drawing_candidates() part in this process, one
+    after another (the background job runs them in parallel instead - see
+    draw_missing.py)."""
+    out = []
+    for pn, _path in missing_drawing_candidates():
         try:
-            out.append(generate_part_drawing(row["pn"]))
+            out.append(generate_part_drawing(pn))
         except Exception as e:
-            out.append({"pn": row["pn"], "ok": False, "error": str(e)})
+            out.append({"pn": pn, "ok": False, "error": str(e)})
     return out
 
 
