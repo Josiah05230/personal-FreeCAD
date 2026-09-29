@@ -13,6 +13,11 @@ import math
 # tessellation deflection in mm - smaller = finer. Tuned later / made adaptive.
 SURFACE_DEFLECTION = 0.10
 EDGE_DEFLECTION = 0.05
+# angular deflection in radians (FreeCAD's own GUI default). Part's per-face
+# tessellate applies a much finer fixed angle, so every small circle becomes
+# ~60 segments: a PCB face with 300+ drilled holes took ~6s and 40k triangles
+# on its own, and tiny fillets/torii came out as 8k triangles each.
+ANGULAR_DEFLECTION = 0.5
 
 
 def _normalize(x, y, z):
@@ -138,6 +143,23 @@ def _surf_normal_near(face, pnt):
         return _face_outward_normal(face)
 
 
+def _premesh(shape):
+    """Mesh the whole shape once with an angular limit, so the per-face
+    tessellate calls below reuse that triangulation instead of remeshing each
+    face at Part's fine default angle. Works on a copy: triangulation lives on
+    the shared TShape, and the document's own shapes (drawings, exports)
+    shouldn't inherit this coarser mesh. The copy keeps face/edge order, so
+    faceGroups and edge indices still match the original shape."""
+    try:
+        import MeshPart
+        s = shape.copy()
+        MeshPart.meshFromShape(Shape=s, LinearDeflection=SURFACE_DEFLECTION,
+                               AngularDeflection=ANGULAR_DEFLECTION, Relative=False)
+        return s
+    except Exception:
+        return shape
+
+
 def tessellate_shape(shape):
     """Return a render mesh for a whole shape.
 
@@ -158,6 +180,7 @@ def tessellate_shape(shape):
     face_groups = []
     vert_offset = 0
 
+    shape = _premesh(shape)
     for fi, face in enumerate(shape.Faces):
         try:
             fp, fn, fidx = tessellate_face(face)
