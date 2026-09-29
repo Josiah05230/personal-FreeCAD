@@ -70,6 +70,61 @@ def test_part_name_is_the_one_word_registry_name_and_mfg_pn_is_only_in_the_note(
     assert any("IS EQUIVALENT TO MCMASTER-CARR 91292A111" in t for t in notes)
 
 
+def _front_view(d):
+    return next(o for o in d.Objects if o.TypeId == "TechDraw::DrawProjGroupItem"
+                and drawing._get_tag(o, "_gwt_dir", "") in ("", "front") and str(o.Type) == "Front")
+
+
+def test_generated_drawing_shows_its_overall_size(generated):
+    # user, 2026-09-28: "There are also not dimensions in the drawing for
+    # me to be able to tell scale" - front width/height + right depth,
+    # measured from each view's drawn outline
+    _, path = generated
+    methods.document_open(path)
+    d = session.doc(create=False)
+    dims = [o for o in d.Objects if o.TypeId == "TechDraw::DrawViewDimension"]
+    assert len(dims) == 3
+    bb = App.BoundBox()
+    for o in d.Objects:
+        if o.TypeId == "Part::Feature":
+            bb.add(o.Shape.BoundBox)
+    values = sorted(round(drawing._dimension_raw_value(x), 2) for x in dims)
+    assert values == sorted(round(v, 2) for v in (bb.XLength, bb.ZLength, bb.YLength))
+    # each dimension sits just outside its own view's outline
+    for x in dims:
+        view = x.References2D[0][0]
+        vis, hid = drawing._part_view_payload(view)
+        min_x, min_y, max_x, max_y = drawing._view_bbox(vis, hid)
+        label = drawing._dimension_geom(x)["labelUV"]
+        assert label[1] > max_y or label[0] > max_x, (x.Name, label, (min_x, min_y, max_x, max_y))
+
+
+def test_a_dimension_on_a_group_view_lands_on_its_outline(generated):
+    # regression: a Front/Top/Right item's outline carries the group's
+    # Scale but projectPoint() doesn't, so a dimension's points on a scaled
+    # group view were drawn at 1/Scale of the geometry, in the view's corner
+    _, path = generated
+    methods.document_open(path)
+    d = session.doc(create=False)
+    page = next(o for o in d.Objects if o.TypeId == "TechDraw::DrawPage")
+    view = _front_view(d)
+    assert float(view.Scale) > 1.5  # a small vendor part is drawn enlarged
+    drawing._ensure_page_live(d, page)
+    vis, hid = drawing._part_view_payload(view)
+    min_x, min_y, max_x, max_y = drawing._view_bbox(vis, hid)
+    shape = view.Source[0].Shape
+    far = max(range(len(shape.Vertexes)),
+              key=lambda i: (shape.Vertexes[i].Point - shape.Vertexes[0].Point).Length)
+    dim = drawing.add_dimension(d, page.Name, view.Name,
+                                [{"sub": "Vertex1"}, {"sub": "Vertex%d" % (far + 1)}], "Distance")
+    tol = 0.05 * max(max_x - min_x, max_y - min_y)
+    for p in (dim["p1"], dim["p2"]):
+        assert min_x - tol <= p[0] <= max_x + tol and min_y - tol <= p[1] <= max_y + tol, (p, (min_x, min_y, max_x, max_y))
+    # and the value is still in model mm, not sheet mm (a projected length
+    # can't exceed the 3D one; in sheet mm it would be Scale times bigger)
+    assert 0 < dim["value"] <= (shape.Vertexes[far].Point - shape.Vertexes[0].Point).Length + 1e-6
+
+
 @pytest.mark.parametrize("name,desc,why", [
     ("flat head", "M3x5mm flat head screw", "one-word"),
     ("", "M3x5mm flat head screw", "one-word"),

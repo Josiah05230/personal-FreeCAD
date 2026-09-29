@@ -216,6 +216,47 @@ def _title_block_text(row):
     return row["name"].strip().upper(), (row.get("description") or "").strip()
 
 
+# how far (sheet mm) an overall dimension's line sits outside its view
+_OVERALL_DIM_OFFSET = 7.0
+
+
+def _add_overall_dimensions(doc, page_id, group_views):
+    """Overall size on a generated drawing, so its scale can be read off
+    the sheet (user, 2026-09-28: "There are also not dimensions in the
+    drawing for me to be able to tell scale"): width and height on Front,
+    depth on Right. Each goes on the side facing the next view - Front's
+    width toward Top, its height toward Right, Right's depth into the open
+    space above it - since the group itself is spread toward the sheet
+    edges. Each measures the view's own drawn outline, so every body and
+    any curved silhouette counts - see drawing.DIM_EXTENT_TAG."""
+    by_dir = {v["direction"]: doc.getObject(v["id"]) for v in group_views}
+    # (view, extent spec): "x+" width drawn above, "y+" height drawn right
+    wanted = [("front", "x+"), ("front", "y+"), ("right", "x+")]
+    for direction, spec in wanted:
+        view = by_dir.get(direction)
+        if view is None or not view.Source:
+            continue
+        # the ref only anchors the dimension to its view - an extent-tagged
+        # dimension measures the view's outline, not the referenced edge
+        dim = _drawing.add_dimension(doc, page_id, view.Name, [{"sub": "Edge1"}], "Distance")
+        dim_obj = doc.getObject(dim["id"])
+        _drawing._tag(dim_obj, _drawing.DIM_EXTENT_TAG, spec)
+        pts = _drawing._dimension_linear_points(dim_obj)
+        if not pts:
+            _drawing.remove_dimension(doc, dim["id"])
+            continue
+        p1, p2 = pts
+        vis, hid = _drawing._part_view_payload(view)
+        min_x, min_y, max_x, max_y = _drawing._view_bbox(vis, hid)
+        # sheet mm per UV unit: view.Scale, except a group view's UV is sheet mm already
+        off = _OVERALL_DIM_OFFSET / max(float(view.Scale) / _drawing._uv_scale(view), 1e-9)
+        if spec.startswith("x"):
+            label = ((p1[0] + p2[0]) / 2.0, max_y + off)
+        else:
+            label = (max_x + off, (p1[1] + p2[1]) / 2.0)
+        _drawing.set_dimension_geom(doc, dim["id"], label)
+
+
 def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, notes=None):
     """Ports DrawingSheet.tsx's loadSheetTemplate (the real "Load Template"
     action a user drives by hand in the GUI) into a headless, scripted
@@ -418,6 +459,8 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
         assert real_max_y <= _SHEET_H - _MARGIN + 1e-6, "group runs off the sheet's bottom edge: %s" % real_max_y
 
     iso_result = _drawing.make_view(doc, page_id, part_obj, direction="iso", scale=1.0, coarse=True)
+    _add_overall_dimensions(doc, page_id, probe["views"])
+
     iso_view = doc.getObject(iso_result["id"])
     # "Page" (the default) ignores Scale in this session but flips to
     # "Custom" when the file is reopened - the iso was laid out and printed

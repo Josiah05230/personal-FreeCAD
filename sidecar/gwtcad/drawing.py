@@ -128,14 +128,29 @@ def _compute_project_offset(view):
     shape = view.Source[0].Shape if view.Source else None
     if shape is None or not shape.Vertexes:
         return (0.0, 0.0)
+    s = _uv_scale(view)
     xsp, ysp = [], []
     for v in shape.Vertexes:
         p = view.projectPoint(v.Point)
-        xsp.append(p.x)
-        ysp.append(p.y)
+        xsp.append(p.x * s)
+        ysp.append(p.y * s)
     minp = (min(xsp), min(ysp))
 
     return (minp[0] - min2d[0], minp[1] - min2d[1])
+
+
+def _uv_scale(view):
+    """Sheet mm per projectPoint() unit in a view's UV frame. A projection
+    group item's edges already carry the group's Scale (see page_contents),
+    but projectPoint() doesn't - so projected points on a Front/Top/Right
+    view landed at 1/Scale of where its outline is (a dimension on a 6x
+    group view was drawn in the view's corner). Plain views: 1."""
+    if getattr(view, "TypeId", "") == "TechDraw::DrawProjGroupItem":
+        try:
+            return float(view.Scale) or 1.0
+        except Exception:
+            return 1.0
+    return 1.0
 
 
 def _project(view, model_point, offset=None):
@@ -146,7 +161,8 @@ def _project(view, model_point, offset=None):
     if offset is None:
         offset = _project_offset(view)
     p = view.projectPoint(model_point)
-    return (p.x - offset[0], p.y - offset[1])
+    s = _uv_scale(view)
+    return (p.x * s - offset[0], p.y * s - offset[1])
 
 
 def _view_uv_to_sheet(view, uv):
@@ -1307,7 +1323,7 @@ def _compute_view_payload(view):
 # --------------------------------------------------------------------------- #
 
 _CACHE_ENTRY = "GwtDrawingCache.json"
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2  # 2: group-view offsets in the scaled frame (_uv_scale)
 # position/cosmetic properties that never change a view's projected edges
 _KEY_SKIP = {"X", "Y", "Label", "Label2", "Visibility", "LockPosition", "Caption",
              "ExpressionEngine", "Views", "Anchor", "spacingX", "spacingY",
@@ -1881,6 +1897,30 @@ def remove_dimension(doc, dim_id):
     return {"ok": True}
 
 
+# an overall-size dimension: measures the view's own drawn outline (its
+# visible + hidden polylines), recomputed from the current geometry every
+# time. Model edges can't give an overall size - a rounded screw head's
+# widest point is on its curved face, where there is no edge or vertex
+# (vertex-to-vertex read a 4.2mm head as 2.2mm, edge extremes as 3.95mm).
+# The tag's value is the axis and the side the dimension sits on: "x+" =
+# width, drawn above; "y+" = height, drawn to the right. Both points sit on
+# that side of the outline so it draws as an ordinary Distance (extension
+# lines + arrows), not the ordinate style DistanceX/DistanceY get.
+DIM_EXTENT_TAG = "_gwt_dimExtent"
+
+
+def _extent_points(view, spec):
+    vis, hid = _part_view_payload(view)
+    if not vis and not hid:
+        return None
+    min_x, min_y, max_x, max_y = _view_bbox(vis, hid)
+    if spec.startswith("x"):
+        base = max_y if spec.endswith("+") else min_y
+        return [(min_x, base), (max_x, base)]
+    base = max_x if spec.endswith("+") else min_x
+    return [(base, min_y), (base, max_y)]
+
+
 def _dimension_linear_points(dim):
     """The two 2D points (in the same projected frame as the view's visible/
     hidden edge polylines) a Distance-family dimension measures between -
@@ -1893,6 +1933,9 @@ def _dimension_linear_points(dim):
         if not refs:
             return None
         view = refs[0][0]
+        extent = _get_tag(dim, DIM_EXTENT_TAG)
+        if extent:
+            return _extent_points(view, extent)
         shape = view.Source[0].Shape if view.Source else None
         if shape is None:
             return None
@@ -1964,8 +2007,9 @@ def _dimension_raw_value(dim):
         # Distance family: 2D distance in the view's own projected plane.
         pts = _dimension_linear_points(dim)
         if pts:
-            dx = pts[1][0] - pts[0][0]
-            dy = pts[1][1] - pts[0][1]
+            s = _uv_scale(view)  # back to model mm from a group view's scaled frame
+            dx = (pts[1][0] - pts[0][0]) / s
+            dy = (pts[1][1] - pts[0][1]) / s
             if dim.Type == "DistanceX":
                 return abs(dx)
             if dim.Type == "DistanceY":
