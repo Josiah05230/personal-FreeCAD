@@ -70,6 +70,26 @@ def test_part_name_is_the_one_word_registry_name_and_mfg_pn_is_only_in_the_note(
     assert any("IS EQUIVALENT TO MCMASTER-CARR 91292A111" in t for t in notes)
 
 
+def test_every_dimension_states_its_unit():
+    # user, 2026-09-29: a dimension without a unit is "still a meaningless
+    # scale" - linear sizes read mm, angles degrees, unless a format turns it off
+    assert drawing._format_dimension(45.0, "Distance", {}) == "45.00mm"
+    assert drawing._format_dimension(3.0, "Radius", {}) == "R3.00mm"
+    assert drawing._format_dimension(90.0, "Angle", {}) == "90.00°"
+    assert drawing._format_dimension(45.0, "Distance", {"unitSuffix": False}) == "45.00"
+
+
+def test_overall_dimensions_print_with_units(generated):
+    import re
+    _, path = generated
+    methods.document_open(path)
+    d = session.doc(create=False)
+    page = next(o for o in d.Objects if o.TypeId == "TechDraw::DrawPage")
+    svg = drawing.export_page_svg(d, page.Name)
+    values = re.findall(r">(\d+\.\d\d[^<]*)</text>", svg)
+    assert len(values) >= 3 and all(v.endswith("mm") for v in values), values
+
+
 def _front_view(d):
     return next(o for o in d.Objects if o.TypeId == "TechDraw::DrawProjGroupItem"
                 and drawing._get_tag(o, "_gwt_dir", "") in ("", "front") and str(o.Type) == "Front")

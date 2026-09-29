@@ -145,6 +145,11 @@ function fitCellFontSize(value: string, fontSize: number, cellW: number): number
   return widest > avail && avail > 0 ? fontSize * (avail / widest) : fontSize
 }
 
+/** Half the gap a linear dimension line leaves around its value label. */
+function labelGap(text: string): number {
+  return Math.max(6, measureText(text, 3.4) / 2 + 1)
+}
+
 const flip = (poly: number[][]): [number, number][] => poly.map((p) => [p[0], -p[1]])
 
 /** Find the next sheet position for a newly-placed view (w x h mm, already
@@ -3678,9 +3683,10 @@ export const DrawingSheet = forwardRef<
                 {/* extension (witness) lines: from each measured point out to the dimension line */}
                 <line x1={p1x} y1={p1y} x2={dlx1} y2={dly1} strokeWidth={0.2} />
                 <line x1={p2x} y1={p2y} x2={dlx2} y2={dly2} strokeWidth={0.2} />
-                {/* dimension line, split around the label */}
-                <line x1={dlx1} y1={dly1} x2={labelX - ux * 6} y2={labelY - uy * 6} />
-                <line x1={labelX + ux * 6} y1={labelY + uy * 6} x2={dlx2} y2={dly2} />
+                {/* dimension line, split around the label - the gap follows the
+                    label's width, which now carries its unit ("45.00mm") */}
+                <line x1={dlx1} y1={dly1} x2={labelX - ux * labelGap(text)} y2={labelY - uy * labelGap(text)} />
+                <line x1={labelX + ux * labelGap(text)} y1={labelY + uy * labelGap(text)} x2={dlx2} y2={dly2} />
                 <polygon points={arrow(dlx1, dly1, -ux, -uy)} stroke="none" />
                 <polygon points={arrow(dlx2, dly2, ux, uy)} stroke="none" />
                 <text x={labelX} y={labelY} fontSize={3.4} textAnchor="middle" stroke="none">

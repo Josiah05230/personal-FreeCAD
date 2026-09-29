@@ -6,7 +6,8 @@ export const DEFAULT_DIM_FORMAT: Required<
   precision: 2,
   leadingZero: true,
   trailingZeros: true,
-  unitSuffix: false
+  // every dimension says its unit (user: a bare number is "a meaningless scale")
+  unitSuffix: true
 }
 
 const RADIAL_PREFIX: Partial<Record<DimensionType, string>> = {

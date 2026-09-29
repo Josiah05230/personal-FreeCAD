@@ -697,7 +697,7 @@ def _format_dimension(value, dtype, fmt):
         s = ("-" + body) if neg else body
     radial_prefix = _RADIAL_DIM_PREFIX.get(dtype, "")
     unit_suffix = ""
-    if fmt.get("unitSuffix"):
+    if fmt.get("unitSuffix", True):  # on unless turned off - see dimensionFormat.ts
         unit_suffix = "°" if dtype in ("Angle", "Angle3Pt") else "mm"  # ° = °
     return "%s%s%s%s%s" % (fmt.get("textPrefix") or "", radial_prefix, s, unit_suffix,
                             fmt.get("textSuffix") or "")
@@ -1120,14 +1120,17 @@ def export_page_svg(doc, page_id):
         perp_off = off_x * -uy + off_y * ux
         dlx1, dly1 = p1x - uy * perp_off, p1y + ux * perp_off
         dlx2, dly2 = p2x - uy * perp_off, p2y + ux * perp_off
+        # the gap around the value follows its width (it carries a unit now) -
+        # same rule as DrawingSheet.tsx's labelGap
+        gap = max(6.0, value_width / 2 + 1.0)
         parts.append('<g transform="translate(%s %s)" stroke="#c47f16" fill="#c47f16" stroke-width="0.25">' % (
             _fmt(gx), _fmt(gy)))
         parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s" stroke-width="0.2"/>' % (_fmt(p1x), _fmt(p1y), _fmt(dlx1), _fmt(dly1)))
         parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s" stroke-width="0.2"/>' % (_fmt(p2x), _fmt(p2y), _fmt(dlx2), _fmt(dly2)))
         parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s"/>' % (
-            _fmt(dlx1), _fmt(dly1), _fmt(label_x - ux * 6), _fmt(label_y - uy * 6)))
+            _fmt(dlx1), _fmt(dly1), _fmt(label_x - ux * gap), _fmt(label_y - uy * gap)))
         parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s"/>' % (
-            _fmt(label_x + ux * 6), _fmt(label_y + uy * 6), _fmt(dlx2), _fmt(dly2)))
+            _fmt(label_x + ux * gap), _fmt(label_y + uy * gap), _fmt(dlx2), _fmt(dly2)))
         parts.append('<polygon points="%s" stroke="none"/>' % _arrow_points(dlx1, dly1, -ux, -uy))
         parts.append('<polygon points="%s" stroke="none"/>' % _arrow_points(dlx2, dly2, ux, uy))
         parts.append('<text x="%s" y="%s" font-size="3.4" text-anchor="middle" stroke="none">%s</text>' % (
