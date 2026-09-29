@@ -9,7 +9,8 @@ import * as asmPin from './assemblyPin'
 import * as mcmaster from './mcmaster'
 import * as lockfile from './lockfile'
 import * as gitWatch from './gitWatch'
-import { FolderRelevance, searchDir } from './fileFilter'
+import { FileIndex, FolderRelevance } from './fileFilter'
+import * as dpPrefs from './dataPanelPrefs'
 import { extOf, fileKind, isSkippedDir } from '../shared/fileTypes'
 
 // repo root is one level above app/ in dev; in a packaged build this is
@@ -61,6 +62,9 @@ function imageMime(path: string): string {
 /** one per process: folder-relevance answers are reused across listings,
  *  searches and panel reopenings (fileFilter.ts has the invalidation) */
 const folderRelevance = new FolderRelevance()
+// the Data Panel's search: one concurrent walk per root, searched in memory
+const fileIndex = new FileIndex()
+void dpPrefs.loadPrefs().then((p) => fileIndex.setSkip(p.hidden))
 
 async function createWindow(): Promise<void> {
   win = new BrowserWindow({
@@ -122,7 +126,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('app:version', () => app.getVersion())
 
   ipcMain.handle('fs:listDir', async (_e, dir?: string) => {
-    const target = dir && dir.length ? resolve(dir) : homedir()
+    const target = dir && dir.length ? resolve(dir) : await dpPrefs.startDir()
     const entries = await readdir(target, { withFileTypes: true })
     const raw = await Promise.all(
       entries
@@ -145,9 +149,10 @@ app.whenReady().then(async () => {
     const files = raw.filter((it) => !it.isDir && fileKind(it.name) !== null)
     const dirs = raw.filter((r) => r.isDir && !isSkippedDir(r.name))
     const known = await Promise.all(dirs.map((d) => folderRelevance.cached(d.path)))
+    const hidden = new Set((await dpPrefs.loadPrefs()).hidden)
     const items = [
       ...dirs
-        .map((d, i) => ({ ...d, relevant: known[i] }))
+        .map((d, i) => ({ ...d, relevant: known[i], hidden: hidden.has(d.path) || undefined }))
         .sort((a, b) => a.name.localeCompare(b.name)),
       ...files.sort((a, b) => a.name.localeCompare(b.name))
     ]
@@ -161,16 +166,34 @@ app.whenReady().then(async () => {
     const out: Record<string, boolean | null> = {}
     await Promise.all(
       (dirs ?? []).map(async (d) => {
-        out[d] = await folderRelevance.isRelevant(d)
+        // a search index covering this folder already knows - no walk
+        const known = fileIndex.relevance(d)
+        out[d] = known !== undefined ? known : await folderRelevance.isRelevant(d)
       })
     )
     return out
   })
 
-  ipcMain.handle('fs:searchDir', async (_e, root: string, query: string) => {
+  ipcMain.handle('fs:searchDir', async (_e, root: string, query: string, alsoMatch?: string[]) => {
     if (!query.trim()) return { results: [] }
-    const results = await searchDir(root, query.trim(), { relevance: folderRelevance })
-    return { results }
+    const r = await fileIndex.searchProgressive(resolve(root), query.trim(), alsoMatch ?? [])
+    return { results: r.hits, partial: r.partial }
+  })
+
+  // Data Panel right-click prefs: hidden folders (also skipped by search) + start folder
+  ipcMain.handle('dp:getPrefs', () => dpPrefs.loadPrefs())
+  ipcMain.handle('dp:setHidden', async (_e, dir: string, hidden: boolean) => {
+    const p = await dpPrefs.setHidden(resolve(dir), hidden)
+    fileIndex.setSkip(p.hidden)
+    return p
+  })
+  ipcMain.handle('dp:setDefaultDir', (_e, dir: string | null) =>
+    dpPrefs.setDefaultDir(dir ? resolve(dir) : null)
+  )
+
+  // the Data Panel shows a folder: index it now so a search there is instant
+  ipcMain.handle('fs:warmIndex', (_e, dir: string) => {
+    if (dir) fileIndex.warm(resolve(dir))
   })
 
   // Looks for a .kicad_pcb/.kicad_pro directly in `dir` - an F (PCB

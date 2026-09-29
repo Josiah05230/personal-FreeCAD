@@ -58,6 +58,15 @@ export function DataPanel({
   const [thumbs, setThumbs] = useState<Record<string, string | null>>({})
   const [menu, setMenu] = useState<{ x: number; y: number; it: DirEntry } | null>(null)
 
+  // right-click prefs: folders the user hid (also skipped by search) and the
+  // folder the panel starts in; "show hidden" is a per-session peek
+  const [prefs, setPrefs] = useState<DataPanelPrefs>({ hidden: [], defaultDir: null })
+  const [showHidden, setShowHidden] = useState(false)
+  const [pathMenu, setPathMenu] = useState<{ x: number; y: number } | null>(null)
+  useEffect(() => {
+    if (open) void window.cad.dataPanelPrefs().then(setPrefs).catch(() => undefined)
+  }, [open])
+
   // "where the company CAD actually lives" hint, per the user's own ask -
   // read once when the panel first opens (company.json rarely changes
   // mid-session; Company Directories already has its own dedicated panel
@@ -103,16 +112,16 @@ export function DataPanel({
       .catch(() => setPnByFilename(new Map()))
   }, [open])
 
-  // search: recursive from the CURRENTLY BROWSED folder down (highest
-  // level first, then each deeper level - see searchDir's own doc comment
-  // for why breadth-first gives that ordering for free), not the whole
-  // disk - matches how the model-tree Browser's own search is scoped to
-  // what's actually in view, not everything that could ever exist. Also
-  // matches PN name/description text (not just the filename) - see
-  // pnByFilename above.
+  // search: recursive from the CURRENTLY BROWSED folder down, shallowest
+  // first, not the whole disk - matches how the model-tree Browser's own
+  // search is scoped to what's in view. Answered from the main process's
+  // in-memory index (fileFilter.ts FileIndex; built when a folder is shown),
+  // skipping hidden folders. Also matches PN name/description text (not
+  // just the filename) - see pnByFilename above.
   const [query, setQuery] = useState('')
   const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null)
   const [searching, setSearching] = useState(false)
+  const [searchPartial, setSearchPartial] = useState(false)
   const searchSeq = useRef(0)
 
   useEffect(() => {
@@ -124,37 +133,34 @@ export function DataPanel({
     }
     setSearching(true)
     const seq = ++searchSeq.current
-    const id = window.setTimeout(() => {
-      void window.cad.searchDir(dir, q).then(async (r) => {
-        if (searchSeq.current !== seq) return // a newer query already superseded this one
-        const byFilename = new Map(r.results.map((x) => [x.name.toLowerCase(), x]))
-        // a filename match already covers itself - only need a SECOND pass
-        // for a name/description match the filename search wouldn't find
-        // (the registry text doesn't appear in the .FCStd's own name).
-        const namesToFind = new Set<string>()
-        for (const [filename, row] of pnByFilename) {
-          if (byFilename.has(filename)) continue
-          if (row.name.toLowerCase().includes(q) || row.description.toLowerCase().includes(q)) {
-            namesToFind.add(row.pn)
-          }
-        }
-        if (namesToFind.size > 0) {
-          // each is an exact-filename search (not a substring one), so this
-          // never pulls in something the user didn't actually mean to find
-          const extra = await Promise.all(
-            [...namesToFind].map((pn) => window.cad.searchDir(dir, pn))
-          )
-          for (const batch of extra) {
-            for (const x of batch.results) {
-              if (!byFilename.has(x.name.toLowerCase())) byFilename.set(x.name.toLowerCase(), x)
-            }
-          }
-        }
-        if (searchSeq.current !== seq) return // a newer query landed while the extra lookups were in flight
-        setSearchResults([...byFilename.values()].sort((a, b) => a.depth - b.depth))
-        setSearching(false)
-      })
-    }, 200) // debounce - a search walks the real filesystem, not an in-memory list
+    // registry name/description matches ("connector" finds CMC0010.FCStd):
+    // their "<PN>.FCStd" filenames ride along in the same search
+    const alsoMatch: string[] = []
+    for (const row of pnByFilename.values()) {
+      if (row.name.toLowerCase().includes(q) || row.description.toLowerCase().includes(q)) {
+        alsoMatch.push(`${row.pn}.fcstd`)
+      }
+    }
+    // a first search of a big tree answers with what's indexed so far
+    // (`partial`) - show that and keep asking until the index is complete
+    const run = (): void => {
+      void window.cad
+        .searchDir(dir, q, alsoMatch)
+        .then((r) => {
+          if (searchSeq.current !== seq) return // a newer query already superseded this one
+          setSearchResults(r.results)
+          setSearchPartial(!!r.partial)
+          setSearching(false)
+          if (r.partial) window.setTimeout(run, 300)
+        })
+        .catch(() => {
+          if (searchSeq.current !== seq) return
+          setSearchResults([])
+          setSearchPartial(false)
+          setSearching(false)
+        })
+    }
+    const id = window.setTimeout(run, 60) // short debounce - searches run against an in-memory index
     return () => window.clearTimeout(id)
   }, [query, dir, pnByFilename])
 
@@ -176,6 +182,7 @@ export function DataPanel({
       .then((r) => {
         if (seq !== loadSeq.current) return
         setDir(r.dir)
+        void window.cad.warmIndex(r.dir).catch(() => undefined)
         setParent(r.parent)
         setItems(r.items)
         setError(null)
@@ -225,7 +232,28 @@ export function DataPanel({
 
   // a folder is hidden once it's KNOWN to hold nothing usable; not-yet-
   // checked (undefined) and gave-up (null) folders stay visible
-  const visibleItems = items.filter((it) => !it.isDir || it.relevant !== false || alwaysShow.has(it.path))
+  const hiddenSet = new Set(prefs.hidden)
+  const visibleItems = items.filter(
+    (it) =>
+      (!it.isDir || it.relevant !== false || alwaysShow.has(it.path)) &&
+      (showHidden || !(it.hidden || hiddenSet.has(it.path)))
+  )
+
+  const setHidden = async (it: DirEntry, hidden: boolean): Promise<void> => {
+    const p = await window.cad.setFolderHidden(it.path, hidden)
+    setPrefs(p)
+    setItems((cur) => cur.map((x) => (x.path === it.path ? { ...x, hidden: hidden || undefined } : x)))
+    if (!p.hidden.length) setShowHidden(false)
+  }
+
+  const setDefault = async (path: string | null): Promise<void> => {
+    setPrefs(await window.cad.setDefaultFolder(path))
+  }
+
+  const defaultItem = (path: string): MenuItem =>
+    prefs.defaultDir === path
+      ? { label: 'Clear default folder', onClick: () => void setDefault(null) }
+      : { label: 'Set as default folder', onClick: () => void setDefault(path) }
 
   const newFolder = async (): Promise<void> => {
     if (!dir) return
@@ -288,6 +316,10 @@ export function DataPanel({
       ? [
           { label: 'Open', onClick: () => load(it.path) },
           { label: 'Rename…', onClick: () => void rename(it) },
+          it.hidden || hiddenSet.has(it.path)
+            ? { label: 'Unhide folder', onClick: () => void setHidden(it, false) }
+            : { label: 'Hide folder', onClick: () => void setHidden(it, true) },
+          defaultItem(it.path),
           { separator: true, label: '' },
           { label: 'Delete', danger: true, onClick: () => void del(it) }
         ]
@@ -314,7 +346,14 @@ export function DataPanel({
           </button>
         </span>
       </div>
-      <div className="datapanel-path" title={dir ?? ''}>
+      <div
+        className="datapanel-path"
+        title={dir ? `${dir}${prefs.defaultDir === dir ? '\n(default folder)' : ''}` : ''}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          if (dir) setPathMenu({ x: e.clientX, y: e.clientY })
+        }}
+      >
         {dir ?? 'Loading…'}
       </div>
       <div className="datapanel-search">
@@ -339,12 +378,12 @@ export function DataPanel({
         )}
         {error && <div className="dp-error">{error}</div>}
         {query ? (
-          searching ? (
+          searching || (searchPartial && !searchResults?.length) ? (
             <div className="dp-empty">Searching…</div>
           ) : !searchResults?.length ? (
             <div className="dp-empty">No matches for "{query.trim()}"</div>
           ) : (
-            searchResults.map((r) => {
+            [...searchResults.map((r) => {
               const rec = !r.isDir ? pnByFilename.get(r.name.toLowerCase()) : undefined
               return (
                 <div
@@ -365,7 +404,8 @@ export function DataPanel({
                   </span>
                 </div>
               )
-            })
+            }),
+            ...(searchPartial ? [<div key="__partial" className="dp-empty">Still searching…</div>] : [])]
           )
         ) : (
           <>
@@ -374,7 +414,9 @@ export function DataPanel({
               return (
                 <div
                   key={it.path}
-                  className={it.isDir ? 'dp-row' : 'dp-row file'}
+                  className={
+                    (it.isDir ? 'dp-row' : 'dp-row file') + (it.hidden || hiddenSet.has(it.path) ? ' dp-hidden' : '')
+                  }
                   onClick={() => it.isDir && load(it.path)}
                   onDoubleClick={() => (it.isDir ? load(it.path) : onOpenFile(it.path))}
                   onContextMenu={(e) => {
@@ -407,6 +449,16 @@ export function DataPanel({
           </>
         )}
       </div>
+      {prefs.hidden.length > 0 && (
+        <div className="datapanel-hiddenbar">
+          <span>
+            {prefs.hidden.length} hidden folder{prefs.hidden.length === 1 ? '' : 's'}
+          </span>
+          <button onClick={() => setShowHidden((v) => !v)}>
+            {showHidden ? 'Hide hidden folders' : 'Show hidden folders'}
+          </button>
+        </div>
+      )}
       {companyRepos.length > 0 && (
         <div className="datapanel-footer" title={companyRepos.map((r) => `${r.code}: ${r.path}`).join('\n')}>
           Company CAD: {companyRepos.map((r) => r.path).join(', ')}
@@ -430,6 +482,9 @@ export function DataPanel({
           items={menuItems(menu.it)}
           onClose={() => setMenu(null)}
         />
+      )}
+      {pathMenu && dir && (
+        <ContextMenu x={pathMenu.x} y={pathMenu.y} items={[defaultItem(dir)]} onClose={() => setPathMenu(null)} />
       )}
     </div>
   )

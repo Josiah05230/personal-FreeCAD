@@ -852,6 +852,25 @@ code {
   color: var(--text);
 }
 
+.datapanel-hiddenbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.datapanel-hiddenbar button {
+  font-size: 10px;
+  padding: 2px 8px;
+}
+.dp-row.dp-hidden {
+  opacity: 0.45;
+  font-style: italic;
+}
 .datapanel-footer {
   flex: 0 0 auto;
   padding: 6px 12px;

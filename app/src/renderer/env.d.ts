@@ -9,12 +9,19 @@ interface DirEntry {
    *  known not to (false - hidden), gave up looking (null), or not checked
    *  yet (undefined) */
   relevant?: boolean | null
+  /** the user hid this folder from the Data Panel (right-click) */
+  hidden?: boolean
 }
 interface DirListing {
   dir: string
   parent: string
   items: DirEntry[]
 }
+interface DataPanelPrefs {
+  hidden: string[]
+  defaultDir: string | null
+}
+
 interface SearchResult {
   name: string
   path: string
@@ -95,7 +102,11 @@ interface CadBridge {
   onSidecarRespawned(fn: () => void): () => void
   listDir(dir?: string): Promise<DirListing>
   dirRelevance(dirs: string[]): Promise<Record<string, boolean | null>>
-  searchDir(root: string, query: string): Promise<{ results: SearchResult[] }>
+  searchDir(root: string, query: string, alsoMatch?: string[]): Promise<{ results: SearchResult[]; partial?: boolean }>
+  warmIndex(dir: string): Promise<void>
+  dataPanelPrefs(): Promise<DataPanelPrefs>
+  setFolderHidden(dir: string, hidden: boolean): Promise<DataPanelPrefs>
+  setDefaultFolder(dir: string | null): Promise<DataPanelPrefs>
   saveDialog(defaultPath?: string): Promise<string | null>
   openDialog(filters?: { name: string; extensions: string[] }[]): Promise<string | null>
   openDirectoryDialog(): Promise<string | null>

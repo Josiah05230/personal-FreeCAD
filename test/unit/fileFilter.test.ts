@@ -15,7 +15,7 @@ import {
   isSkippedDir,
   extOf
 } from '../../app/src/shared/fileTypes'
-import { FolderRelevance, walkForAllowedFile, searchDir } from '../../app/src/main/fileFilter'
+import { FolderRelevance, walkForAllowedFile, searchDir, FileIndex, buildIndex } from '../../app/src/main/fileFilter'
 
 function tree(spec: Record<string, string | null>): string {
   const root = mkdtempSync(join(tmpdir(), 'gwtcad-filefilter-'))
@@ -191,6 +191,91 @@ test('search: usable files only, skips junk, drops irrelevant folder hits', asyn
     const hits = await searchDir(root, 'bracket', { relevance: new FolderRelevance() })
     const names = hits.map((h) => h.path.slice(root.length + 1)).sort()
     assert.deepEqual(names, ['bracket.FCStd', 'docs/bracket.pdf', 'sub/bracket-parts', 'sub/bracket-parts/bracket.step'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('index search: usable files + relevant folders, shallowest first, junk skipped', async () => {
+  const root = tree({
+    'a/SGA0010.FCStd': 'x',
+    'a/deep/er/SGA0011.FCStd': 'x',
+    'sga-docs/readme.txt': 'x', // folder name matches but holds nothing usable
+    'x/sga-parts/p.step': 'x',
+    'sga-top/q.step': 'x', // directly in the searched folder: already in the listing, not a hit
+    'node_modules/SGA0099.FCStd': 'x',
+    'SGA0012.FCStd.gwtcad.json': 'x'
+  })
+  try {
+    const ix = new FileIndex()
+    const hits = await ix.search(root, 'sga')
+    const names = hits.map((h) => h.name)
+    assert.deepEqual([...names].sort(), ['SGA0010.FCStd', 'SGA0011.FCStd', 'sga-parts'])
+    assert.equal(names[2], 'SGA0011.FCStd') // the deepest comes last
+    assert.ok(hits[0].depth <= hits[1].depth && hits[1].depth <= hits[2].depth)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('index search: a subfolder reuses the parent index, depths relative to it', async () => {
+  const root = tree({ 'a/b/X1.FCStd': 'x', 'c/X2.FCStd': 'x' })
+  try {
+    const ix = new FileIndex()
+    await ix.search(root, 'x')
+    const hits = await ix.search(join(root, 'a'), 'x')
+    assert.deepEqual(hits.map((h) => [h.name, h.depth]), [['X1.FCStd', 1]])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('index search: alsoMatch pulls in files by registry name/description hits', async () => {
+  const root = tree({ 'CMC0010.FCStd': 'x', 'CMC0020.FCStd': 'x' })
+  try {
+    const ix = new FileIndex()
+    const hits = await ix.search(root, 'connector', ['cmc0010.fcstd'])
+    assert.deepEqual(hits.map((h) => h.name), ['CMC0010.FCStd'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('index relevance: code-only folder false, part folder true, empty folder true', async () => {
+  const root = tree({ 'code/main.py': 'x', 'parts/p.FCStd': 'x', 'fresh': null })
+  try {
+    const ix = new FileIndex()
+    await ix.search(root, 'zzz')
+    assert.equal(ix.relevance(join(root, 'code')), false)
+    assert.equal(ix.relevance(join(root, 'parts')), true)
+    assert.equal(ix.relevance(join(root, 'fresh')), true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('index: a walk out of budget never calls a folder irrelevant', async () => {
+  const root = tree({ 'a/b/c/d/p.FCStd': 'x', 'z/readme.txt': 'x' })
+  try {
+    const ix = await buildIndex(root, { timeMs: 10_000, maxDirs: 10_000, maxDepth: 1 })
+    assert.equal(ix.truncated, true)
+    const fi = new FileIndex(15_000, { timeMs: 10_000, maxDirs: 10_000, maxDepth: 1 })
+    await fi.search(root, 'zzz')
+    assert.notEqual(fi.relevance(join(root, 'a')), false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('index: stale answers at once, then picks up a new file after the background rebuild', async () => {
+  const root = tree({ 'A1.FCStd': 'x' })
+  try {
+    const ix = new FileIndex(0) // always stale
+    assert.equal((await ix.search(root, 'a')).length, 1)
+    writeFileSync(join(root, 'A2.FCStd'), 'x')
+    await ix.search(root, 'a') // stale answer, kicks the rebuild
+    await new Promise((r) => setTimeout(r, 200))
+    assert.equal((await ix.search(root, 'a')).length, 2)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

@@ -9,12 +9,19 @@ export interface DirEntry {
    *  known not to (false - the Data Panel hides it), gave up looking
    *  (null), or not checked yet (undefined) */
   relevant?: boolean | null
+  /** the user hid this folder from the Data Panel (right-click) */
+  hidden?: boolean
 }
 export interface DirListing {
   dir: string
   parent: string
   items: DirEntry[]
 }
+export interface DataPanelPrefs {
+  hidden: string[]
+  defaultDir: string | null
+}
+
 export interface SearchResult {
   name: string
   path: string
@@ -110,11 +117,20 @@ const cad = {
    *  null = the bounded walk gave up (treat as yes) */
   dirRelevance: (dirs: string[]) =>
     ipcRenderer.invoke('fs:dirRelevance', dirs) as Promise<Record<string, boolean | null>>,
-  /** recursive design/folder search from `root` down - highest level
-   *  first, then each deeper level in turn (breadth-first), bounded so a
-   *  huge tree can't hang the UI. Used by the Data Panel's search box. */
-  searchDir: (root: string, query: string) =>
-    ipcRenderer.invoke('fs:searchDir', root, query) as Promise<{ results: SearchResult[] }>,
+  /** design/folder search from `root` down, shallowest first - answered
+   *  from an in-memory index (main/fileFilter.ts FileIndex). `alsoMatch`:
+   *  extra substrings a FILE name may contain instead (registry
+   *  name/description hits). Used by the Data Panel's search box. */
+  searchDir: (root: string, query: string, alsoMatch?: string[]) =>
+    ipcRenderer.invoke('fs:searchDir', root, query, alsoMatch) as Promise<{ results: SearchResult[]; partial?: boolean }>,
+  /** start indexing `dir` for search ahead of the first keystroke */
+  warmIndex: (dir: string) => ipcRenderer.invoke('fs:warmIndex', dir) as Promise<void>,
+  /** Data Panel right-click prefs: hidden folders + the folder it starts in */
+  dataPanelPrefs: () => ipcRenderer.invoke('dp:getPrefs') as Promise<DataPanelPrefs>,
+  setFolderHidden: (dir: string, hidden: boolean) =>
+    ipcRenderer.invoke('dp:setHidden', dir, hidden) as Promise<DataPanelPrefs>,
+  setDefaultFolder: (dir: string | null) =>
+    ipcRenderer.invoke('dp:setDefaultDir', dir) as Promise<DataPanelPrefs>,
 
   saveDialog: (defaultPath?: string) =>
     ipcRenderer.invoke('dialog:save', defaultPath) as Promise<string | null>,
