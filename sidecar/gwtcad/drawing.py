@@ -1334,6 +1334,46 @@ def _part_view_payload(view):
     return _compute_view_payload(view)
 
 
+SNAPSHOT_TAG = "_gwt_snapshotOf"
+
+
+def _snapshot_sources(view):
+    """Some PartDesign bodies project to nothing at all as a view source -
+    the PSJ0010 spacer's front view came out empty in both hidden-line
+    modes - while a plain Part::Feature holding the very same solid draws
+    fine. Point the view (or its projection group) at hidden copies of its
+    bodies' shapes; refresh_snapshots() re-copies them from their bodies,
+    so the drawing still follows the model. True if anything changed."""
+    doc = view.Document
+    owner = next((p for p in view.InList if p.TypeId == "TechDraw::DrawProjGroup"), view)
+    srcs = list(getattr(owner, "Source", []) or [])
+    if not srcs or not any(o.TypeId == "PartDesign::Body" for o in srcs):
+        return False
+    new = []
+    for o in srcs:
+        if o.TypeId != "PartDesign::Body":
+            new.append(o)
+            continue
+        snap = doc.addObject("Part::Feature", "ViewShape")
+        snap.Shape = o.Shape.copy()
+        snap.Label = "%s (drawing shape)" % o.Label
+        snap.Visibility = False
+        _tag(snap, SNAPSHOT_TAG, o.Name)
+        new.append(snap)
+    owner.Source = new
+    doc.recompute()
+    return True
+
+
+def refresh_snapshots(doc):
+    """Re-copy every drawing snapshot from its body (see _snapshot_sources)."""
+    for o in doc.Objects:
+        name = _get_tag(o, SNAPSHOT_TAG) if o.TypeId == "Part::Feature" else ""
+        src = doc.getObject(name) if name else None
+        if src is not None and not src.Shape.isNull():
+            o.Shape = src.Shape.copy()
+
+
 def _compute_view_payload(view):
     vis = _edges_to_polylines(view.getVisibleEdges()) if hasattr(view, "getVisibleEdges") else []
     hid = _edges_to_polylines(view.getHiddenEdges()) if hasattr(view, "getHiddenEdges") else []
@@ -1344,6 +1384,9 @@ def _compute_view_payload(view):
         view.CoarseView = not view.CoarseView
         _tag(view, "_gwt_exact", "" if view.CoarseView else "1")
         view.Document.recompute()
+        vis = _edges_to_polylines(view.getVisibleEdges())
+        hid = _edges_to_polylines(view.getHiddenEdges())
+    if not vis and not hid and _snapshot_sources(view):
         vis = _edges_to_polylines(view.getVisibleEdges())
         hid = _edges_to_polylines(view.getHiddenEdges())
     if not vis and not hid:

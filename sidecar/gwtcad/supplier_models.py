@@ -1156,6 +1156,7 @@ def _recompute_page_views(doc, page):
     lazy page (KeepUpdated off on disk) or a stale cached view must never
     show the previous revision's geometry on this revision's drawing."""
     _drawing._ensure_page_live(doc, page)
+    _drawing.refresh_snapshots(doc)
     for o in _drawing._page_objects(page):
         if o.TypeId.startswith("TechDraw::"):
             o.touch()
