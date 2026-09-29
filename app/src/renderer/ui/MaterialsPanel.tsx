@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { pushAppAction } from '../appHistory'
 import { api, type CustomMaterialPreset, type MaterialDTO, type MaterialFamily } from '../rpc'
 
 /**
@@ -42,6 +43,11 @@ export function MaterialsPanel({
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(load, [targetId])
+  // an undo/redo of a custom-preset save/delete (appHistory)
+  useEffect(() => {
+    window.addEventListener('gwtcad-materials-changed', load)
+    return () => window.removeEventListener('gwtcad-materials-changed', load)
+  })
 
   const activeFamily = useMemo(() => families.find((f) => f.family === family), [families, family])
 
@@ -86,9 +92,26 @@ export function MaterialsPanel({
     }
   }
 
+  // undoable (Ctrl+Z): the preset is saved back under the same id
   const deleteCustom = async (id: string): Promise<void> => {
+    const gone = (await api.materialCustomList().catch(() => ({ presets: [] as CustomMaterialPreset[] }))).presets.find(
+      (p) => p.id === id
+    )
     await api.materialCustomDelete(id)
     load()
+    if (gone) {
+      pushAppAction({
+        label: `Delete material ${gone.name}`,
+        undo: async () => {
+          await api.materialCustomSave(gone.name, gone.baseUuid, gone.appearance, gone.physical, gone.extra, gone.id)
+          window.dispatchEvent(new Event('gwtcad-materials-changed'))
+        },
+        redo: async () => {
+          await api.materialCustomDelete(gone.id)
+          window.dispatchEvent(new Event('gwtcad-materials-changed'))
+        }
+      })
+    }
   }
 
   return (
@@ -183,8 +206,19 @@ export function MaterialsPanel({
           onAssign={() => void assign()}
           onSaveCustom={async (name, appearance, physical, extra) => {
             try {
-              await api.materialCustomSave(name, detail.uuid, appearance, physical, extra)
+              const saved = await api.materialCustomSave(name, detail.uuid, appearance, physical, extra)
               load()
+              pushAppAction({
+                label: `Save material ${name}`,
+                undo: async () => {
+                  await api.materialCustomDelete(saved.id)
+                  window.dispatchEvent(new Event('gwtcad-materials-changed'))
+                },
+                redo: async () => {
+                  await api.materialCustomSave(saved.name, saved.baseUuid, saved.appearance, saved.physical, saved.extra, saved.id)
+                  window.dispatchEvent(new Event('gwtcad-materials-changed'))
+                }
+              })
               setEditing(false)
             } catch (e) {
               setErr((e as Error).message)

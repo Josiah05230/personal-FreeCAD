@@ -1,3 +1,4 @@
+import { pushAppAction } from '../appHistory'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   api,
@@ -68,10 +69,15 @@ export function AppearancePanel({
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
-    void api
-      .appearancePresetList()
-      .then((r) => setSavedPresets(r.presets))
-      .catch(() => undefined)
+    const reload = (): void =>
+      void api
+        .appearancePresetList()
+        .then((r) => setSavedPresets(r.presets))
+        .catch(() => undefined)
+    reload()
+    // an undo/redo of a preset save/delete (appHistory)
+    window.addEventListener('gwtcad-presets-changed', reload)
+    return () => window.removeEventListener('gwtcad-presets-changed', reload)
   }, [])
 
   const eff = effectiveAppearance(appearance)
@@ -151,14 +157,41 @@ export function AppearancePanel({
                   scope
                 )
                 setSavedPresets((p) => [...p, saved])
+                let cur = saved.id
+                pushAppAction({
+                  label: `Save appearance preset ${name}`,
+                  undo: async () => {
+                    await api.appearancePresetDelete(cur)
+                    window.dispatchEvent(new Event('gwtcad-presets-changed'))
+                  },
+                  redo: async () => {
+                    cur = (await api.appearancePresetSave(saved.name, saved.appearance, saved.render, saved.scope)).id
+                    window.dispatchEvent(new Event('gwtcad-presets-changed'))
+                  }
+                })
               } catch (e) {
                 setErr((e as Error).message)
               }
             }}
             onDelete={async (id) => {
               if (id.startsWith('builtin.')) return
+              const gone = savedPresets.find((x) => x.id === id)
               await api.appearancePresetDelete(id).catch(() => undefined)
               setSavedPresets((p) => p.filter((x) => x.id !== id))
+              if (gone) {
+                let cur = id
+                pushAppAction({
+                  label: `Delete appearance preset ${gone.name}`,
+                  undo: async () => {
+                    cur = (await api.appearancePresetSave(gone.name, gone.appearance, gone.render, gone.scope)).id
+                    window.dispatchEvent(new Event('gwtcad-presets-changed'))
+                  },
+                  redo: async () => {
+                    await api.appearancePresetDelete(cur)
+                    window.dispatchEvent(new Event('gwtcad-presets-changed'))
+                  }
+                })
+              }
             }}
           />
         )}
