@@ -217,3 +217,102 @@ def appearance_preset_save(name, appearance=None, render=None, scope="object", i
 def appearance_preset_delete(id):
     session.set_appearance_preset(id, None)
     return {"deleted": id}
+
+
+# --------------------------------------------------------------------------- #
+# Inherited colours for assembly components.
+#
+# An App::Link renders as ONE mesh, and the scene only looked up appearance
+# records keyed by the link's own name in the open document - so every
+# component showed default grey even when its part file was fully coloured,
+# and a nested sub-assembly was one flat colour (found 2026-09-28 on the node
+# assemblies). These helpers work out, face by face, the colour each face of a
+# component's shape should have: from the linked part file's own companion,
+# recursing through links and sub-assemblies (whose shape is their
+# children's faces in Group order, verified). A record painted on the
+# component itself in the open assembly still wins.
+# --------------------------------------------------------------------------- #
+
+_COMPANION_CACHE = {}
+_SKIP_CHILD_TYPES = ("Assembly::JointGroup", "App::Origin", "App::DocumentObjectGroup")
+
+
+def _companion_of(doc):
+    import json
+    import os
+    path = (getattr(doc, "FileName", "") or "") + ".gwtcad.json"
+    if not os.path.isfile(path):
+        return {}
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return {}
+    hit = _COMPANION_CACHE.get(path)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    try:
+        data = json.load(open(path))
+    except Exception:
+        data = {}
+    _COMPANION_CACHE[path] = (mtime, data)
+    return data
+
+
+def _look_of(o):
+    """(base colour or None, {"FaceN": rgb}) recorded for object o, from the
+    live session if o lives in the open document, else from its file's
+    companion."""
+    sd = session.doc(create=False)
+    if sd is not None and o.Document is sd:
+        rec = session.object_appearance(o.Name) or {}
+        col = rec.get("color") or session.body_color(o.Name)
+    else:
+        comp = _companion_of(o.Document)
+        rec = (comp.get("appearance") or {}).get(o.Name) or {}
+        col = rec.get("color") or (comp.get("colors") or {}).get(o.Name)
+    return col, (rec.get("faces") or {})
+
+
+def _shape_children(o):
+    kids = []
+    for c in getattr(o, "Group", []) or []:
+        if c.TypeId in _SKIP_CHILD_TYPES:
+            continue
+        sh = getattr(c, "Shape", None)
+        if sh is None or sh.isNull():
+            continue
+        kids.append(c)
+    return kids
+
+
+def inherited_face_colors(o, _depth=0):
+    """One [r,g,b] (or None = default) per face of o.Shape."""
+    sh = getattr(o, "Shape", None)
+    if sh is None or sh.isNull() or _depth > 12:
+        return None
+    n = len(sh.Faces)
+    inner = None
+    if o.TypeId == "App::Link":
+        target = getattr(o, "LinkedObject", None)
+        if target is not None:
+            inner = inherited_face_colors(target, _depth + 1)
+    elif o.TypeId in ("Assembly::AssemblyObject", "App::Part"):
+        parts = []
+        for c in _shape_children(o):
+            sub = inherited_face_colors(c, _depth + 1)
+            parts.extend(sub if sub is not None else [None] * len(c.Shape.Faces))
+        inner = parts if len(parts) == n else None
+    col, faces = _look_of(o)
+    out = []
+    for i in range(n):
+        own = faces.get("Face%d" % (i + 1))
+        if own is not None:
+            out.append(own)
+        elif col is not None:
+            # a part's base colour, or a whole component painted in the assembly
+            out.append(col)
+        elif inner is not None and i < len(inner):
+            out.append(inner[i])
+        else:
+            out.append(None)
+    return out

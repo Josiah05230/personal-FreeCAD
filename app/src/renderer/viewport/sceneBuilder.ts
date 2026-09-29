@@ -214,27 +214,30 @@ function buildBody(m: RenderMesh): THREE.Object3D[] {
     depthWrite: !transparent
   })
   // per-face colour overrides (view layer). Split the index buffer into groups
-  // and give each overridden face its own material clone tinted to its colour.
+  // and give each overridden face a material clone tinted to its colour - one
+  // clone per distinct COLOUR, not per face: an assembly component inherits a
+  // colour for every face of its parts (1000+ faces on a populated board),
+  // and a material per face made those scenes crawl.
   const faceCols = m.appearance?.faces
   let meshMat: THREE.Material | THREE.Material[] = mat
   if (faceCols && Object.keys(faceCols).length && m.faceGroups.length && geom.getIndex()) {
     const mats: THREE.Material[] = [mat]
-    const idxForSub = new Map<string, number>()
+    const idxForColour = new Map<string, number>()
     geom.clearGroups()
     // sort groups by start so the whole index range is covered in order
     const groups = [...m.faceGroups].sort((a, b) => a.start - b.start)
     for (const g of groups) {
-      const sub = `Face${g.face + 1}`
-      const col = faceCols[sub]
+      const col = faceCols[`Face${g.face + 1}`]
       let mi = 0
       if (col) {
-        mi = idxForSub.get(sub) ?? -1
+        const key = (col as number[]).map((c) => c.toFixed(3)).join(',')
+        mi = idxForColour.get(key) ?? -1
         if (mi < 0) {
           const fm = mat.clone()
           fm.color = toColor(col as RGB, SOLID_COLOR)
           mats.push(fm)
           mi = mats.length - 1
-          idxForSub.set(sub, mi)
+          idxForColour.set(key, mi)
         }
       }
       geom.addGroup(g.start, g.count, mi)

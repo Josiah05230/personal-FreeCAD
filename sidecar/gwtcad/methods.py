@@ -37,6 +37,14 @@ _DATUM_TYPES = (
 # Tessellation cache: body name -> (signature, render buffer). OCCT meshing is
 # the slow part of scene.get; skip it when a body's shape is unchanged.
 _TESS_CACHE = {}
+
+def _inherited_faces_cached(o, sig):
+    """{"FaceN": rgb} inherited by an assembly component. Not cached on the
+    shape signature: recolouring a part file doesn't change its shape, and
+    the companion reads are already cached by mtime in appearance."""
+    from . import appearance as _appearance
+    cols = _appearance.inherited_face_colors(o) or []
+    return {"Face%d" % (i + 1): c for i, c in enumerate(cols) if c is not None}
 # the caches of recently open files, so switching back to a tab reuses its
 # meshes instead of re-meshing (1-2s on a dense vendor model)
 _TESS_BY_PATH = collections.OrderedDict()
@@ -4454,6 +4462,16 @@ def scene_get():
             appr = session.object_appearance(o.Name)
             if appr:
                 buf["appearance"] = appr
+            if tid == "App::Link":
+                # colours from the linked part file / sub-assembly, face by face
+                # (see appearance.inherited_face_colors)
+                inherited = _inherited_faces_cached(o, buf.get("sig"))
+                if inherited:
+                    rec = dict(appr or {})
+                    faces = dict(inherited)
+                    faces.update(rec.get("faces") or {})
+                    rec["faces"] = faces
+                    buf["appearance"] = rec
             meshes.append(buf)
         elif tid == "Sketcher::SketchObject":
             if build.is_ref_copy(o):
