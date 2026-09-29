@@ -281,7 +281,9 @@ const cad = {
   mcmasterDownloadCad: (format?: 'STEP' | 'IGES') =>
     ipcRenderer.invoke('mcmaster:downloadCad', format) as Promise<string>,
   mcmasterScrapeCurrentPart: () =>
-    ipcRenderer.invoke('mcmaster:scrapeCurrentPart') as Promise<Record<string, unknown> | null>
+    ipcRenderer.invoke('mcmaster:scrapeCurrentPart') as Promise<Record<string, unknown> | null>,
+  mcmasterFetchStepHeadless: (mfgPn: string) =>
+    ipcRenderer.invoke('mcmaster:fetchStepHeadless', mfgPn) as Promise<string>
 }
 
 contextBridge.exposeInMainWorld('cad', cad)

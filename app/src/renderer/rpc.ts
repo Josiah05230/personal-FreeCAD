@@ -1933,7 +1933,15 @@ export const api = {
     rpc<{
       sync: Array<{ pn: string; ok: boolean; path?: string; skipped?: string; error?: string }>
       drawings: Array<{ pn: string; ok: boolean; pdfUploaded?: boolean; skipped?: string; errors?: string[]; error?: string }>
-    }>('supplierModels.syncAndGenerateAll', {})
+    }>('supplierModels.syncAndGenerateAll', {}),
+  /** McMaster-Carr registry parts with an MFG PN but no 3D model yet - see
+   *  sidecar mcmaster_models.py. The renderer fetches each one's STEP via
+   *  window.cad.mcmasterFetchStepHeadless and hands it to uploadStep, which
+   *  drops it where syncAndGenerateAll picks supplier models up. */
+  mcmasterModelsListMissing: () =>
+    rpc<Array<{ pn: string; mfgPn: string; description: string }>>('mcmasterModels.listMissing', {}),
+  mcmasterModelsUploadStep: (pn: string, path: string, mfgPn: string, description: string) =>
+    rpc<{ pn: string; bytes: number }>('mcmasterModels.uploadStep', { pn, path, mfgPn, description })
 }
 
 /** kicad = part of the KiCad project; footprint = a 3D model a footprint in

@@ -238,6 +238,93 @@ export async function downloadCad(format: 'STEP' | 'IGES' = 'STEP'): Promise<str
 }
 
 /**
+ * Background model fetch for registry parts (see sidecar mcmaster_models.py):
+ * the same in-page fetch downloadCad uses, but in a hidden window of its own
+ * so it never touches the visible panel's page. Shares the panel's partition
+ * (cookies/Akamai state). Checked live: no login needed, ~2-3s per part.
+ * Two things the interactive path can take for granted but this can't: the
+ * page may still be hydrating when the format toggle first appears (clicking
+ * it then silently does nothing, and the anchor stays on the default
+ * SolidWorks file), so the switch is retried; and the result is checked to
+ * really be a STEP before it's returned.
+ */
+let fetchWin: BrowserWindow | null = null
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+const HREF_JS = `(function(){
+  var a = document.querySelector('a[class*="downloadAnchor"], a[class*="DownloadAnchor"]');
+  return a ? a.getAttribute('href') : null;
+})()`
+
+export async function fetchStepHeadless(mfgPn: string): Promise<string> {
+  if (!/^[A-Za-z0-9-]+$/.test(mfgPn)) throw new Error(`not a McMaster part number: ${mfgPn}`)
+  if (!fetchWin || fetchWin.isDestroyed()) {
+    fetchWin = new BrowserWindow({
+      show: false,
+      width: 1280,
+      height: 900,
+      webPreferences: { partition: PARTITION, sandbox: true, backgroundThrottling: false }
+    })
+  }
+  const wc = fetchWin.webContents
+  await wc.loadURL(`https://www.mcmaster.com/${mfgPn}/`)
+
+  let href: string | null = null
+  for (let i = 0; i < 40 && !href; i++) {
+    await sleep(500)
+    href = (await wc.executeJavaScript(HREF_JS, true)) as string | null
+  }
+  if (!href) throw new Error(`${mfgPn}: no CAD download on its page (not a product page, or no CAD offered)`)
+
+  for (let attempt = 0; attempt < 3 && !/\.STEP(\?|$)/i.test(href || ''); attempt++) {
+    await sleep(1000 + attempt * 1500)
+    const picked = (await wc.executeJavaScript(
+      `(async function(){
+        var toggle = Array.from(document.querySelectorAll('button')).find(function(b){
+          return /^3-D |^2-D /.test((b.textContent||'').trim());
+        });
+        if (!toggle) return 'no format selector';
+        toggle.click();
+        await new Promise(function(r){ setTimeout(r, 500); });
+        var li = Array.from(document.querySelectorAll('li')).find(function(x){ return (x.textContent||'').trim() === '3-D STEP'; });
+        if (!li) return 'no 3-D STEP option';
+        li.click();
+        return 'ok';
+      })()`,
+      true
+    )) as string
+    if (picked !== 'ok') throw new Error(`${mfgPn}: ${picked}`)
+    for (let i = 0; i < 15; i++) {
+      await sleep(300)
+      href = (await wc.executeJavaScript(HREF_JS, true)) as string | null
+      if (/\.STEP(\?|$)/i.test(href || '')) break
+    }
+  }
+  if (!href || !/\.STEP(\?|$)/i.test(href)) throw new Error(`${mfgPn}: STEP format never became selected`)
+
+  const fileUrl = new URL(href, wc.getURL()).toString()
+  const res = (await wc.executeJavaScript(
+    `(async function(){
+      try {
+        var r = await fetch(${JSON.stringify(fileUrl)});
+        if (!r.ok) return { error: 'HTTP ' + r.status };
+        var b = new Uint8Array(await r.arrayBuffer()), s = '';
+        for (var i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+        return { base64: btoa(s) };
+      } catch (e) { return { error: String(e && e.message || e) }; }
+    })()`,
+    true
+  )) as { base64?: string; error?: string }
+  if (res.error || !res.base64) throw new Error(`${mfgPn}: download failed: ${res.error || 'no data'}`)
+  const bytes = Buffer.from(res.base64, 'base64')
+  if (bytes.subarray(0, 12).toString('latin1') !== 'ISO-10303-21') throw new Error(`${mfgPn}: download was not a STEP file`)
+
+  if (!downloadDir) downloadDir = await mkdtemp(join(tmpdir(), 'gwtcad-mmc-'))
+  const dest = join(downloadDir, `${mfgPn}.step`)
+  await writeFile(dest, bytes)
+  return dest
+}
+
+/**
  * Scrape everything readable off the currently-loaded product page: part
  * number (from the URL, MMC's own canonical id), title, description text,
  * the full spec table (every label/value row - "grab everything" per the
@@ -325,6 +412,8 @@ export async function scrapeCurrentPart(): Promise<Record<string, unknown> | nul
 }
 
 export async function cleanup(): Promise<void> {
+  if (fetchWin && !fetchWin.isDestroyed()) fetchWin.destroy()
+  fetchWin = null
   if (downloadDir) {
     await rm(downloadDir, { recursive: true, force: true }).catch(() => {})
     downloadDir = null

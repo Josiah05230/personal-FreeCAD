@@ -183,6 +183,7 @@ interface CadBridge {
   mcmasterGoHome(): Promise<void>
   mcmasterNavigate(input: string): Promise<void>
   mcmasterDownloadCad(format?: 'STEP' | 'IGES'): Promise<string>
+  mcmasterFetchStepHeadless(mfgPn: string): Promise<string>
   mcmasterScrapeCurrentPart(): Promise<Record<string, unknown> | null>
 }
 

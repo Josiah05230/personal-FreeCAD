@@ -479,6 +479,48 @@ export function App(): JSX.Element {
     if (sketchNoticeTimer.current) clearTimeout(sketchNoticeTimer.current)
     sketchNoticeTimer.current = setTimeout(() => setSketchNotice(null), 5000)
   }, [])
+  // McMaster-Carr has no model API (unlike Aptiv, fetched server-side), so
+  // GWT-CAD fetches those itself before organizing: every registry part from
+  // McMaster with no model yet gets its STEP pulled from its product page in
+  // a hidden window and dropped where the supplier sync picks models up. One
+  // at a time with a pause between, so it looks like a person browsing. A
+  // part that fails (no CAD offered, page changed) is left alone for a day
+  // instead of retried on every launch.
+  const fetchMissingMcMasterModels = useCallback(async (): Promise<number> => {
+    if (window.cad.isE2E) return 0
+    const FAIL_KEY = 'gwtcad.mmcFetchFailures'
+    let failures: Record<string, number> = {}
+    try {
+      failures = JSON.parse(localStorage.getItem(FAIL_KEY) || '{}')
+    } catch {
+      failures = {}
+    }
+    const missing = await api.mcmasterModelsListMissing().catch((err) => {
+      console.error('mcmasterModelsListMissing:', err)
+      return []
+    })
+    let fetched = 0
+    for (const part of missing) {
+      if (Date.now() - (failures[part.pn] || 0) < 24 * 3600 * 1000) continue
+      try {
+        const path = await window.cad.mcmasterFetchStepHeadless(part.mfgPn)
+        await api.mcmasterModelsUploadStep(part.pn, path, part.mfgPn, part.description)
+        delete failures[part.pn]
+        fetched++
+      } catch (err) {
+        console.error(`McMaster model fetch for ${part.pn} (${part.mfgPn}):`, err)
+        failures[part.pn] = Date.now()
+      }
+      await new Promise((r) => setTimeout(r, 1500))
+    }
+    try {
+      localStorage.setItem(FAIL_KEY, JSON.stringify(failures))
+    } catch {
+      /* storage unavailable - failures just get retried next launch */
+    }
+    return fetched
+  }, [])
+
   // Shared by both triggers this feature's design settled on: automatic on
   // startup (catches anything reserved while GWT-CAD wasn't running, since
   // the fetch itself happens in GrainWavePartners' Cloud Function the
@@ -491,12 +533,15 @@ export function App(): JSX.Element {
   // app doesn't need to announce that on every single launch.
   const checkSupplierModels = useCallback(
     (silent: boolean) => {
-      return api
-        .supplierModelsSyncAndGenerateAll()
-        .then((result) => {
+      return fetchMissingMcMasterModels()
+        .then((fetched) => api.supplierModelsSyncAndGenerateAll().then((result) => ({ fetched, result })))
+        .then(({ fetched, result }) => {
           const drawn = result.drawings.filter((d) => d.ok && d.pdfUploaded).length
           if (drawn > 0) {
-            flashSketchNotice(`Generated ${drawn} reference drawing${drawn === 1 ? '' : 's'} for supplier-sourced parts.`)
+            flashSketchNotice(
+              `Generated ${drawn} reference drawing${drawn === 1 ? '' : 's'} for supplier-sourced parts` +
+                (fetched > 0 ? ` (${fetched} McMaster model${fetched === 1 ? '' : 's'} downloaded).` : '.')
+            )
           } else if (!silent) {
             flashSketchNotice('No new supplier models to organize.')
           }
@@ -506,7 +551,7 @@ export function App(): JSX.Element {
           if (!silent) flashSketchNotice('Checking for supplier models failed - see console.')
         })
     },
-    [flashSketchNotice]
+    [flashSketchNotice, fetchMissingMcMasterModels]
   )
   useEffect(() => {
     let live = true

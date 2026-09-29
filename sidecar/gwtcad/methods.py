@@ -6379,7 +6379,7 @@ from gwtcad import kicad as _kicad_methods  # noqa: E402,F401
 
 # Fusion-parity feature modules. Each registers its own @method RPCs on import.
 # Guarded so a problem in one module cannot take the whole sidecar down.
-for _mod in ("primitives", "xform", "meshtools", "materials", "appearance", "partnumbers"):
+for _mod in ("primitives", "xform", "meshtools", "materials", "appearance", "partnumbers", "mcmaster_models"):
     try:
         __import__("gwtcad." + _mod)
     except Exception as _e:  # pragma: no cover - surfaced in the sidecar log

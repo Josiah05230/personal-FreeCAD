@@ -387,6 +387,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('mcmaster:navigate', (_e, input: string) => mcmaster.navigate(input))
   ipcMain.handle('mcmaster:downloadCad', (_e, format?: 'STEP' | 'IGES') => mcmaster.downloadCad(format))
   ipcMain.handle('mcmaster:scrapeCurrentPart', () => mcmaster.scrapeCurrentPart())
+  ipcMain.handle('mcmaster:fetchStepHeadless', (_e, mfgPn: string) => mcmaster.fetchStepHeadless(mfgPn))
 
   ipcMain.handle('drawing:exportPdf', async (_e, html: string, outPath: string) => {
     const w = new BrowserWindow({ show: false, webPreferences: { offscreen: true } })
