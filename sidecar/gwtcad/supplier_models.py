@@ -380,7 +380,7 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     bb3 = sources[0].Shape.BoundBox
     for o in sources[1:]:
         bb3.add(o.Shape.BoundBox)
-    heavy = sum(len(o.Shape.Faces) for o in sources) > _FAST_VIEW_FACES
+    heavy = _hlr_cost(sources) > _FAST_VIEW_COST
     if heavy:
         # image views carry no live dimensions - state the size instead
         notes = list(notes or []) + ["OVERALL SIZE %.1f x %.1f x %.1f MM" % (
@@ -596,7 +596,18 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
 
 
 ISO_RENDER_TAG = "_gwt_isoRender"  # any fastview-drawn view image (name kept for files already tagged)
-_FAST_VIEW_FACES = 1500  # above this, TechDraw's hidden-line views take minutes
+_FAST_VIEW_COST = 3000  # above this, TechDraw's hidden-line views take minutes
+
+
+def _hlr_cost(sources):
+    """Rough hidden-line cost: freeform faces weigh ten plain ones (a
+    1100-face PCB model, all B-spline, took TechDraw 5.5 min; a perfboard's
+    6870 planes and cylinders took about as long)."""
+    cost = 0
+    for o in sources:
+        for f in o.Shape.Faces:
+            cost += 1 if f.Surface.__class__.__name__ in _ANALYTIC_SURFACES else 10
+    return cost
 
 
 def _render_view_image(doc, page_id, sources, direction, x, y, centered, scale=None,
@@ -1404,7 +1415,8 @@ def _drawable_bodies(doc):
     Body)."""
     out = []
     for o in doc.Objects:
-        if o.TypeId not in ("PartDesign::Body", "Part::Feature") and not o.TypeId.startswith("Part::"):
+        # App::Link: an assembly's components (their Shape carries placement)
+        if o.TypeId not in ("PartDesign::Body", "Part::Feature", "App::Link") and not o.TypeId.startswith("Part::"):
             continue
         if any(p.TypeId == "PartDesign::Body" for p in o.InList):
             continue  # a feature inside a Body - the Body stands for it
