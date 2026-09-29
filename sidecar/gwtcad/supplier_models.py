@@ -376,8 +376,13 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     est_scale = min((budget_w - _GROUP_SPACING) / span_w, (budget_h - _GROUP_SPACING) / span_h,
                     _PART_TARGET_W / max(bb3.XLength, 1e-6), _PART_TARGET_H / max(bb3.ZLength, 1e-6), 8.0)
     est_scale = max(est_scale, 1e-3)
+    # ...and spread from the start: at that scale the three views need
+    # span * scale, so the rest of each axis's budget is its gap (the user
+    # wants front/top/right toward the sheet edges, not huddled together)
+    est_sp_x = max(_GROUP_SPACING, (budget_w - est_scale * span_w) * 0.97)
+    est_sp_y = max(_GROUP_SPACING, (budget_h - est_scale * span_h) * 0.97)
     probe = _drawing.make_projection_group(doc, page_id, part_obj, group_dirs, anchor="front",
-                                           scale=est_scale, coarse=True, spacing=_GROUP_SPACING)
+                                           scale=est_scale, coarse=True, spacing=(est_sp_x, est_sp_y))
     grp = doc.getObject(probe["groupId"])
     grp.ScaleType = "Custom"
     _coarsen_views(doc)
@@ -448,7 +453,7 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     # the probe is already at the estimated scale and final spacing: measure
     # it as it stands, and only recompute if it doesn't fit
     scale = est_scale
-    spacing_x = spacing_y = _GROUP_SPACING
+    spacing_x, spacing_y = est_sp_x, est_sp_y
     last["v"] = (scale, spacing_x, spacing_y)
     fp = _measure(scale, spacing_x, spacing_y)
     for _ in range(3):
@@ -465,6 +470,22 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
         spacing_x *= ratio_w
         spacing_y *= ratio_h
         fp = _measure(scale, spacing_x, spacing_y)
+
+    # Spread the views out: with the scale settled, grow each axis's gap by
+    # that axis's leftover room so front/top/right sit toward the sheet
+    # edges rather than huddled together (the user asked for this spread).
+    # A gap is one-for-one with the footprint on its axis, so this lands in
+    # one step; if the result somehow overshoots, keep the tighter layout.
+    spare_w = budget_w - (fp[2] - fp[0])
+    spare_h = budget_h - (fp[3] - fp[1])
+    if spare_w > budget_w * 0.05 or spare_h > budget_h * 0.05:
+        tight = (spacing_x, spacing_y, fp)
+        spacing_x += max(spare_w, 0.0) * 0.97
+        spacing_y += max(spare_h, 0.0) * 0.97
+        fp = _measure(scale, spacing_x, spacing_y)
+        if (fp[2] - fp[0]) > budget_w * 1.03 or (fp[3] - fp[1]) > budget_h * 1.03:
+            spacing_x, spacing_y, fp = tight
+            fp = _measure(scale, spacing_x, spacing_y)
 
     # Place the group by TRANSLATING its already-measured footprint (fp,
     # relative to the anchor's own origin) so its min corner lands at the

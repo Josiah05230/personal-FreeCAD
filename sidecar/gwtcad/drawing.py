@@ -1618,8 +1618,9 @@ def make_projection_group(doc, page_id, source_obj, directions, anchor=None, sca
     grp.ProjectionType = "Third angle"
     if spacing is not None:
         # set before the items exist - changing it later relays and
-        # recomputes every item
-        grp.spacingX = grp.spacingY = float(spacing)
+        # recomputes every item. A number, or an (x, y) pair.
+        sx, sy = spacing if isinstance(spacing, (list, tuple)) else (spacing, spacing)
+        grp.spacingX, grp.spacingY = float(sx), float(sy)
     grp.ScaleType = "Custom"
     grp.Scale = float(scale)
     doc.recompute()
