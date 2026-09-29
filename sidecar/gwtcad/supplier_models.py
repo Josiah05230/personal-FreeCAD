@@ -633,6 +633,7 @@ def sync_supplier_models():
     for repo, items in by_repo.items():
         _pn._sync_pull(repo)
         changed = False
+        organized = []
         for pn, storage_path in items:
             dest = os.path.join(_part_folder(cfg, repo, pn), "%s.stp" % pn)
             if os.path.isfile(dest):
@@ -666,13 +667,17 @@ def sync_supplier_models():
                     pass
                 changed = True
                 results.append({"pn": pn, "ok": True, "path": dest})
+                organized.append(dest)
+                meta = os.path.join(os.path.dirname(dest), "%s_supplier_meta.json" % pn)
+                if os.path.isfile(meta):
+                    organized.append(meta)
             except Exception as e:
                 results.append({"pn": pn, "ok": False, "error": str(e)})
         if changed:
             _pn._commit_and_push(
                 repo,
                 "Organize %d supplier-fetched 3D model(s)" % sum(1 for r in results if r.get("path")),
-                lambda: True,
+                lambda: True, paths=organized,
             )
     return results
 
@@ -844,6 +849,7 @@ def _generate_supplier_drawing(pn):
         _pn._sync_pull(repo)
         _pn._commit_and_push(
             repo, "%s: add reference drawing from supplier 3D model" % pn, lambda: True,
+            paths=_pn._part_paths(fcstd_path),
         )
 
     return result
@@ -1292,7 +1298,8 @@ def generate_part_drawing(pn, commit=True):
         return {"pn": pn, "ok": True, "skipped": "no solid geometry"}
     if commit:
         _pn._sync_pull(repo)
-        _pn._commit_and_push(repo, "%s: add auto-generated drawing" % pn, lambda: True)
+        _pn._commit_and_push(repo, "%s: add auto-generated drawing" % pn, lambda: True,
+                             paths=_pn._part_paths(fcstd_path))
     return {"pn": pn, "ok": True, "generated": True, "path": fcstd_path, "repo": repo}
 
 

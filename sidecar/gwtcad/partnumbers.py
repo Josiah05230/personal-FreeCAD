@@ -226,19 +226,36 @@ def _sync_pull_for_read(repo):
     _sync_pull(repo)
 
 
-def _commit_and_push(repo, message, retry_fn):
-    """Stage everything, commit, and push with retry: on a rejected push,
-    re-pull and re-run retry_fn (which re-derives the change against the now-
-    current registry) before trying again. retry_fn returns True if it made a
-    change to commit, False if the desired state already exists (e.g. someone
-    else already committed the exact row we wanted)."""
+def _part_paths(*abspaths):
+    """A part file plus its companion(s) that exist - for _commit_and_push's
+    `paths` so a commit carries only that part."""
+    out = []
+    for p in abspaths:
+        for q in (p, p + ".gwtcad.json"):
+            if q and os.path.exists(q) and q not in out:
+                out.append(q)
+    return out
+
+
+def _commit_and_push(repo, message, retry_fn, paths=None):
+    """Stage, commit, and push with retry: on a rejected push, re-pull and
+    re-run retry_fn (which re-derives the change against the now-current
+    registry) before trying again. retry_fn returns True if it made a change
+    to commit, False if the desired state already exists (e.g. someone else
+    already committed the exact row we wanted).
+
+    `paths` (absolute or repo-relative) limits the commit to those files. A
+    part repo is shared by several sessions and the app itself; staging
+    everything swept other work in progress into an unrelated commit (a
+    supplier .stp landed in another part's drawing commit)."""
     for attempt in range(_MAX_PUSH_RETRIES):
-        _git(repo, "add", "-A")
+        scope = ["--"] + [os.path.relpath(p, repo) if os.path.isabs(p) else p for p in paths] if paths else []
+        _git(repo, "add", "-A", *scope)
         # Nothing staged (retry_fn decided no further change is needed) - done.
-        ok, _ = _git_ok(repo, "diff", "--cached", "--quiet")
+        ok, _ = _git_ok(repo, "diff", "--cached", "--quiet", *scope)
         if ok:
             return
-        _git(repo, "commit", "-m", message)
+        _git(repo, "commit", "-m", message, *scope)
         if not _has_remote(repo):
             return
         ok, _ = _git_ok(repo, "push")
@@ -726,7 +743,7 @@ def pn_new_revision(pnSeq, reason, mfg=None, mfgPn=None, purchasingLink=None):
     if os.path.isfile(old_companion):
         shutil.copy2(old_companion, new_abspath + ".gwtcad.json")
     _commit_and_push(proj_repo, "New revision %s" % os.path.basename(new_relpath),
-                      lambda: True)
+                      lambda: True, paths=_part_paths(new_abspath))
 
     def attempt():
         rows2 = _read_registry(cfg)
