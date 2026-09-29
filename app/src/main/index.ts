@@ -321,6 +321,9 @@ app.whenReady().then(async () => {
     (_e, filePath: string, message: string, authorName?: string, authorEmail?: string) =>
       gitw.commit(filePath, message, authorName, authorEmail)
   )
+  ipcMain.handle('git:commitFile', (_e, filePath: string, message: string, opts?: { wholeDir?: boolean }) =>
+    gitw.commitFile(filePath, message, opts)
+  )
   ipcMain.handle(
     'git:commitAll',
     (_e, filePath: string, message: string, authorName?: string, authorEmail?: string) =>

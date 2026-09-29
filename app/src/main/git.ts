@@ -18,7 +18,8 @@
  *  trap for a new caller that only has a repo/clone directory - use
  *  `<dir>/anything` (the file need not exist) to get the right cwd. */
 import { execFile } from 'child_process'
-import { dirname } from 'path'
+import { basename, dirname, join } from 'path'
+import { readdir } from 'fs/promises'
 import { promisify } from 'util'
 
 const run = promisify(execFile)
@@ -301,6 +302,41 @@ export async function commit(
   const args = ['commit', '-m', message]
   if (authorName && authorEmail) args.push('--author', `${authorName} <${authorEmail}>`)
   await gitOrThrow(cwd, args)
+  const hash = (await git(cwd, ['rev-parse', 'HEAD'])).trim()
+  return { hash }
+}
+
+/** A part file plus the companions that travel with it in the same folder
+ *  (`X.FCStd.gwtcad.json`, `X.FCStd.gwtcad-asm.json`, ...) - never its lock
+ *  file or backups. `wholeDir`: the file's entire folder instead (a KiCad
+ *  project folder). */
+export async function companionPaths(filePath: string, wholeDir = false): Promise<string[]> {
+  const dir = dirname(filePath)
+  if (wholeDir) return [dir]
+  const base = basename(filePath)
+  const out = [filePath]
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    if (name !== base && name.startsWith(base + '.') && !/\.FCBak$|gwtcad-lock\.json$/i.test(name)) {
+      out.push(join(dir, name))
+    }
+  }
+  return out
+}
+
+/** Commit ONLY this file and its companions (deletions included), whatever
+ *  else is changed or staged in the repo - the company repo is one shared
+ *  monorepo, so a save of one part must never sweep other parts' edits into
+ *  its commit. Throws GitError when there's nothing of this file to commit. */
+export async function commitFile(
+  filePath: string,
+  message: string,
+  opts: { wholeDir?: boolean } = {}
+): Promise<{ hash: string }> {
+  const cwd = dirname(filePath)
+  if (!message.trim()) throw new GitError('Commit message is empty.')
+  const paths = await companionPaths(filePath, opts.wholeDir)
+  await gitOrThrow(cwd, ['add', '-A', '--', ...paths])
+  await gitOrThrow(cwd, ['commit', '--only', '-m', message, '--', ...paths])
   const hash = (await git(cwd, ['rev-parse', 'HEAD'])).trim()
   return { hash }
 }

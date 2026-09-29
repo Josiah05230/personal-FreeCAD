@@ -3231,7 +3231,8 @@ export function App(): JSX.Element {
     }
     setGitOffline(false)
     try {
-      await window.cad.gitCommitAll(p, `${basename(p)}: saved via GWT-CAD`)
+      // only this part's own files - the company repo is shared by every part
+      await window.cad.gitCommitFile(p, `${basename(p)}: saved via GWT-CAD`)
     } catch {
       // most commonly "nothing to commit" (save() didn't actually change
       // any tracked bytes, e.g. re-saving with no edits) - not a failure,
@@ -3715,7 +3716,7 @@ export function App(): JSX.Element {
       const st = await window.cad.gitStatus(board).catch(() => ({ isRepo: false }) as GitStatus)
       if (st.isRepo) {
         if (st.dirty) {
-          await window.cad.gitCommitAll(board, `${basename(board)}: KiCad changes (synced from GWT-CAD)`)
+          await window.cad.gitCommitFile(board, `${basename(board)}: KiCad changes (synced from GWT-CAD)`, { wholeDir: true })
         }
         if (st.hasUpstream && (await window.cad.gitIsReachable(board).catch(() => false))) {
           const pulled = await window.cad.gitPull(board)
@@ -5081,7 +5082,7 @@ export function App(): JSX.Element {
         return
       }
       try {
-        await window.cad.gitCommitAll(n.filePath, `${basename(n.filePath)}: saved via GWT-CAD`).catch(() => undefined)
+        await window.cad.gitCommitFile(n.filePath, `${basename(n.filePath)}: saved via GWT-CAD`).catch(() => undefined)
         await window.cad.gitPushForceWithLease(n.filePath)
         clearUpstreamNotice(n.filePath)
         flashSketchNotice(`Pushed your version of ${n.label} - theirs is still recoverable in git history`)
