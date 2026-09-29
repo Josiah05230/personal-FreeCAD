@@ -11,6 +11,7 @@ import * as lockfile from './lockfile'
 import * as gitWatch from './gitWatch'
 import { FileIndex, FolderRelevance } from './fileFilter'
 import * as dpPrefs from './dataPanelPrefs'
+import * as softDel from './softDelete'
 import { extOf, fileKind, isSkippedDir } from '../shared/fileTypes'
 
 // repo root is one level above app/ in dev; in a packaged build this is
@@ -65,6 +66,7 @@ const folderRelevance = new FolderRelevance()
 // the Data Panel's search: one concurrent walk per root, searched in memory
 const fileIndex = new FileIndex()
 void dpPrefs.loadPrefs().then((p) => fileIndex.setSkip(p.hidden))
+void softDel.purgeOld()
 
 async function createWindow(): Promise<void> {
   win = new BrowserWindow({
@@ -76,7 +78,9 @@ async function createWindow(): Promise<void> {
     webPreferences: {
       preload: resolve(__dirname, '../preload/index.js'),
       sandbox: false,
-      contextIsolation: true
+      contextIsolation: true,
+      // Chromium's PDF viewer, for opening PDFs in a viewer tab
+      plugins: true
     }
   })
 
@@ -436,6 +440,12 @@ app.whenReady().then(async () => {
     return { path: outPath }
   })
 
+  // raw bytes for the in-app file viewer (PDF, DXF)
+  ipcMain.handle('fs:readBytes', async (_e, path: string) => {
+    const st = await stat(path)
+    if (st.size > 300 * 1024 * 1024) throw new Error('file is too large to view (over 300 MB)')
+    return new Uint8Array(await readFile(path))
+  })
   ipcMain.handle('fs:readImage', async (_e, path: string) => {
     const buf = await readFile(path)
     return `data:${imageMime(path)};base64,${buf.toString('base64')}`
@@ -487,6 +497,9 @@ app.whenReady().then(async () => {
     return { src, dest }
   })
 
+  // undoable delete: into ~/.gwtcad/deleted, and back on undo
+  ipcMain.handle('fs:softDelete', (_e, path: string) => softDel.softDelete(resolve(path)))
+  ipcMain.handle('fs:restore', (_e, held: string, path: string) => softDel.restore(held, resolve(path)))
   ipcMain.handle('fs:trash', async (_e, path: string) => {
     await shell.trashItem(resolve(path))
     return { trashed: path }

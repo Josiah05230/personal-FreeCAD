@@ -171,11 +171,14 @@ interface CadBridge {
   exportPdf(html: string, outPath: string): Promise<{ path: string }>
   writeText(text: string, outPath: string): Promise<{ path: string }>
   readImage(path: string): Promise<string>
+  readBytes(path: string): Promise<Uint8Array>
   realpath(path: string): Promise<string | null>
   copyInto(src: string, destDir: string, name: string): Promise<{ path: string }>
   mkdir(dir: string): Promise<{ dir: string }>
   touch(path: string): Promise<{ path: string }>
   move(src: string, dest: string): Promise<{ src: string; dest: string }>
+  softDelete(path: string): Promise<{ held: string }>
+  restore(held: string, path: string): Promise<{ restored: string }>
   trash(path: string): Promise<{ trashed: string }>
   openPath(path: string): Promise<{ opened: string }>
   findKicadProject(dir: string): Promise<{

@@ -4416,6 +4416,7 @@ def scene_get():
     """Render buffers for visible bodies, sketches, and datum geometry."""
     d = session.doc()
     _ensure_starter_body(d)
+    _absorb_refined()  # never hand out a draft whose full mesh is already here
     meshes, sketches, datums = [], [], []
 
     # scene.get returns EVERYTHING with a `visible` hint; the shell owns
@@ -4530,13 +4531,9 @@ def scene_get():
     }
 
 
-@method("scene.refined")
-def scene_refined():
-    """Full-quality meshes that finished in the background since the last
-    call, for bodies scene.get sent as drafts. Only results that still match
-    the cached draft (same object, same shape signature) are returned; the
-    shell swaps them in by id + sig. `pending` = jobs still running for this
-    document, so the shell knows when to stop polling."""
+def _absorb_refined():
+    """Move finished background meshes into the tessellation caches. Returns
+    [(name, sig, buf)] that replaced a draft of the current document."""
     path = session.path()
     out = []
     for (p, name, sig), buf in _mesh_pool.take_results():
@@ -4548,8 +4545,19 @@ def scene_refined():
             continue  # edited, closed or already refined meanwhile
         cache[name] = (sig, buf)
         if p == path:
-            out.append(dict(buf, id=name, sig=sig))
-    return {"meshes": out, "pending": _mesh_pool.pending(path)}
+            out.append((name, sig, buf))
+    return out
+
+
+@method("scene.refined")
+def scene_refined():
+    """Full-quality meshes that finished in the background since the last
+    call, for bodies scene.get sent as drafts. Only results that still match
+    the cached draft (same object, same shape signature) are returned; the
+    shell swaps them in by id + sig. `pending` = jobs still running for this
+    document, so the shell knows when to stop polling."""
+    out = [dict(buf, id=name, sig=sig) for name, sig, buf in _absorb_refined()]
+    return {"meshes": out, "pending": _mesh_pool.pending(session.path())}
 
 
 # --------------------------------------------------------------------------- #
@@ -4919,6 +4927,9 @@ def tree_get():
         "path": session.path(),
         "canUndo": d is not None and int(getattr(d, "UndoCount", 0)) > 0,
         "canRedo": d is not None and int(getattr(d, "RedoCount", 0)) > 0,
+        # the shell's app-wide undo history counts document steps from these
+        "undoCount": 0 if d is None else int(getattr(d, "UndoCount", 0)),
+        "redoCount": 0 if d is None else int(getattr(d, "RedoCount", 0)),
     }
 
 

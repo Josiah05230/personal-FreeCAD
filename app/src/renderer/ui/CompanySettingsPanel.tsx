@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, type CompanyConfig } from '../rpc'
+import { pushAppAction } from '../appHistory'
 
 /**
  * Where the company's PN registry and per-project git repos live on THIS
@@ -17,11 +18,24 @@ export function CompanySettingsPanel({ onClose }: { onClose: () => void }): JSX.
 
   useEffect(() => {
     void api.pnGetCompanyConfig().then(setCfg)
+    // an undo/redo of an edit made here (appHistory) - show the restored config
+    const onChange = (): void => void api.pnGetCompanyConfig().then(setCfg)
+    window.addEventListener('gwtcad-company-changed', onChange)
+    return () => window.removeEventListener('gwtcad-company-changed', onChange)
   }, [])
 
-  const save = (next: CompanyConfig): void => {
+  /** write the whole config, recorded for Ctrl+Z (restores the previous one;
+   *  an unset path is sent as "" to clear it again) */
+  const save = (next: CompanyConfig, label = 'Edit company directories'): void => {
+    const prev = cfg
     setCfg(next)
     void api.pnSetCompanyConfig(next).catch((e) => setErr((e as Error).message))
+    if (!prev) return
+    const apply = async (c: CompanyConfig): Promise<void> => {
+      await api.pnSetCompanyConfig({ ...c, registryPath: c.registryPath ?? '', ecadRepoPath: c.ecadRepoPath ?? '' })
+      window.dispatchEvent(new Event('gwtcad-company-changed'))
+    }
+    pushAppAction({ label, undo: () => apply(prev), redo: () => apply(next) })
   }
 
   const pickDir = async (): Promise<string | null> => window.cad.openDirectoryDialog()
@@ -50,7 +64,8 @@ export function CompanySettingsPanel({ onClose }: { onClose: () => void }): JSX.
   const removeProject = (code: string): void => {
     if (!cfg) return
     const { [code]: _dropped, ...rest } = cfg.projects
-    save({ ...cfg, projects: rest })
+    save({ ...cfg, projects: rest }, `Remove project ${code}`)
+    window.dispatchEvent(new CustomEvent('gwtcad-notice', { detail: `Removed project ${code} - Ctrl+Z to undo` }))
   }
 
   const addProject = async (): Promise<void> => {
@@ -62,7 +77,7 @@ export function CompanySettingsPanel({ onClose }: { onClose: () => void }): JSX.
     }
     const p = await pickDir()
     if (!p) return
-    save({ ...cfg, projects: { ...cfg.projects, [code]: { name: newName.trim(), repoPath: p } } })
+    save({ ...cfg, projects: { ...cfg.projects, [code]: { name: newName.trim(), repoPath: p } } }, `Add project ${code}`)
     setNewCode('')
     setNewName('')
   }

@@ -119,10 +119,11 @@ def pn_get_company_config():
 @method("pn.setCompanyConfig")
 def pn_set_company_config(registryPath=None, ecadRepoPath=None, projects=None):
     cfg = _load_config()
+    # None = leave as is; "" = clear (the shell's undo restores an unset path)
     if registryPath is not None:
-        cfg["registryPath"] = registryPath
+        cfg["registryPath"] = registryPath or None
     if ecadRepoPath is not None:
-        cfg["ecadRepoPath"] = ecadRepoPath
+        cfg["ecadRepoPath"] = ecadRepoPath or None
     if projects is not None:
         cfg["projects"] = projects
     _save_config(cfg)

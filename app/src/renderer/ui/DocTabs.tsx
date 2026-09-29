@@ -14,6 +14,8 @@ export interface DocTab {
   name: string
   dirty: boolean
   path: string | null
+  /** a picture / PDF / SVG / DXF open in the file viewer, not a FreeCAD document */
+  viewer?: boolean
 }
 
 export function DocTabs({

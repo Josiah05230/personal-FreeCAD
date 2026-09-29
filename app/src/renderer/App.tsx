@@ -33,6 +33,8 @@ import { GitPanel } from './ui/GitPanel'
 import { Browser } from './ui/Browser'
 import { Timeline } from './ui/Timeline'
 import { CommandPalette } from './ui/CommandPalette'
+import { FileViewer } from './ui/FileViewer'
+import * as appHistory from './appHistory'
 import { OperationDialog, type OpKind, type OpValues } from './ui/OperationDialog'
 import { DrawingSheet, type DrawingSheetApi, type DrawingTool } from './ui/DrawingSheet'
 import { SketchRibbon } from './ui/SketchRibbon'
@@ -226,6 +228,30 @@ export function App(): JSX.Element {
     }
   }, [])
   const [meshes, setMeshes] = useState<RenderMesh[]>([])
+  // full-quality meshes that replaced drafts (scene.refined), by body id: a
+  // scene.get answered before the refine landed can arrive after it and
+  // would otherwise put the draft back
+  const refinedRef = useRef(new Map<string, RenderMesh>())
+  const withRefined = useCallback(
+    (ms: RenderMesh[]): RenderMesh[] =>
+      ms.map((m) => {
+        if (!m.draft) return m
+        const f = refinedRef.current.get(m.id)
+        if (!f || f.sig !== m.sig) return m
+        return {
+          ...m,
+          positions: f.positions,
+          normals: f.normals,
+          indices: f.indices,
+          faceGroups: f.faceGroups,
+          edges: f.edges,
+          vertices: f.vertices,
+          bbox: f.bbox,
+          draft: false
+        }
+      }),
+    []
+  )
   const [sketches, setSketches] = useState<SketchRender[]>([])
   const [datums, setDatums] = useState<DatumDTO[]>([])
   const [bodies, setBodies] = useState<BodyTree[]>([])
@@ -647,7 +673,7 @@ export function App(): JSX.Element {
       scene: Awaited<ReturnType<typeof api.sceneGet>>,
       tree: Awaited<ReturnType<typeof api.treeGet>>
     ) => {
-      setMeshes(scene.meshes)
+      setMeshes(withRefined(scene.meshes))
       setSketches(scene.sketches ?? [])
       setDatums(scene.datums ?? [])
       setPickPlanes(scene.pickPlanes ?? [])
@@ -659,6 +685,9 @@ export function App(): JSX.Element {
       setDocPath(tree.path)
       if ('canUndo' in tree) setCanUndo(!!tree.canUndo)
       if ('canRedo' in tree) setCanRedo(!!tree.canRedo)
+      if (typeof tree.undoCount === 'number') {
+        appHistory.noteDocState(tree.path, tree.undoCount, tree.redoCount ?? 0)
+      }
       // keep the user's show/hide choices across refreshes
     },
     []
@@ -745,7 +774,7 @@ export function App(): JSX.Element {
     const done = traceSpan('refreshMeshesOnly', { quiet })
     const a = quiet ? apiQuiet : api
     const [scene, tree] = await Promise.all([a.sceneGet(), a.treeGet()])
-    setMeshes(scene.meshes)
+    setMeshes(withRefined(scene.meshes))
     setSketches(scene.sketches ?? [])
     setDatums(scene.datums ?? [])
     setPickPlanes(scene.pickPlanes ?? [])
@@ -807,6 +836,7 @@ export function App(): JSX.Element {
           await new Promise((r) => window.setTimeout(r, 400))
           const r = await apiQuiet.sceneRefined()
           if (r.meshes.length) {
+            for (const x of r.meshes) refinedRef.current.set(x.id, x)
             const byId = new Map(r.meshes.map((x) => [x.id, x]))
             setMeshes((ms) =>
               ms.map((m) => {
@@ -1237,7 +1267,7 @@ export function App(): JSX.Element {
     try {
       await apiQuiet.sketchFinish(id, newEnts, cons, removedCons, removedEnts, convertedEnts, movedEnts)
       const [scene, tree] = await Promise.all([apiQuiet.sceneGet(), apiQuiet.treeGet()])
-      setMeshes(scene.meshes)
+      setMeshes(withRefined(scene.meshes))
       setSketches(scene.sketches ?? [])
       setDatums(scene.datums ?? [])
       setBodies(tree.bodies)
@@ -1654,6 +1684,9 @@ export function App(): JSX.Element {
           setImported(tree.imported ?? [])
           if ('canUndo' in tree) setCanUndo(!!tree.canUndo)
           if ('canRedo' in tree) setCanRedo(!!tree.canRedo)
+          if (typeof tree.undoCount === 'number') {
+            appHistory.noteDocState(tree.path, tree.undoCount, tree.redoCount ?? 0)
+          }
           setSketches((ss) =>
             ss.filter((s) => !selection.some((x) => 'sketchId' in x && x.sketchId === s.id))
           )
@@ -2920,6 +2953,7 @@ export function App(): JSX.Element {
       const r = await api.undo()
       setCanUndo(r.canUndo)
       setCanRedo(r.canRedo)
+      if (typeof r.undoCount === 'number') appHistory.noteDocState(r.path, r.undoCount, r.redoCount ?? 0, 'undo')
       rollCacheRef.current.clear()
       // history moved - drop stale manual show/hide choices and trust the engine,
       // so e.g. undoing an extrude un-hides the sketch it had consumed
@@ -2936,12 +2970,67 @@ export function App(): JSX.Element {
       const r = await api.redo()
       setCanUndo(r.canUndo)
       setCanRedo(r.canRedo)
+      if (typeof r.undoCount === 'number') appHistory.noteDocState(r.path, r.undoCount, r.redoCount ?? 0, 'redo')
       rollCacheRef.current.clear()
       setVisOverride({})
       await refreshScene()
       markDirty()
     })
   }, [canRedo, refreshScene, markDirty])
+
+  // Ctrl+Z / Ctrl+Y / the toolbar: undo or redo whatever happened last,
+  // document edit or app action (appHistory.ts)
+  const [, setHistTick] = useState(0)
+  useEffect(() => appHistory.subscribeHistory(() => setHistTick((t) => t + 1)), [])
+  // panels outside App (Data Panel, Company Directories) post short notices
+  useEffect(() => {
+    const on = (e: Event): void => flashSketchNotice(String((e as CustomEvent).detail))
+    window.addEventListener('gwtcad-notice', on)
+    return () => window.removeEventListener('gwtcad-notice', on)
+  }, [flashSketchNotice])
+  const undoAny = useCallback(async (): Promise<void> => {
+    const e = appHistory.peekUndo()
+    if (!e || e.kind === 'doc') {
+      if (!canUndo) {
+        if (e) appHistory.dropUndo() // a stale marker - the engine has nothing left
+        return
+      }
+      await doUndo()
+      if (e) appHistory.markUndone()
+      return
+    }
+    try {
+      await e.action.undo()
+      appHistory.markUndone()
+      flashSketchNotice(`Undid: ${e.action.label}`)
+    } catch (err) {
+      appHistory.dropUndo()
+      flashSketchNotice(`Couldn't undo ${e.action.label}: ${(err as Error).message}`)
+    }
+  }, [canUndo, doUndo, flashSketchNotice])
+  const redoAny = useCallback(async (): Promise<void> => {
+    const e = appHistory.peekRedo()
+    if (!e || e.kind === 'doc') {
+      if (!canRedo) {
+        if (e) appHistory.dropRedo()
+        return
+      }
+      await doRedo()
+      if (e) appHistory.markRedone()
+      return
+    }
+    try {
+      await e.action.redo()
+      appHistory.markRedone()
+      flashSketchNotice(`Redid: ${e.action.label}`)
+    } catch (err) {
+      appHistory.dropRedo()
+      flashSketchNotice(`Couldn't redo ${e.action.label}: ${(err as Error).message}`)
+    }
+  }, [canRedo, doRedo, flashSketchNotice])
+  const hist = appHistory.historySizes()
+  const canUndoAny = canUndo || hist.undo > 0
+  const canRedoAny = canRedo || hist.redo > 0
 
   const editFeatureDim = useCallback(
     async (id: string) => {
@@ -3484,6 +3573,7 @@ export function App(): JSX.Element {
       if (!(await prepareToOpen(p))) return
       // the sidecar holds one document: opening replaces it. Reflect that as a
       // fresh tab rather than mutating whatever tab is in front.
+      refinedRef.current.clear() // the previous document's refined meshes
       const opened = await api.open(p)
       // a crash after this exact file was last saved may have left a newer
       // autosave-recovery copy - offer it now, before the user starts
@@ -4583,6 +4673,18 @@ export function App(): JSX.Element {
 
   // Data Panel double-click: do what the app does with that kind of file
   // (labels in DataPanel.tsx's OPEN_LABEL); inserts go through the gate
+  // a picture / PDF / SVG / DXF opens in its own viewer tab - the design the
+  // engine holds stays loaded underneath, so switching back is instant
+  const openViewer = useCallback(
+    (p: string) => {
+      const existing = tabs.find((x) => x.viewer && x.path === p)
+      const id = existing?.id ?? `v${Date.now()}`
+      if (!existing) setTabs((t) => [...t, { id, name: basename(p), dirty: false, path: p, viewer: true }])
+      setActiveTab(id)
+    },
+    [tabs]
+  )
+
   const openDataPanelFile = useCallback(
     async (p: string) => {
       try {
@@ -4591,14 +4693,12 @@ export function App(): JSX.Element {
           case 'mesh':
             return await importModelPath(p)
           case 'image':
-            return await insertCanvasPath(p)
+          case 'vector':
+          case 'document':
+            return openViewer(p) // just look at it (Insert as canvas is in the right-click menu)
           case 'ecad':
           case 'archive':
             return await importFromFile(p)
-          case 'vector':
-          case 'document':
-            await window.cad.openPath(p)
-            return
           default:
             return await openDesign(p)
         }
@@ -4606,7 +4706,7 @@ export function App(): JSX.Element {
         window.alert((e as Error).message)
       }
     },
-    [importModelPath, insertCanvasPath, importFromFile, openDesign]
+    [importModelPath, importFromFile, openDesign, openViewer]
   )
 
   // set/clear/refresh a component's pin. Re-linking is done by removing and
@@ -5312,8 +5412,8 @@ export function App(): JSX.Element {
       editSketch,
 
       // --- history / features ---
-      undo: () => doUndo(),
-      redo: () => doRedo(),
+      undo: () => undoAny(),
+      redo: () => redoAny(),
       deleteFeature: (id: string) => deleteFeature(id),
       editFeature: (id: string) => editFeature(id),
       suppressFeature: (id: string, s: boolean) => suppressFeature(id, s),
@@ -5426,8 +5526,8 @@ export function App(): JSX.Element {
     finishSketch,
     cancelSketch,
     editSketch,
-    doUndo,
-    doRedo,
+    undoAny,
+    redoAny,
     deleteFeature,
     editFeature,
     suppressFeature,
@@ -5672,12 +5772,12 @@ export function App(): JSX.Element {
       if (!drawingPageId) {
         if (ctrl && e.key.toLowerCase() === 'z' && !e.shiftKey) {
           e.preventDefault()
-          void doUndo()
+          void undoAny()
           return
         }
         if (ctrl && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) {
           e.preventDefault()
-          void doRedo()
+          void redoAny()
           return
         }
       }
@@ -5706,7 +5806,7 @@ export function App(): JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [sketchSession, sketchConstruction, save, openDesign, newDesign, doUndo, doRedo, commands, hotkeys, openOp, drawingPageId])
+  }, [sketchSession, sketchConstruction, save, openDesign, newDesign, undoAny, redoAny, commands, hotkeys, openOp, drawingPageId])
 
   const activeName = tabs.find((t) => t.id === activeTab)?.name ?? 'Untitled'
   const activeDirty = tabs.find((t) => t.id === activeTab)?.dirty ?? false
@@ -6128,10 +6228,10 @@ export function App(): JSX.Element {
           onSetLifecycle: currentPn ? setLifecycle : undefined
         }}
         history={{
-          onUndo: () => void doUndo(),
-          onRedo: () => void doRedo(),
-          canUndo,
-          canRedo
+          onUndo: () => void undoAny(),
+          onRedo: () => void redoAny(),
+          canUndo: canUndoAny,
+          canRedo: canRedoAny
         }}
       />
 
@@ -6142,6 +6242,7 @@ export function App(): JSX.Element {
           onFileAction={(p, action) => {
             if (action === 'insertComponent') void insertComponentPath(p)
             else if (action === 'newPartFromFile') void importFromFile(p)
+            else if (action === 'insertCanvas') void insertCanvasPath(p)
             else void window.cad.openPath(p).catch((e) => window.alert((e as Error).message))
           }}
           onNewDesignAt={(p) => {
@@ -6239,6 +6340,12 @@ export function App(): JSX.Element {
               if (id === activeTab) return
               const target = tabs.find((t) => t.id === id)
               if (!target) return
+              // a file-viewer tab, or back to the document the engine still
+              // holds: nothing to reopen, just show it
+              if (target.viewer || (target.path ?? null) === (docPath ?? null)) {
+                setActiveTab(id)
+                return
+              }
               // The sidecar holds exactly one document - switching tabs must
               // actually reopen that file, not just relabel the UI. A tab
               // with no saved path (a never-saved "Untitled") has nothing on
@@ -6253,7 +6360,9 @@ export function App(): JSX.Element {
               // reopening replaces the sidecar's one document, so unsaved
               // edits to the tab being left would be lost - autosave them
               // first when that's allowed (in-work / non-company), else ask
-              const leaving = tabs.find((t) => t.id === activeTab)
+              // (from a viewer tab, the document being left is the one the engine holds)
+              const leaving =
+                tabs.find((t) => t.id === activeTab && !t.viewer) ?? tabs.find((t) => !t.viewer && t.path === docPath)
               const targetPath = target.path
               void (async () => {
                 const autosaveOn =
@@ -6277,6 +6386,13 @@ export function App(): JSX.Element {
               if (tabs.length <= 1) return
               const closing = tabs.find((t) => t.id === id)
               setTabs((t) => t.filter((x) => x.id !== id))
+              if (closing?.viewer) {
+                if (id === activeTab) {
+                  const back = tabs.find((t) => !t.viewer && t.path === docPath) ?? tabs.find((t) => t.id !== id)
+                  if (back) setActiveTab(back.id)
+                }
+                return
+              }
               const p = closing?.path
               if (p && !tabs.some((t) => t.id !== id && t.path === p)) void releaseStandaloneLock(p)
             }}
@@ -6295,6 +6411,14 @@ export function App(): JSX.Element {
                 </div>
               )}
               {status.phase === 'boot' && <div className="overlay">Starting FreeCAD engine…</div>}
+              {(() => {
+                const vt = tabs.find((t) => t.id === activeTab && t.viewer)
+                return vt?.path ? (
+                  <div className="fileviewer-host">
+                    <FileViewer path={vt.path} />
+                  </div>
+                ) : null
+              })()}
 
               {drawingPageId ? (
                 <DrawingSheet

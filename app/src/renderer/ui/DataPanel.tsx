@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ContextMenu, type MenuItem } from './ContextMenu'
 import { promptText, promptForm } from './PromptDialog'
 import { api, type PartRecord } from '../rpc'
+import { pushAppAction } from '../appHistory'
 import { fileKind, extOf, type FileKind } from '../../shared/fileTypes'
 
 /** the double-click / "Open" label for each usable file kind - App's
@@ -12,12 +13,15 @@ const OPEN_LABEL: Record<FileKind, string> = {
   mesh: 'Import into current design',
   ecad: 'New part from file…',
   archive: 'New part from file…',
-  image: 'Insert as canvas',
-  vector: 'Open in system viewer',
-  document: 'Open in system viewer'
+  image: 'Open',
+  vector: 'Open',
+  document: 'Open'
 }
 
-export type DataPanelFileAction = 'insertComponent' | 'newPartFromFile' | 'openExternal'
+/** tell an open Data Panel to re-list after an undo/redo changed the disk */
+const fsChanged = (): void => void window.dispatchEvent(new Event('gwtcad-fs-changed'))
+
+export type DataPanelFileAction = 'insertComponent' | 'newPartFromFile' | 'openExternal' | 'insertCanvas'
 
 /** a non-design file's row icon: its extension as a small tag (STEP, PDF,
  *  PNG, ...) - reads at a glance without an icon per format */
@@ -210,6 +214,19 @@ export function DataPanel({
     if (open && dir === null) load()
   }, [open, dir, load])
 
+  // an undo/redo of a panel action (appHistory) changed the disk or prefs:
+  // re-list the folder being shown
+  const dirRef = useRef(dir)
+  dirRef.current = dir
+  useEffect(() => {
+    const onChange = (): void => {
+      if (dirRef.current) load(dirRef.current)
+      void window.cad.dataPanelPrefs().then(setPrefs).catch(() => undefined)
+    }
+    window.addEventListener('gwtcad-fs-changed', onChange)
+    return () => window.removeEventListener('gwtcad-fs-changed', onChange)
+  }, [load])
+
   useEffect(() => {
     if (!resizing.current) return
     const onMove = (e: PointerEvent): void => {
@@ -244,10 +261,33 @@ export function DataPanel({
     setPrefs(p)
     setItems((cur) => cur.map((x) => (x.path === it.path ? { ...x, hidden: hidden || undefined } : x)))
     if (!p.hidden.length) setShowHidden(false)
+    pushAppAction({
+      label: `${hidden ? 'Hide' : 'Unhide'} folder ${it.name}`,
+      undo: async () => {
+        await window.cad.setFolderHidden(it.path, !hidden)
+        fsChanged()
+      },
+      redo: async () => {
+        await window.cad.setFolderHidden(it.path, hidden)
+        fsChanged()
+      }
+    })
   }
 
   const setDefault = async (path: string | null): Promise<void> => {
+    const prev = prefs.defaultDir
     setPrefs(await window.cad.setDefaultFolder(path))
+    pushAppAction({
+      label: path ? 'Set default folder' : 'Clear default folder',
+      undo: async () => {
+        await window.cad.setDefaultFolder(prev)
+        fsChanged()
+      },
+      redo: async () => {
+        await window.cad.setDefaultFolder(path)
+        fsChanged()
+      }
+    })
   }
 
   const defaultItem = (path: string): MenuItem =>
@@ -259,8 +299,21 @@ export function DataPanel({
     if (!dir) return
     const name = await promptText('New folder name')
     if (!name) return
-    await window.cad.mkdir(dir + sep + name)
+    const path = dir + sep + name
+    await window.cad.mkdir(path)
     load(dir)
+    let held = ''
+    pushAppAction({
+      label: `New folder ${name}`,
+      undo: async () => {
+        held = (await window.cad.softDelete(path)).held
+        fsChanged()
+      },
+      redo: async () => {
+        await window.cad.restore(held, path)
+        fsChanged()
+      }
+    })
   }
 
   const newDesign = async (): Promise<void> => {
@@ -272,11 +325,27 @@ export function DataPanel({
     load(dir)
   }
 
+  /** a rename/move, recorded for Ctrl+Z */
+  const moveUndoable = async (src: string, dest: string, label: string): Promise<void> => {
+    await window.cad.move(src, dest)
+    load(dir ?? undefined)
+    pushAppAction({
+      label,
+      undo: async () => {
+        await window.cad.move(dest, src)
+        fsChanged()
+      },
+      redo: async () => {
+        await window.cad.move(src, dest)
+        fsChanged()
+      }
+    })
+  }
+
   const rename = async (it: DirEntry): Promise<void> => {
     const next = await promptText('Rename', it.name)
     if (!next || next === it.name) return
-    await window.cad.move(it.path, it.path.slice(0, -it.name.length) + next)
-    load(dir ?? undefined)
+    await moveUndoable(it.path, it.path.slice(0, -it.name.length) + next, `Rename ${it.name} to ${next}`)
   }
 
   const move = async (it: DirEntry): Promise<void> => {
@@ -285,14 +354,25 @@ export function DataPanel({
       { key: 'dest', label: 'Destination', options: dirs }
     ])
     if (!choice) return
-    await window.cad.move(it.path, choice.dest + sep + it.name)
-    load(dir ?? undefined)
+    await moveUndoable(it.path, choice.dest + sep + it.name, `Move ${it.name}`)
   }
 
+  // undoable (Ctrl+Z): the item moves into ~/.gwtcad/deleted and back
   const del = async (it: DirEntry): Promise<void> => {
-    if (!window.confirm(`Move "${it.name}" to trash?`)) return
-    await window.cad.trash(it.path)
+    let held = (await window.cad.softDelete(it.path)).held
     load(dir ?? undefined)
+    window.dispatchEvent(new CustomEvent('gwtcad-notice', { detail: `Deleted ${it.name} - Ctrl+Z to undo` }))
+    pushAppAction({
+      label: `Delete ${it.name}`,
+      undo: async () => {
+        await window.cad.restore(held, it.path)
+        fsChanged()
+      },
+      redo: async () => {
+        held = (await window.cad.softDelete(it.path)).held
+        fsChanged()
+      }
+    })
   }
 
   const fileExtras = (it: DirEntry): MenuItem[] => {
@@ -305,7 +385,10 @@ export function DataPanel({
     if (k === 'model' || k === 'mesh') {
       out.push({ label: 'New part from file…', onClick: () => onFileAction(it.path, 'newPartFromFile') })
     }
-    if (k === 'image' || k === 'ecad') {
+    if (k === 'image') {
+      out.push({ label: 'Insert as canvas', onClick: () => onFileAction(it.path, 'insertCanvas') })
+    }
+    if (k === 'image' || k === 'ecad' || k === 'vector' || k === 'document') {
       out.push({ label: 'Open in system viewer', onClick: () => onFileAction(it.path, 'openExternal') })
     }
     return out

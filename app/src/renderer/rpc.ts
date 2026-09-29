@@ -914,7 +914,15 @@ export const apiQuiet = {
   sceneRefined: () =>
     rpcQuiet<{ meshes: RenderMesh[]; pending: number }>('scene.refined'),
   treeGet: () =>
-    rpcQuiet<{ bodies: BodyTree[]; imported: ImportedNode[]; path: string | null }>('tree.get'),
+    rpcQuiet<{
+      bodies: BodyTree[]
+      imported: ImportedNode[]
+      path: string | null
+      canUndo?: boolean
+      canRedo?: boolean
+      undoCount?: number
+      redoCount?: number
+    }>('tree.get'),
   sectionCreate: (plane: string, offset: number, flip: boolean) =>
     rpcQuiet<SectionDTO>('section.create', { plane, offset, flip }),
   sectionSet: (
@@ -972,6 +980,8 @@ export const api = {
       path: string | null
       canUndo?: boolean
       canRedo?: boolean
+      undoCount?: number
+      redoCount?: number
     }>('tree.get'),
   undo: () =>
     rpc<{
@@ -981,6 +991,8 @@ export const api = {
       undone: boolean
       canUndo: boolean
       canRedo: boolean
+      undoCount?: number
+      redoCount?: number
     }>('history.undo'),
   redo: () =>
     rpc<{
@@ -990,6 +1002,8 @@ export const api = {
       redone: boolean
       canUndo: boolean
       canRedo: boolean
+      undoCount?: number
+      redoCount?: number
     }>('history.redo'),
 
   sketchOn: (ref: SketchRef) =>

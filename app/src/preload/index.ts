@@ -263,6 +263,7 @@ const cad = {
   writeText: (text: string, outPath: string) =>
     ipcRenderer.invoke('drawing:writeText', text, outPath) as Promise<{ path: string }>,
   readImage: (path: string) => ipcRenderer.invoke('fs:readImage', path) as Promise<string>,
+  readBytes: (path: string) => ipcRenderer.invoke('fs:readBytes', path) as Promise<Uint8Array>,
   /** symlink-resolved absolute path, null if it doesn't exist */
   realpath: (path: string) => ipcRenderer.invoke('fs:realpath', path) as Promise<string | null>,
   /** copy src into destDir as name, never overwriting (x.png -> x-2.png) */
@@ -272,6 +273,10 @@ const cad = {
   touch: (path: string) => ipcRenderer.invoke('fs:touch', path) as Promise<{ path: string }>,
   move: (src: string, dest: string) =>
     ipcRenderer.invoke('fs:move', src, dest) as Promise<{ src: string; dest: string }>,
+  /** undoable delete (moves into ~/.gwtcad/deleted); `restore` puts it back */
+  softDelete: (path: string) => ipcRenderer.invoke('fs:softDelete', path) as Promise<{ held: string }>,
+  restore: (held: string, path: string) =>
+    ipcRenderer.invoke('fs:restore', held, path) as Promise<{ restored: string }>,
   trash: (path: string) =>
     ipcRenderer.invoke('fs:trash', path) as Promise<{ trashed: string }>,
   openPath: (path: string) =>
