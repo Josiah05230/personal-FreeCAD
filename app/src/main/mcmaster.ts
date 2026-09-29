@@ -288,6 +288,7 @@ async function fetchStepNow(mfgPn: string): Promise<string> {
   }
   if (!href) throw new Error(`${mfgPn}: ${NO_CAD}`)
 
+  let lastPickError = ''
   for (let attempt = 0; attempt < 3 && !/\.STEP(\?|$)/i.test(href || ''); attempt++) {
     await sleep(1000 + attempt * 1500)
     const picked = (await wc.executeJavaScript(
@@ -297,22 +298,30 @@ async function fetchStepNow(mfgPn: string): Promise<string> {
         });
         if (!toggle) return 'no format selector';
         toggle.click();
-        await new Promise(function(r){ setTimeout(r, 500); });
-        var li = Array.from(document.querySelectorAll('li')).find(function(x){ return (x.textContent||'').trim() === '3-D STEP'; });
-        if (!li) return 'no 3-D STEP option';
+        // the option list renders a beat after the click - usually <0.4s,
+        // longer when the app is busy, so poll instead of one fixed wait
+        var li = null;
+        for (var i = 0; i < 30 && !li; i++) {
+          await new Promise(function(r){ setTimeout(r, 100); });
+          li = Array.from(document.querySelectorAll('li')).find(function(x){ return (x.textContent||'').trim() === '3-D STEP'; });
+        }
+        if (!li) { toggle.click(); return 'no 3-D STEP option'; }
         li.click();
         return 'ok';
       })()`,
       true
     )) as string
-    if (picked !== 'ok') throw new Error(`${mfgPn}: ${picked}`)
+    // not fatal yet - the next attempt re-opens the menu after a longer pause
+    if (picked !== 'ok') lastPickError = picked
     for (let i = 0; i < 15; i++) {
       await sleep(300)
       href = (await wc.executeJavaScript(HREF_JS, true)) as string | null
       if (/\.STEP(\?|$)/i.test(href || '')) break
     }
   }
-  if (!href || !/\.STEP(\?|$)/i.test(href)) throw new Error(`${mfgPn}: STEP format never became selected`)
+  if (!href || !/\.STEP(\?|$)/i.test(href)) {
+    throw new Error(`${mfgPn}: STEP format never became selected${lastPickError ? ` (${lastPickError})` : ''}`)
+  }
 
   const fileUrl = new URL(href, wc.getURL()).toString()
   const res = (await wc.executeJavaScript(
