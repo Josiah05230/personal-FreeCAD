@@ -91,8 +91,11 @@ export class Picker {
 
     for (const h of hits) {
       const ud = this.ownerOf(h.object, content).userData
-      if (ud.pick === 'edge' && this.nearOnScreen(h.point, 6)) {
-        return { kind: 'edge', bodyId: ud.bodyId, index: 0, sub: ud.sub, point: local(h) }
+      if (ud.pick === 'edges' && h.index != null && this.nearOnScreen(h.point, 6)) {
+        // a body's edges share one LineSegments; h.index is the hit
+        // segment's first vertex
+        const edge = (ud.segEdge as Int32Array)[Math.floor(h.index / 2)]
+        if (edge != null) return { kind: 'edge', bodyId: ud.bodyId, index: 0, sub: `Edge${edge + 1}`, point: local(h) }
       }
     }
 
@@ -121,7 +124,7 @@ export class Picker {
           }
         }
       }
-      if (ud.pick === 'edge') continue // handled in the pass above
+      if (ud.pick === 'edges') continue // handled in the pass above
       if (ud.pick === 'face' && h.faceIndex != null) {
         const sub = faceSubFromTriangle(ud.faceGroups, h.faceIndex)
         if (sub) {
@@ -189,16 +192,22 @@ export class Picker {
       return s
     }
     if (sel.kind === 'edge') {
-      const src = content.children.find(
-        (c) => c.userData.pick === 'edge' && c.userData.sub === sel.sub && c.userData.bodyId === sel.bodyId
-      ) as THREE.Line | undefined
-      if (!src) return null
-      const line = new THREE.Line(
-        src.geometry,
-        new THREE.LineBasicMaterial({ color, depthTest: false })
-      )
-      line.renderOrder = 10
-      return line
+      // just this edge's slice of the body's merged edge segments
+      const edge = Number(/^Edge(\d+)$/.exec(sel.sub)?.[1]) - 1
+      for (const c of content.children) {
+        if (c.userData.pick !== 'edges' || c.userData.bodyId !== sel.bodyId) continue
+        const range = (c.userData.edgeRange as Map<number, [number, number]>).get(edge)
+        if (!range) continue
+        const src = (c as THREE.LineSegments).geometry.getAttribute('position') as THREE.BufferAttribute
+        const arr = (src.array as Float32Array).slice(range[0] * 3, (range[0] + range[1]) * 3)
+        const g = new THREE.BufferGeometry()
+        g.setAttribute('position', new THREE.BufferAttribute(arr, 3))
+        const line = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color, depthTest: false }))
+        line.renderOrder = 10
+        line.userData.ownGeom = true
+        return line
+      }
+      return null
     }
     if (sel.kind === 'plane') {
       const grp = content.children.find(

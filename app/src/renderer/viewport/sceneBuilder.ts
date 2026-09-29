@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import type { RenderMesh, SketchRender, DatumDTO, CanvasDTO, RenderSettings } from '../rpc'
+import type { RenderMesh, SketchRender, DatumDTO, CanvasDTO, RenderSettings, EdgePoly } from '../rpc'
 import {
   effectiveAppearance,
   effectiveRender,
@@ -165,6 +165,45 @@ function buildCanvas(c: CanvasDTO): THREE.Object3D {
 }
 
 /** mesh + per-edge lines + invisible pickable vertex points for one body */
+/** One LineSegments for a set of a body's edges (each polyline expanded to
+ *  segment pairs), pickable per edge: userData.segEdge[segment] = edge index,
+ *  userData.edgeRange.get(edge) = [firstVertex, vertexCount] in the buffer. */
+function edgeSegments(bodyId: string, edges: EdgePoly[], mat: THREE.LineBasicMaterial | THREE.LineDashedMaterial): THREE.LineSegments {
+  let nSeg = 0
+  for (const e of edges) nSeg += Math.max(0, e.points.length / 3 - 1)
+  const pos = new Float32Array(nSeg * 6)
+  const segEdge = new Int32Array(nSeg)
+  const edgeRange = new Map<number, [number, number]>()
+  const kinds = new Map<number, string | undefined>()
+  let k = 0
+  for (const e of edges) {
+    const p = e.points
+    const n = p.length / 3
+    const first = k * 2
+    for (let i = 0; i < n - 1; i++) {
+      const o = k * 6
+      const q = i * 3
+      pos[o] = p[q]
+      pos[o + 1] = p[q + 1]
+      pos[o + 2] = p[q + 2]
+      pos[o + 3] = p[q + 3]
+      pos[o + 4] = p[q + 4]
+      pos[o + 5] = p[q + 5]
+      segEdge[k] = e.edge
+      k++
+    }
+    edgeRange.set(e.edge, [first, k * 2 - first])
+    kinds.set(e.edge, e.kind)
+  }
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+  const ls = new THREE.LineSegments(g, mat)
+  ls.name = `edges:${bodyId}`
+  ls.userData = { pick: 'edges', bodyId, segEdge, edgeRange, kinds }
+  ls.renderOrder = 1
+  return ls
+}
+
 function buildBody(m: RenderMesh): THREE.Object3D[] {
   const objs: THREE.Object3D[] = []
   const R = RENDER
@@ -299,43 +338,32 @@ function buildBody(m: RenderMesh): THREE.Object3D[] {
     : toColor(R.edgeColor, EDGE_COLOR)
   const tangentStyle = eA.tangent ?? R.tangentEdges ?? 'show'
 
+  // ALL of a body's edges go into one LineSegments per line style (not a
+  // THREE.Line + material per edge: a 15k-edge vendor model built 15k
+  // objects and drew 15k draw calls every frame, freezing the app for over a
+  // minute on open). userData.segEdge maps each segment back to its edge for
+  // picking; userData.edgeRange gives each edge's vertex slice for highlights.
   if (drawEdges) {
+    const solid: EdgePoly[] = []
+    const dashed: EdgePoly[] = []
     for (const e of m.edges) {
       const isTangent = e.kind === 'tangent' || e.kind === 'free'
       const style = isTangent ? tangentStyle : 'show'
       if (style === 'hide') continue
-      const g = new THREE.BufferGeometry()
-      g.setAttribute('position', new THREE.Float32BufferAttribute(e.points, 3))
-      let line: THREE.Line
-      if (style === 'dashed') {
-        line = new THREE.Line(
-          g,
-          new THREE.LineDashedMaterial({ color: edgeColor, ...EDGE_DASH })
-        )
-        line.computeLineDistances()
-      } else {
-        line = new THREE.Line(g, new THREE.LineBasicMaterial({ color: edgeColor }))
-      }
-      line.name = `edge:${m.id}:${e.edge}`
-      line.userData = { pick: 'edge', bodyId: m.id, sub: `Edge${e.edge + 1}`, edgeKind: e.kind }
-      line.renderOrder = 1
-      objs.push(line)
+      ;(style === 'dashed' ? dashed : solid).push(e)
     }
-  } else {
-    // still emit invisible pickable edge lines so selection keeps working when
+    if (solid.length) objs.push(edgeSegments(m.id, solid, new THREE.LineBasicMaterial({ color: edgeColor })))
+    if (dashed.length) {
+      const ls = edgeSegments(m.id, dashed, new THREE.LineDashedMaterial({ color: edgeColor, ...EDGE_DASH }))
+      ls.computeLineDistances()
+      objs.push(ls)
+    }
+  } else if (m.edges.length) {
+    // still emit invisible pickable edges so selection keeps working when
     // the visible overlay is off (e.g. plain "shaded" mode)
-    for (const e of m.edges) {
-      const g = new THREE.BufferGeometry()
-      g.setAttribute('position', new THREE.Float32BufferAttribute(e.points, 3))
-      const line = new THREE.Line(
-        g,
-        new THREE.LineBasicMaterial({ color: edgeColor, transparent: true, opacity: 0 })
-      )
-      line.name = `edge:${m.id}:${e.edge}`
-      line.userData = { pick: 'edge', bodyId: m.id, sub: `Edge${e.edge + 1}`, edgeKind: e.kind }
-      line.renderOrder = 1
-      objs.push(line)
-    }
+    objs.push(
+      edgeSegments(m.id, m.edges, new THREE.LineBasicMaterial({ color: edgeColor, transparent: true, opacity: 0 }))
+    )
   }
   return objs
 }
