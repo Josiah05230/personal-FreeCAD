@@ -17,6 +17,18 @@ export interface DirListing {
   parent: string
   items: DirEntry[]
 }
+export interface FileCommit {
+  hash: string
+  short: string
+  subject: string
+  body: string
+  author: string
+  isoDate: string
+  relDate: string
+  pathAtCommit: string
+  auto: boolean
+}
+
 export interface DataPanelPrefs {
   hidden: string[]
   defaultDir: string | null
@@ -172,6 +184,19 @@ const cad = {
     ipcRenderer.invoke('git:commit', filePath, message, authorName, authorEmail) as Promise<{
       hash: string
     }>,
+  /** every commit touching this file (follows renames), with notes */
+  gitFileLog: (filePath: string, limit?: number) =>
+    ipcRenderer.invoke('git:fileLog', filePath, limit) as Promise<FileCommit[]>,
+  /** the file as of a commit, written as a hidden temp file beside it */
+  gitRevisionFile: (filePath: string, commit: string, pathAtCommit: string) =>
+    ipcRenderer.invoke('git:revisionFile', filePath, commit, pathAtCommit) as Promise<string>,
+  gitDropRevisionFile: (path: string) => ipcRenderer.invoke('git:dropRevisionFile', path) as Promise<void>,
+  gitFileChanges: (filePath: string) =>
+    ipcRenderer.invoke('git:fileChanges', filePath) as Promise<{ path: string; status: string }[]>,
+  gitDiscardFile: (filePath: string) =>
+    ipcRenderer.invoke('git:discardFile', filePath) as Promise<{ backup: { orig: string; copy: string }[] }>,
+  gitUndoDiscard: (backup: { orig: string; copy: string }[]) =>
+    ipcRenderer.invoke('git:undoDiscard', backup) as Promise<void>,
   /** commit ONLY this file + its companions (never the rest of the repo) */
   gitCommitFile: (filePath: string, message: string, opts?: { wholeDir?: boolean }) =>
     ipcRenderer.invoke('git:commitFile', filePath, message, opts) as Promise<{ hash: string }>,

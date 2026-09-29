@@ -67,7 +67,7 @@ await sleep(150);
 assert(!!document.querySelector('.gitpanel.open'), 'git panel opened');
 
 // --- init ---
-let initBtn = Array.from(document.querySelectorAll('.git-btn')).find((b) => /Initialize git/i.test(b.textContent || ''));
+let initBtn = Array.from(document.querySelectorAll('.git-btn')).find((b) => /Start tracking history/i.test(b.textContent || ''));
 assert(!!initBtn, 'Initialize button shown for a non-repo folder');
 initBtn.click();
 await sleep(400);
@@ -84,7 +84,7 @@ const msgBox = document.querySelector('.git-msg');
 assert(!!msgBox, 'commit message textarea exists');
 setTextareaValue(msgBox, 'initial commit');
 await sleep(60);
-const commitBtn = Array.from(document.querySelectorAll('.git-btn')).find((b) => /Commit All Changes/i.test(b.textContent || ''));
+const commitBtn = Array.from(document.querySelectorAll('.git-btn')).find((b) => /Commit this part/i.test(b.textContent || ''));
 assert(!!commitBtn && !commitBtn.disabled, 'Commit button enabled once a message is typed and the repo is dirty');
 commitBtn.click();
 await sleep(500);

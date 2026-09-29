@@ -17,6 +17,21 @@ interface DirListing {
   parent: string
   items: DirEntry[]
 }
+interface FileCommit {
+  hash: string
+  short: string
+  subject: string
+  /** the rest of the commit message - the version's notes */
+  body: string
+  author: string
+  isoDate: string
+  relDate: string
+  /** repo-relative path of the file as of this commit */
+  pathAtCommit: string
+  /** lock / auto-generated drawing / supplier reference commit */
+  auto: boolean
+}
+
 interface DataPanelPrefs {
   hidden: string[]
   defaultDir: string | null
@@ -135,6 +150,12 @@ interface CadBridge {
     authorEmail?: string
   ): Promise<{ hash: string }>
   gitCommitFile(filePath: string, message: string, opts?: { wholeDir?: boolean }): Promise<{ hash: string }>
+  gitFileLog(filePath: string, limit?: number): Promise<FileCommit[]>
+  gitRevisionFile(filePath: string, commit: string, pathAtCommit: string): Promise<string>
+  gitDropRevisionFile(path: string): Promise<void>
+  gitFileChanges(filePath: string): Promise<{ path: string; status: string }[]>
+  gitDiscardFile(filePath: string): Promise<{ backup: { orig: string; copy: string }[] }>
+  gitUndoDiscard(backup: { orig: string; copy: string }[]): Promise<void>
   gitCommitAll(
     filePath: string,
     message: string,

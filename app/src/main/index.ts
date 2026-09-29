@@ -325,6 +325,20 @@ app.whenReady().then(async () => {
     (_e, filePath: string, message: string, authorName?: string, authorEmail?: string) =>
       gitw.commit(filePath, message, authorName, authorEmail)
   )
+  // per-file history (History panel)
+  ipcMain.handle('git:fileLog', (_e, filePath: string, limit?: number) => gitw.fileLog(filePath, limit))
+  ipcMain.handle('git:revisionFile', (_e, filePath: string, commit: string, pathAtCommit: string) =>
+    gitw.revisionFile(filePath, commit, pathAtCommit)
+  )
+  ipcMain.handle('git:dropRevisionFile', (_e, path: string) => gitw.dropRevisionFile(path))
+  ipcMain.handle('git:fileChanges', (_e, filePath: string) => gitw.fileChanges(filePath))
+  // discard this part's changes - backed up first so Ctrl+Z can put them back
+  ipcMain.handle('git:discardFile', async (_e, filePath: string) => {
+    const backup = await softDel.backupCopies(await gitw.companionPaths(filePath))
+    await gitw.discardFile(filePath)
+    return { backup }
+  })
+  ipcMain.handle('git:undoDiscard', (_e, backup: { orig: string; copy: string }[]) => softDel.restoreCopies(backup))
   ipcMain.handle('git:commitFile', (_e, filePath: string, message: string, opts?: { wholeDir?: boolean }) =>
     gitw.commitFile(filePath, message, opts)
   )

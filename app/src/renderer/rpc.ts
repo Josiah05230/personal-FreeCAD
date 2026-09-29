@@ -910,6 +910,8 @@ export const apiQuiet = {
       renderSettings?: RenderSettings
       sections?: SectionDTO[]
     }>('scene.get'),
+  /** meshes for another file (e.g. an old version), without touching the open document */
+  sceneForFile: (path: string) => rpcQuiet<{ meshes: RenderMesh[] }>('scene.forFile', { path }),
   /** full-quality meshes finished in the background for bodies scene.get sent as drafts */
   sceneRefined: () =>
     rpcQuiet<{ meshes: RenderMesh[]; pending: number }>('scene.refined'),

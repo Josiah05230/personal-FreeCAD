@@ -18,11 +18,21 @@
  *  trap for a new caller that only has a repo/clone directory - use
  *  `<dir>/anything` (the file need not exist) to get the right cwd. */
 import { execFile } from 'child_process'
-import { basename, dirname, join } from 'path'
-import { readdir } from 'fs/promises'
+import { basename, dirname, extname, join, relative } from 'path'
+import { readdir, rm, writeFile } from 'fs/promises'
 import { promisify } from 'util'
 
 const run = promisify(execFile)
+
+/** execFile with a Buffer stdout (binary blobs, e.g. `git show` of an FCStd) */
+function runBuf(cmd: string, args: string[], cwd: string): Promise<{ stdout: Buffer }> {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { cwd, encoding: 'buffer', maxBuffer: 1024 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) reject(new GitError((stderr?.toString() || err.message).trim()))
+      else resolve({ stdout })
+    })
+  })
+}
 
 // network operations (pull/push/fetch/ls-remote) can hang indefinitely
 // against a dead/unreachable remote - local-only operations (log, status,
@@ -539,4 +549,106 @@ export async function remotes(filePath: string): Promise<GitRemote[]> {
 export async function addRemote(filePath: string, name: string, url: string): Promise<void> {
   const cwd = dirname(filePath)
   await gitOrThrow(cwd, ['remote', 'add', name, url])
+}
+
+// --------------------------------------------------------------------------- //
+// per-file history (History panel): notes, old versions, scoped commit/discard
+// --------------------------------------------------------------------------- //
+
+export interface FileCommit {
+  hash: string
+  short: string
+  subject: string
+  /** the rest of the commit message - the version's notes */
+  body: string
+  author: string
+  isoDate: string
+  relDate: string
+  /** repo-relative path of the file AS OF this commit (files move) */
+  pathAtCommit: string
+  /** an automatic commit (lock, auto-generated drawing, supplier reference) */
+  auto: boolean
+}
+
+const AUTO_SUBJECT = /^(lock: |.*: add auto-generated drawing$|.*: add reference drawing from supplier 3D model$)/
+
+/** Every commit that touched this file, newest first, following renames
+ *  (the part folders were flattened once), with each commit's full note. */
+export async function fileLog(filePath: string, limit = 200): Promise<FileCommit[]> {
+  const cwd = dirname(filePath)
+  const US = '\x1f'
+  const RS = '\x1e'
+  const fmt = RS + ['%H', '%h', '%s', '%an', '%aI', '%ar', '%b'].join(US) + US
+  let out: string
+  try {
+    out = await git(cwd, ['log', '--follow', `--max-count=${limit}`, `--format=${fmt}`, '--name-status', '--', filePath])
+  } catch {
+    return []
+  }
+  const commits: FileCommit[] = []
+  for (const rec of out.split(RS)) {
+    if (!rec.trim()) continue
+    const parts = rec.split(US)
+    const [hash, short, subject, author, isoDate, relDate, body] = parts
+    // after the last separator: the --name-status lines for this file
+    const status = (parts[7] ?? '').trim().split('\n').filter(Boolean)
+    let pathAtCommit = ''
+    for (const line of status) {
+      const cols = line.split('\t')
+      // "M\tpath", "A\tpath", "R100\told\tnew" - the file's name in this commit is the last column
+      pathAtCommit = cols[cols.length - 1]
+    }
+    commits.push({
+      hash,
+      short,
+      subject,
+      body: (body ?? '').trim(),
+      author,
+      isoDate,
+      relDate,
+      pathAtCommit,
+      auto: AUTO_SUBJECT.test(subject)
+    })
+  }
+  return commits
+}
+
+/** Write the file as of `commit` to a hidden temp file NEXT TO the working
+ *  file (so an assembly's relative links still resolve), for rendering an
+ *  old version. The caller removes it with dropRevisionFile. */
+export async function revisionFile(filePath: string, commit: string, pathAtCommit: string): Promise<string> {
+  const cwd = dirname(filePath)
+  const root = (await git(cwd, ['rev-parse', '--show-toplevel'])).trim()
+  const rel = pathAtCommit || relative(root, filePath)
+  const dest = join(dirname(filePath), `.${basename(filePath)}.rev-${commit.slice(0, 10)}${extname(filePath)}`)
+  const { stdout } = await runBuf('git', ['show', `${commit}:${rel}`], root)
+  await writeFile(dest, stdout)
+  return dest
+}
+
+export async function dropRevisionFile(path: string): Promise<void> {
+  if (!/\.rev-[0-9a-f]{4,}\.[^/\\]+$/.test(path)) return // only ever our own temp files
+  await rm(path, { force: true })
+}
+
+/** Uncommitted changes to this file or its companions ("" = clean). */
+export async function fileChanges(filePath: string): Promise<{ path: string; status: string }[]> {
+  const cwd = dirname(filePath)
+  const paths = await companionPaths(filePath)
+  try {
+    const out = await git(cwd, ['status', '--porcelain', '--', ...paths])
+    return out
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => ({ status: l.slice(0, 2).trim(), path: l.slice(3) }))
+  } catch {
+    return []
+  }
+}
+
+/** Put this file (and companions) back to the last commit. */
+export async function discardFile(filePath: string): Promise<void> {
+  const cwd = dirname(filePath)
+  const paths = await companionPaths(filePath)
+  await gitOrThrow(cwd, ['checkout', 'HEAD', '--', ...paths])
 }

@@ -29,7 +29,8 @@ import { AppBar } from './ui/AppBar'
 import { Ribbon } from './ui/Ribbon'
 import { DocTabs, type DocTab } from './ui/DocTabs'
 import { DataPanel } from './ui/DataPanel'
-import { GitPanel } from './ui/GitPanel'
+import { GitPanel, type VersionRef } from './ui/GitPanel'
+import { CompareView, type CompareSide } from './ui/CompareView'
 import { Browser } from './ui/Browser'
 import { Timeline } from './ui/Timeline'
 import { CommandPalette } from './ui/CommandPalette'
@@ -4673,6 +4674,47 @@ export function App(): JSX.Element {
 
   // Data Panel double-click: do what the app does with that kind of file
   // (labels in DataPanel.tsx's OPEN_LABEL); inserts go through the gate
+  // ---- History: compare two versions side by side in the main view ----
+  const [compare, setCompare] = useState<{ left: CompareSide; right: CompareSide } | null>(null)
+  const compareSeq = useRef(0)
+  const startCompare = useCallback(
+    (filePath: string, a: VersionRef, b: VersionRef) => {
+      const seq = ++compareSeq.current
+      const dirtyNow = tabs.find((t) => !t.viewer && t.path === docPath)?.dirty ?? false
+      const label = (v: VersionRef): Pick<CompareSide, 'label' | 'sub'> =>
+        v.kind === 'current'
+          ? { label: 'Current', sub: filePath === docPath && dirtyNow ? 'including unsaved changes' : 'working copy' }
+          : { label: `${v.commit.short} - ${v.commit.subject}`, sub: `${v.commit.relDate} - ${v.commit.author}` }
+      const load = async (v: VersionRef): Promise<RenderMesh[]> => {
+        if (v.kind === 'current') {
+          if (filePath === docPath) return meshesRef.current
+          return (await apiQuiet.sceneForFile(filePath)).meshes
+        }
+        const tmp = await window.cad.gitRevisionFile(filePath, v.commit.hash, v.commit.pathAtCommit)
+        try {
+          return (await apiQuiet.sceneForFile(tmp)).meshes
+        } finally {
+          void window.cad.gitDropRevisionFile(tmp).catch(() => undefined)
+        }
+      }
+      setCompare({ left: { ...label(a), meshes: null }, right: { ...label(b), meshes: null } })
+      for (const [side, v] of [
+        ['left', a],
+        ['right', b]
+      ] as const) {
+        void load(v)
+          .then((meshes) => {
+            if (compareSeq.current === seq) setCompare((c) => (c ? { ...c, [side]: { ...c[side], meshes } } : c))
+          })
+          .catch((e) => {
+            if (compareSeq.current === seq)
+              setCompare((c) => (c ? { ...c, [side]: { ...c[side], error: (e as Error).message } } : c))
+          })
+      }
+    },
+    [tabs, docPath]
+  )
+
   // a picture / PDF / SVG / DXF opens in its own viewer tab - the design the
   // engine holds stays loaded underneath, so switching back is instant
   const openViewer = useCallback(
@@ -6415,6 +6457,17 @@ export function App(): JSX.Element {
                 </div>
               )}
               {status.phase === 'boot' && <div className="overlay">Starting FreeCAD engine…</div>}
+              {compare && (
+                <CompareView
+                  left={compare.left}
+                  right={compare.right}
+                  onClose={() => {
+                    compareSeq.current++
+                    setCompare(null)
+                  }}
+                  onSwap={() => setCompare((c) => (c ? { left: c.right, right: c.left } : c))}
+                />
+              )}
               {(() => {
                 const vt = tabs.find((t) => t.id === activeTab && t.viewer)
                 return vt?.path ? (
@@ -6936,7 +6989,23 @@ export function App(): JSX.Element {
           </div>
         </div>
 
-        <GitPanel open={gitOpen} filePath={gitTarget ?? docPath} />
+        <GitPanel
+          open={gitOpen}
+          filePath={gitTarget ?? docPath}
+          isOpenDoc={!!docPath && (gitTarget ?? docPath) === docPath}
+          docDirty={tabs.find((t) => !t.viewer && t.path === docPath)?.dirty ?? false}
+          onCompare={startCompare}
+          onFileRestored={(p) => {
+            // the open document's file changed on disk (discard / its undo): reload it
+            if (p !== docPath) return
+            void (async () => {
+              refinedRef.current.clear()
+              await api.open(p)
+              await refreshScene()
+              markDirty(false)
+            })().catch((e) => flashSketchNotice(`Reload failed: ${(e as Error).message}`))
+          }}
+        />
       </div>
 
       <div className="statusbar">

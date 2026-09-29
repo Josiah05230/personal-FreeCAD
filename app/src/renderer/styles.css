@@ -659,7 +659,8 @@ code {
 }
 
 .gitpanel.open {
-  width: 290px;
+  width: 340px;
+  overflow-y: auto;
 }
 
 .datapanel-head,
@@ -3943,4 +3944,216 @@ code {
   margin: auto;
   color: var(--text-dim);
   font-size: 13px;
+}
+
+/* History panel (ui/GitPanel.tsx) */
+.hp-file {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text);
+  padding-left: 8px;
+}
+.hp-section {
+  border-top: 1px solid var(--line);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.hp-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: default;
+}
+.hp-advanced > summary {
+  cursor: pointer;
+  list-style: revert;
+}
+.hp-notes {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  background: var(--chrome-3, #1d1f23);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 5px 6px;
+  font: inherit;
+  font-size: 11px;
+}
+.hp-pill {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: #0696d733;
+  color: #7cc8ef;
+}
+.hp-auto-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 10px;
+}
+.hp-pickbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 4px 6px;
+  border: 1px dashed #0696d788;
+  border-radius: 4px;
+}
+.git-commit.hp-auto {
+  opacity: 0.55;
+}
+.git-commit.hp-picked {
+  outline: 1px solid #0696d7;
+  outline-offset: -1px;
+}
+.git-commit.hp-current .git-hash {
+  color: #7cc8ef;
+}
+.hp-pick {
+  margin: 0 4px 0 0;
+}
+.hp-has-notes {
+  cursor: pointer;
+}
+.hp-notes-more {
+  color: #7cc8ef;
+  font-size: 10px;
+}
+.hp-notes-body {
+  white-space: pre-wrap;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  padding: 4px 0 2px 2px;
+  border-left: 2px solid #0696d755;
+  padding-left: 8px;
+  margin: 2px 0;
+}
+.hp-row-actions {
+  display: none;
+  gap: 6px;
+  padding-top: 4px;
+}
+.git-commit:hover .hp-row-actions,
+.git-commit.hp-picked .hp-row-actions {
+  display: flex;
+}
+.git-btn.hp-mini {
+  font-size: 10px;
+  padding: 2px 8px;
+}
+
+/* version compare (ui/CompareView.tsx): over the 3D view */
+.compare-host {
+  position: absolute;
+  inset: 0;
+  z-index: 31;
+  display: flex;
+  flex-direction: column;
+  background: #2a2c31;
+}
+.cmp-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--chrome-2);
+  font-size: 11px;
+}
+.cmp-bar-title {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.cmp-legend {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-dim);
+}
+.cmp-sw {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-left: 8px;
+}
+.cmp-changed { background: rgb(245, 168, 41); }
+.cmp-added { background: rgb(77, 204, 107); }
+.cmp-removed { background: rgb(235, 82, 77); }
+.cmp-same { background: rgb(158, 163, 173); }
+.cmp-spacer {
+  flex: 1;
+}
+.cmp-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+}
+.cmp-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.cmp-stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.cmp-label {
+  position: absolute;
+  top: 10px;
+  max-width: 45%;
+  pointer-events: none;
+  background: #1b1d21cc;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+.cmp-left { left: 10px; }
+.cmp-right { left: calc(50% + 10px); }
+.cmp-title {
+  font-size: 12px;
+  color: var(--text);
+}
+.cmp-sub {
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+.cmp-err {
+  font-size: 11px;
+  color: #ff8a80;
+}
+.cmp-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--line);
+  pointer-events: none;
+}
+.cmp-ghost-key {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  background: rgba(242, 77, 71, 0.5);
+  border-radius: 2px;
 }

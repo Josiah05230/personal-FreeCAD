@@ -52,3 +52,24 @@ export async function purgeOld(): Promise<void> {
     if (t && t < cutoff) await rm(join(root, name), { recursive: true, force: true }).catch(() => undefined)
   }
 }
+
+/** Copy files into the holding area (before something overwrites them, e.g.
+ *  a git discard) so the overwrite can be undone with restoreCopies. */
+export async function backupCopies(paths: string[]): Promise<{ orig: string; copy: string }[]> {
+  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const out: { orig: string; copy: string }[] = []
+  for (const [i, p] of paths.entries()) {
+    const exists = await stat(p).then((s) => s.isFile()).catch(() => false)
+    if (!exists) continue
+    const copy = join(holdRoot(), stamp, `${i}-${basename(p)}`)
+    await mkdir(dirname(copy), { recursive: true })
+    await cp(p, copy, { preserveTimestamps: true })
+    out.push({ orig: p, copy })
+  }
+  return out
+}
+
+/** Put backed-up copies back over whatever is there now. */
+export async function restoreCopies(items: { orig: string; copy: string }[]): Promise<void> {
+  for (const it of items) await cp(it.copy, it.orig, { preserveTimestamps: true })
+}
