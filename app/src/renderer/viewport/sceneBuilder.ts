@@ -7,6 +7,7 @@ import {
   DEFAULT_RENDER,
   type RGB
 } from '../appearance'
+import { decalNodes } from './decalLayer'
 
 export interface BuiltScene {
   group: THREE.Group
@@ -475,7 +476,8 @@ export function syncScene(
     ...datums.map((d) => ({ key: `datum:${d.id}`, sig: datumSig(d), build: () => [buildDatum(d)], frame: false })),
     ...canvases.map((c) => ({ key: `canvas:${c.id}`, sig: canvasSig(c), build: () => [buildCanvas(c)], frame: true })),
     ...meshes.map((m) => ({ key: `body:${m.id}`, sig: bodySig(m), build: () => buildBody(m), frame: true })),
-    ...sketches.map((s) => ({ key: `sketch:${s.id}`, sig: sketchSig(s), build: () => buildSketch(s), frame: true }))
+    ...sketches.map((s) => ({ key: `sketch:${s.id}`, sig: sketchSig(s), build: () => buildSketch(s), frame: true })),
+    ...decalNodes(meshes, RENDER.shading)
   ]
   const want = new Set(desired.map((d) => d.key))
   const nodes = new Map<string, SceneNode>()

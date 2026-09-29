@@ -168,6 +168,8 @@ export interface RenderMesh {
   sig?: string | null
   /** quick coarse first look at a heavy shape; the full mesh follows via scene.refined */
   draft?: boolean
+  /** face decals on this mesh, own + inherited through links (decals.ts) */
+  decals?: import('./decals').DecalRender[]
 }
 
 export interface PickPlane {
