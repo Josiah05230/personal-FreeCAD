@@ -59,6 +59,7 @@ import { ImportFromFileDialog, type ImportPlan } from './ui/ImportFromFileDialog
 import { PNBrowserPanel } from './ui/PNBrowserPanel'
 import { CompanySettingsPanel } from './ui/CompanySettingsPanel'
 import { AppearancePanel } from './ui/AppearancePanel'
+import { DecalPanel } from './ui/DecalPanel'
 import { FirstRun, firstRunDone } from './ui/FirstRun'
 import {
   loadPinned,
@@ -632,6 +633,7 @@ export function App(): JSX.Element {
   const [dressUpGhost, setDressUpGhost] = useState<import('./rpc').BaseRef[]>([])
   const [renderSettings, setRenderSettings] = useState<RenderSettings>({})
   const [showAppearance, setShowAppearance] = useState(false)
+  const [showDecals, setShowDecals] = useState(false)
   const [showFirstRun, setShowFirstRun] = useState(
     () => !window.cad.isE2E && !firstRunDone()
   )
@@ -5722,6 +5724,7 @@ export function App(): JSX.Element {
         toggleParams: () => setParamsOpen((v) => !v),
         toggleMaterials: () => setMaterialsOpen((v) => !v),
         toggleAppearance: () => setShowAppearance((v) => !v),
+        toggleDecals: () => setShowDecals((v) => !v),
         toggleMcMaster: () => setMcMasterOpen((v) => !v),
         importKicad,
         reimportKicad,
@@ -6965,6 +6968,25 @@ export function App(): JSX.Element {
                           onClearAppearance={clearObjectAppearance}
                           onSetRender={applyRenderSettings}
                           onClose={() => setShowAppearance(false)}
+                        />
+                      )
+                    })()}
+                  {showDecals &&
+                    (() => {
+                      const f = selection.find((s) => s.kind === 'face') as
+                        | { bodyId: string; sub: string }
+                        | undefined
+                      const face = f
+                        ? { ...f, label: meshes.find((m) => m.id === f.bodyId)?.label }
+                        : null
+                      return (
+                        <DecalPanel
+                          face={face}
+                          onChanged={() => {
+                            markDirty(true)
+                            void refreshMeshesOnly(true)
+                          }}
+                          onClose={() => setShowDecals(false)}
                         />
                       )
                     })()}

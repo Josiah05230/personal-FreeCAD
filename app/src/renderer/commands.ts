@@ -66,6 +66,7 @@ export interface CommandContext {
   centerOfMass: () => void
   toggleMaterials: () => void
   toggleAppearance: () => void
+  toggleDecals: () => void
   toggleMcMaster: () => void
   insertCanvas: () => Promise<void>
   toggleParams: () => void
@@ -132,6 +133,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'sel.filter', title: 'Select', group: 'Select', tab: 'SOLID', icon: 'point', component: ctx.selectFilterNode, menuComponent: ctx.selectFilterMenuNode },
     // --- insert (lives on the SOLID tab, Fusion-style) ---
     { id: 'ins.canvas', title: 'Canvas', group: 'Insert', tab: 'SOLID', icon: 'canvas', run: () => ctx.insertCanvas() },
+    { id: 'ins.decal', title: 'Insert Decal', group: 'Insert', tab: 'SOLID', icon: 'canvas', run: () => ctx.toggleDecals() },
     { id: 'ins.model', title: 'Insert 3D Model', group: 'Insert', tab: 'SOLID', icon: 'extrude', run: () => ctx.importStep() },
     { id: 'ins.kicad', title: 'Import KiCad PCB', group: 'Insert', tab: 'SOLID', icon: 'combine', run: () => ctx.importKicad() },
     { id: 'ins.kicadSync', title: 'Re-sync KiCad PCB', group: 'Insert', tab: 'SOLID', icon: 'combine', run: () => ctx.reimportKicad() },
@@ -172,6 +174,7 @@ export function buildCommands(ctx: CommandContext): Command[] {
     { id: 'mod.appearance', title: 'Appearance', group: 'Modify', tab: 'SOLID', icon: 'draft', hotkey: 'a', run: () => ctx.toggleAppearance() },
     // --- APPEARANCE tab (rendering / viewing / export) ---
     { id: 'appr.appearance', title: 'Appearance', group: 'Appearance', tab: 'APPEARANCE', icon: 'draft', run: () => ctx.toggleAppearance() },
+    { id: 'appr.decal', title: 'Decals', group: 'Appearance', tab: 'APPEARANCE', icon: 'canvas', run: () => ctx.toggleDecals() },
     { id: 'appr.render', title: 'Render Image', group: 'Export', tab: 'APPEARANCE', icon: 'canvas', run: () => ctx.toggleAppearance() },
     // --- drawing ---
     { id: 'draw.fromDesign', title: 'Drawing from Design', group: 'Drawing', tab: 'TOOLS', icon: 'sketch', run: () => ctx.startDrawing() },
