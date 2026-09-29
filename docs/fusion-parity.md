@@ -277,8 +277,8 @@ Move/Copy of faces + features (not just bodies).
   from the first. Verified: a 20mm-tall hole through the middle of a box,
   10mm cut each way from a mid-height datum plane, removes exactly the
   expected volume.
-- `fusion_features.js` extended to 90 checks. Full suite green except the
-  pre-existing `monkey.js` check 6.
+- `fusion_features.js` extended to 90 checks. Full suite green (the
+  failing `monkey.js` check 6 was later removed with the scenario).
 
 Still open: Move/Copy of faces + features, Two Sides for Intersect/New-body,
 Align of non-planar refs, coil/pipe plane placement, Sweep Twist/

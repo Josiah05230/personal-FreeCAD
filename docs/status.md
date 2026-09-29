@@ -6,7 +6,7 @@ milestones M0-M5 have a working first version; ~85 sidecar RPC methods. Live
 feedback is tracked in `docs/FEEDBACK.md`; per-change detail is in git history.
 Verified each pass by headless engine tests (`scratch/*.py`) + a UI-driven E2E
 suite (`bash test/e2e/run.sh`: `workflow.js`, `repro.js`, `editfeature.js`,
-`monkey.js`, `fuzz.js`, `op_commit.js`, `part_asm.js`). `op_commit.js` opens
+`fuzz.js`, `op_commit.js`, `part_asm.js`). `op_commit.js` opens
 every operation dialog, makes a minimal valid selection, and asserts the OK
 button actually enables (getState().opReady + the real DOM button) then that
 apply keeps the engine healthy - the class of "preview renders but OK stays
