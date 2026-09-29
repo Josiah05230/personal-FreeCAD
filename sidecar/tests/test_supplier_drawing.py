@@ -88,8 +88,13 @@ def test_generated_drawing_shows_its_overall_size(generated):
     for o in d.Objects:
         if o.TypeId == "Part::Feature":
             bb.add(o.Shape.BoundBox)
-    values = sorted(round(drawing._dimension_raw_value(x), 2) for x in dims)
-    assert values == sorted(round(v, 2) for v in (bb.XLength, bb.ZLength, bb.YLength))
+    expected = sorted(round(v, 2) for v in (bb.XLength, bb.ZLength, bb.YLength))
+    assert sorted(round(drawing._dimension_raw_value(x), 2) for x in dims) == expected
+    # a group item's own Scale can lag at 1.0 when the group is built at its
+    # final scale - values must come from the group's, not read in sheet mm
+    for x in dims:
+        x.References2D[0][0].Scale = 1.0
+    assert sorted(round(drawing._dimension_raw_value(x), 2) for x in dims) == expected
     # each dimension sits just outside its own view's outline
     for x in dims:
         view = x.References2D[0][0]
@@ -108,7 +113,7 @@ def test_a_dimension_on_a_group_view_lands_on_its_outline(generated):
     d = session.doc(create=False)
     page = next(o for o in d.Objects if o.TypeId == "TechDraw::DrawPage")
     view = _front_view(d)
-    assert float(view.Scale) > 1.5  # a small vendor part is drawn enlarged
+    assert drawing._uv_scale(view) > 1.5  # a small vendor part is drawn enlarged
     drawing._ensure_page_live(d, page)
     vis, hid = drawing._part_view_payload(view)
     min_x, min_y, max_x, max_y = drawing._view_bbox(vis, hid)

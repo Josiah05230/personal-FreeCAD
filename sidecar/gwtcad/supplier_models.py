@@ -248,8 +248,9 @@ def _add_overall_dimensions(doc, page_id, group_views):
         p1, p2 = pts
         vis, hid = _drawing._part_view_payload(view)
         min_x, min_y, max_x, max_y = _drawing._view_bbox(vis, hid)
-        # sheet mm per UV unit: view.Scale, except a group view's UV is sheet mm already
-        off = _OVERALL_DIM_OFFSET / max(float(view.Scale) / _drawing._uv_scale(view), 1e-9)
+        # a group item's UV frame is sheet mm already; a plain view's is model mm
+        is_item = view.TypeId == "TechDraw::DrawProjGroupItem"
+        off = _OVERALL_DIM_OFFSET if is_item else _OVERALL_DIM_OFFSET / max(float(view.Scale), 1e-9)
         if spec.startswith("x"):
             label = ((p1[0] + p2[0]) / 2.0, max_y + off)
         else:

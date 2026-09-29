@@ -146,8 +146,12 @@ def _uv_scale(view):
     view landed at 1/Scale of where its outline is (a dimension on a 6x
     group view was drawn in the view's corner). Plain views: 1."""
     if getattr(view, "TypeId", "") == "TechDraw::DrawProjGroupItem":
+        # the GROUP's Scale is what its items' edges carry - an item's own
+        # Scale property can lag at 1.0 when the group is created at its
+        # final scale and never re-scaled (overall sizes read in sheet mm)
+        group = next((g for g in view.InList if g.TypeId == "TechDraw::DrawProjGroup"), None)
         try:
-            return float(view.Scale) or 1.0
+            return float((group or view).Scale) or 1.0
         except Exception:
             return 1.0
     return 1.0
