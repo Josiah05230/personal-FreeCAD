@@ -396,6 +396,8 @@ def load_state(blob):
     _appearance_presets.update(blob.get("appearancePresets", {}) or {})
     _part_number.clear()
     _part_number.update(blob.get("partNumber", {}) or {})
+    from . import decals as _decal_mod
+    set_decals(_decal_mod.from_disk(blob.get("decals"), _decals_base()))
     mx = 0
     for cid in _canvases:
         try:
@@ -418,7 +420,31 @@ def dump_state():
             "drawings": list(_drawings.values()),
             "dimFormats": all_dim_formats(),
             "dimFormatDefault": dim_format_default(),
-            "partNumber": part_number()}
+            "partNumber": part_number(),
+            "decals": _decals_dump()}
+
+
+def _decals_dump():
+    from . import decals as _decal_mod
+    return _decal_mod.to_disk(_decals, _decals_base())
+
+
+# Face decals (gwtcad.decals owns the logic). Image paths are absolute here and
+# relative to the companion's folder on disk - converted in dump/load_state.
+_decals = []
+
+
+def decals():
+    return [dict(r) for r in _decals]
+
+
+def set_decals(recs):
+    _decals[:] = [dict(r) for r in recs or []]
+
+
+def _decals_base():
+    import os
+    return os.path.dirname(_state["path"]) if _state["path"] else None
 
 
 def canvases():
@@ -584,6 +610,7 @@ def reset():
     # part's PN leaked into whatever opened next (wrong title block, and
     # the next Save wrote that wrong PN into the file)
     _part_number.clear()
+    _decals.clear()
     return d
 
 
@@ -641,6 +668,7 @@ def open_path(path):
     _close_stale_docs()
     d = _enable_undo(App.openDocument(path))
     _settle_detail_views(d)
+    _decals.clear()  # the companion (if any) reloads them
     _state["name"] = d.Name
     _state["path"] = path
     _note_loaded_docs()

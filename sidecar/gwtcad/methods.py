@@ -47,6 +47,13 @@ def _inherited_faces_cached(o, sig):
     cols = _appearance.inherited_face_colors(o) or []
     return {"Face%d" % (i + 1): c for i, c in enumerate(cols) if c is not None}
 
+def _scene_decals(o):
+    try:
+        from . import decals as _decals
+        return _decals.scene_decals(o)
+    except Exception:
+        return []
+
 # the caches of recently open files, so switching back to a tab reuses its
 # meshes instead of re-meshing (1-2s on a dense vendor model)
 _TESS_BY_PATH = collections.OrderedDict()
@@ -4502,6 +4509,12 @@ def scene_get():
                     faces.update(rec.get("faces") or {})
                     rec["faces"] = faces
                     buf["appearance"] = rec
+            # face decals, own + inherited through links (see gwtcad.decals)
+            dec = _scene_decals(o)
+            if dec:
+                buf["decals"] = dec
+            else:
+                buf.pop("decals", None)
             meshes.append(buf)
         elif tid == "Sketcher::SketchObject":
             if build.is_ref_copy(o):
@@ -6528,3 +6541,10 @@ for _mod in ("primitives", "xform", "meshtools", "materials", "appearance", "par
         import sys as _sys
         print("[gwtcad] optional module %r failed to load: %s" % (_mod, _e),
               file=_sys.stderr)
+
+# Face decals (registers decal.* RPCs on import)
+try:
+    from gwtcad import decals as _decals_methods  # noqa: E402,F401
+except Exception as _e:  # pragma: no cover - surfaced in the sidecar log
+    import sys as _sys
+    print("[gwtcad] optional module 'decals' failed to load: %s" % _e, file=_sys.stderr)
