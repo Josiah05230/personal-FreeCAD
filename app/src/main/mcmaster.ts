@@ -249,13 +249,26 @@ export async function downloadCad(format: 'STEP' | 'IGES' = 'STEP'): Promise<str
  * really be a STEP before it's returned.
  */
 let fetchWin: BrowserWindow | null = null
+/** In the error message when the part's page has no CAD download at all -
+ *  the one failure worth not retrying on every launch (see App.tsx). */
+export const NO_CAD = 'no CAD download on its page (not a product page, or no CAD offered)'
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 const HREF_JS = `(function(){
   var a = document.querySelector('a[class*="downloadAnchor"], a[class*="DownloadAnchor"]');
   return a ? a.getAttribute('href') : null;
 })()`
 
-export async function fetchStepHeadless(mfgPn: string): Promise<string> {
+// One hidden window, so one fetch at a time: two overlapping callers would
+// navigate it out from under each other (seen live - the renderer's startup
+// check ran twice under React's dev double-effect, and both loops failed).
+let fetchQueue: Promise<unknown> = Promise.resolve()
+export function fetchStepHeadless(mfgPn: string): Promise<string> {
+  const run = fetchQueue.then(() => fetchStepNow(mfgPn))
+  fetchQueue = run.catch(() => undefined)
+  return run
+}
+
+async function fetchStepNow(mfgPn: string): Promise<string> {
   if (!/^[A-Za-z0-9-]+$/.test(mfgPn)) throw new Error(`not a McMaster part number: ${mfgPn}`)
   if (!fetchWin || fetchWin.isDestroyed()) {
     fetchWin = new BrowserWindow({
@@ -273,7 +286,7 @@ export async function fetchStepHeadless(mfgPn: string): Promise<string> {
     await sleep(500)
     href = (await wc.executeJavaScript(HREF_JS, true)) as string | null
   }
-  if (!href) throw new Error(`${mfgPn}: no CAD download on its page (not a product page, or no CAD offered)`)
+  if (!href) throw new Error(`${mfgPn}: ${NO_CAD}`)
 
   for (let attempt = 0; attempt < 3 && !/\.STEP(\?|$)/i.test(href || ''); attempt++) {
     await sleep(1000 + attempt * 1500)

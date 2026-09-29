@@ -486,9 +486,22 @@ export function App(): JSX.Element {
   // at a time with a pause between, so it looks like a person browsing. A
   // part that fails (no CAD offered, page changed) is left alone for a day
   // instead of retried on every launch.
-  const fetchMissingMcMasterModels = useCallback(async (): Promise<number> => {
+  const mmcFetchRun = useRef<Promise<number> | null>(null)
+  const fetchMissingMcMasterModels = useCallback((): Promise<number> => {
+    // one run at a time - a second caller (the dev double-effect, or the
+    // menu action during the startup run) just waits on the first
+    if (!mmcFetchRun.current) {
+      mmcFetchRun.current = fetchMissingMcMasterModelsOnce().finally(() => {
+        mmcFetchRun.current = null
+      })
+    }
+    return mmcFetchRun.current
+  }, [])
+  const fetchMissingMcMasterModelsOnce = async (): Promise<number> => {
     if (window.cad.isE2E) return 0
-    const FAIL_KEY = 'gwtcad.mmcFetchFailures'
+    // parts whose McMaster page offers no CAD at all; anything else that
+    // fails (page glitch, offline) is simply retried on the next check
+    const FAIL_KEY = 'gwtcad.mmcNoCad'
     let failures: Record<string, number> = {}
     try {
       failures = JSON.parse(localStorage.getItem(FAIL_KEY) || '{}')
@@ -509,7 +522,7 @@ export function App(): JSX.Element {
         fetched++
       } catch (err) {
         console.error(`McMaster model fetch for ${part.pn} (${part.mfgPn}):`, err)
-        failures[part.pn] = Date.now()
+        if (/no CAD download on its page/.test(String(err))) failures[part.pn] = Date.now()
       }
       await new Promise((r) => setTimeout(r, 1500))
     }
@@ -519,7 +532,7 @@ export function App(): JSX.Element {
       /* storage unavailable - failures just get retried next launch */
     }
     return fetched
-  }, [])
+  }
 
   // Shared by both triggers this feature's design settled on: automatic on
   // startup (catches anything reserved while GWT-CAD wasn't running, since
