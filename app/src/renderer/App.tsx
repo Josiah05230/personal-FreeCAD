@@ -5540,7 +5540,9 @@ export function App(): JSX.Element {
         startDrawing,
         drawingAddViewDir: (dir) => drawApi.current?.addView(dir) ?? Promise.resolve(),
         drawingAutoLayout: () => drawApi.current?.autoLayout() ?? Promise.resolve(),
-        drawingSectionTool: () => drawApi.current?.sectionTool(),
+        // outside a drawing, "Section View" (what a palette search for
+        // "section" also finds) means the 3D section cut
+        drawingSectionTool: () => (drawApi.current ? drawApi.current.sectionTool() : toggleSection()),
         drawingDetailTool: () => drawApi.current?.detailTool(),
         drawingBrokenTool: () => drawApi.current?.brokenTool(),
         drawingDimensionTool: () => setDrawingTool((t) => (t === 'dimension' ? 'select' : 'dimension')),
