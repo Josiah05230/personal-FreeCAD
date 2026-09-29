@@ -27,6 +27,7 @@ from . import import_dispatch as _import_dispatch  # noqa: F401 (registers impor
 from . import copy_in as _copy_in  # noqa: F401 (registers pn.copyIn)
 from .tessellate import tessellate_shape
 from . import mesh_pool as _mesh_pool
+from . import mesh_disk as _mesh_disk
 from .vocab import op_name, next_label
 from . import expr as _expr
 
@@ -4470,6 +4471,11 @@ def scene_get():
                         # resubmit if the job went away (e.g. a tab switch);
                         # a failed job leaves the draft as the final mesh
                         _mesh_pool.submit((session.path(), o.Name, sig), shape)
+                elif sig is not None and (disk := _mesh_disk.load(sig)) is not None:
+                    # meshed on an earlier open (or by another copy of the
+                    # same shape) - straight from disk, full quality
+                    _TESS_CACHE[o.Name] = (sig, disk)
+                    buf = dict(disk)
                 else:
                     # (the signature doesn't depend on meshing - vertices +
                     # area, no BoundBox - so the key taken above still holds)
@@ -4487,6 +4493,7 @@ def scene_get():
                         buf = tessellate_shape(shape)
                     if sig is not None:
                         _TESS_CACHE[o.Name] = (sig, buf)
+                        _mesh_disk.save(sig, buf)  # skips drafts
                 buf["sig"] = sig
             buf["id"] = o.Name
             buf["label"] = o.Label
@@ -4634,6 +4641,7 @@ def _absorb_refined():
         if cur is None or cur[0] != sig or not cur[1].get("draft"):
             continue  # edited, closed or already refined meanwhile
         cache[name] = (sig, buf)
+        _mesh_disk.save(sig, buf)
         if p == path:
             out.append((name, sig, buf))
     return out
