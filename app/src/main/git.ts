@@ -340,11 +340,11 @@ export async function companionPaths(filePath: string, wholeDir = false): Promis
 export async function commitFile(
   filePath: string,
   message: string,
-  opts: { wholeDir?: boolean } = {}
+  opts: { wholeDir?: boolean; extraPaths?: string[] } = {}
 ): Promise<{ hash: string }> {
   const cwd = dirname(filePath)
   if (!message.trim()) throw new GitError('Commit message is empty.')
-  const paths = await companionPaths(filePath, opts.wholeDir)
+  const paths = [...new Set([...(await companionPaths(filePath, opts.wholeDir)), ...(opts.extraPaths ?? [])])]
   await gitOrThrow(cwd, ['add', '-A', '--', ...paths])
   await gitOrThrow(cwd, ['commit', '--only', '-m', message, '--', ...paths])
   const hash = (await git(cwd, ['rev-parse', 'HEAD'])).trim()

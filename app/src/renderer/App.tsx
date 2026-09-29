@@ -9,6 +9,7 @@ import {
   type ImportedNode,
   type RenderMesh,
   type SectionDTO,
+  type BomItem,
   type SketchRender,
   type Selection,
   type DrawingView,
@@ -3693,7 +3694,18 @@ export function App(): JSX.Element {
                   `expects (expected ${check.expectedPath}). Update the registry to point here instead?`
               )
             ) {
-              void api.pnRelocate(pnSeq, p).catch((e) => window.alert((e as Error).message))
+              void (async () => {
+                const before = (await api.pnRegistryRows([pnSeq]).catch(() => null))?.rows ?? null
+                await api.pnRelocate(pnSeq, p)
+                const after = (await api.pnRegistryRows([pnSeq]).catch(() => null))?.rows ?? null
+                if (before && after) {
+                  appHistory.pushAppAction({
+                    label: `Relocate ${pnSeq}`,
+                    undo: async () => void (await api.pnRegistryRestore(before, `undo: relocate ${pnSeq}`)),
+                    redo: async () => void (await api.pnRegistryRestore(after, `redo: relocate ${pnSeq}`))
+                  })
+                }
+              })().catch((e) => window.alert((e as Error).message))
             }
           })
           .catch(() => undefined)
@@ -3715,6 +3727,12 @@ export function App(): JSX.Element {
     },
     [openDesignNow]
   )
+  // for undo/redo callbacks that run long after they were recorded
+  const openDesignRef = useRef(openDesign)
+  openDesignRef.current = openDesign
+  const docPathRef = useRef(docPath)
+  docPathRef.current = docPath
+  const newDesignRef = useRef<(() => void) | null>(null)
 
   // ---- copy-in gate (copyIn.ts) ----
   // Every "pull a file into the open document" path calls this first. For a
@@ -4032,6 +4050,7 @@ export function App(): JSX.Element {
       await refreshScene()
     })()
   }, [refreshScene])
+  newDesignRef.current = newDesign
 
   // A PN was just reserved (registry row committed) - reset to a clean
   // document, save it at the reserved path, tag the session with the PN so
@@ -4041,6 +4060,29 @@ export function App(): JSX.Element {
   // than File > New), import that STEP file into this newly-tagged document
   // and re-save so the saved file carries both the PN and the actual CAD
   // geometry, not just an empty PN-tagged shell.
+  // ---- undo support for part-number actions: the registry is shared, so an
+  // undo is a NEW commit putting rows back (pn.registryRestore); files the
+  // action created move into the holding area and their removal is committed
+  const holdFiles = async (paths: string[]): Promise<{ path: string; held: string }[]> => {
+    const out: { path: string; held: string }[] = []
+    for (const p of paths) {
+      try {
+        out.push({ path: p, held: (await window.cad.softDelete(p)).held })
+      } catch {
+        // not there (no companion / KiCad folder) - nothing to hold
+      }
+    }
+    return out
+  }
+  const unholdFiles = async (held: { path: string; held: string }[]): Promise<void> => {
+    for (const h of held) await window.cad.restore(h.held, h.path)
+  }
+  const commitPaths = async (paths: string[], message: string): Promise<void> => {
+    if (!paths.length) return
+    await window.cad.gitCommitFile(paths[0], message, { extraPaths: paths.slice(1) }).catch(() => undefined)
+    await window.cad.gitPush(paths[0]).catch(() => undefined)
+  }
+
   const createPart = useCallback(
     async (info: { pn: string; path: string; name: string; description: string }) => {
       setNewPartOpen(false)
@@ -4102,6 +4144,31 @@ export function App(): JSX.Element {
         setCurrentLifecycle('in_work') // pn.reserve always seeds new parts in_work
         setLinkedKicadProject(kicadProject)
         await refreshScene()
+        {
+          const pnSeq = info.pn.slice(0, -1)
+          const files = [info.path, `${info.path}.gwtcad.json`, kicadDirFor(info.path)]
+          const createdRows = (await api.pnRegistryRows([pnSeq]).catch(() => null))?.rows ?? null
+          let held: { path: string; held: string }[] = []
+          appHistory.pushAppAction({
+            label: `Create part ${info.pn}`,
+            undo: async () => {
+              if (docPathRef.current === info.path) {
+                setTabs((t) => t.filter((x) => x.path !== info.path))
+                newDesignRef.current?.()
+              }
+              void releaseStandaloneLock(info.path)
+              held = await holdFiles(files)
+              await commitPaths(held.map((h) => h.path), `undo: remove new part ${info.pn}`)
+              await api.pnRegistryRestore({ [pnSeq]: [] }, `undo: release ${info.pn}`)
+            },
+            redo: async () => {
+              await unholdFiles(held)
+              await commitPaths(held.map((h) => h.path), `${info.pn}: restored (redo)`)
+              if (createdRows) await api.pnRegistryRestore(createdRows, `redo: reserve ${info.pn}`)
+              await openDesignRef.current?.(info.path)
+            }
+          })
+        }
         if (pendingImport) {
           // commits + pushes EVERYTHING just written into the repo (the
           // KiCad files included), same auto-push a normal Save does
@@ -4171,6 +4238,7 @@ export function App(): JSX.Element {
     const pnSeq = currentPn.slice(0, -1)
     const oldPath = docPath
     try {
+      const rowsBefore = (await api.pnRegistryRows([pnSeq]).catch(() => null))?.rows ?? null
       const res = await api.pnNewRevision(pnSeq, reason.trim())
       const newPath = res.path ?? docPath
       await api.pnTagDocument(res.pn, res.name, res.description)
@@ -4205,6 +4273,31 @@ export function App(): JSX.Element {
       }
       const pushed = await attemptPush(newPath).catch(() => false)
       setUnpushedCount(pushed ? 0 : 1)
+      if (rowsBefore && newPath !== oldPath) {
+        const rowsAfter = (await api.pnRegistryRows([pnSeq]).catch(() => null))?.rows ?? null
+        const bomNew = await api.pnBomFor(res.pn).catch(() => ({ items: [] }))
+        const files = [newPath, `${newPath}.gwtcad.json`]
+        let held: { path: string; held: string }[] = []
+        appHistory.pushAppAction({
+          label: `New revision ${res.pn}`,
+          undo: async () => {
+            await openDesignRef.current?.(oldPath)
+            setTabs((t) => t.filter((x) => x.path !== newPath))
+            void releaseStandaloneLock(newPath)
+            held = await holdFiles(files)
+            await commitPaths(held.map((h) => h.path), `undo: remove revision ${res.pn}`)
+            await api.pnRegistryRestore(rowsBefore, `undo: ${res.pn} (back to ${currentPn})`)
+            await api.pnSaveBom(res.pn, []).catch(() => undefined)
+          },
+          redo: async () => {
+            await unholdFiles(held)
+            await commitPaths(held.map((h) => h.path), `New revision ${basename(newPath)} (redo)`)
+            if (rowsAfter) await api.pnRegistryRestore(rowsAfter, `redo: ${res.pn}`)
+            await api.pnSaveBom(res.pn, bomNew.items).catch(() => undefined)
+            await openDesignRef.current?.(newPath)
+          }
+        })
+      }
       return res.pn
     } catch (e) {
       window.alert((e as Error).message)
@@ -4257,8 +4350,41 @@ export function App(): JSX.Element {
             await refreshScene() // the part on screen may be the one just drawn
           }
         }
+        const touched = new Set([pnSeq]) // sub-parts a cascade promotes join below
+        const rowsBefore = (await api.pnRegistryRows([pnSeq]).catch(() => null))?.rows ?? {}
+        const bomBefore = await api.pnBomFor(currentPn).catch(() => ({ items: [] }))
+        const prevLifecycle = (rowsBefore[pnSeq] ?? []).slice(-1)[0]?.lifecycle as typeof lifecycle | undefined
         await api.pnSetLifecycle(pnSeq, lifecycle)
         setCurrentLifecycle(lifecycle)
+        // recorded now, not after the BOM / export / cascade below, so a quick
+        // Ctrl+Z always finds it; the "after" state (incl. any sub-parts the
+        // cascade promotes - `touched`) is snapshotted when it's undone
+        {
+          let rowsAfter: Record<string, Record<string, string>[]> | null = null
+          let bomAfter: BomItem[] = []
+          appHistory.pushAppAction({
+            label: `${currentPn} ${lifecycle.replace('_', ' ')}`,
+            undo: async () => {
+              rowsAfter = (await api.pnRegistryRows([...touched]).catch(() => null))?.rows ?? null
+              bomAfter = (await api.pnBomFor(currentPn).catch(() => ({ items: [] as BomItem[] }))).items
+              await api.pnRegistryRestore(rowsBefore, `undo: ${pnSeq} lifecycle -> ${lifecycle}`)
+              await api.pnSaveBom(currentPn, bomBefore.items).catch(() => undefined)
+              if (prevLifecycle) setCurrentLifecycle(prevLifecycle)
+              if (lifecycle === 'active') {
+                window.dispatchEvent(
+                  new CustomEvent('gwtcad-notice', {
+                    detail: `${currentPn} back to ${prevLifecycle ?? 'its previous state'} - the STEP/PDF already published to the portal stays there`
+                  })
+                )
+              }
+            },
+            redo: async () => {
+              if (rowsAfter) await api.pnRegistryRestore(rowsAfter, `redo: ${pnSeq} lifecycle -> ${lifecycle}`)
+              await api.pnSaveBom(currentPn, bomAfter).catch(() => undefined)
+              setCurrentLifecycle(lifecycle)
+            }
+          })
+        }
         // Re-derive and persist the BOM on every lifecycle change, not just
         // revision bumps - marking a part active is exactly the moment its
         // assembly should be considered validated/trustworthy, so this is
@@ -4320,6 +4446,10 @@ export function App(): JSX.Element {
               if (rePromote) overrideDiscontinued = check.discontinued.map((d) => d.pn)
             }
             if (check.toPromote.length > 0 || overrideDiscontinued) {
+              const subSeqs = [...check.toPromote.map((x) => x.pn), ...(overrideDiscontinued ?? [])].map((x) => x.slice(0, -1))
+              const subBefore = (await api.pnRegistryRows(subSeqs).catch(() => null))?.rows ?? {}
+              Object.assign(rowsBefore, subBefore)
+              for (const q of subSeqs) touched.add(q)
               const result = await api.pnCascadePromote(currentPn, overrideDiscontinued)
               const autoDrawn = result.promoted.filter((p) => p.autoGeneratedDrawing).length
               const parts: string[] = []

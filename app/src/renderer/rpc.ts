@@ -1948,6 +1948,12 @@ export const api = {
       errors: string[]
     }>('export.promote', { pnSeq }),
   pnBomFor: (pn: string) => rpc<{ items: BomItem[] }>('pn.bomFor', { pn }),
+  /** {pnSeq: registry rows} - the before/after snapshot an undo keeps */
+  pnRegistryRows: (pnSeqs: string[]) =>
+    rpcQuiet<{ rows: Record<string, Record<string, string>[]> }>('pn.registryRows', { pnSeqs }),
+  /** put those rows back ([] removes a part) as a new commit + push */
+  pnRegistryRestore: (snapshot: Record<string, Record<string, string>[]>, message: string) =>
+    rpcQuiet<{ changed: boolean }>('pn.registryRestore', { snapshot, message }),
   /** Organizes any supplier-fetched 3D models (Aptiv currently - see
    *  tryFetchSupplierModel in GrainWavePartners' functions/index.js) sitting
    *  unprocessed in Firebase Storage into pn-cad-files, then generates a

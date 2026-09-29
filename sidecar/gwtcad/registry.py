@@ -111,6 +111,7 @@ _NO_TXN = {
     "pn.getCompanyConfig", "pn.setCompanyConfig", "pn.listTypes", "pn.listAll",
     "pn.listAvailableSeq", "pn.reserve", "pn.newRevision", "pn.resolve",
     "pn.tagDocument", "pn.repoForPath", "pn.checkLocation", "pn.relocate",
+    "pn.registryRows", "pn.registryRestore",
     "pn.history", "pn.currentRow",
     # builds/tags the part file in its own scratch document, never the session's
     "pn.copyIn",

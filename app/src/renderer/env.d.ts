@@ -149,7 +149,11 @@ interface CadBridge {
     authorName?: string,
     authorEmail?: string
   ): Promise<{ hash: string }>
-  gitCommitFile(filePath: string, message: string, opts?: { wholeDir?: boolean }): Promise<{ hash: string }>
+  gitCommitFile(
+    filePath: string,
+    message: string,
+    opts?: { wholeDir?: boolean; extraPaths?: string[] }
+  ): Promise<{ hash: string }>
   gitFileLog(filePath: string, limit?: number): Promise<FileCommit[]>
   gitRevisionFile(filePath: string, commit: string, pathAtCommit: string): Promise<string>
   gitDropRevisionFile(path: string): Promise<void>

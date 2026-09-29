@@ -829,6 +829,54 @@ def pn_set_lifecycle(pnSeq, lifecycle):
     return {"pnSeq": pnSeq, "lifecycle": lifecycle}
 
 
+@method("pn.registryRows")
+def pn_registry_rows(pnSeqs):
+    """{pnSeq: [its registry rows, oldest first]} - the before/after
+    snapshot the app's undo keeps for a registry change."""
+    cfg = _load_config()
+    _sync_pull_for_read(_registry_path(cfg))
+    rows = _read_registry(cfg)
+    return {"rows": {s: [dict(r) for r in _rows_for_seq(rows, s)] for s in pnSeqs}}
+
+
+@method("pn.registryRestore")
+def pn_registry_restore(snapshot, message):
+    """Put each part sequence's registry rows back exactly as `snapshot`
+    ({pnSeq: rows}, as pn.registryRows gave them; [] removes the part) and
+    commit + push that as its own change - the app's undo/redo of a
+    reserve, revision, lifecycle or relocate. The shared registry is never
+    rewound; this is a new commit saying what was put back."""
+    cfg = _load_config()
+    repo = _registry_path(cfg)
+
+    def attempt():
+        cur = _read_registry(cfg)
+        out = []
+        placed = set()
+        for r in cur:
+            s = r.get("pn_seq")
+            if s in snapshot:
+                if s not in placed:
+                    out.extend(dict(x) for x in snapshot[s])  # where the part's rows were
+                    placed.add(s)
+                continue
+            out.append(r)
+        for s, rows in snapshot.items():
+            if s not in placed:
+                out.extend(dict(x) for x in rows)
+        norm = lambda rows: [{k: str(r.get(k, "")) for k in _REGISTRY_FIELDS} for r in rows]
+        if norm(out) == norm(cur):
+            return False
+        _write_registry(cfg, out)
+        return True
+
+    _sync_pull(repo)
+    if not attempt():
+        return {"changed": False}
+    _commit_and_push(repo, message, attempt)
+    return {"changed": True}
+
+
 @method("pn.resolveBomFilenames")
 def pn_resolve_bom_filenames(filenames):
     """Resolve a list of {"filename": "<PN>.FCStd", "qty": N} entries (one

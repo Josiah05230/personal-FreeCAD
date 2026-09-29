@@ -198,7 +198,7 @@ const cad = {
   gitUndoDiscard: (backup: { orig: string; copy: string }[]) =>
     ipcRenderer.invoke('git:undoDiscard', backup) as Promise<void>,
   /** commit ONLY this file + its companions (never the rest of the repo) */
-  gitCommitFile: (filePath: string, message: string, opts?: { wholeDir?: boolean }) =>
+  gitCommitFile: (filePath: string, message: string, opts?: { wholeDir?: boolean; extraPaths?: string[] }) =>
     ipcRenderer.invoke('git:commitFile', filePath, message, opts) as Promise<{ hash: string }>,
   gitCommitAll: (filePath: string, message: string, authorName?: string, authorEmail?: string) =>
     ipcRenderer.invoke('git:commitAll', filePath, message, authorName, authorEmail) as Promise<{

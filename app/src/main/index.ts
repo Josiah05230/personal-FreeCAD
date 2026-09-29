@@ -339,7 +339,7 @@ app.whenReady().then(async () => {
     return { backup }
   })
   ipcMain.handle('git:undoDiscard', (_e, backup: { orig: string; copy: string }[]) => softDel.restoreCopies(backup))
-  ipcMain.handle('git:commitFile', (_e, filePath: string, message: string, opts?: { wholeDir?: boolean }) =>
+  ipcMain.handle('git:commitFile', (_e, filePath: string, message: string, opts?: { wholeDir?: boolean; extraPaths?: string[] }) =>
     gitw.commitFile(filePath, message, opts)
   )
   ipcMain.handle(
