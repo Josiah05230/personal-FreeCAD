@@ -1443,6 +1443,67 @@ def _norm(v, depth):
 
 _shape_key_memo = {}
 
+# Area values by exact geometry (counts + a checksum of every vertex), kept
+# across sessions: Area is part of every saved view-cache key (so it can't be
+# swapped for something cheaper without invalidating every saved drawing),
+# but on a B-spline-heavy part it costs ~130ms each - 3.5s to load a
+# 26-part assembly's drawing. Same geometry, same area.
+_AREA_FILE = "drawing-areas.marshal"
+_areas = {"d": None, "dirty": 0}
+
+
+def _area_sig(shape, pts):
+    ck = 0.0
+    ck2 = 0.0
+    for p in pts:
+        ck += p.x * 1.0001 + p.y * 1.7003 + p.z * 2.3007
+        ck2 += p.x * p.x + 1.3 * p.y * p.y + 1.7 * p.z * p.z
+    return "%d|%d|%d|%.6f|%.6f" % (shape.countElement("Face"), shape.countElement("Edge"), len(pts), ck, ck2)
+
+
+def _areas_load():
+    if _areas["d"] is None:
+        import marshal
+        from .paths import config_path
+        try:
+            with open(config_path(_AREA_FILE), "rb") as f:
+                _areas["d"] = marshal.load(f)
+        except Exception:
+            _areas["d"] = {}
+    return _areas["d"]
+
+
+def _areas_save():
+    import marshal
+    from .paths import config_path
+    d = _areas["d"]
+    if not d or not _areas["dirty"]:
+        return
+    if len(d) > 50000:  # plenty; start over rather than grow forever
+        d.clear()
+        return
+    p = config_path(_AREA_FILE)
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        tmp = p + ".%d.tmp" % os.getpid()
+        with open(tmp, "wb") as f:
+            marshal.dump(d, f)
+        os.replace(tmp, p)
+        _areas["dirty"] = 0
+    except Exception:
+        pass
+
+
+def _area_of(shape, pts):
+    d = _areas_load()
+    k = _area_sig(shape, pts)
+    a = d.get(k)
+    if a is None:
+        a = d[k] = float(shape.Area)
+        _areas["dirty"] += 1
+        _areas_save()
+    return a
+
 
 def _shape_key(shape):
     # hashCode identifies the underlying shape (new geometry = new code) and
@@ -1457,9 +1518,39 @@ def _shape_key(shape):
     vb = ((min(p.x for p in pts), min(p.y for p in pts), min(p.z for p in pts),
            max(p.x for p in pts), max(p.y for p in pts), max(p.z for p in pts))
           if pts else (0.0,) * 6)
-    key = [len(shape.Faces), len(shape.Edges), len(pts), round(shape.Area, 4)] + [round(c, 4) for c in vb]
+    key = [len(shape.Faces), len(shape.Edges), len(pts), round(_area_of(shape, pts), 4)] + [round(c, 4) for c in vb]
     _shape_key_memo[h] = key
     return key
+
+
+_link_key_memo = {}
+
+
+def _object_shape_key(o, shape):
+    """_shape_key(o.Shape), memoized for App::Links too: a link builds a NEW
+    shape on every .Shape access, so the hashCode memo never hit and a
+    drawing of a 26-link assembly recomputed Area ~600 times per page load
+    (3.5s). A link's shape is fixed by what it links (that shape's own
+    hashCode) and how it's placed, so those key the memo; the returned key
+    is exactly what _shape_key gives, so saved view caches still match."""
+    if o.TypeId != "App::Link":
+        return _shape_key(shape)
+    try:
+        lo = o.LinkedObject
+        ls = getattr(lo, "Shape", None) if lo is not None else None
+        if ls is None or ls.isNull():
+            return _shape_key(shape)
+        mk = (o.Document.Name, o.Name, ls.hashCode(), repr(o.Placement),
+              repr(getattr(o, "LinkPlacement", None)), bool(getattr(o, "LinkTransform", False)),
+              getattr(o, "ElementCount", 0), repr(getattr(o, "ScaleVector", None)))
+    except Exception:
+        return _shape_key(shape)
+    hit = _link_key_memo.get(mk)
+    if hit is None:
+        if len(_link_key_memo) > 512:
+            _link_key_memo.clear()
+        hit = _link_key_memo[mk] = _shape_key(shape)
+    return hit
 
 
 def _object_key(o, depth=0):
@@ -1470,7 +1561,7 @@ def _object_key(o, depth=0):
         try:
             if shape is None or shape.isNull():
                 return [o.Name]
-            return [o.Name, _norm(o.Placement, depth) if hasattr(o, "Placement") else None, _shape_key(shape)]
+            return [o.Name, _norm(o.Placement, depth) if hasattr(o, "Placement") else None, _object_shape_key(o, shape)]
         except Exception:
             return [o.Name]
     out = [o.TypeId]
@@ -1587,6 +1678,9 @@ def set_view_scale(doc, view_id, scale):
     target = view
     if view.TypeId == "TechDraw::DrawProjGroupItem":
         target = next((p for p in view.InList if p.TypeId == "TechDraw::DrawProjGroup"), view)
+    fast = _rescale_from_cache(doc, view, target, scale)
+    if fast is not None:
+        return fast
     if hasattr(target, "ScaleType"):
         target.ScaleType = "Custom"
     target.Scale = scale
@@ -1595,6 +1689,89 @@ def set_view_scale(doc, view_id, scale):
     vis, hid = _part_view_payload(view)
     return {"id": view.Name, "scale": 1.0, "needsFit": False,
             "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid)}
+
+
+def _scaled_polys(polys, k):
+    return [[[x * k, y * k] for x, y in poly] for poly in polys]
+
+
+def _rescale_from_cache(doc, view, target, scale):
+    """Rescale WITHOUT hidden-line removal (a recompute at the new scale took
+    60-110s per view on a dense assembly). A projection is linear in its
+    scale: a plain view's edges are stored at model scale (the sheet applies
+    Scale), so they don't change at all; a projection-group item's edges bake
+    in the group's Scale, so they - and its offset and its position in the
+    group - just multiply by new/old. The page is kept lazy (TechDraw skips
+    recomputing its views) and every view on it gets a fresh cache entry
+    under its new key, so the result also lands in the file's saved view
+    cache. None = can't (a view with no geometry yet) -> the caller
+    recomputes the slow way."""
+    page = _page_of(view)
+    if page is None:
+        return None
+    try:
+        old = float(target.Scale)
+    except Exception:
+        return None
+    if old <= 0:
+        return None
+    k = scale / old
+    is_group = target.TypeId == "TechDraw::DrawProjGroup"
+    # current geometry of EVERY view on the page (the page goes/stays lazy,
+    # so each needs a cache entry to be served from)
+    views = [v for v in page.Views if v.TypeId in (
+        "TechDraw::DrawViewPart", "TechDraw::DrawViewSection", "TechDraw::DrawViewDetail",
+        "TechDraw::DrawBrokenView")]
+    for grp in [v for v in page.Views if v.TypeId == "TechDraw::DrawProjGroup"]:
+        views += [i for i in grp.Views if i.TypeId == "TechDraw::DrawProjGroupItem"]
+    entries = {}
+    for v in views:
+        cached = _cached_view(v)
+        if cached is not None:
+            entries[v.Name] = {kk: cached[kk] for kk in ("visible", "hidden", "offset")}
+            continue
+        if _page_is_lazy(v):
+            return None  # never computed and nothing cached
+        try:
+            vis, hid = _compute_view_payload(v)
+            entries[v.Name] = {"visible": vis, "hidden": hid, "offset": list(_compute_project_offset(v))}
+        except Exception:
+            return None
+    # section/detail views are derived from their base view's projection -
+    # rescaling those still takes the real recompute
+    if view.TypeId in ("TechDraw::DrawViewSection", "TechDraw::DrawViewDetail"):
+        return None
+    scaled = [i for i in target.Views if i.TypeId == "TechDraw::DrawProjGroupItem"] if is_group else [view]
+    page.KeepUpdated = False
+    if hasattr(target, "ScaleType"):
+        target.ScaleType = "Custom"
+    target.Scale = scale
+    _tag(view, "_gwt_scaled", "1")
+    for item in scaled:
+        e = entries.get(item.Name)
+        if e is None:
+            continue
+        if is_group:
+            e["visible"] = _scaled_polys(e["visible"], k)
+            e["hidden"] = _scaled_polys(e["hidden"], k)
+            e["offset"] = [e["offset"][0] * k, e["offset"][1] * k]
+            # its place in the group scales with it (TechDraw's own layout
+            # runs again whenever the page is next computed for real)
+            try:
+                item.X = float(item.X) * k
+                item.Y = float(item.Y) * k
+            except Exception:
+                pass
+    _view_cache["doc"] = doc.Name
+    for v in views:
+        e = entries.get(v.Name)
+        if e is not None:
+            _view_cache["views"][v.Name] = dict(e, key=_view_key(v))
+    e = entries.get(view.Name)
+    if e is None:
+        return None
+    return {"id": view.Name, "scale": 1.0, "needsFit": False,
+            "visible": e["visible"], "hidden": e["hidden"], "bbox": _view_bbox(e["visible"], e["hidden"])}
 
 
 def make_view(doc, page_id, source_obj, direction="front", scale=1.0, coarse=False, x=None, y=None):

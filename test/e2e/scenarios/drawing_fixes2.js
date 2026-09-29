@@ -45,7 +45,14 @@ if (fitBtn) fitBtn.click();
 await sleep(60);
 const vbAfterFit = sheetSvg.getAttribute('viewBox');
 note('viewBox after zoom-fit=' + vbAfterFit);
-assert(vbAfterFit === '0 0 420 297', 'zoom-to-fit resets the viewBox to the whole sheet');
+// fit frames the whole 420x297 sheet with a margin, at the pane's aspect
+// ratio (the viewBox always matches the pane - DrawingSheet.tsx)
+const [fx, fy, fw, fh] = (vbAfterFit || '').split(/\s+/).map(Number);
+assert(
+  fx <= 0 && fy <= 0 && fx + fw >= 420 && fy + fh >= 297 && (Math.abs(fx + fw / 2 - 210) < 1 && Math.abs(fy + fh / 2 - 148.5) < 1),
+  'zoom-to-fit shows the whole sheet, centred (viewBox ' + vbAfterFit + ')'
+);
+assert(/^100%$/.test(fitBtn?.textContent || ''), 'and reads 100%');
 
 note('--- window-select (rubber band) selects multiple views ---');
 G.runCommand('draw.front');
