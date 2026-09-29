@@ -924,10 +924,24 @@ note('--- narrow fillet face is still pickable next to its bounding edges ---');
     const sy = cornerY < 15 ? 1 : -1;
     const arcCx = cornerX + sx * R;
     const arcCy = cornerY + sy * R;
+    // look at the fillet: from the fitted view a corner fillet can be seen
+    // nearly edge-on, leaving only a sub-millimetre visible sliver right
+    // beside its tangent edge (no point there is a fair "face, not edge"
+    // click). Orbit until the band's middle faces the camera, as a user would.
     const diag = Math.SQRT1_2; // cos(45deg) == sin(45deg)
-    const fx = arcCx - sx * R * diag;
-    const fy = arcCy - sy * R * diag;
-    const bandPoint = [fx, fy, 10];
+    const bn = [-sx * diag, -sy * diag]; // outward normal at the band's middle
+    const bandPoint = [arcCx + bn[0] * R, arcCy + bn[1] * R, 10];
+    const facing = () => {
+      const c = G.cameraDebug().pos;
+      const d = [c[0] - bandPoint[0], c[1] - bandPoint[1], c[2] - bandPoint[2]];
+      return (bn[0] * d[0] + bn[1] * d[1]) / Math.hypot(d[0], d[1], d[2]);
+    };
+    for (let k = 0; k < 24 && facing() < 0.6; k++) {
+      G.applyOrbit(Math.PI / 12, 0);
+      await flush();
+    }
+    await idle();
+    note('band facing the camera: ' + facing().toFixed(2));
     note('fillet band probe point: ' + JSON.stringify(bandPoint) + ' (corner ' + cornerX + ',' + cornerY + ')');
     const p = await screenOf(bandPoint);
     clickAt(p.x, p.y);
