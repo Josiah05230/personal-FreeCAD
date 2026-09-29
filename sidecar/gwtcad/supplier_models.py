@@ -51,7 +51,7 @@ def _coarsen_views(doc):
     fitting the layout, far longer). Coarse: ~11s open, visually the same
     at drawing scale (compared rendered sheets side by side)."""
     for o in doc.Objects:
-        if hasattr(o, "CoarseView") and not o.CoarseView:
+        if hasattr(o, "CoarseView") and not o.CoarseView and not getattr(o, "_gwt_exact", ""):
             o.CoarseView = True
 
 

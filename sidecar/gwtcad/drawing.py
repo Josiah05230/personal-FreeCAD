@@ -1303,6 +1303,14 @@ def _part_view_payload(view):
 def _compute_view_payload(view):
     vis = _edges_to_polylines(view.getVisibleEdges()) if hasattr(view, "getVisibleEdges") else []
     hid = _edges_to_polylines(view.getHiddenEdges()) if hasattr(view, "getHiddenEdges") else []
+    if not vis and not hid and getattr(view, "CoarseView", False):
+        # coarse (polygon) hidden-line removal sometimes returns nothing at
+        # all on a thin chamfered plate (PSJ0010) - redo this view exactly
+        view.CoarseView = False
+        _tag(view, "_gwt_exact", "1")  # _coarsen_views must leave it exact
+        view.Document.recompute()
+        vis = _edges_to_polylines(view.getVisibleEdges())
+        hid = _edges_to_polylines(view.getHiddenEdges())
     if not vis and not hid:
         raise RpcError(APP_ERROR, "drawing view produced no geometry")
     return vis, hid
