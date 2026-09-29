@@ -106,3 +106,38 @@ def test_the_startup_scan_draws_in_a_separate_process(bracket, monkeypatch, tmp_
             pass
         time.sleep(0.25)
     assert sm._file_has_drawing(bracket)
+
+
+def test_saving_a_printed_part_records_its_volume_for_pricing(company_config, cad_repo):
+    # the portal prices 3D-printed (J) parts as filament from this volume
+    r = pn.pn_reserve("CM", "J", 2, "cover", "Test Cover")
+    path = os.path.join(str(cad_repo), r["repoRelpath"])
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    d = App.newDocument("cover")
+    o = d.addObject("Part::Feature", "Body")
+    o.Shape = Part.makeBox(40, 20, 5)  # 4.0 cm3
+    d.recompute()
+    session.set_part_number({"pn": r["pn"], "name": "cover", "description": "Test Cover"})
+    try:
+        methods._record_print_volume(d)
+        row = pn._row_for_pn(pn._read_registry(pn._load_config()), r["pn"])
+        assert row["print_volume_cm3"] == "4.0"
+        # an unchanged part adds no registry history
+        assert pn.pn_record_print_volume(r["pn"], 4.0) is False
+    finally:
+        App.closeDocument(d.Name)
+
+
+def test_non_printed_parts_record_no_volume(company_config, cad_repo):
+    r = pn.pn_reserve("CM", "D", 1, "bracket", "Test Bracket")
+    d = App.newDocument("bracket2")
+    o = d.addObject("Part::Feature", "Body")
+    o.Shape = Part.makeBox(10, 10, 10)
+    d.recompute()
+    session.set_part_number({"pn": r["pn"], "name": "bracket", "description": "Test Bracket"})
+    try:
+        methods._record_print_volume(d)
+        row = pn._row_for_pn(pn._read_registry(pn._load_config()), r["pn"])
+        assert not row.get("print_volume_cm3")
+    finally:
+        App.closeDocument(d.Name)

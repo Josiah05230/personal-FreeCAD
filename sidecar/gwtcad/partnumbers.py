@@ -64,7 +64,7 @@ _CONFIG_PATH = config_path("company.json")
 _REGISTRY_FIELDS = [
     "pn", "pn_seq", "project", "type", "seq", "rev", "name", "description",
     "reason", "mfg", "mfg_pn", "purchasing_link", "status", "lifecycle",
-    "rev_date", "created", "repo_relpath",
+    "rev_date", "created", "repo_relpath", "print_volume_cm3",
 ]
 
 # in_work: just reserved or just revised, not yet validated - can't be
@@ -827,6 +827,33 @@ def pn_set_lifecycle(pnSeq, lifecycle):
         return {"pnSeq": pnSeq, "lifecycle": lifecycle, "unchanged": True}
     _commit_and_push(reg_repo, "%s: lifecycle -> %s" % (pnSeq, lifecycle), attempt)
     return {"pnSeq": pnSeq, "lifecycle": lifecycle}
+
+
+def pn_record_print_volume(pn, volume_cm3):
+    """Store a 3D-printed (J) part's solid volume on its registry row - the
+    GrainWavePartners portal prices it as filament from this. A no-op (no
+    commit) when the recorded value already matches to 0.1 cm3, so saving
+    an unchanged part doesn't add registry history."""
+    cfg = _load_config()
+    if not cfg.get("registryPath"):
+        return False
+    reg_repo = _registry_path(cfg)
+    value = "%.1f" % volume_cm3
+
+    def attempt():
+        rows = _read_registry(cfg)
+        row = _row_for_pn(rows, pn)
+        if row is None or row.get("print_volume_cm3") == value:
+            return False
+        row["print_volume_cm3"] = value
+        _write_registry(cfg, rows)
+        return True
+
+    _sync_pull(reg_repo)
+    if not attempt():
+        return False
+    _commit_and_push(reg_repo, "%s: print volume %s cm3" % (pn, value), attempt)
+    return True
 
 
 @method("pn.registryRows")

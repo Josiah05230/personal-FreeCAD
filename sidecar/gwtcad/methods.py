@@ -5253,6 +5253,22 @@ def _write_sidecar(path):
         pass
 
 
+def _record_print_volume(d):
+    """After saving a 3D-printed (J) part, store its solid volume in the
+    registry so the portal can price its filament. Best effort - offline,
+    no registry, or no solid geometry must never fail the save."""
+    pn = (session.part_number() or {}).get("pn") or ""
+    if len(pn) < 3 or pn[2] != "J":
+        return
+    try:
+        from . import supplier_models as _sm
+        volume = sum(o.Shape.Volume for o in _sm._drawable_bodies(d) if o.Shape.Solids) / 1000.0
+        if volume > 0:
+            _partnumbers.pn_record_print_volume(pn, volume)
+    except Exception as e:
+        App.Console.PrintWarning("%s: print volume not recorded: %s\n" % (pn, e))
+
+
 def _recover_part_number(d, path):
     """A file opened with no PN in its companion state: take it from the
     document's own GwtPartNumber properties, else - for a <PN>.FCStd that
@@ -5308,6 +5324,7 @@ def document_save_as(path):
     _drawing.mark_pages_lazy_on_disk(path, d)
     session.set_path(path)
     _write_sidecar(path)
+    _record_print_volume(d)
     return {"path": path}
 
 
@@ -5323,6 +5340,7 @@ def document_save():
     d.save()
     _drawing.mark_pages_lazy_on_disk(p, d)
     _write_sidecar(p)
+    _record_print_volume(d)
     return {"path": p}
 
 
