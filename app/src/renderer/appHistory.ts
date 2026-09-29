@@ -14,7 +14,13 @@ export interface AppAction {
   label: string
   undo: () => Promise<void>
   redo: () => Promise<void>
+  /** consecutive actions with the same key within COALESCE_MS merge into one
+   *  step (a slider drag): the first one's undo, the latest one's redo */
+  key?: string
 }
+
+const COALESCE_MS = 1000
+let lastPush = { key: '', at: 0 }
 
 export type HistoryEntry = { kind: 'app'; action: AppAction } | { kind: 'doc' }
 
@@ -35,6 +41,22 @@ export function subscribeHistory(fn: () => void): () => void {
 
 /** Record an app action that has just been done. */
 export function pushAppAction(action: AppAction): void {
+  const now = Date.now()
+  const top = undoStack[undoStack.length - 1]
+  if (
+    action.key &&
+    top?.kind === 'app' &&
+    top.action.key === action.key &&
+    lastPush.key === action.key &&
+    now - lastPush.at < COALESCE_MS
+  ) {
+    top.action = { ...top.action, redo: action.redo, label: action.label }
+    lastPush = { key: action.key, at: now }
+    redoStack.length = 0
+    emit()
+    return
+  }
+  lastPush = { key: action.key ?? '', at: now }
   undoStack.push({ kind: 'app', action })
   if (undoStack.length > MAX) undoStack.shift()
   redoStack.length = 0

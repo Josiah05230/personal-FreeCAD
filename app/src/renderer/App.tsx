@@ -8,6 +8,7 @@ import {
   type BodyTree,
   type ImportedNode,
   type RenderMesh,
+  type SectionDTO,
   type SketchRender,
   type Selection,
   type DrawingView,
@@ -3225,19 +3226,65 @@ export function App(): JSX.Element {
     [bodies, sketches, editSketch, editFeature]
   )
 
+  const visOverrideRef = useRef(visOverride)
+  visOverrideRef.current = visOverride
   const toggleVisibility = useCallback((id: string, visible: boolean) => {
     // pure view state: instant, no engine round-trip, no spinner. scene.get
     // already ships every body / sketch / datum so there is always something
     // to toggle back on.
-    setVisOverride((m) => ({ ...m, [id]: visible }))
+    const prev = visOverrideRef.current[id]
+    const set = (v: boolean | undefined): void =>
+      setVisOverride((m) => {
+        const n = { ...m }
+        if (v === undefined) delete n[id]
+        else n[id] = v
+        return n
+      })
+    set(visible)
+    appHistory.pushAppAction({
+      label: `${visible ? 'Show' : 'Hide'} ${id}`,
+      undo: async () => set(prev),
+      redo: async () => set(visible)
+    })
   }, [])
 
   // ---- appearances (view layer; also queued to the engine for persistence) ----
   // apply instantly to the local mesh, then fire the RPC quietly so it lands in
   // the .gwtcad companion + on the FreeCAD object. merge=true means the change
   // touches only the keys given.
+  // the object's whole appearance back to `prev` (undefined = none) - what
+  // undo of any appearance / face-colour edit does
+  const restoreAppearance = useCallback(
+    async (targetId: string, prev: ObjectAppearance | undefined) => {
+      setMeshes((ms) => ms.map((m) => (m.id === targetId ? { ...m, appearance: prev } : m)))
+      markDirty(true)
+      if (prev) await apiQuiet.appearanceSet(targetId, prev, false)
+      else await apiQuiet.appearanceClear(targetId)
+    },
+    [markDirty]
+  )
+  const recordAppearance = useCallback(
+    (targetId: string, label: string, prev: ObjectAppearance | undefined) => {
+      appHistory.pushAppAction({
+        key: `appearance:${targetId}`,
+        label,
+        undo: () => restoreAppearance(targetId, prev),
+        redo: () => restoreAppearance(targetId, meshesRef.current.find((m) => m.id === targetId)?.appearance)
+      })
+    },
+    [restoreAppearance]
+  )
+
   const setObjectAppearance = useCallback(
     (targetId: string, patch: ObjectAppearance, merge = true) => {
+      const prev = meshesRef.current.find((m) => m.id === targetId)?.appearance
+      const next = merge ? { ...(prev ?? {}), ...patch } : patch
+      appHistory.pushAppAction({
+        key: `appearance:${targetId}`,
+        label: `Appearance of ${targetId}`,
+        undo: () => restoreAppearance(targetId, prev),
+        redo: () => restoreAppearance(targetId, next)
+      })
       setMeshes((ms) =>
         ms.map((m) =>
           m.id === targetId
@@ -3255,6 +3302,7 @@ export function App(): JSX.Element {
 
   const clearObjectAppearance = useCallback(
     (targetId: string) => {
+      recordAppearance(targetId, `Clear appearance of ${targetId}`, meshesRef.current.find((m) => m.id === targetId)?.appearance)
       setMeshes((ms) =>
         ms.map((m) => (m.id === targetId ? { ...m, appearance: undefined } : m))
       )
@@ -3267,6 +3315,7 @@ export function App(): JSX.Element {
   // per-face colour: `color` null clears that face's override
   const setFaceColor = useCallback(
     (targetId: string, subs: string[], color: [number, number, number] | null) => {
+      recordAppearance(targetId, `Face colour on ${targetId}`, meshesRef.current.find((m) => m.id === targetId)?.appearance)
       const facesPatch: Record<string, [number, number, number] | null> = {}
       for (const s of subs) facesPatch[s] = color
       setMeshes((ms) =>
@@ -3288,8 +3337,20 @@ export function App(): JSX.Element {
     [markDirty, flashSketchNotice]
   )
 
+  const renderSettingsRef = useRef(renderSettings)
+  renderSettingsRef.current = renderSettings
   const applyRenderSettings = useCallback(
-    (patch: RenderSettings, merge = true) => {
+    (patch: RenderSettings, merge = true, record = true) => {
+      if (record) {
+        const prev = renderSettingsRef.current
+        const next = merge ? { ...prev, ...patch } : patch
+        appHistory.pushAppAction({
+          key: 'render',
+          label: 'Render settings',
+          undo: async () => applyRenderSettingsRef.current?.(prev, false, false),
+          redo: async () => applyRenderSettingsRef.current?.(next, false, false)
+        })
+      }
       setRenderSettings((cur) => {
         const next = merge ? { ...cur, ...patch } : patch
         vpApi.current?.setRenderSettings(next)
@@ -3300,6 +3361,8 @@ export function App(): JSX.Element {
     },
     [markDirty]
   )
+  const applyRenderSettingsRef = useRef(applyRenderSettings)
+  applyRenderSettingsRef.current = applyRenderSettings
 
   // --- git auto-push (best-effort, retried in the background) ---
   //
@@ -4483,19 +4546,58 @@ export function App(): JSX.Element {
     setSection((s) => (s ? null : { plane: 'XY', offset: 0, flip: false }))
   }, [])
 
+  // ---- section edits are recorded for the app-wide undo (appHistory) ----
+  // they live in the .gwtcad companion, not the FreeCAD document, so each
+  // gets an explicit inverse; a re-created section gets a new id, tracked here
+  const reloadSections = useCallback(async () => {
+    const r = await apiQuiet.sectionList().catch(() => null)
+    if (r) setSections(r.sections as SectionState[])
+    markDirty()
+  }, [markDirty])
+  const recordSectionCreate = useCallback(
+    (created: SectionDTO) => {
+      let id = created.id
+      appHistory.pushAppAction({
+        label: 'New section view',
+        undo: async () => {
+          await apiQuiet.sectionDelete(id)
+          await reloadSections()
+        },
+        redo: async () => {
+          const again = await apiQuiet.sectionCreate(created.plane, created.offset, created.flip)
+          id = again.id
+          await reloadSections()
+        }
+      })
+    },
+    [reloadSections]
+  )
+
   const commitSection = useCallback(async () => {
     const draft = sectionRef.current
     if (!draft) return
     try {
       if (draft.id) {
-        await apiQuiet.sectionSet(draft.id, {
-          plane: draft.plane,
-          offset: draft.offset,
-          flip: draft.flip,
-          visible: true
-        })
+        const id = draft.id
+        const prev = sectionsRef.current.find((x) => x.id === id)
+        const next = { plane: draft.plane, offset: draft.offset, flip: draft.flip, visible: true }
+        await apiQuiet.sectionSet(id, next)
+        if (prev) {
+          appHistory.pushAppAction({
+            label: 'Edit section view',
+            undo: async () => {
+              await apiQuiet.sectionSet(id, { plane: prev.plane, offset: prev.offset, flip: prev.flip, visible: prev.visible })
+              await reloadSections()
+            },
+            redo: async () => {
+              await apiQuiet.sectionSet(id, next)
+              await reloadSections()
+            }
+          })
+        }
       } else {
-        await apiQuiet.sectionCreate(draft.plane, draft.offset, draft.flip)
+        const created = await apiQuiet.sectionCreate(draft.plane, draft.offset, draft.flip)
+        recordSectionCreate(created)
       }
       markDirty()
       const scene = await api.sceneGet()
@@ -4504,7 +4606,7 @@ export function App(): JSX.Element {
       flashSketchNotice(`Section: ${(e as Error).message}`)
     }
     setSection(null)
-  }, [])
+  }, [reloadSections, recordSectionCreate])
 
   const editSection = useCallback(
     (id: string) => {
@@ -4519,21 +4621,49 @@ export function App(): JSX.Element {
     try {
       await apiQuiet.sectionSet(id, { visible })
       markDirty()
+      appHistory.pushAppAction({
+        label: `${visible ? 'Show' : 'Hide'} section view`,
+        undo: async () => {
+          await apiQuiet.sectionSet(id, { visible: !visible })
+          await reloadSections()
+        },
+        redo: async () => {
+          await apiQuiet.sectionSet(id, { visible })
+          await reloadSections()
+        }
+      })
     } catch {
       /* keep the optimistic state; a refresh will reconcile */
     }
-  }, [])
+  }, [reloadSections])
 
   const deleteSection = useCallback(async (id: string) => {
+    const gone = sectionsRef.current.find((x) => x.id === id)
     setSections((cur) => cur.filter((s) => s.id !== id))
     setSection((d) => (d && d.id === id ? null : d))
     try {
       await apiQuiet.sectionDelete(id)
       markDirty()
+      if (gone) {
+        let cur = id
+        appHistory.pushAppAction({
+          label: 'Delete section view',
+          undo: async () => {
+            const back = await apiQuiet.sectionCreate(gone.plane, gone.offset, gone.flip)
+            cur = back.id
+            await apiQuiet.sectionSet(cur, { visible: gone.visible, label: gone.label })
+            await reloadSections()
+          },
+          redo: async () => {
+            await apiQuiet.sectionDelete(cur)
+            await reloadSections()
+          }
+        })
+      }
     } catch {
       /* ignore */
     }
-  }, [])
+  }, [reloadSections])
 
   useEffect(() => {
     if (!measureMode) return
@@ -4576,15 +4706,26 @@ export function App(): JSX.Element {
   // creates a fresh drawing page and enters it - the "Drawing from Design"
   // ribbon entry point. Reopening an existing one goes through openDrawing
   // (Browser "Drawings" section double-click), not this.
+  // a document step the app should see now (not at the next scene refresh),
+  // so the app-wide undo history keeps it in the right order
+  const noteDocStep = useCallback(async () => {
+    const t = await apiQuiet.treeGet().catch(() => null)
+    if (!t) return
+    if ('canUndo' in t) setCanUndo(!!t.canUndo)
+    if ('canRedo' in t) setCanRedo(!!t.canRedo)
+    if (typeof t.undoCount === 'number') appHistory.noteDocState(t.path, t.undoCount, t.redoCount ?? 0)
+  }, [])
+
   const startDrawing = useCallback(async () => {
     try {
       const page = await api.drawingPageCreate()
       setDrawingPageId(page.id)
+      void noteDocStep()
       void refreshDrawingPages()
     } catch (e) {
       window.alert((e as Error).message)
     }
-  }, [refreshDrawingPages])
+  }, [refreshDrawingPages, noteDocStep])
 
   const openDrawing = useCallback((pageId: string) => {
     setDrawingPageId(pageId)
@@ -4594,27 +4735,32 @@ export function App(): JSX.Element {
     async (pageId: string, label: string) => {
       try {
         await api.drawingPageRename(pageId, label)
+        void noteDocStep()
         void refreshDrawingPages()
       } catch (e) {
         window.alert((e as Error).message)
       }
     },
-    [refreshDrawingPages]
+    [refreshDrawingPages, noteDocStep]
   )
 
   const deleteDrawing = useCallback(
     async (pageId: string) => {
-      if (!window.confirm('Delete this drawing? This cannot be undone.')) return
+      // undoable (Ctrl+Z) - the engine's own undo restores the page with
+      // all its views and dimensions
       try {
+        const label = drawingPages.find((p) => p.id === pageId)?.label ?? 'drawing'
         await api.drawingPageDelete(pageId)
         if (drawingPageId === pageId) setDrawingPageId(null)
+        await noteDocStep()
         void refreshDrawingPages()
         markDirty()
+        flashSketchNotice(`Deleted ${label} - Ctrl+Z to undo`)
       } catch (e) {
         window.alert((e as Error).message)
       }
     },
-    [drawingPageId, refreshDrawingPages]
+    [drawingPageId, drawingPages, refreshDrawingPages, noteDocStep, markDirty, flashSketchNotice]
   )
 
   // ---- assemblies ----

@@ -927,6 +927,7 @@ export const apiQuiet = {
       undoCount?: number
       redoCount?: number
     }>('tree.get'),
+  sectionList: () => rpcQuiet<{ sections: SectionDTO[] }>('section.list'),
   sectionCreate: (plane: string, offset: number, flip: boolean) =>
     rpcQuiet<SectionDTO>('section.create', { plane, offset, flip }),
   sectionSet: (

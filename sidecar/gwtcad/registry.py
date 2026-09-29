@@ -88,8 +88,10 @@ _NO_TXN = {
     "section.list", "section.create", "section.set", "section.delete",
     # Drawing sheet edits are a side-channel like sections above, not tracked
     # in the main undo history.
-    "drawing.pageList", "drawing.pageCreate", "drawing.pageDelete",
-    "drawing.pageRename", "drawing.pageContents", "drawing.addView", "drawing.addSectionView",
+    # (pageCreate / pageDelete / pageRename are NOT here: they run in a
+    # normal transaction, so the app-wide Ctrl+Z undoes them - FreeCAD's
+    # undo restores a deleted page with all its views and dimensions)
+    "drawing.pageList", "drawing.pageContents", "drawing.addView", "drawing.addSectionView",
     "drawing.addDetailView", "drawing.addBrokenView", "drawing.convertView",
     "drawing.removeView", "drawing.setViewPosition", "drawing.setViewScale",
     "drawing.addDimension", "drawing.removeDimension", "drawing.setDimensionType",
