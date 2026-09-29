@@ -111,6 +111,11 @@ function footprint(p: Placed): { x: number; y: number; w: number; h: number } {
 // ISO A3 landscape sheet in mm
 const SHEET_W = 420
 const SHEET_H = 297
+
+/** pixels per sheet-mm that fits the whole page in a pw x ph pane, with a margin */
+function fitScale(pw: number, ph: number): number {
+  return Math.min(pw / (SHEET_W * 1.08), ph / (SHEET_H * 1.08))
+}
 const MARGIN = 10
 
 /** Approximate rendered width (in the same local/sheet units as fontSize)
@@ -654,7 +659,15 @@ export const DrawingSheet = forwardRef<
   // is how close the camera looking at the page is). viewBox = a sub-
   // rectangle of the fixed SHEET_W x SHEET_H page: zoom shrinks/grows that
   // rectangle around the cursor, pan translates it.
+  // The <svg> itself always fills the pane at a fixed size and the viewBox
+  // is kept at the pane's aspect ratio, so the viewBox IS exactly what's on
+  // screen: zoom and pan only ever change it (one transform - the old
+  // version also scaled the element's CSS width, zooming twice per step and
+  // fighting the pane's scrollbars).
   const [viewBox, setViewBox] = useState({ x: 0, y: 0, w: SHEET_W, h: SHEET_H })
+  const [pane, setPane] = useState({ w: 0, h: 0 })
+  const paneRef = useRef(pane)
+  paneRef.current = pane
   const panRef = useRef<{ x: number; y: number; vbx: number; vby: number } | null>(null)
   const spaceHeld = useRef(false)
   // bumped only to force a re-render when spaceHeld's REF value changes (a
@@ -1101,41 +1114,106 @@ export const DrawingSheet = forwardRef<
   // position to sheet-space BEFORE resizing viewBox, then re-anchor so that
   // same sheet point stays under the cursor after the resize (standard
   // "zoom toward cursor" math for an SVG viewBox).
-  const onWheel = (e: React.WheelEvent<SVGSVGElement>): void => {
-    e.preventDefault()
-    const svg = e.currentTarget
-    const pt = svg.createSVGPoint()
-    pt.x = e.clientX
-    pt.y = e.clientY
-    const before = pt.matrixTransform(svg.getScreenCTM()!.inverse())
-    const factor = e.deltaY > 0 ? 1.12 : 1 / 1.12
-    setViewBox((vb) => {
-      const w = Math.min(Math.max(vb.w * factor, 20), SHEET_W * 4)
-      const h = w * (vb.h / vb.w)
-      const x = before.x - ((before.x - vb.x) / vb.w) * w
-      const y = before.y - ((before.y - vb.y) / vb.h) * h
-      return { x, y, w, h }
+  const fitViewBox = useCallback((pw: number, ph: number) => {
+    const s = fitScale(pw, ph)
+    const w = pw / s
+    const h = ph / s
+    return { x: SHEET_W / 2 - w / 2, y: SHEET_H / 2 - h / 2, w, h }
+  }, [])
+
+  // track the pane's pixel size; keep the zoom level and centre across a
+  // resize, and fit the page the first time the pane has a size
+  useEffect(() => {
+    const el = sheetRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      const pw = el.clientWidth
+      const ph = el.clientHeight
+      if (!pw || !ph) return
+      setViewBox((vb) => {
+        const prev = paneRef.current
+        if (!prev.w || !prev.h) return fitViewBox(pw, ph)
+        const pxPerMm = prev.w / vb.w
+        const cx = vb.x + vb.w / 2
+        const cy = vb.y + vb.h / 2
+        const w = pw / pxPerMm
+        const h = ph / pxPerMm
+        return { x: cx - w / 2, y: cy - h / 2, w, h }
+      })
+      setPane({ w: pw, h: ph })
     })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [fitViewBox])
+
+  /** keep at least a sliver of the page on screen however far it's panned */
+  const clampVb = (vb: { x: number; y: number; w: number; h: number }): typeof vb => {
+    const kx = 0.15 * Math.min(vb.w, SHEET_W)
+    const ky = 0.15 * Math.min(vb.h, SHEET_H)
+    return {
+      ...vb,
+      x: Math.min(Math.max(vb.x, kx - vb.w), SHEET_W - kx),
+      y: Math.min(Math.max(vb.y, ky - vb.h), SHEET_H - ky)
+    }
   }
 
-  const zoomFit = useCallback((): void => setViewBox({ x: 0, y: 0, w: SHEET_W, h: SHEET_H }), [])
-  const zoomBy = useCallback((factor: number): void => {
+  /** zoom by `factor` (>1 = out) keeping sheet point (ax, ay) fixed on screen */
+  const zoomAt = useCallback((factor: number, ax?: number, ay?: number): void => {
     setViewBox((vb) => {
-      const w = Math.min(Math.max(vb.w * factor, 20), SHEET_W * 4)
-      const h = w * (vb.h / vb.w)
-      const cx = vb.x + vb.w / 2
-      const cy = vb.y + vb.h / 2
-      return { x: cx - w / 2, y: cy - h / 2, w, h }
+      const { w: pw, h: ph } = paneRef.current
+      const fit = pw && ph ? fitScale(pw, ph) : 1
+      const cur = pw ? pw / vb.w : 1
+      // 25% .. 6000% of "fit"
+      const next = Math.min(Math.max(cur / factor, fit * 0.25), fit * 60)
+      const f = cur / next
+      const cx = ax ?? vb.x + vb.w / 2
+      const cy = ay ?? vb.y + vb.h / 2
+      const w = vb.w * f
+      const h = vb.h * f
+      return clampVb({ x: cx - (cx - vb.x) * f, y: cy - (cy - vb.y) * f, w, h })
     })
   }, [])
 
+  // wheel zoom toward the cursor. A native, non-passive listener: React's
+  // onWheel is passive, so preventDefault was ignored and every notch also
+  // scrolled the pane. Exponential in the wheel delta, so a mouse notch is
+  // one even step and a trackpad's many small events add up smoothly;
+  // ctrl+wheel (trackpad pinch) is finer. Horizontal scroll pans.
+  useEffect(() => {
+    const svg = sheetRef.current?.querySelector('svg.drawing-page-svg') as SVGSVGElement | null
+    if (!svg) return
+    const onWheel = (e: WheelEvent): void => {
+      e.preventDefault()
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1
+      const dx = e.deltaX * unit
+      const dy = e.deltaY * unit
+      if (!e.ctrlKey && Math.abs(dx) > Math.abs(dy)) {
+        setViewBox((vb) => clampVb({ ...vb, x: vb.x + dx * (vb.w / (paneRef.current.w || 1)) }))
+        return
+      }
+      const pt = svg.createSVGPoint()
+      pt.x = e.clientX
+      pt.y = e.clientY
+      const at = pt.matrixTransform(svg.getScreenCTM()!.inverse())
+      const d = Math.max(-240, Math.min(240, dy))
+      zoomAt(Math.exp(d * (e.ctrlKey ? 0.01 : 0.0018)), at.x, at.y)
+    }
+    svg.addEventListener('wheel', onWheel, { passive: false })
+    return () => svg.removeEventListener('wheel', onWheel)
+  }, [zoomAt])
+
+  const zoomFit = useCallback((): void => {
+    const { w, h } = paneRef.current
+    setViewBox(w && h ? fitViewBox(w, h) : { x: 0, y: 0, w: SHEET_W, h: SHEET_H })
+  }, [fitViewBox])
+  const zoomBy = useCallback((factor: number): void => zoomAt(factor), [zoomAt])
+  const zoomPct = pane.w && pane.h ? Math.round((100 * (pane.w / viewBox.w)) / fitScale(pane.w, pane.h)) : 100
+
   const onPointerMove = (e: React.PointerEvent): void => {
-    if (panRef.current && sheetRef.current) {
+    if (panRef.current) {
       const { x, y, vbx, vby } = panRef.current
-      const svg = sheetRef.current.querySelector('svg') as SVGSVGElement
-      const scaleX = viewBox.w / svg.clientWidth
-      const scaleY = viewBox.h / svg.clientHeight
-      setViewBox((vb) => ({ ...vb, x: vbx - (e.clientX - x) * scaleX, y: vby - (e.clientY - y) * scaleY }))
+      const mmPerPx = viewBox.w / (pane.w || 1)
+      setViewBox((vb) => clampVb({ ...vb, x: vbx - (e.clientX - x) * mmPerPx, y: vby - (e.clientY - y) * mmPerPx }))
       return
     }
     if (band && sheetRef.current) {
@@ -1266,9 +1344,14 @@ export const DrawingSheet = forwardRef<
   const exportPdf = useCallback(async (): Promise<void> => {
     const p = await window.cad.saveDialog(docPath ? docPath.replace(/\.FCStd$/i, '.pdf') : undefined)
     if (!p || !sheetRef.current) return
+    // the whole sheet, whatever the on-screen zoom/pan, without the page shadow
+    const svg = (sheetRef.current.querySelector('svg.drawing-page-svg') as SVGSVGElement).cloneNode(true) as SVGSVGElement
+    svg.setAttribute('viewBox', `0 0 ${SHEET_W} ${SHEET_H}`)
+    svg.removeAttribute('style')
+    svg.querySelectorAll('[data-screen-only]').forEach((n) => n.remove())
     const html = `<!doctype html><meta charset="utf-8"><style>
       html,body{margin:0;background:#fff}svg{width:100%;height:auto}
-      polyline{vector-effect:non-scaling-stroke}</style>${sheetRef.current.innerHTML}`
+      polyline{vector-effect:non-scaling-stroke}</style>${svg.outerHTML}`
     await window.cad.exportPdf(html, p)
   }, [docPath])
 
@@ -2864,7 +2947,7 @@ export const DrawingSheet = forwardRef<
             −
           </button>
           <button title="Zoom to fit the whole sheet" onClick={zoomFit}>
-            {Math.round((SHEET_W / viewBox.w) * 100)}%
+            {zoomPct}%
           </button>
           <button title="Zoom in" onClick={() => zoomBy(1 / 1.25)}>
             +
@@ -2876,7 +2959,6 @@ export const DrawingSheet = forwardRef<
         <svg
           className="drawing-page-svg"
           viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
-          onWheel={onWheel}
           onPointerDown={(e) => {
             // space+drag (or the middle mouse button) pans the sheet,
             // regardless of the active tool - same modifier convention the
@@ -2884,6 +2966,12 @@ export const DrawingSheet = forwardRef<
             if (spaceHeld.current || e.button === 1) {
               e.preventDefault()
               panRef.current = { x: e.clientX, y: e.clientY, vbx: viewBox.x, vby: viewBox.y }
+              // capture, so letting go outside the sheet still ends the pan
+              try {
+                e.currentTarget.setPointerCapture(e.pointerId)
+              } catch {
+                // not an active pointer (synthetic event) - pan still works
+              }
               return
             }
             // an empty-sheet pointerdown in select mode starts a rubber-
@@ -3030,20 +3118,10 @@ export const DrawingSheet = forwardRef<
             }
           }}
           style={{
-            cursor: spaceHeld.current ? 'grab' : undefined,
-            // the SVG element's OWN on-screen size now scales with zoom
-            // (at viewBox.w===SHEET_W, i.e. 100%, this is exactly the old
-            // fixed min(100%,1400px) base) - previously only viewBox
-            // changed, so the page's outer box stayed pinned at one
-            // constant screen size and only the border/content drawn
-            // inside it grew or shrank, which read as "the black box and
-            // everything in it changes but the white page stays the same
-            // size" (user report, 2026-09-22). Now the page itself
-            // visibly grows/shrinks like a real zoom, and the container's
-            // own overflow:auto scrolling (already in place for panning)
-            // handles the rest.
-            width: `min(${(SHEET_W / viewBox.w) * 100}%, ${(1400 * SHEET_W) / viewBox.w}px)`,
-            height: 'auto'
+            cursor: panRef.current ? 'grabbing' : spaceHeld.current ? 'grab' : undefined
+          }}
+          onLostPointerCapture={() => {
+            panRef.current = null
           }}
           onClick={(e) => {
             // the sheet's own white background <rect> sits directly under
@@ -3092,6 +3170,11 @@ export const DrawingSheet = forwardRef<
             }
           }}
         >
+          {/* the page itself - white paper with a soft shadow on the grey
+              pasteboard, so zooming visibly grows/shrinks the page (the
+              pasteboard is the pane's own background, not part of the
+              exported sheet) */}
+          <rect data-screen-only="" x={0.8} y={1.2} width={SHEET_W} height={SHEET_H} fill="#0000004d" />
           <rect x={0} y={0} width={SHEET_W} height={SHEET_H} fill="#fff" />
           <rect
             x={MARGIN}

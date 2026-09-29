@@ -2318,19 +2318,20 @@ code {
 
 .drawing-sheet {
   flex: 1;
-  overflow: auto;
-  padding: 24px;
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
   background: #2a2a2e;
 }
 
+/* fills the pane; zoom/pan only move the viewBox (DrawingSheet.tsx) */
 .drawing-page-svg {
-  width: min(100%, 1400px);
-  height: auto;
-  background: #fff;
-  box-shadow: 0 8px 40px #0009;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
 }
 
 .drawing-add {
