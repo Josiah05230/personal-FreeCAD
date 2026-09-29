@@ -4063,6 +4063,13 @@ export function App(): JSX.Element {
   // ---- undo support for part-number actions: the registry is shared, so an
   // undo is a NEW commit putting rows back (pn.registryRestore); files the
   // action created move into the holding area and their removal is committed
+  // note any document steps the flow already made (tagging, a drawing
+  // refresh...) BEFORE recording its app action - otherwise they're noticed
+  // at the next refresh, land on top of it, and Ctrl+Z undoes those instead
+  const syncDocSteps = async (): Promise<void> => {
+    const t = await apiQuiet.treeGet().catch(() => null)
+    if (t && typeof t.undoCount === 'number') appHistory.noteDocState(t.path, t.undoCount, t.redoCount ?? 0)
+  }
   const holdFiles = async (paths: string[]): Promise<{ path: string; held: string }[]> => {
     const out: { path: string; held: string }[] = []
     for (const p of paths) {
@@ -4149,6 +4156,7 @@ export function App(): JSX.Element {
           const files = [info.path, `${info.path}.gwtcad.json`, kicadDirFor(info.path)]
           const createdRows = (await api.pnRegistryRows([pnSeq]).catch(() => null))?.rows ?? null
           let held: { path: string; held: string }[] = []
+          await syncDocSteps()
           appHistory.pushAppAction({
             label: `Create part ${info.pn}`,
             undo: async () => {
@@ -4278,6 +4286,7 @@ export function App(): JSX.Element {
         const bomNew = await api.pnBomFor(res.pn).catch(() => ({ items: [] }))
         const files = [newPath, `${newPath}.gwtcad.json`]
         let held: { path: string; held: string }[] = []
+        await syncDocSteps()
         appHistory.pushAppAction({
           label: `New revision ${res.pn}`,
           undo: async () => {
@@ -4362,6 +4371,7 @@ export function App(): JSX.Element {
         {
           let rowsAfter: Record<string, Record<string, string>[]> | null = null
           let bomAfter: BomItem[] = []
+          await syncDocSteps()
           appHistory.pushAppAction({
             label: `${currentPn} ${lifecycle.replace('_', ' ')}`,
             undo: async () => {
