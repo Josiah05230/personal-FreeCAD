@@ -3,6 +3,7 @@
 One document at a time for now. Milestone 2 (assemblies) turns this into a small
 document set keyed by path.
 """
+import os
 import time
 
 import FreeCAD as App
@@ -602,15 +603,47 @@ def _settle_detail_views(d):
         pass
 
 
+_loaded_mtime = {}   # doc name -> its file's mtime when we last saw it loaded
+
+
+def _close_stale_docs():
+    """Close any loaded document whose file changed on disk since it was
+    loaded. Opening an assembly leaves its linked parts loaded; without this
+    a later open of that assembly (or another that links the same part)
+    silently reuses the old in-memory part after the file was rebuilt."""
+    for name, d in list(App.listDocuments().items()):
+        fn = getattr(d, "FileName", "")
+        seen = _loaded_mtime.get(name)
+        if not fn or seen is None or not os.path.isfile(fn):
+            continue
+        if os.path.getmtime(fn) != seen:
+            try:
+                App.closeDocument(name)
+            except Exception:
+                pass
+            _loaded_mtime.pop(name, None)
+
+
+def _note_loaded_docs():
+    for name, d in App.listDocuments().items():
+        fn = getattr(d, "FileName", "")
+        if fn and os.path.isfile(fn):
+            _loaded_mtime.setdefault(name, os.path.getmtime(fn))
+
+
 def open_path(path):
     d = _find(_state["name"])
     if d is not None:
         _settle_detail_views(d)
-        App.closeDocument(d.Name)
+        name = d.Name
+        App.closeDocument(name)
+        _loaded_mtime.pop(name, None)
+    _close_stale_docs()
     d = _enable_undo(App.openDocument(path))
     _settle_detail_views(d)
     _state["name"] = d.Name
     _state["path"] = path
+    _note_loaded_docs()
     return d
 
 
