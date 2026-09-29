@@ -1647,6 +1647,8 @@ export const api = {
     rpc<{ templates: SheetTemplate[] }>('drawing.listSheetTemplates'),
   drawingSaveSheetTemplate: (name: string, spec: SheetTemplate['spec']) =>
     rpc<SheetTemplate>('drawing.saveSheetTemplate', { name, spec }),
+  drawingDeleteSheetTemplate: (name: string) => rpc<{ deleted: string }>('drawing.deleteSheetTemplate', { name }),
+  drawingDeleteTableTemplate: (name: string) => rpc<{ deleted: string }>('drawing.deleteTableTemplate', { name }),
   drawingApplySheetTemplate: (name: string) =>
     rpc<AppliedSheetTemplate>('drawing.applySheetTemplate', { name }),
 

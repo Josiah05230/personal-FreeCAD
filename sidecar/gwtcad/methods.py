@@ -5884,6 +5884,16 @@ def drawing_save_table_template(name, spec):
     return _tables.save_table_template(name, spec)
 
 
+@method("drawing.deleteTableTemplate")
+def drawing_delete_table_template(name):
+    return _tables.delete_table_template(name)
+
+
+@method("drawing.deleteSheetTemplate")
+def drawing_delete_sheet_template(name):
+    return _sheet_templates.delete_sheet_template(name)
+
+
 @method("drawing.listTableTemplates")
 def drawing_list_table_templates():
     return {"templates": _tables.list_table_templates()}

@@ -104,7 +104,7 @@ _NO_TXN = {
     "drawing.addImage", "drawing.setImageTransform", "drawing.removeImage",
     "drawing.bomRows", "drawing.makeTable", "drawing.removeTable", "drawing.updateTableStyle",
     "drawing.mergeTableCells", "drawing.unmergeTableCells",
-    "drawing.saveTableTemplate",
+    "drawing.saveTableTemplate", "drawing.deleteTableTemplate", "drawing.deleteSheetTemplate",
     "drawing.listTableTemplates", "drawing.loadTableTemplate",
     "drawing.listSheetTemplates", "drawing.saveSheetTemplate", "drawing.applySheetTemplate",
     # PN registry: plain file/git bookkeeping, no FreeCAD document involved.

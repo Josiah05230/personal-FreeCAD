@@ -1100,15 +1100,26 @@ export const DrawingSheet = forwardRef<
       { key: 'name', label: 'Template name', value: '' }
     ])
     if (!res?.name.trim()) return
+    const name = res.name.trim()
     try {
-      await api.drawingSaveSheetTemplate(res.name.trim(), {
+      // the same name overwrites: undo puts the old spec back (or removes a new one)
+      const prev = (await api.drawingListSheetTemplates()).templates.find((t) => t.name === name && !t.builtin)
+      const spec = {
         titleBlock: showTitleBlock,
         views: placed.map((p) => p.view.direction).filter((d): d is string => !!d)
+      }
+      await api.drawingSaveSheetTemplate(name, spec)
+      pushUndo({
+        undo: async () => {
+          if (prev) await api.drawingSaveSheetTemplate(name, prev.spec)
+          else await api.drawingDeleteSheetTemplate(name)
+        },
+        redo: async () => void (await api.drawingSaveSheetTemplate(name, spec))
       })
     } catch (e) {
       window.alert((e as Error).message)
     }
-  }, [showTitleBlock, placed])
+  }, [showTitleBlock, placed, pushUndo])
 
   // wheel-to-zoom, centred on the cursor: convert the pointer's CLIENT
   // position to sheet-space BEFORE resizing viewBox, then re-anchor so that
@@ -2135,17 +2146,27 @@ export const DrawingSheet = forwardRef<
       const name2 = await promptText('Template name', '')
       if (!name2 || !name2.trim()) return
       try {
-        await api.drawingSaveTableTemplate(name2.trim(), {
+        const name = name2.trim()
+        const prev = (await api.drawingListTableTemplates()).templates.find((x) => x.name === name)
+        const spec = {
           columns: t.columns,
           showGrid: t.showGrid,
           gridColor: t.gridColor,
           rowHeight: t.rowHeight
+        }
+        await api.drawingSaveTableTemplate(name, spec)
+        pushUndo({
+          undo: async () => {
+            if (prev) await api.drawingSaveTableTemplate(name, prev.spec)
+            else await api.drawingDeleteTableTemplate(name)
+          },
+          redo: async () => void (await api.drawingSaveTableTemplate(name, spec))
         })
       } catch (e) {
         window.alert((e as Error).message)
       }
     },
-    [tables]
+    [tables, pushUndo]
   )
 
   // ribbon-level "Save as Template…" (no specific table in mind) - acts on

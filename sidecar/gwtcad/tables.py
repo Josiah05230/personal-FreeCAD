@@ -467,6 +467,14 @@ def save_table_template(name, spec):
     return {"name": name, "spec": data[name]}
 
 
+def delete_table_template(name):
+    """Remove a saved template - the undo of saving a new one."""
+    data = _load_templates()
+    if data.pop(name, None) is not None:
+        _save_templates(data)
+    return {"deleted": name}
+
+
 def list_table_templates():
     return [{"name": n, "spec": spec} for n, spec in _load_templates().items()]
 

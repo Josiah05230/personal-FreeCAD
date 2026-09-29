@@ -144,6 +144,14 @@ def save_sheet_template(name, spec):
     return {"name": name, "spec": data[name]}
 
 
+def delete_sheet_template(name):
+    """Remove a saved (non-built-in) template - the undo of saving a new one."""
+    data = _load()
+    if data.pop(name, None) is not None:
+        _save(data)
+    return {"deleted": name}
+
+
 def load_sheet_template(name):
     if name in _BUILTIN:
         return {"name": name, "spec": _BUILTIN[name]}
