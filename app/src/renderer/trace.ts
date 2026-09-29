@@ -23,14 +23,30 @@ const RING: Row[] = []
 const MAX = 5000
 const START = Date.now()
 
-export function clip(o: unknown): unknown {
-  return JSON.parse(
-    JSON.stringify(o, (_k, v) => {
-      if (typeof v === 'number') return Number.isFinite(v) ? Math.round(v * 1e4) / 1e4 : String(v)
-      if (typeof v === 'string' && v.length > 140) return v.slice(0, 140) + '...'
-      return v
-    })
-  )
+/** A small, log-friendly copy of `o`. Long arrays become a length note
+ *  BEFORE they're walked: a scene.get result carries millions of mesh
+ *  numbers, and stringifying those (twice) on every RPC froze the renderer
+ *  for seconds to minutes on a big model - and kept the whole payload alive
+ *  in the ring buffer. */
+export function clip(o: unknown, depth = 0): unknown {
+  if (typeof o === 'number') return Number.isFinite(o) ? Math.round(o * 1e4) / 1e4 : String(o)
+  if (typeof o === 'string') return o.length > 140 ? o.slice(0, 140) + '...' : o
+  if (o === null || typeof o !== 'object') return o
+  if (depth > 6) return '{...}'
+  if (Array.isArray(o)) {
+    if (o.length > 24) return `[${o.length} items]`
+    return o.map((v) => clip(v, depth + 1))
+  }
+  const out: Record<string, unknown> = {}
+  let n = 0
+  for (const k in o as Record<string, unknown>) {
+    if (++n > 40) {
+      out['...'] = 'more keys'
+      break
+    }
+    out[k] = clip((o as Record<string, unknown>)[k], depth + 1)
+  }
+  return out
 }
 function fmt(data?: unknown): string {
   if (data === undefined) return ''
@@ -46,7 +62,7 @@ export function trace(evt: string, data?: Record<string, unknown>): void {
   if (!ON) return
   const now = Date.now()
   const wall = new Date(now).toISOString().slice(11, 23) // HH:MM:SS.mmm
-  RING.push({ t: now - START, wall, evt, data })
+  RING.push({ t: now - START, wall, evt, data: data === undefined ? undefined : clip(data) })
   if (RING.length > MAX) RING.shift()
   // eslint-disable-next-line no-console
   console.log(`[trace ${wall} +${((now - START) / 1000).toFixed(3)}s] ${evt}${fmt(data)}`)

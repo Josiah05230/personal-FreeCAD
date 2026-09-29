@@ -5198,6 +5198,7 @@ export function App(): JSX.Element {
       // besides the native dialog, so a test needs a way to call the exact
       // same openDesign/save the File menu uses, with an explicit path) ---
       openDesignPath: (path: string) => openDesign(path),
+      openDrawing: (pageId: string | null) => (pageId ? openDrawing(pageId) : setDrawingPageId(null)),
       saveDoc: () => save(),
       // the next prompt/promptForm resolves to these values instead of
       // auto-cancelling (null = cancel)
