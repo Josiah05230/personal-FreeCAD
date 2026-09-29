@@ -122,6 +122,35 @@ def _silhouettes(pts, tris, face_ids, dvec):
     return [np.array([pts[a], pts[b]]) for a, b in k]
 
 
+_SIMPLIFY_MM = 0.02  # a visible run keeps only points that move it more than this
+
+
+def _simplify(p, tol):
+    """Ramer-Douglas-Peucker: a straight edge sampled every pixel collapses
+    to its two ends (the page's SVG, and so its PDF, stays small enough to
+    render - a heavy perfboard's views were multi-MB)."""
+    if len(p) <= 2:
+        return p
+    keep = np.zeros(len(p), bool)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(p) - 1)]
+    while stack:
+        i, j = stack.pop()
+        if j <= i + 1:
+            continue
+        seg = p[j] - p[i]
+        n = np.hypot(seg[0], seg[1])
+        rel = p[i + 1:j] - p[i]
+        d = np.abs(seg[0] * rel[:, 1] - seg[1] * rel[:, 0]) / n if n > 1e-12 else np.hypot(rel[:, 0], rel[:, 1])
+        k = int(np.argmax(d))
+        if d[k] > tol:
+            m = i + 1 + k
+            keep[m] = True
+            stack.append((i, m))
+            stack.append((m, j))
+    return p[keep]
+
+
 def model_mesh(shapes):
     """The coarse mesh render_view_svg works from - build it once and pass
     it to every view of the same model."""
@@ -183,16 +212,13 @@ def render_view_svg(shapes, direction, max_w=None, max_h=None, scale=None, mesh=
         for oy, ox in ((0, 1), (1, 0), (0, -1), (-1, 0)):
             near = np.maximum(near, zb[np.clip(iy + oy, 0, h - 1), np.clip(ix + ox, 0, w - 1)])
         vis = dz <= near + eps
-        run = []
-        for k in range(len(pl)):
-            if vis[k]:
-                run.append("%.2f,%.2f" % ((puv[k, 0] - lo[0]) * scale, (hi[1] - puv[k, 1]) * scale))
-            elif run:
-                if len(run) > 1:
-                    paths.append(run)
-                run = []
-        if len(run) > 1:
-            paths.append(run)
+        sheet = np.stack([(puv[:, 0] - lo[0]) * scale, (hi[1] - puv[:, 1]) * scale], axis=1)
+        # split into visible runs, each simplified to the points that shape it
+        idx = np.flatnonzero(np.diff(np.concatenate([[0], vis.astype(np.int8), [0]])))
+        for a, b in zip(idx[0::2], idx[1::2]):
+            if b - a > 1:
+                run = _simplify(sheet[a:b], _SIMPLIFY_MM)
+                paths.append(["%.2f,%.2f" % (x, y) for x, y in run])
 
     wmm, hmm = span[0] * scale, span[1] * scale
     body = "\n".join('<polyline points="%s"/>' % " ".join(r) for r in paths)

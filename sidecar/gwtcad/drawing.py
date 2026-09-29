@@ -803,6 +803,28 @@ def _arrow_points(x, y, dirx, diry):
         _fmt(x), _fmt(y), _fmt(backx + nx), _fmt(backy + ny), _fmt(backx - nx), _fmt(backy - ny))
 
 
+def _inline_svg(im, transform=""):
+    """An SVG image's own markup, placed and sized as a nested <svg>, or
+    None for any other image type (or an unreadable file)."""
+    path = im["path"]
+    if not path.lower().endswith(".svg"):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return None
+    text = re.sub(r"<\?xml[^>]*\?>", "", text).strip()
+    m = re.match(r"<svg\b([^>]*)>", text)
+    if not m:
+        return None
+    attrs = re.sub(r'\s(width|height|x|y)="[^"]*"', "", m.group(1))
+    head = '<svg%s x="%s" y="%s" width="%s" height="%s" preserveAspectRatio="none">' % (
+        attrs, _fmt(im["x"]), _fmt(im["y"]), _fmt(im["width"]), _fmt(im["height"]))
+    body = head + text[m.end():]
+    return '<g%s>%s</g>' % (transform, body) if transform else body
+
+
 def _image_data_uri(path):
     """Port of app/src/main/index.ts's 'fs:readImage' handler - the same
     extension -> mime mapping (png/webp, else jpeg) and base64 encoding the
@@ -814,7 +836,8 @@ def _image_data_uri(path):
     except Exception:
         return None
     ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
-    mime = "image/png" if ext == "png" else "image/webp" if ext == "webp" else "image/jpeg"
+    mime = ("image/png" if ext == "png" else "image/webp" if ext == "webp"
+            else "image/svg+xml" if ext == "svg" else "image/jpeg")
     return "data:%s;base64,%s" % (mime, base64.b64encode(data).decode("ascii"))
 
 
@@ -927,13 +950,13 @@ def export_page_svg(doc, page_id):
                     parts.append(_svg_polyline(pts, "#0696d7", 0.4))
         parts.append("</svg>")
         # view label under the view, same font size/color/format as
-        # ViewBox's own <text> ("{label} — {direction} (kind)")
+        # ViewBox's own <text> ("{label} - {direction} (kind)")
         label = escape(v.get("label", ""))
         direction = escape(v.get("direction", ""))
         kind = v.get("kind", "part")
         suffix = " (%s)" % escape(kind) if kind != "part" else ""
         parts.append(
-            '<text x="0" y="%s" font-size="3.4" fill="#333">%s — %s%s</text>'
+            '<text x="0" y="%s" font-size="3.4" fill="#333">%s - %s%s</text>'
             % (_fmt(h + 4), label, direction, suffix)
         )
         parts.append("</g>")
@@ -1231,15 +1254,22 @@ def export_page_svg(doc, page_id):
     # same as the frontend's own imageData fetch via window.cad.readImage -
     # see that IPC handler's mime-type mapping, ported in _image_data_uri).
     for im in contents["images"]:
-        href = _image_data_uri(im["path"])
-        if href is None:
-            continue  # source file no longer readable - skip rather than emit a broken <image>
         rotation = im.get("rotation") or 0.0
         transform = ""
         if rotation:
             cx = im["x"] + im["width"] / 2
             cy = im["y"] + im["height"] / 2
             transform = ' transform="rotate(%s %s %s)"' % (_fmt(rotation), _fmt(cx), _fmt(cy))
+        inline = _inline_svg(im, transform)
+        if inline is not None:
+            # an SVG image (a generated view) goes in as nested SVG: as a
+            # base64 data URI a heavy model's view was a multi-MB attribute
+            # that librsvg refused ("Huge input lookup") - no PDF at all
+            parts.append(inline)
+            continue
+        href = _image_data_uri(im["path"])
+        if href is None:
+            continue  # source file no longer readable - skip rather than emit a broken <image>
         parts.append(
             '<image href="%s" x="%s" y="%s" width="%s" height="%s"%s/>'
             % (href, _fmt(im["x"]), _fmt(im["y"]), _fmt(im["width"]), _fmt(im["height"]), transform)
@@ -1702,7 +1732,7 @@ def make_section(doc, page_id, base_view_id, plane="XY", offset=0.0, flip=False)
     # NOT "Section %s" % view.Name - view.Name is itself "Section" (FreeCAD's
     # own auto-naming from addObject's requested name above), which doubled
     # up as "Section Section" once the frontend appends its own direction/
-    # kind suffix (DrawingSheet.tsx's ViewBox: "{label} — {direction} (kind)").
+    # kind suffix (DrawingSheet.tsx's ViewBox: "{label} - {direction} (kind)").
     view.Label = "%s section" % _get_tag(base, "_gwt_dir", "front").title()
     base.Visibility = False
     _tag(view, "_gwt_kind", "section")

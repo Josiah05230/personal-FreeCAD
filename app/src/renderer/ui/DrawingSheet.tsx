@@ -449,7 +449,7 @@ function ViewBox({
         )}
       </svg>
       <text x={0} y={h + 4} fontSize={3.4} fill={hovered || selected ? '#0696d7' : '#333'}>
-        {view.label} — {view.direction}
+        {view.label} - {view.direction}
         {view.kind !== 'part' ? ` (${view.kind})` : ''}
       </text>
     </g>
@@ -2651,7 +2651,7 @@ export const DrawingSheet = forwardRef<
         <button className="drawing-back" onClick={onBack}>
           ← Model
         </button>
-        <span className="drawing-title">Drawing — {name}</span>
+        <span className="drawing-title">Drawing - {name}</span>
         {tool !== 'select' && (
           <span className="drawing-tool-active">
             {tool === 'dimension' ? 'Dimension' : tool === 'note' ? 'Note' : 'Cleanup Line'} tool active
@@ -3100,7 +3100,7 @@ export const DrawingSheet = forwardRef<
 
           {placed.length === 0 && (
             <text x={SHEET_W / 2} y={SHEET_H / 2} fontSize={6} fill="#bbb" textAnchor="middle">
-              Blank sheet — use “Add View”
+              Blank sheet - use "Add View"
             </text>
           )}
 
