@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type KeyboardEvent } from 'react'
 import { decalApi, DECAL_IMAGE_FILTERS, type DecalRecord } from '../decals'
+import { decalSize, DECAL_SIZE_MODES, type DecalSizeMode } from '../decalSize'
 
 const basename = (p: string): string => p.split(/[\\/]/).pop() ?? p
 const num = (s: string, d: number): number => {
@@ -7,12 +8,12 @@ const num = (s: string, d: number): number => {
   return Number.isFinite(n) ? n : d
 }
 
-async function imageAspect(path: string): Promise<number | null> {
+async function imagePixels(path: string): Promise<{ w: number; h: number } | null> {
   try {
     const img = new Image()
     img.src = await window.cad.readImage(path)
     await img.decode()
-    return img.naturalWidth > 0 ? img.naturalHeight / img.naturalWidth : null
+    return img.naturalWidth > 0 ? { w: img.naturalWidth, h: img.naturalHeight } : null
   } catch {
     return null
   }
@@ -37,8 +38,9 @@ export function DecalPanel({
   const [decals, setDecals] = useState<DecalRecord[]>([])
   const [err, setErr] = useState<string | null>(null)
   const [newImage, setNewImage] = useState<string | null>(null)
-  const [newAspect, setNewAspect] = useState<number | null>(null)
-  const [newWidth, setNewWidth] = useState('50')
+  const [newPx, setNewPx] = useState<{ w: number; h: number } | null>(null)
+  const [sizeMode, setSizeMode] = useState<DecalSizeMode>('width')
+  const [sizeValue, setSizeValue] = useState('50')
 
   const reload = useCallback(() => {
     void decalApi
@@ -66,8 +68,8 @@ export function DecalPanel({
     return p || null
   }
 
-  const w = num(newWidth, 0)
-  const h = newAspect != null && w > 0 ? w * newAspect : null
+  const size = newPx ? decalSize(sizeMode, num(sizeValue, 0), newPx.w, newPx.h) : null
+  const unit = DECAL_SIZE_MODES.find((m) => m.id === sizeMode)?.unit ?? 'mm'
 
   return (
     <div className="materials-panel appearance-panel">
@@ -97,28 +99,49 @@ export function DecalPanel({
                   const p = await pickImage()
                   if (!p) return
                   setNewImage(p)
-                  setNewAspect(await imageAspect(p))
+                  setNewPx(await imagePixels(p))
                 }}
               >
                 Choose...
               </button>
             </label>
             <label>
-              <span>Width (mm)</span>
-              <input type="number" min={0} step={0.5} value={newWidth} onChange={(e) => setNewWidth(e.target.value)} />
+              <span>Size by</span>
+              <select value={sizeMode} onChange={(e) => setSizeMode(e.target.value as DecalSizeMode)}>
+                {DECAL_SIZE_MODES.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label} ({m.unit})
+                  </option>
+                ))}
+              </select>
             </label>
             <label>
-              <span>Height (mm)</span>
+              <span>{DECAL_SIZE_MODES.find((m) => m.id === sizeMode)?.label} ({unit})</span>
+              <input
+                type="number"
+                min={0}
+                step={sizeMode === 'pxPerMm' ? 1 : 0.5}
+                value={sizeValue}
+                onChange={(e) => setSizeValue(e.target.value)}
+              />
+            </label>
+            <label>
+              <span>Size</span>
               <b style={{ flex: 1, textAlign: 'left', fontWeight: 400 }}>
-                {h != null ? `${h.toFixed(2)} (from the image aspect)` : '-'}
+                {size
+                  ? `${size.widthMm.toFixed(2)} x ${size.heightMm.toFixed(2)} mm` +
+                    (newPx ? ` (${newPx.w} x ${newPx.h} px)` : '')
+                  : newImage
+                    ? '-'
+                    : 'choose an image'}
               </b>
             </label>
             <button
               className="materials-save-btn"
-              disabled={!face || !newImage || !(w > 0)}
+              disabled={!face || !newImage || !size}
               onClick={async () => {
-                if (!face || !newImage) return
-                const ok = await run(() => decalApi.add(face.bodyId, face.sub, newImage, w, h))
+                if (!face || !newImage || !size) return
+                const ok = await run(() => decalApi.add(face.bodyId, face.sub, newImage, size.widthMm, size.heightMm))
                 if (ok) setNewImage(null)
               }}
             >
