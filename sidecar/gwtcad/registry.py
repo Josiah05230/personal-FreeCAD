@@ -67,7 +67,7 @@ def _error(code, message, data=None):
 # Methods that never mutate the FreeCAD document, or manage their own doc
 # lifecycle - these run outside an undo transaction.
 _NO_TXN = {
-    "ping", "scene.get", "tree.get", "measure.compute", "params.list",
+    "ping", "scene.get", "scene.refined", "tree.get", "measure.compute", "params.list",
     "expr.eval", "feature.primaryDim", "feature.exprs",
     "document.info", "assembly.tree",
     "session.reset", "document.open", "document.save", "document.saveAs",

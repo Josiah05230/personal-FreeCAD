@@ -398,6 +398,7 @@ function renderSig(): string {
 function bodySig(m: RenderMesh): string {
   return [
     m.sig ?? m.positions.length,
+    m.draft ? 'draft' : 'full',
     m.color ? m.color.join('/') : '-',
     m.appearance ? JSON.stringify(m.appearance) : '-',
     renderSig(),

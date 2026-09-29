@@ -785,6 +785,58 @@ export function App(): JSX.Element {
   opRef.current = op
   const meshesRef = useRef(meshes)
   meshesRef.current = meshes
+
+  // heavy shapes arrive as a quick draft mesh while the sidecar builds the
+  // full one in the background (mesh_pool) - poll for those and swap each in
+  // by id, only while the body still has the shape the draft was made from
+  const refiningRef = useRef(false)
+  const refineAgainRef = useRef(false) // new drafts arrived while a loop was running
+  const mountedRef = useRef(true)
+  useEffect(() => () => void (mountedRef.current = false), [])
+  useEffect(() => {
+    if (!meshes.some((m) => m.draft)) return
+    if (refiningRef.current) {
+      refineAgainRef.current = true
+      return
+    }
+    refiningRef.current = true
+    void (async () => {
+      try {
+        while (mountedRef.current && meshesRef.current.some((m) => m.draft)) {
+          refineAgainRef.current = false
+          await new Promise((r) => window.setTimeout(r, 400))
+          const r = await apiQuiet.sceneRefined()
+          if (r.meshes.length) {
+            const byId = new Map(r.meshes.map((x) => [x.id, x]))
+            setMeshes((ms) =>
+              ms.map((m) => {
+                const f = byId.get(m.id)
+                if (!f || !m.draft || f.sig !== m.sig) return m
+                return {
+                  ...m,
+                  positions: f.positions,
+                  normals: f.normals,
+                  indices: f.indices,
+                  faceGroups: f.faceGroups,
+                  edges: f.edges,
+                  vertices: f.vertices,
+                  bbox: f.bbox,
+                  draft: false
+                }
+              })
+            )
+          }
+          // nothing left running: any draft still showing is final (its
+          // background job failed) - unless newer drafts came in meanwhile
+          if (r.pending === 0 && !refineAgainRef.current) break
+        }
+      } catch {
+        // sidecar busy/restarting - the next scene refresh retries
+      } finally {
+        refiningRef.current = false
+      }
+    })()
+  }, [meshes])
   // the modifier state of the latest pick BEFORE an open dialog forces it
   // additive - Move's Objects box replaces on a plain click, adds on Ctrl
   const lastPickAdditiveRef = useRef(false)
@@ -5346,7 +5398,7 @@ export function App(): JSX.Element {
           marker: b.marker ?? null,
           features: b.features.map((f) => ({ id: f.id, kind: f.kind, error: !!f.error }))
         })),
-        meshes: meshes.map((m) => ({ id: m.id, tris: Math.floor((m.positions?.length ?? 0) / 9) })),
+        meshes: meshes.map((m) => ({ id: m.id, tris: Math.floor((m.positions?.length ?? 0) / 9), draft: !!m.draft })),
         sketches: sketches.map((s) => s.id),
         timelineSel,
         assembly: asmTree?.assembly

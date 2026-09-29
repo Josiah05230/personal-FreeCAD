@@ -13,11 +13,19 @@ import math
 # tessellation deflection in mm - smaller = finer. Tuned later / made adaptive.
 SURFACE_DEFLECTION = 0.10
 EDGE_DEFLECTION = 0.05
-# angular deflection in radians (FreeCAD's own GUI default). Part's per-face
-# tessellate applies a much finer fixed angle, so every small circle becomes
-# ~60 segments: a PCB face with 300+ drilled holes took ~6s and 40k triangles
-# on its own, and tiny fillets/torii came out as 8k triangles each.
-ANGULAR_DEFLECTION = 0.5
+# angular deflection in radians. Part's per-face tessellate applies a much
+# finer fixed angle, so every small circle becomes ~60 segments: a PCB face
+# with 300+ drilled holes took ~6s and 40k triangles on its own, and tiny
+# fillets/torii came out as 8k triangles each.
+ANGULAR_DEFLECTION = 0.35
+
+# "draft" quality: what a heavy shape shows first while mesh_pool builds the
+# full mesh in the background (see methods.scene_get). Linear deflection
+# scales with the model so a big part stays cheap; edges skip the
+# tangent/sharp classification (~1.5s on a 1000-face PCBA) and all read as
+# sharp, which matches the default "show tangent edges" look.
+DRAFT_LINEAR_FRACTION = 0.002   # of the bounding-box diagonal
+DRAFT_ANGULAR_DEFLECTION = 1.0
 
 
 def _normalize(x, y, z):
@@ -40,13 +48,13 @@ def _face_outward_normal(face):
         return None
 
 
-def tessellate_face(face):
+def tessellate_face(face, deflection=SURFACE_DEFLECTION):
     """Return (positions, normals, tri_indices) for one face, all face-local.
 
     positions/normals are flat lists of floats (3 per vertex); tri_indices is a
     flat list of ints indexing into that vertex array.
     """
-    verts, tris = face.tessellate(SURFACE_DEFLECTION)
+    verts, tris = face.tessellate(deflection)
     n = len(verts)
     positions = [0.0] * (n * 3)
     for i, v in enumerate(verts):
@@ -143,7 +151,7 @@ def _surf_normal_near(face, pnt):
         return _face_outward_normal(face)
 
 
-def _premesh(shape):
+def _premesh(shape, linear=SURFACE_DEFLECTION, angular=ANGULAR_DEFLECTION):
     """Mesh the whole shape once with an angular limit, so the per-face
     tessellate calls below reuse that triangulation instead of remeshing each
     face at Part's fine default angle. Works on a copy: triangulation lives on
@@ -153,15 +161,16 @@ def _premesh(shape):
     try:
         import MeshPart
         s = shape.copy()
-        MeshPart.meshFromShape(Shape=s, LinearDeflection=SURFACE_DEFLECTION,
-                               AngularDeflection=ANGULAR_DEFLECTION, Relative=False)
+        MeshPart.meshFromShape(Shape=s, LinearDeflection=linear,
+                               AngularDeflection=angular, Relative=False)
         return s
     except Exception:
         return shape
 
 
-def tessellate_shape(shape):
-    """Return a render mesh for a whole shape.
+def tessellate_shape(shape, draft=False):
+    """Return a render mesh for a whole shape (`draft`: the quick, coarser
+    first look - see DRAFT_*; the buffer then carries "draft": True).
 
     {
       "positions": [x,y,z, ...],
@@ -180,10 +189,17 @@ def tessellate_shape(shape):
     face_groups = []
     vert_offset = 0
 
-    shape = _premesh(shape)
+    lin, ang = SURFACE_DEFLECTION, ANGULAR_DEFLECTION
+    if draft:
+        try:
+            lin = max(lin, shape.BoundBox.DiagonalLength * DRAFT_LINEAR_FRACTION)
+        except Exception:
+            pass
+        ang = DRAFT_ANGULAR_DEFLECTION
+    shape = _premesh(shape, lin, ang)
     for fi, face in enumerate(shape.Faces):
         try:
-            fp, fn, fidx = tessellate_face(face)
+            fp, fn, fidx = tessellate_face(face, lin)
         except Exception:
             continue
         if not fidx:
@@ -205,7 +221,7 @@ def tessellate_shape(shape):
     # classify each edge as sharp / tangent (smooth) / other so the client can
     # style tangent edges independently (hide them, dash them, ...). "tangent"
     # = the two faces sharing the edge meet at a near-zero dihedral angle.
-    kinds = _classify_edges(shape)
+    kinds = {} if draft else _classify_edges(shape)
 
     edges = []
     for ei, edge in enumerate(shape.Edges):
@@ -224,7 +240,7 @@ def tessellate_shape(shape):
             edges.append({"edge": ei, "points": pts, "kind": kinds.get(ei, "sharp")})
 
     bb = shape.BoundBox
-    return {
+    out = {
         "positions": positions,
         "normals": normals,
         "indices": indices,
@@ -236,3 +252,6 @@ def tessellate_shape(shape):
             "max": [bb.XMax, bb.YMax, bb.ZMax],
         },
     }
+    if draft:
+        out["draft"] = True
+    return out

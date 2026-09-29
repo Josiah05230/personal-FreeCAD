@@ -26,6 +26,7 @@ from . import recovery as _recovery
 from . import import_dispatch as _import_dispatch  # noqa: F401 (registers importDispatch.*)
 from . import copy_in as _copy_in  # noqa: F401 (registers pn.copyIn)
 from .tessellate import tessellate_shape
+from . import mesh_pool as _mesh_pool
 from .vocab import op_name, next_label
 from . import expr as _expr
 
@@ -45,10 +46,15 @@ def _inherited_faces_cached(o, sig):
     from . import appearance as _appearance
     cols = _appearance.inherited_face_colors(o) or []
     return {"Face%d" % (i + 1): c for i, c in enumerate(cols) if c is not None}
+
 # the caches of recently open files, so switching back to a tab reuses its
 # meshes instead of re-meshing (1-2s on a dense vendor model)
 _TESS_BY_PATH = collections.OrderedDict()
 _TESS_KEEP_FILES = 6
+# a shape with at least this many faces is shown as a draft mesh first and
+# meshed at full quality in the background (mesh_pool) - below it the full
+# mesh takes well under a second anyway
+_DRAFT_MIN_FACES = 250
 
 
 def _shape_sig(shape):
@@ -2285,7 +2291,6 @@ def _owner_mesh(owner, shape):
         buf = dict(cached[1])
     else:
         buf = tessellate_shape(shape)
-        sig = _shape_sig(shape)  # meshing tightens BoundBox; key on the after-state
         if sig is not None:
             _TESS_CACHE[owner.Name] = (sig, buf)
     buf["sig"] = sig
@@ -4442,12 +4447,20 @@ def scene_get():
                 cached = _TESS_CACHE.get(o.Name)
                 if sig is not None and cached is not None and cached[0] == sig:
                     buf = dict(cached[1])  # reuse the heavy positions/normals lists
+                    if buf.get("draft"):
+                        # resubmit if the job went away (e.g. a tab switch);
+                        # a failed job leaves the draft as the final mesh
+                        _mesh_pool.submit((session.path(), o.Name, sig), shape)
                 else:
-                    buf = tessellate_shape(shape)
-                    # meshing tightens the shape's BoundBox, so a key taken
-                    # before it never matched again and every refresh
-                    # re-meshed; key on the after-state
-                    sig = _shape_sig(shape)
+                    # (the signature doesn't depend on meshing - vertices +
+                    # area, no BoundBox - so the key taken above still holds)
+                    heavy = sig is not None and len(shape.Faces) >= _DRAFT_MIN_FACES
+                    if heavy and not _mesh_pool.failed((session.path(), o.Name, sig)):
+                        buf = tessellate_shape(shape, draft=True)
+                        if not _mesh_pool.submit((session.path(), o.Name, sig), shape):
+                            buf = tessellate_shape(shape)
+                    else:
+                        buf = tessellate_shape(shape)
                     if sig is not None:
                         _TESS_CACHE[o.Name] = (sig, buf)
                 buf["sig"] = sig
@@ -4515,6 +4528,28 @@ def scene_get():
         "renderSettings": session.render_settings(),
         "sections": session.sections(),
     }
+
+
+@method("scene.refined")
+def scene_refined():
+    """Full-quality meshes that finished in the background since the last
+    call, for bodies scene.get sent as drafts. Only results that still match
+    the cached draft (same object, same shape signature) are returned; the
+    shell swaps them in by id + sig. `pending` = jobs still running for this
+    document, so the shell knows when to stop polling."""
+    path = session.path()
+    out = []
+    for (p, name, sig), buf in _mesh_pool.take_results():
+        cache = _TESS_CACHE if p == path else _TESS_BY_PATH.get(p)
+        if cache is None:
+            continue
+        cur = cache.get(name)
+        if cur is None or cur[0] != sig or not cur[1].get("draft"):
+            continue  # edited, closed or already refined meanwhile
+        cache[name] = (sig, buf)
+        if p == path:
+            out.append(dict(buf, id=name, sig=sig))
+    return {"meshes": out, "pending": _mesh_pool.pending(path)}
 
 
 # --------------------------------------------------------------------------- #
@@ -5199,6 +5234,7 @@ def document_open(path):
     # that changed on disk (a pull) just re-meshes
     _TESS_CACHE.update(_TESS_BY_PATH.get(path, {}))
     d = session.open_path(path)
+    _mesh_pool.warm()
     _drawing.load_view_cache(d, path)
     session.set_part_number(None)  # never inherit the previous file's PN
     try:

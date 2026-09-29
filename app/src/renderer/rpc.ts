@@ -166,6 +166,8 @@ export interface RenderMesh {
   visible?: boolean
   /** cheap shape signature from the sidecar; unchanged => skip client rebuild */
   sig?: string | null
+  /** quick coarse first look at a heavy shape; the full mesh follows via scene.refined */
+  draft?: boolean
 }
 
 export interface PickPlane {
@@ -908,6 +910,9 @@ export const apiQuiet = {
       renderSettings?: RenderSettings
       sections?: SectionDTO[]
     }>('scene.get'),
+  /** full-quality meshes finished in the background for bodies scene.get sent as drafts */
+  sceneRefined: () =>
+    rpcQuiet<{ meshes: RenderMesh[]; pending: number }>('scene.refined'),
   treeGet: () =>
     rpcQuiet<{ bodies: BodyTree[]; imported: ImportedNode[]; path: string | null }>('tree.get'),
   sectionCreate: (plane: string, offset: number, flip: boolean) =>
