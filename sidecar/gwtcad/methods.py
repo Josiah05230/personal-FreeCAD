@@ -55,23 +55,31 @@ _TESS_KEEP_FILES = 6
 # meshed at full quality in the background (mesh_pool) - below it the full
 # mesh takes well under a second anyway
 _DRAFT_MIN_FACES = 250
+# ...and once one scene.get has fine-meshed this many faces in-process, any
+# further shape with at least _DRAFT_MIN_FACES_OVER_BUDGET faces goes draft too
+_FINE_FACE_BUDGET = 600
+_DRAFT_MIN_FACES_OVER_BUDGET = 24
 
 
 def _shape_sig(shape):
-    # No Volume (~0.3s per refresh on a dense vendor model) and no BoundBox:
-    # OCCT's BoundBox depends on whether the shape has been meshed yet (up
-    # to ~1mm on curved faces), so a key taken on a freshly loaded shape
-    # never matched its own cached mesh. Counts + area + the bounds of the
-    # actual vertices are exact and change with any real edit.
+    # Cheap and exact: element counts plus the bounds AND a weighted checksum
+    # of every vertex coordinate. No Area (1.4s per call on a 55-part vendor
+    # model, recomputed every time - and blind to a hole moved within a
+    # plate, which the vertex checksum catches), no Volume, and no BoundBox
+    # (OCCT's depends on whether the shape has been meshed yet, so a key
+    # taken on a freshly loaded shape never matched its own cached mesh).
     try:
         pts = [v.Point for v in shape.Vertexes]
         if pts:
             xs, ys, zs = [p.x for p in pts], [p.y for p in pts], [p.z for p in pts]
             vb = (min(xs), min(ys), min(zs), max(xs), max(ys), max(zs))
+            ck = sum(x * 1.0001 + y * 1.7003 + z * 2.3007 for x, y, z in zip(xs, ys, zs))
+            ck2 = sum(x * x + 1.3 * y * y + 1.7 * z * z for x, y, z in zip(xs, ys, zs))
         else:
             vb = (0.0,) * 6
-        return "%d|%d|%d|%.5f|%.4f,%.4f,%.4f,%.4f,%.4f,%.4f" % (
-            (len(shape.Faces), len(shape.Edges), len(pts), shape.Area) + vb)
+            ck = ck2 = 0.0
+        return "%d|%d|%d|%.6f|%.6f|%.4f,%.4f,%.4f,%.4f,%.4f,%.4f" % (
+            (shape.countElement("Face"), shape.countElement("Edge"), len(pts), ck, ck2) + vb)
     except Exception:
         return None
 
@@ -4424,6 +4432,9 @@ def scene_get():
     suppressed = _suppressed_names(d)
     consumed_bodies = _boolean_consumed_bodies(d)
     helper_shapes = _xform_helper_features(d)
+    # faces fine-meshed in THIS call so far: past the budget, even medium
+    # shapes go draft + background (fifty 100-face parts add up too)
+    budget = {"faces": 0}
     for o in d.Objects:
         if o.Name in suppressed:
             continue
@@ -4455,7 +4466,12 @@ def scene_get():
                 else:
                     # (the signature doesn't depend on meshing - vertices +
                     # area, no BoundBox - so the key taken above still holds)
-                    heavy = sig is not None and len(shape.Faces) >= _DRAFT_MIN_FACES
+                    nf = shape.countElement("Face")
+                    heavy = sig is not None and (
+                        nf >= _DRAFT_MIN_FACES
+                        or (budget["faces"] > _FINE_FACE_BUDGET and nf >= _DRAFT_MIN_FACES_OVER_BUDGET))
+                    if not heavy:
+                        budget["faces"] += nf
                     if heavy and not _mesh_pool.failed((session.path(), o.Name, sig)):
                         buf = tessellate_shape(shape, draft=True)
                         if not _mesh_pool.submit((session.path(), o.Name, sig), shape):
@@ -4529,6 +4545,67 @@ def scene_get():
         "renderSettings": session.render_settings(),
         "sections": session.sections(),
     }
+
+
+@method("scene.forFile")
+def scene_for_file(path):
+    """Render meshes for ANOTHER file without touching the open document -
+    the History panel's version compare. The file is opened hidden,
+    tessellated (big shapes at draft quality: it's a quick look) and closed,
+    along with any documents it pulled in that weren't open before."""
+    path = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isfile(path):
+        raise RpcError(APP_ERROR, "no such file: %s" % path)
+    active = session.doc(create=False)
+    if active is not None and os.path.abspath(getattr(active, "FileName", "") or "") == path:
+        raise RpcError(APP_ERROR, "that file is the open document - use scene.get")
+    before = set(App.listDocuments().keys())
+    d = App.openDocument(path, hidden=True)
+    try:
+        d.recompute()
+        suppressed = _suppressed_names(d)
+        consumed = _boolean_consumed_bodies(d)
+        helpers = _xform_helper_features(d)
+        meshes = []
+        for o in d.Objects:
+            if o.Name in suppressed or o.Name in helpers:
+                continue
+            tid = o.TypeId
+            if tid not in ("PartDesign::Body", "App::Link", "Part::Feature", "Part::FeaturePython", "Mesh::Feature"):
+                continue
+            if tid == "PartDesign::Body" and o.Name in consumed:
+                continue
+            if not bool(getattr(o, "Visibility", True)):
+                continue
+            if tid == "Mesh::Feature":
+                buf = _mesh_feature_buffer(o)
+                if buf is None:
+                    continue
+            else:
+                shape = getattr(o, "Shape", None)
+                if shape is None or shape.isNull():
+                    continue
+                buf = tessellate_shape(shape, draft=len(shape.Faces) >= _DRAFT_MIN_FACES)
+                buf["sig"] = _shape_sig(shape)
+            buf["id"] = o.Name
+            buf["label"] = o.Label
+            buf["visible"] = True
+            if tid == "App::Link":
+                buf["component"] = True
+            meshes.append(buf)
+        return {"meshes": meshes}
+    finally:
+        for name in list(App.listDocuments().keys()):
+            if name not in before:
+                try:
+                    App.closeDocument(name)
+                except Exception:
+                    pass
+        if active is not None:
+            try:
+                App.setActiveDocument(active.Name)
+            except Exception:
+                pass
 
 
 def _absorb_refined():

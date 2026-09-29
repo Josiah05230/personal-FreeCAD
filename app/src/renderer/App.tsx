@@ -5571,6 +5571,10 @@ export function App(): JSX.Element {
   ])
 
   // ---- boot ----
+  // runs ONCE: it used to depend on refreshScene, which changes with docPath,
+  // so every file open re-ran boot and loaded the whole scene a second time
+  const refreshSceneRef = useRef(refreshScene)
+  refreshSceneRef.current = refreshScene
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -5582,7 +5586,7 @@ export function App(): JSX.Element {
           if (cancelled) return
           // finish the first scene / tree load BEFORE dropping the boot scrim,
           // so the app never appears "ready" while it is still populating
-          await refreshScene()
+          await refreshSceneRef.current()
           if (cancelled) return
           setStatus({ phase: 'ready', freecad: `${p.freecad} ${p.build}` })
           return
@@ -5596,7 +5600,7 @@ export function App(): JSX.Element {
     return () => {
       cancelled = true
     }
-  }, [refreshScene])
+  }, [])
 
   // the geometry engine can hard-crash on bad OCCT input; the main process
   // respawns it, but the new doc is empty - refetch and tell the user

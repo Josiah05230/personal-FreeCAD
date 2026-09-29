@@ -10,6 +10,8 @@ up-axis; it does not rewrite coordinates here.
 """
 import math
 
+import numpy as np
+
 # tessellation deflection in mm - smaller = finer. Tuned later / made adaptive.
 SURFACE_DEFLECTION = 0.10
 EDGE_DEFLECTION = 0.05
@@ -52,60 +54,70 @@ def tessellate_face(face, deflection=SURFACE_DEFLECTION):
     """Return (positions, normals, tri_indices) for one face, all face-local.
 
     positions/normals are flat lists of floats (3 per vertex); tri_indices is a
-    flat list of ints indexing into that vertex array.
+    flat list of ints indexing into that vertex array. Vectorized with numpy:
+    the per-triangle Python loop was the biggest in-process meshing cost on
+    a many-part model.
     """
     verts, tris = face.tessellate(deflection)
-    n = len(verts)
-    positions = [0.0] * (n * 3)
-    for i, v in enumerate(verts):
-        positions[i * 3] = v.x
-        positions[i * 3 + 1] = v.y
-        positions[i * 3 + 2] = v.z
-
+    if not verts or not tris:
+        return [], [], []
+    P = np.array([(v.x, v.y, v.z) for v in verts], dtype=float)
+    T = np.array(tris, dtype=np.int64)
     ref = _face_outward_normal(face)
-    accum = [0.0] * (n * 3)
-    indices = []
-
-    for (a, b, c) in tris:
-        ax, ay, az = verts[a].x, verts[a].y, verts[a].z
-        bx, by, bz = verts[b].x, verts[b].y, verts[b].z
-        cx, cy, cz = verts[c].x, verts[c].y, verts[c].z
-        ux, uy, uz = bx - ax, by - ay, bz - az
-        vx, vy, vz = cx - ax, cy - ay, cz - az
-        fx = uy * vz - uz * vy
-        fy = uz * vx - ux * vz
-        fz = ux * vy - uy * vx
-        fx, fy, fz = _normalize(fx, fy, fz)
-
-        flip = ref is not None and (fx * ref[0] + fy * ref[1] + fz * ref[2]) < 0.0
-        if flip:
-            fx, fy, fz = -fx, -fy, -fz
-            a, c = c, a  # keep winding consistent with the outward normal
-
-        indices.extend((a, b, c))
-        for idx in (a, b, c):
-            accum[idx * 3] += fx
-            accum[idx * 3 + 1] += fy
-            accum[idx * 3 + 2] += fz
-
-    normals = [0.0] * (n * 3)
-    for i in range(n):
-        nx, ny, nz = _normalize(accum[i * 3], accum[i * 3 + 1], accum[i * 3 + 2])
-        if nx == 0.0 and ny == 0.0 and nz == 0.0 and ref is not None:
-            nx, ny, nz = ref
-        normals[i * 3] = nx
-        normals[i * 3 + 1] = ny
-        normals[i * 3 + 2] = nz
-
-    return positions, normals, indices
+    fn = np.cross(P[T[:, 1]] - P[T[:, 0]], P[T[:, 2]] - P[T[:, 0]])
+    ln = np.linalg.norm(fn, axis=1)
+    ok = ln > 1e-12
+    fn[ok] /= ln[ok, None]
+    fn[~ok] = 0.0
+    if ref is not None:
+        # keep winding consistent with the outward normal
+        flip = fn @ np.asarray(ref) < 0.0
+        fn[flip] *= -1.0
+        T[flip] = T[flip][:, ::-1]
+    acc = np.zeros_like(P)
+    for k in range(3):
+        np.add.at(acc, T[:, k], fn)
+    la = np.linalg.norm(acc, axis=1)
+    nz = la > 1e-12
+    acc[nz] /= la[nz, None]
+    if ref is not None:
+        acc[~nz] = ref
+    return P.ravel().tolist(), acc.ravel().tolist(), T.ravel().tolist()
 
 
 # dihedral angle (deg) below which a shared edge counts as a smooth / tangent
 # transition rather than a designed crease.
 TANGENT_ANGLE_DEG = 12.0
+_CLEARLY_TANGENT = math.cos(math.radians(4.0))
+_CLEARLY_SHARP = math.cos(math.radians(TANGENT_ANGLE_DEG + 12.0))
 
 
-def _classify_edges(shape):
+def _normal_fn(face):
+    """A fast "surface normal near point p" for one face: analytic for planes
+    and cylinders (most mechanical faces; Surface.parameter() was the bulk of
+    edge classification), the general projection otherwise. Sign is
+    irrelevant here - callers compare |n1 . n2|."""
+    try:
+        surf = face.Surface
+        kind = type(surf).__name__
+        if kind == "Plane":
+            n = _normalize(surf.Axis.x, surf.Axis.y, surf.Axis.z)
+            return lambda p: n
+        if kind == "Cylinder":
+            ax = _normalize(surf.Axis.x, surf.Axis.y, surf.Axis.z)
+            c = surf.Center
+
+            def cyl(p):
+                dx, dy, dz = p.x - c.x, p.y - c.y, p.z - c.z
+                t = dx * ax[0] + dy * ax[1] + dz * ax[2]
+                return _normalize(dx - t * ax[0], dy - t * ax[1], dz - t * ax[2])
+            return cyl
+    except Exception:
+        pass
+    return lambda p: _surf_normal_near(face, p)
+
+
+def _classify_edges(shape, pair_dots=None):
     """{edgeIndex: "sharp"|"tangent"|"free"} - "free" = an edge with fewer than
     two adjacent faces (open wire / lamina boundary)."""
     out = {}
@@ -116,22 +128,43 @@ def _classify_edges(shape):
         return out
     # map each edge (by hash) to the faces that use it
     by_edge = {}
-    for face in faces:
+    for fi, face in enumerate(faces):
         try:
             for e in face.Edges:
-                by_edge.setdefault(e.hashCode(), []).append(face)
+                by_edge.setdefault(e.hashCode(), []).append(fi)
         except Exception:
             continue
+    normal_of = {}
     cos_lim = math.cos(math.radians(TANGENT_ANGLE_DEG))
     for ei, edge in enumerate(edges):
         adj = by_edge.get(edge.hashCode(), [])
         if len(adj) < 2:
             out[ei] = "free"
             continue
+        if adj[0] == adj[1]:
+            out[ei] = "tangent"  # a seam: the face meets itself smoothly
+            continue
+        if pair_dots:
+            # mesh normals at a curved face's boundary are off by up to half
+            # the meshing angle, so they only settle the clear cases; the
+            # band around the threshold gets the exact surface normals below
+            dot = pair_dots.get((min(adj[0], adj[1]), max(adj[0], adj[1])))
+            if dot is not None and dot >= _CLEARLY_TANGENT:
+                out[ei] = "tangent"
+                continue
+            if dot is not None and dot <= _CLEARLY_SHARP:
+                out[ei] = "sharp"
+                continue
         try:
             mid = edge.valueAt((edge.FirstParameter + edge.LastParameter) * 0.5)
-            n1 = _surf_normal_near(adj[0], mid)
-            n2 = _surf_normal_near(adj[1], mid)
+            fns = []
+            for fi in adj[:2]:
+                f = normal_of.get(fi)
+                if f is None:
+                    f = normal_of[fi] = _normal_fn(faces[fi])
+                fns.append(f)
+            n1 = fns[0](mid)
+            n2 = fns[1](mid)
             if n1 is None or n2 is None:
                 out[ei] = "sharp"
                 continue
@@ -168,6 +201,94 @@ def _premesh(shape, linear=SURFACE_DEFLECTION, angular=ANGULAR_DEFLECTION):
         return shape
 
 
+def _mesh_whole_shape(shape, lin, ang):
+    """Triangles + normals + face groups for a whole shape from ONE MeshPart
+    call (Segments=True gives each triangle's source face), un-welded per face
+    and oriented by each face's outward normal - all vectorized. Per-face
+    tessellate() + Python normal loops cost ~1ms a face; a vendor part has
+    thousands. Returns (positions, normals, indices, faceGroups, meshed copy)
+    or None to fall back to the per-face path."""
+    import MeshPart
+    s = shape.copy()  # triangulation lives on the TShape - keep it off the document's shape
+    m = MeshPart.meshFromShape(Shape=s, LinearDeflection=lin, AngularDeflection=ang,
+                               Relative=False, Segments=True)
+    faces = s.Faces
+    nseg = m.countSegments()
+    if nseg != len(faces):
+        return None
+    pts, tris = m.Topology
+    if not tris:
+        return [], [], [], [], s
+    P = np.array([(q.x, q.y, q.z) for q in pts], dtype=float)
+    Tr = np.array(tris, dtype=np.int64)
+    seg = np.full(len(Tr), -1, dtype=np.int64)
+    for k in range(nseg):
+        fac = m.getSegment(k)
+        if fac:
+            seg[list(fac)] = k
+    keep = seg >= 0
+    Tr, seg = Tr[keep], seg[keep]
+    order = np.argsort(seg, kind="stable")
+    Tr, seg = Tr[order], seg[order]
+    refs = np.zeros((nseg, 3))
+    has = np.zeros(nseg, dtype=bool)
+    for k, f in enumerate(faces):
+        r = _face_outward_normal(f)
+        if r is not None:
+            refs[k] = r
+            has[k] = True
+    fn = np.cross(P[Tr[:, 1]] - P[Tr[:, 0]], P[Tr[:, 2]] - P[Tr[:, 0]])
+    ln = np.linalg.norm(fn, axis=1)
+    ok = ln > 1e-12
+    fn[ok] /= ln[ok, None]
+    fn[~ok] = 0.0
+    flip = has[seg] & (np.einsum("ij,ij->i", fn, refs[seg]) < 0.0)
+    fn[flip] *= -1.0
+    Tr[flip] = Tr[flip][:, ::-1]
+    # un-weld: one vertex per (face, point), so shading stays hard at edges
+    nP = len(P)
+    uniq, inv = np.unique((seg[:, None] * nP + Tr).ravel(), return_inverse=True)
+    newT = inv.reshape(-1, 3)
+    newP = P[uniq % nP]
+    acc = np.zeros_like(newP)
+    for k in range(3):
+        np.add.at(acc, newT[:, k], fn)
+    la = np.linalg.norm(acc, axis=1)
+    nz = la > 1e-12
+    acc[nz] /= la[nz, None]
+    vseg = uniq // nP
+    fill = ~nz & has[vseg]
+    acc[fill] = refs[vseg[fill]]
+    starts = np.flatnonzero(np.r_[True, seg[1:] != seg[:-1]])
+    counts = np.diff(np.r_[starts, len(seg)])
+    groups = [{"face": int(seg[a]), "start": int(a) * 3, "count": int(c) * 3} for a, c in zip(starts, counts)]
+    return newP.ravel().tolist(), acc.ravel().tolist(), newT.ravel().tolist(), groups, s, _face_pair_dots(uniq % nP, vseg, acc)
+
+
+def _face_pair_dots(orig, vseg, nrm):
+    """{(faceA, faceB): max |nA . nB|} over the mesh points two faces share
+    (the welded mesh gives both faces the same point along their common
+    edge) - classifies every edge between them as tangent or sharp without
+    a per-edge surface projection."""
+    if len(orig) < 2:
+        return {}
+    order = np.argsort(orig, kind="stable")
+    o, sg, nn = orig[order], vseg[order], nrm[order]
+    same = (o[1:] == o[:-1]) & (sg[1:] != sg[:-1])
+    if not same.any():
+        return {}
+    i = np.flatnonzero(same)
+    a, b = sg[i], sg[i + 1]
+    d = np.abs(np.einsum("ij,ij->i", nn[i], nn[i + 1]))
+    lo, hi = np.minimum(a, b), np.maximum(a, b)
+    keys = lo * (int(vseg.max()) + 1) + hi
+    uk, inv = np.unique(keys, return_inverse=True)
+    best = np.zeros(len(uk))
+    np.maximum.at(best, inv, d)
+    m = int(vseg.max()) + 1
+    return {(int(k // m), int(k % m)): float(v) for k, v in zip(uk, best)}
+
+
 def tessellate_shape(shape, draft=False):
     """Return a render mesh for a whole shape (`draft`: the quick, coarser
     first look - see DRAFT_*; the buffer then carries "draft": True).
@@ -196,8 +317,17 @@ def tessellate_shape(shape, draft=False):
         except Exception:
             pass
         ang = DRAFT_ANGULAR_DEFLECTION
-    shape = _premesh(shape, lin, ang)
-    for fi, face in enumerate(shape.Faces):
+    whole = None
+    try:
+        whole = _mesh_whole_shape(shape, lin, ang)
+    except Exception:
+        whole = None
+    pair_dots = None
+    if whole is not None:
+        positions, normals, indices, face_groups, shape, pair_dots = whole
+    else:
+        shape = _premesh(shape, lin, ang)
+    for fi, face in enumerate(shape.Faces if whole is None else ()):
         try:
             fp, fn, fidx = tessellate_face(face, lin)
         except Exception:
@@ -221,7 +351,7 @@ def tessellate_shape(shape, draft=False):
     # classify each edge as sharp / tangent (smooth) / other so the client can
     # style tangent edges independently (hide them, dash them, ...). "tangent"
     # = the two faces sharing the edge meet at a near-zero dihedral angle.
-    kinds = {} if draft else _classify_edges(shape)
+    kinds = {} if draft else _classify_edges(shape, pair_dots)
 
     edges = []
     for ei, edge in enumerate(shape.Edges):
