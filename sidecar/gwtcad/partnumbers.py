@@ -65,6 +65,7 @@ _REGISTRY_FIELDS = [
     "pn", "pn_seq", "project", "type", "seq", "rev", "name", "description",
     "reason", "mfg", "mfg_pn", "purchasing_link", "status", "lifecycle",
     "rev_date", "created", "repo_relpath", "print_volume_cm3",
+    "est_unit_cost",
 ]
 
 # in_work: just reserved or just revised, not yet validated - can't be
