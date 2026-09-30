@@ -596,15 +596,54 @@ export function App(): JSX.Element {
     },
     [flashSketchNotice, fetchMissingMcMasterModels]
   )
+  // At startup, then whenever the PN registry gets a new commit (every part
+  // number reserved from a purchase upload is one), plus a slow fallback for
+  // changes that don't touch the registry. The full check pulls repos, scans
+  // every part file and may fetch McMaster pages - far too heavy to run on a
+  // timer - so a cheap probe (the registry remote's HEAD id, one small
+  // ls-remote in the main process, never the sidecar) decides when to run it.
+  // One check at a time; a change seen mid-check is picked up right after.
+  const supplierCheckRunning = useRef(false)
+  const supplierCheckAgain = useRef(false)
   useEffect(() => {
+    if (window.cad.isE2E) return
     let live = true
-    if (live) void checkSupplierModels(true)
+    let lastHead: string | null = null
+    let lastFull = 0
+    const PROBE_MS = 10_000
+    const FALLBACK_MS = 15 * 60_000
+    const runCheck = async (): Promise<void> => {
+      if (supplierCheckRunning.current) {
+        supplierCheckAgain.current = true
+        return
+      }
+      supplierCheckRunning.current = true
+      try {
+        do {
+          supplierCheckAgain.current = false
+          lastFull = Date.now()
+          await checkSupplierModels(true)
+        } while (live && supplierCheckAgain.current)
+      } finally {
+        supplierCheckRunning.current = false
+      }
+    }
+    const probe = async (): Promise<void> => {
+      const head = await window.cad.registryRemoteHead().catch(() => null)
+      if (!live) return
+      const changed = head !== null && lastHead !== null && head !== lastHead
+      if (head !== null) lastHead = head
+      if (changed || Date.now() - lastFull > FALLBACK_MS) void runCheck()
+    }
+    void runCheck()
+    void window.cad.registryRemoteHead().then((h) => { lastHead = h }).catch(() => undefined)
+    const timer = window.setInterval(() => void probe(), PROBE_MS)
     return () => {
       live = false
+      window.clearInterval(timer)
     }
-    // Deliberately [] (startup-only) - checkSupplierModels' identity only
-    // ever changes if flashSketchNotice's did, which never happens (it's
-    // itself a stable useCallback), so this can't silently start re-running.
+    // Deliberately [] - checkSupplierModels' identity only ever changes if
+    // flashSketchNotice's did, which never happens (a stable useCallback).
   }, [])
   const [planePickMode, setPlanePickMode] = useState(false)
   const [pickPlanes, setPickPlanes] = useState<PickPlane[]>([])

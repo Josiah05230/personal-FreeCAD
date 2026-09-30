@@ -309,6 +309,17 @@ app.whenReady().then(async () => {
     return r.filePath
   })
 
+  // the registry repo's remote HEAD - polled by the renderer to notice new
+  // part numbers (see checkSupplierModels in App.tsx); null if unconfigured
+  ipcMain.handle('registry:remoteHead', async () => {
+    try {
+      const dir = process.env.GWTCAD_CONFIG_DIR || join(homedir(), '.gwtcad')
+      const cfg = JSON.parse(await readFile(join(dir, 'company.json'), 'utf8')) as { registryPath?: string }
+      return cfg.registryPath ? await gitw.remoteHead(cfg.registryPath) : null
+    } catch {
+      return null
+    }
+  })
   ipcMain.handle('git:status', (_e, filePath: string) => gitw.status(filePath))
   ipcMain.handle('git:log', (_e, filePath: string, limit?: number) => gitw.log(filePath, limit))
   ipcMain.handle('git:logAll', (_e, filePath: string, limit?: number) => gitw.logAll(filePath, limit))

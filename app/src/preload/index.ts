@@ -332,7 +332,8 @@ const cad = {
   mcmasterScrapeCurrentPart: () =>
     ipcRenderer.invoke('mcmaster:scrapeCurrentPart') as Promise<Record<string, unknown> | null>,
   mcmasterFetchStepHeadless: (mfgPn: string) =>
-    ipcRenderer.invoke('mcmaster:fetchStepHeadless', mfgPn) as Promise<string>
+    ipcRenderer.invoke('mcmaster:fetchStepHeadless', mfgPn) as Promise<string>,
+  registryRemoteHead: () => ipcRenderer.invoke('registry:remoteHead') as Promise<string | null>
 }
 
 contextBridge.exposeInMainWorld('cad', cad)

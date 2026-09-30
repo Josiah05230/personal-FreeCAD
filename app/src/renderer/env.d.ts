@@ -224,6 +224,8 @@ interface CadBridge {
   mcmasterNavigate(input: string): Promise<void>
   mcmasterDownloadCad(format?: 'STEP' | 'IGES'): Promise<string>
   mcmasterFetchStepHeadless(mfgPn: string): Promise<string>
+  /** the PN registry repo's remote HEAD commit, or null (offline / unconfigured) */
+  registryRemoteHead(): Promise<string | null>
   mcmasterScrapeCurrentPart(): Promise<Record<string, unknown> | null>
 }
 

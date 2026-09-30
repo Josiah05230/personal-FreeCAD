@@ -652,3 +652,17 @@ export async function discardFile(filePath: string): Promise<void> {
   const paths = await companionPaths(filePath)
   await gitOrThrow(cwd, ['checkout', 'HEAD', '--', ...paths])
 }
+
+/** The commit id `origin`'s HEAD points at, or null when there is no remote
+ *  or it can't be reached. One small network round trip (ls-remote sends a
+ *  few hundred bytes), so it's cheap enough to poll - the supplier-model
+ *  check uses it to notice new registry commits (every reserved PN is one)
+ *  without pulling or scanning anything. */
+export async function remoteHead(repoDir: string): Promise<string | null> {
+  try {
+    const out = await gitOrThrow(repoDir, ['ls-remote', 'origin', 'HEAD'], { timeout: NETWORK_TIMEOUT_MS })
+    return out.split(/\s+/)[0] || null
+  } catch {
+    return null
+  }
+}
