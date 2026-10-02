@@ -1698,10 +1698,9 @@ def _scaled_polys(polys, k):
 def _rescale_from_cache(doc, view, target, scale):
     """Rescale WITHOUT hidden-line removal (a recompute at the new scale took
     60-110s per view on a dense assembly). A projection is linear in its
-    scale: a plain view's edges are stored at model scale (the sheet applies
-    Scale), so they don't change at all; a projection-group item's edges bake
-    in the group's Scale, so they - and its offset and its position in the
-    group - just multiply by new/old. The page is kept lazy (TechDraw skips
+    scale: a view's edges (plain or projection-group item) and its offset
+    just multiply by new/old, and a group item's position in its group does
+    too. The page is kept lazy (TechDraw skips
     recomputing its views) and every view on it gets a fresh cache entry
     under its new key, so the result also lands in the file's saved view
     cache. None = can't (a view with no geometry yet) -> the caller
@@ -1751,10 +1750,10 @@ def _rescale_from_cache(doc, view, target, scale):
         e = entries.get(item.Name)
         if e is None:
             continue
+        e["visible"] = _scaled_polys(e["visible"], k)
+        e["hidden"] = _scaled_polys(e["hidden"], k)
+        e["offset"] = [e["offset"][0] * k, e["offset"][1] * k]
         if is_group:
-            e["visible"] = _scaled_polys(e["visible"], k)
-            e["hidden"] = _scaled_polys(e["hidden"], k)
-            e["offset"] = [e["offset"][0] * k, e["offset"][1] * k]
             # its place in the group scales with it (TechDraw's own layout
             # runs again whenever the page is next computed for real)
             try:

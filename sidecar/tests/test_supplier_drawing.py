@@ -297,7 +297,9 @@ def test_saved_drawing_is_lazy_on_disk_and_computed_on_first_use(generated):
     page = next(o for o in d.Objects if o.TypeId == "TechDraw::DrawPage")
     views = drawing.page_contents(d, page.Name)["views"]
     assert all(v["visible"] for v in views)
-    drawing.set_view_scale(d, views[0]["id"], 1.0)  # any real drawing edit computes the page
+    # any real drawing edit computes the page (a rescale doesn't need to -
+    # it scales the saved geometry, see test_set_view_scale_*)
+    drawing.get_page(d, page.Name)
     assert page.KeepUpdated is True
 
 
