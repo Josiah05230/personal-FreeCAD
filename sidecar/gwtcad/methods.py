@@ -124,6 +124,8 @@ def ping():
 
 @method("session.reset")
 def session_reset():
+    from . import registry as _registry
+    _registry.set_read_only(None)
     d = session.reset()
     _TESS_CACHE.clear()
     _ensure_starter_body(d)
@@ -5345,11 +5347,15 @@ def document_save():
 
 
 @method("document.open")
-def document_open(path):
+def document_open(path, readOnly=None):
+    """readOnly: a reason string - open the file for viewing only (an old
+    revision); every editing call is refused with it until the next open."""
     import json
+    from . import registry as _registry
     path = os.path.abspath(os.path.expanduser(path))
     if not os.path.isfile(path):
         raise RpcError(APP_ERROR, "no such file: %s" % path)
+    _registry.set_read_only(readOnly)
     prev = session.path()
     if prev and _TESS_CACHE:
         _TESS_BY_PATH[prev] = dict(_TESS_CACHE)

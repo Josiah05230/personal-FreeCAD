@@ -591,6 +591,35 @@ def pn_history(pnSeq):
     return {"revisions": rows}
 
 
+@method("pn.revisionFiles")
+def pn_revision_files(pnSeqOrFull):
+    """Every revision of a part, oldest first, each with the absolute path of
+    its file (None if it can't be found) and whether it's the current one -
+    what the History panel lists so an old revision can be viewed from the
+    newest one."""
+    cfg = _load_config()
+    _sync_pull_for_read(_registry_path(cfg))
+    all_rows = _read_registry(cfg)
+    # a full PN (any revision) or the bare sequence id
+    hit = next((r for r in all_rows if r.get("pn") == pnSeqOrFull), None)
+    pn_seq = hit["pn_seq"] if hit else pnSeqOrFull
+    rows = _rows_for_seq(all_rows, pn_seq)
+    if not rows:
+        return {"revisions": []}
+    rows.sort(key=lambda r: int(r["rev"]))
+    current = int(rows[-1]["rev"])
+    out = []
+    for r in rows:
+        repo = _repo_path_for_type(cfg, r["project"], r["type"])
+        filename = _filename_for(r["project"], r["type"], int(r["seq"]), int(r["rev"]))
+        try:
+            abspath, _rel = _find_part_file(repo, filename, r.get("repo_relpath"))
+        except Exception:
+            abspath = None
+        out.append(dict(r, path=abspath, current=int(r["rev"]) == current))
+    return {"revisions": out}
+
+
 @method("pn.listAvailableSeq")
 def pn_list_available_seq(project, type, count=20):
     """Unused 3-digit sequence numbers for this project+type, filling holes

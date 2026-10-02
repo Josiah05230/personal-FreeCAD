@@ -112,12 +112,45 @@ _NO_TXN = {
     "pn.listAvailableSeq", "pn.reserve", "pn.newRevision", "pn.resolve",
     "pn.tagDocument", "pn.repoForPath", "pn.checkLocation", "pn.relocate",
     "pn.registryRows", "pn.registryRestore",
-    "pn.history", "pn.currentRow",
+    "pn.history", "pn.currentRow", "pn.revisionFiles",
     # builds/tags the part file in its own scratch document, never the session's
     "pn.copyIn",
     # export/upload only - reads the open document, never mutates it.
     "export.promote",
 }
+
+
+# Read-only viewing (an old revision opened from the newest one's History
+# panel): while set, only these methods run - everything that would change
+# the document, the disk or the registry is refused with `_read_only["why"]`.
+# document.open sets/clears it on every open, so it never outlives the file.
+_read_only = {"why": None}
+
+_READ_ONLY_OK = {
+    "ping", "session.reset", "document.open", "document.info",
+    "scene.get", "scene.refined", "scene.forFile", "tree.get", "assembly.tree",
+    "measure.compute", "params.list", "expr.eval", "edge.loopFrom",
+    "feature.primaryDim", "feature.exprs", "feature.get",
+    "inspect.centerOfMass", "inspect.interference",
+    "object.setVisibility", "visibility.setGroup",
+    "assembly.explodeState", "datum.planePreview", "kicad.status",
+    "section.list", "section.create", "section.set", "section.delete",
+    "appearance.get", "appearance.renderGet", "appearance.presetList",
+    "material.get", "material.presets", "material.presetDetail", "material.customList",
+    "mesh.list", "decal.list",
+    "drawing.pageList", "drawing.pageContents", "drawing.snapTargets", "drawing.bomRows",
+    "drawing.getDimensionFormats", "drawing.listCleanupLines",
+    "drawing.listTableTemplates", "drawing.listSheetTemplates",
+    "io.export", "io.exportStep", "io.exportStl",
+    "pn.getCompanyConfig", "pn.listTypes", "pn.listAll", "pn.history", "pn.currentRow",
+    "pn.revisionFiles", "pn.registryRows", "pn.resolve", "pn.repoForPath",
+    "pn.checkLocation", "pn.bomFor", "pn.resolveBomFilenames",
+    "pn.getInventory", "pn.listInventory",
+}
+
+
+def set_read_only(why):
+    _read_only["why"] = why or None
 
 
 def _open_txn(name):
@@ -156,6 +189,10 @@ def dispatch(payload):
     if fn is None:
         return {"jsonrpc": "2.0", "id": rpc_id,
                 "error": _error(METHOD_NOT_FOUND, "no such method: %s" % name)}
+
+    if _read_only["why"] and name not in _READ_ONLY_OK:
+        return {"jsonrpc": "2.0", "id": rpc_id,
+                "error": _error(APP_ERROR, _read_only["why"], {"readOnly": True})}
 
     _t0 = time.perf_counter()
     txn = _open_txn(name)

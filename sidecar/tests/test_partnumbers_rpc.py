@@ -218,6 +218,23 @@ def test_history_returns_every_revision_oldest_first(company_config, cad_repo):
     assert revs == ["0", "1", "2"]
 
 
+def test_revision_files_lists_every_revision_with_its_file(company_config, cad_repo):
+    reserved = pn.pn_reserve("CM", "C", 1, "connector", "v0")
+    abspath = os.path.join(str(cad_repo), reserved["repoRelpath"])
+    os.makedirs(os.path.dirname(abspath), exist_ok=True)
+    open(abspath, "w").close()
+    new = pn.pn_new_revision("CMC001", reason="bump 1")
+
+    # by sequence, or by any revision's full PN
+    for key in ("CMC001", "CMC0010", "CMC0011"):
+        revs = pn.pn_revision_files(key)["revisions"]
+        assert [r["pn"] for r in revs] == ["CMC0010", "CMC0011"]
+        assert [r["current"] for r in revs] == [False, True]
+        assert revs[0]["path"] == abspath
+        assert revs[1]["path"] == new["path"]
+    assert pn.pn_revision_files("CMC999")["revisions"] == []
+
+
 def test_list_available_seq_fills_holes_left_by_obsoleted_parts(company_config):
     pn.pn_reserve("CM", "C", 1, "connector", "a")
     pn.pn_reserve("CM", "C", 3, "connector", "c")
