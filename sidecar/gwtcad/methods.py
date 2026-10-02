@@ -5366,19 +5366,27 @@ def _write_sidecar(path):
 
 
 def _record_print_volume(d):
-    """After saving a 3D-printed (J) part, store its solid volume in the
-    registry so the portal can price its filament. Best effort - offline,
-    no registry, or no solid geometry must never fail the save."""
+    """After saving a part, store its solid volume and overall size in the
+    registry's shipping.csv (the portal estimates shipping weight and box
+    from them), and for a 3D-printed (J) part its print volume too (the
+    portal prices its filament). Best effort - offline, no registry, or no
+    solid geometry must never fail the save."""
     pn = (session.part_number() or {}).get("pn") or ""
-    if len(pn) < 3 or pn[2] != "J":
+    if len(pn) < 3:
         return
     try:
         from . import supplier_models as _sm
-        volume = sum(o.Shape.Volume for o in _sm._drawable_bodies(d) if o.Shape.Solids) / 1000.0
-        if volume > 0:
+        import Part
+        shapes = [o.Shape for o in _sm._drawable_bodies(d) if o.Shape.Solids]
+        volume = sum(s.Volume for s in shapes) / 1000.0
+        if volume <= 0:
+            return
+        if pn[2] == "J":
             _partnumbers.pn_record_print_volume(pn, volume)
+        bb = Part.makeCompound(shapes).BoundBox
+        _partnumbers.pn_record_shipping_measure(pn, volume, [bb.XLength, bb.YLength, bb.ZLength])
     except Exception as e:
-        App.Console.PrintWarning("%s: print volume not recorded: %s\n" % (pn, e))
+        App.Console.PrintWarning("%s: volume/size not recorded: %s\n" % (pn, e))
 
 
 def _recover_part_number(d, path):

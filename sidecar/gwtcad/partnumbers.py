@@ -886,6 +886,62 @@ def pn_record_print_volume(pn, volume_cm3):
     return True
 
 
+_SHIPPING_FIELDS = ["pn", "volume_cm3", "length_mm", "width_mm", "height_mm", "weight_g", "measured_at", "note"]
+
+
+def pn_record_shipping_measure(pn, volume_cm3, dims_mm):
+    """Store a part's solid volume and overall size (largest side first) in
+    the registry's shipping.csv - the GrainWavePartners portal estimates the
+    part's shipping weight and box from these. Keeps any hand-entered
+    weight_g. A no-op (no commit) when the values already match, so saving
+    an unchanged part doesn't add registry history."""
+    import csv
+    cfg = _load_config()
+    if not cfg.get("registryPath"):
+        return False
+    reg_repo = _registry_path(cfg)
+    path = os.path.join(reg_repo, "shipping.csv")
+    dims = sorted((float(d) for d in dims_mm), reverse=True)
+    want = {"volume_cm3": "%.3f" % volume_cm3, "length_mm": "%.1f" % dims[0],
+            "width_mm": "%.1f" % dims[1], "height_mm": "%.1f" % dims[2]}
+
+    def attempt():
+        rows = []
+        if os.path.isfile(path):
+            with open(path, newline="") as f:
+                rows = list(csv.DictReader(f))
+        row = next((r for r in rows if r.get("pn") == pn), None)
+        if row is not None and all(_same_num(row.get(k), v) for k, v in want.items()):
+            return False
+        if row is None:
+            row = {"pn": pn}
+            rows.append(row)
+        row.update(want)
+        row["measured_at"] = _now_iso()
+        rows.sort(key=lambda r: r.get("pn", ""))
+        with open(path, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=_SHIPPING_FIELDS, extrasaction="ignore", lineterminator="\n")
+            w.writeheader()
+            for r in rows:
+                w.writerow({k: r.get(k, "") or "" for k in _SHIPPING_FIELDS})
+        return True
+
+    _sync_pull(reg_repo)
+    if not attempt():
+        return False
+    _commit_and_push(reg_repo, "%s: shipping measure %s cm3, %s mm" % (
+        pn, want["volume_cm3"], " x ".join(want[k] for k in ("length_mm", "width_mm", "height_mm"))),
+        attempt, paths=[path])
+    return True
+
+
+def _same_num(a, b, tol=0.05):
+    try:
+        return abs(float(a) - float(b)) <= tol
+    except (TypeError, ValueError):
+        return False
+
+
 @method("pn.registryRows")
 def pn_registry_rows(pnSeqs):
     """{pnSeq: [its registry rows, oldest first]} - the before/after
