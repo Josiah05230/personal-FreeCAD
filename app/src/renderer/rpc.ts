@@ -1750,6 +1750,7 @@ export const api = {
       partNumber: { pn: string; name: string; description: string } | null
       /** link properties re-derived with element hashing turned off (sidecar hasher.py) */
       referencesMigrated?: number
+      jointsRevived?: number
     }>(
       'document.open',
       readOnly ? { path, readOnly } : { path }

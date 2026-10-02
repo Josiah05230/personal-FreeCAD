@@ -175,6 +175,41 @@ def ground(doc, link_name):
         return {"grounded": link_name, "via": "flag", "note": str(e)}
 
 
+def revive_joints(doc):
+    """Give back the proxy of every joint saved without one, so it solves.
+
+    A joint whose JointObject couldn't import when its file was opened
+    (FreeCADGui missing - the old background drawing worker) restores with
+    Proxy None, and a save writes it out that way: the properties survive
+    but nothing updates its Placement1/2 when a part changes, so the solver
+    re-places parts against stale frames (SGA0020: housing walls +1mm and
+    the lid never rode up). Returns how many were revived."""
+    dead = [o for o in doc.Objects
+            if o.TypeId == "App::FeaturePython" and getattr(o, "Proxy", 0) is None
+            and ("ObjectToGround" in o.PropertiesList or
+                 ("JointType" in o.PropertiesList and "Reference1" in o.PropertiesList))]
+    if not dead:
+        return 0
+    try:
+        import JointObject
+    except Exception:  # noqa: BLE001
+        return 0
+    n = 0
+    for o in dead:
+        cls = JointObject.GroundedJoint if "ObjectToGround" in o.PropertiesList else JointObject.Joint
+        try:
+            px = cls.__new__(cls)  # its own __init__ would add the properties again
+            o.Proxy = px
+            px.onDocumentRestored(o)
+            o.touch()
+            n += 1
+        except Exception:  # noqa: BLE001
+            continue
+    if n:
+        doc.recompute()  # frames re-derived from the current part geometry
+    return n
+
+
 def _classify_sub(doc, comp, sub):
     """What kind of surface/curve a picked (component, sub) reference is, for
     the Creo-style "pick two references, suggest a constraint" flow (user

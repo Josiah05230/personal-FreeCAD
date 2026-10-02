@@ -5512,6 +5512,12 @@ def document_open(path, readOnly=None):
     except Exception:
         pass
     migrated = 0 if (readOnly or lifecycle in ("active", "discontinued")) else _hasher.migrate(d)
+    # joints saved without their proxy solve again - after the migration,
+    # so they first run against the re-derived references
+    try:
+        revived = _assembly.revive_joints(d)
+    except Exception:
+        revived = 0
     _hasher.rebuild_transient(d)
     try:
         from . import materials as _materials
@@ -5519,7 +5525,7 @@ def document_open(path, readOnly=None):
     except Exception:
         pass
     return {"path": path, "name": d.Name, "partNumber": session.part_number() or None,
-            "referencesMigrated": migrated}
+            "referencesMigrated": migrated, "jointsRevived": revived}
 
 
 @method("document.info")

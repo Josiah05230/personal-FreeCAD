@@ -33,7 +33,14 @@ def _index_only(v):
     """A link value with every sub-element name cut to its index name
     ('Edge2'), which is still right while the geometry hasn't changed."""
     def strip(s):
-        return s.split(".")[-1] if isinstance(s, str) and ";" in s else s
+        if not isinstance(s, str):
+            return s
+        if ";" in s:
+            s = s.split(".")[-1]
+        # '?Face2': FreeCAD couldn't map the stored name (e.g. the linked part
+        # was itself just migrated) and kept the old index - still right
+        # while geometry is unchanged
+        return s.lstrip("?")
     if isinstance(v, tuple) and len(v) == 2 and not isinstance(v[0], tuple):
         o, subs = v
         return (o, [strip(s) for s in subs]) if isinstance(subs, (list, tuple)) else (o, strip(subs))

@@ -24,20 +24,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# The Assembly workbench's Preferences.py imports FreeCADGui unconditionally
-# (only its GUI preferences page uses it), and JointObject imports
-# Preferences. freecadcmd ships no GUI library, so that import failed:
-# every saved joint's proxy failed to restore on open, and add_joint fell
-# back to a non-solving record. An empty stand-in is enough - the rest of
-# the joint code only touches FreeCADGui when App.GuiUp.
-if "FreeCADGui" not in sys.modules:
-    import types
-
-    try:
-        import FreeCADGui  # noqa: F401
-    except ImportError:
-        sys.modules["FreeCADGui"] = types.ModuleType("FreeCADGui")
-
+# gwtcad's package init installs the FreeCADGui stand-in the Assembly
+# workbench needs (see gwtcad/__init__.py).
 from gwtcad.registry import dispatch  # noqa: E402
 import gwtcad.methods  # noqa: E402,F401  (import registers the RPC methods)
 

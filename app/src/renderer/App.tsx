@@ -3755,13 +3755,16 @@ export function App(): JSX.Element {
       // the engine re-derived this part's stored element references with
       // hashing off (fillets / attachments now survive dimension edits) -
       // a save keeps that, so the open costs it only once
-      const migrated = (opened.referencesMigrated ?? 0) > 0
+      const revived = opened.jointsRevived ?? 0
+      const migrated = (opened.referencesMigrated ?? 0) > 0 || revived > 0
       setTabs((t) =>
         existing
           ? t.map((x) => (x.id === existing.id && migrated ? { ...x, dirty: true } : x))
           : [...t.filter((x) => x.name !== 'Untitled' || x.dirty), { id, name: basename(p), dirty: migrated, path: p }]
       )
-      if (migrated) flashSketchNotice(`Updated ${basename(p)}'s references so dimension edits keep fillets and attachments - save to keep it`)
+      if (revived > 0)
+        flashSketchNotice(`Reconnected ${revived} joint${revived === 1 ? '' : 's'} in ${basename(p)} that had stopped solving - save to keep it`)
+      else if (migrated) flashSketchNotice(`Updated ${basename(p)}'s references so dimension edits keep fillets and attachments - save to keep it`)
       setActiveTab(id)
       setDocPath(p)
       setDrawingPageId(null)
