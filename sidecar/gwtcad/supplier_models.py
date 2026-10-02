@@ -155,6 +155,7 @@ _GROUP_EDGE_BREATHING_ROOM = 15.0
 # border - at 30 a full-height iso ran 5mm above the border (CME0030)
 _ISO_X, _ISO_TARGET_W, _ISO_TARGET_H = 330.0, 65.0, 50.0
 _ISO_Y = _MARGIN + 4.0 + _ISO_TARGET_H / 2.0
+_IMAGE_INSET = 4.0  # view images keep at least this far inside the border
 
 
 def _fit_scale(bbox, target_w, target_h, cap=8.0):
@@ -633,6 +634,11 @@ def _render_view_image(doc, page_id, sources, direction, x, y, centered, scale=N
         x, y = ((float(image.X) + float(image.Width) / 2, float(image.Y) + float(image.Height) / 2)
                 if centered else (float(image.X), float(image.Y)))
     px, py = (x - w / 2.0, y - h / 2.0) if centered else (x, y)
+    # never past the sheet border, whatever position it was handed: a batch
+    # redraw by a sidecar still running pre-121791d code centred the iso at
+    # y=30 again (CME0030/60/70, PSA0031), and a re-render keeps that spot
+    px = min(max(px, _MARGIN + _IMAGE_INSET), _SHEET_W - _MARGIN - _IMAGE_INSET - w)
+    py = min(max(py, _MARGIN + _IMAGE_INSET), _SHEET_H - _MARGIN - _IMAGE_INSET - h)
     if image is None:
         dto = _drawing.add_image(doc, page_id, path, x=px, y=py, width=w, height=h)
         image = doc.getObject(dto["id"])
