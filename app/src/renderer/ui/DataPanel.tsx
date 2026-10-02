@@ -4,6 +4,7 @@ import { promptText, promptForm } from './PromptDialog'
 import { api, type PartRecord } from '../rpc'
 import { pushAppAction } from '../appHistory'
 import { fileKind, extOf, type FileKind } from '../../shared/fileTypes'
+import { currentRevs, supersededBy } from '../../shared/revisions'
 
 /** the double-click / "Open" label for each usable file kind - App's
  *  onOpenFile does the matching thing (see openDataPanelFile) */
@@ -104,6 +105,10 @@ export function DataPanel({
   // filename - e.g. typing "connector" finds CMC0010.FCStd even though
   // "connector" appears nowhere in that filename.
   const [pnByFilename, setPnByFilename] = useState<Map<string, PartRecord>>(new Map())
+  // current revision per PN sequence: an older revision's files (PSJ0010.*
+  // once PSJ0011 exists) never show here - they're viewed read-only from the
+  // newest revision's History panel
+  const [currentBySeq, setCurrentBySeq] = useState<ReturnType<typeof currentRevs>>(new Map())
   useEffect(() => {
     if (!open) return
     void api
@@ -112,8 +117,12 @@ export function DataPanel({
         const m = new Map<string, PartRecord>()
         for (const row of r.parts) m.set(`${row.pn}.FCStd`.toLowerCase(), row)
         setPnByFilename(m)
+        setCurrentBySeq(currentRevs(r.parts))
       })
-      .catch(() => setPnByFilename(new Map()))
+      .catch(() => {
+        setPnByFilename(new Map())
+        setCurrentBySeq(new Map())
+      })
   }, [open])
 
   // search: recursive from the CURRENTLY BROWSED folder down, shallowest
@@ -253,8 +262,10 @@ export function DataPanel({
   const visibleItems = items.filter(
     (it) =>
       (!it.isDir || it.relevant !== false || alwaysShow.has(it.path)) &&
-      (showHidden || !(it.hidden || hiddenSet.has(it.path)))
+      (showHidden || !(it.hidden || hiddenSet.has(it.path))) &&
+      (it.isDir || !supersededBy(it.name, currentBySeq))
   )
+  const shownResults = searchResults?.filter((r) => r.isDir || !supersededBy(r.name, currentBySeq)) ?? null
 
   const setHidden = async (it: DirEntry, hidden: boolean): Promise<void> => {
     const p = await window.cad.setFolderHidden(it.path, hidden)
@@ -461,12 +472,12 @@ export function DataPanel({
         )}
         {error && <div className="dp-error">{error}</div>}
         {query ? (
-          searching || (searchPartial && !searchResults?.length) ? (
+          searching || (searchPartial && !shownResults?.length) ? (
             <div className="dp-empty">Searching…</div>
-          ) : !searchResults?.length ? (
+          ) : !shownResults?.length ? (
             <div className="dp-empty">No matches for "{query.trim()}"</div>
           ) : (
-            [...searchResults.map((r) => {
+            [...shownResults.map((r) => {
               const rec = !r.isDir ? pnByFilename.get(r.name.toLowerCase()) : undefined
               return (
                 <div
