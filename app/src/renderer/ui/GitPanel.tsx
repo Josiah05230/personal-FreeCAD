@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { pushAppAction } from '../appHistory'
+import { api, type RevisionFile } from '../rpc'
+import { pnOfFilename } from '../../shared/revisions'
 
 /** a commit body for reading: hard-wrapped lines joined into paragraphs,
  *  list items kept on their own lines, trailers (Co-Authored-By: ...) dropped */
@@ -17,6 +19,9 @@ function readableNotes(body: string): string {
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
+/** a commit of this part's file, or of an earlier revision's file (revPn) */
+type PartCommit = FileCommit & { revPn?: string }
+
 /** one side of a version compare: a commit of the file, or the working copy */
 export type VersionRef = { kind: 'commit'; commit: FileCommit } | { kind: 'current' }
 
@@ -28,6 +33,10 @@ export type VersionRef = { kind: 'commit'; commit: FileCommit } | { kind: 'curre
  * company repo is one shared monorepo, so whole-repo actions (branches,
  * remotes) live under "Whole repository". Auth for push/pull is whatever
  * the system `git` is configured with.
+ *
+ * A part number's revisions are separate files (PSJ0010, PSJ0011, ...): the
+ * Revisions list shows them all, older ones open read-only from here, and
+ * Versions includes the commits of every earlier revision's file too.
  */
 export function GitPanel({
   open,
@@ -35,7 +44,8 @@ export function GitPanel({
   isOpenDoc,
   docDirty,
   onCompare,
-  onFileRestored
+  onFileRestored,
+  onViewRevision
 }: {
   open: boolean
   filePath: string | null
@@ -46,9 +56,12 @@ export function GitPanel({
   onCompare?: (filePath: string, a: VersionRef, b: VersionRef) => void
   /** the file on disk changed under the editor (discard / its undo) */
   onFileRestored?: (filePath: string) => void
+  /** view an older revision of this part, read-only */
+  onViewRevision?: (path: string, pn: string) => void
 }): JSX.Element {
   const [status, setStatus] = useState<GitStatus | null>(null)
-  const [log, setLog] = useState<FileCommit[]>([])
+  const [log, setLog] = useState<PartCommit[]>([])
+  const [revisions, setRevisions] = useState<RevisionFile[]>([])
   const [changes, setChanges] = useState<{ path: string; status: string }[]>([])
   const [branches, setBranches] = useState<GitBranch[]>([])
   const [remotes, setRemotes] = useState<GitRemote[]>([])
@@ -70,18 +83,38 @@ export function GitPanel({
       setStatus(null)
       setLog([])
       setChanges([])
+      setRevisions([])
       return
     }
+    const fileName = filePath.split(/[\\/]/).pop() ?? ''
+    const own = /\.fcstd$/i.test(fileName) ? pnOfFilename(fileName) : null
+    const revs = own ? ((await api.pnRevisionFiles(own.pn).catch(() => null))?.revisions ?? []) : []
+    setRevisions(revs)
     const s = await window.cad.gitStatus(filePath)
     setStatus(s)
     if (s.isRepo) {
-      const [l, c, b, r] = await Promise.all([
+      // a revision's file starts as a copy of the previous one, so its own
+      // log begins at "New revision" - the earlier revisions' commits are
+      // this part's history too
+      const earlier = revs.filter((r) => r.path && r.path !== filePath && own && Number(r.rev) < own.rev)
+      const [l, c, b, r, ...olderLogs] = await Promise.all([
         window.cad.gitFileLog(filePath),
         window.cad.gitFileChanges(filePath),
         window.cad.gitBranches(filePath),
-        window.cad.gitRemotes(filePath)
+        window.cad.gitRemotes(filePath),
+        ...earlier.map((rv) => window.cad.gitFileLog(rv.path!).catch(() => [] as FileCommit[]))
       ])
-      setLog(l)
+      const seen = new Set(l.map((x) => x.hash))
+      const merged: PartCommit[] = [...l]
+      olderLogs.forEach((ol, i) => {
+        for (const x of ol) {
+          if (seen.has(x.hash)) continue
+          seen.add(x.hash)
+          merged.push({ ...x, revPn: earlier[i].pn })
+        }
+      })
+      merged.sort((a, b2) => b2.isoDate.localeCompare(a.isoDate))
+      setLog(merged)
       setChanges(c)
       setBranches(b)
       setRemotes(r)
@@ -274,6 +307,47 @@ export function GitPanel({
           </div>
           {!status.tracked && <div className="git-hint git-warn">This file isn't committed yet.</div>}
 
+          {revisions.length > 1 && (
+            <div className="hp-section">
+              <div className="hp-section-title">
+                Revisions <span className="git-sub">({revisions.length})</span>
+              </div>
+              <div className="git-log">
+                {[...revisions].reverse().map((rv) => {
+                  const here = rv.path === filePath
+                  return (
+                    <div
+                      key={rv.pn}
+                      className={'git-commit' + (here ? ' hp-current' : '')}
+                      title={rv.path ?? `${rv.pn}.FCStd not found`}
+                    >
+                      <div className="git-commit-top">
+                        <span className="git-hash">{rv.pn}</span>
+                        <span className="git-rel">
+                          {rv.current ? 'current' : 'old revision'}
+                          {rv.rev_date ? ` · ${rv.rev_date.slice(0, 10)}` : ''}
+                          {rv.current && rv.lifecycle ? ` · ${rv.lifecycle.replace('_', ' ')}` : ''}
+                        </span>
+                      </div>
+                      {rv.reason && <div className="git-subject">{rv.reason}</div>}
+                      {!here && !rv.current && onViewRevision && (
+                        <div className="hp-row-actions">
+                          <button
+                            className="git-btn hp-mini"
+                            disabled={!rv.path}
+                            onClick={() => rv.path && onViewRevision(rv.path, rv.pn)}
+                          >
+                            {rv.path ? 'View (read only)' : 'File not found'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="hp-section">
             <div className="hp-section-title">Commit this part</div>
             {changes.length > 0 ? (
@@ -375,6 +449,7 @@ export function GitPanel({
                         title="Pick to compare"
                       />
                       <span className="git-hash">{c.short}</span>
+                      {c.revPn && <span className="hp-pill">{c.revPn}</span>}
                       <span className="git-rel">
                         {c.relDate} · {c.author.split(' ')[0]}
                       </span>

@@ -83,6 +83,7 @@ import { basename, dirname, kicadDirFor, sketchEntitiesToPolys } from './util'
 import { askOptionalCopyIn, checkCopyIn, copyInTestHooks, guessPartType } from './copyIn'
 import type { CopyInResult } from './rpc'
 import { fileKind } from '../shared/fileTypes'
+import { pnOfFilename } from '../shared/revisions'
 import { perfProfile } from './perfProfile'
 import { CmdQueue } from './cmdQueue'
 import { trace, traceSpan } from './trace'
@@ -726,7 +727,8 @@ export function App(): JSX.Element {
       if (scene.renderSettings) setRenderSettings(scene.renderSettings)
       setBodies(tree.bodies)
       setImported(tree.imported ?? [])
-      setDocPath(tree.path)
+      // a review peek shows another file, but the open document is still docPath
+      if (!reviewingRef.current) setDocPath(tree.path)
       if ('canUndo' in tree) setCanUndo(!!tree.canUndo)
       if ('canRedo' in tree) setCanRedo(!!tree.canRedo)
       if (typeof tree.undoCount === 'number') {
@@ -3671,8 +3673,23 @@ export function App(): JSX.Element {
         window.alert('Finish reviewing (click "Done reviewing") before opening another file.')
         return
       }
-      const p = path ?? (await window.cad.openDialog())
+      let p = path ?? (await window.cad.openDialog())
       if (!p) return
+      // an old revision never opens for editing: open the newest revision
+      // instead (the old one is viewable read-only from its History panel)
+      const asRev = /\.fcstd$/i.test(p) ? pnOfFilename(basename(p)) : null
+      if (asRev) {
+        const revs = (await api.pnRevisionFiles(asRev.pn).catch(() => null))?.revisions ?? []
+        const cur = revs.find((r) => r.current)
+        if (cur && cur.pn.toUpperCase() !== asRev.pn && Number(cur.rev) > asRev.rev) {
+          if (!cur.path) {
+            window.alert(`${asRev.pn} has been superseded by ${cur.pn}, but ${cur.pn}.FCStd wasn't found.`)
+            return
+          }
+          flashSketchNotice(`${asRev.pn} is an old revision - opened ${cur.pn}. View ${asRev.pn} from History.`)
+          p = cur.path
+        }
+      }
       setLinkedKicadProject(null) // clears any stale "Open in KiCad" from a previous F part
       // the previous document's tab stays open, so its lock is kept too -
       // it is released when that tab closes
@@ -5168,19 +5185,52 @@ export function App(): JSX.Element {
     async (n: UpstreamNotice) => {
       try {
         const { path, commit } = await window.cad.gitWatchFetchUpstreamVersion(n.filePath)
-        await api.open(path)
-        await refreshScene()
         reviewingRef.current = true
+        await api.open(path, `This is a peek at ${n.label} as someone else pushed it - read only.`)
+        await refreshScene()
         setReviewingChange({ ...n, commits: [{ ...n.commits[0], hash: commit }, ...n.commits.slice(1)] })
       } catch (e) {
+        reviewingRef.current = false
         window.alert(`Couldn't fetch the upstream version to review: ${(e as Error).message}`)
+        if (docPath) await api.open(docPath).catch(() => undefined)
+        await refreshScene()
       }
     },
-    [refreshScene]
+    [refreshScene, docPath]
+  )
+  // An older revision of the open part, viewed read-only from the History
+  // panel (old revisions never show in the Data Panel and never open for
+  // editing). The same peek as Review above: the open revision's tab stays,
+  // "Done reviewing" puts it back.
+  const [viewingRev, setViewingRev] = useState<{ pn: string; path: string } | null>(null)
+  const startRevisionView = useCallback(
+    async (path: string, pn: string) => {
+      if (reviewingRef.current) {
+        window.alert('Finish reviewing (click "Done reviewing") first.')
+        return
+      }
+      if (tabs.find((t) => t.id === activeTab)?.dirty) {
+        window.alert(`Save your changes to ${currentPn ?? basename(docPath ?? '')} before viewing ${pn}.`)
+        return
+      }
+      try {
+        reviewingRef.current = true
+        await api.open(path, `${pn} is an old revision - read only. Make changes in ${currentPn ?? 'the newest revision'}.`)
+        await refreshScene()
+        setViewingRev({ pn, path })
+      } catch (e) {
+        reviewingRef.current = false
+        window.alert(`Couldn't open ${pn}: ${(e as Error).message}`)
+        if (docPath) await api.open(docPath).catch(() => undefined)
+        await refreshScene()
+      }
+    },
+    [tabs, activeTab, currentPn, docPath, refreshScene]
   )
   const endReview = useCallback(async () => {
     reviewingRef.current = false
     setReviewingChange(null)
+    setViewingRev(null)
     if (docPath) {
       await api.open(docPath).catch(() => undefined)
       await refreshScene()
@@ -5670,6 +5720,8 @@ export function App(): JSX.Element {
       openDesignPath: (path: string) => openDesign(path),
       openDrawing: (pageId: string | null) => (pageId ? openDrawing(pageId) : setDrawingPageId(null)),
       saveDoc: () => save(),
+      viewRevision: (path: string, pn: string) => startRevisionView(path, pn),
+      endReview: () => endReview(),
       // the next prompt/promptForm resolves to these values instead of
       // auto-cancelling (null = cancel)
       answerNextPrompt: (values: Record<string, string> | null) => queueE2EPromptAnswer(values),
@@ -5860,6 +5912,7 @@ export function App(): JSX.Element {
         docPath,
         currentPn,
         currentLifecycle,
+        viewingRev: viewingRev?.pn ?? null,
         op,
         opReady: opReadyRef.current,
         sketchMode: !!sketchSession,
@@ -5936,7 +5989,10 @@ export function App(): JSX.Element {
     resolveDrawingImage,
     openDataPanelFile,
     copyInReq,
-    runAutosave
+    runAutosave,
+    viewingRev,
+    startRevisionView,
+    endReview
   ])
 
   // ---- boot ----
@@ -6962,7 +7018,15 @@ export function App(): JSX.Element {
                       <button onClick={() => setSketchNotice(null)}>Dismiss</button>
                     </div>
                   )}
-                  {reviewingChange ? (
+                  {viewingRev ? (
+                    <div className="hintbar warn review-banner">
+                      <span>
+                        Viewing {viewingRev.pn}, an old revision - read only.
+                        {currentPn ? ` Changes go in ${currentPn}.` : ''}
+                      </span>
+                      <button onClick={() => void endReview()}>Done reviewing</button>
+                    </div>
+                  ) : reviewingChange ? (
                     <div className="hintbar warn review-banner">
                       <span>
                         Reviewing {reviewingChange.label} as of{' '}
@@ -7342,6 +7406,7 @@ export function App(): JSX.Element {
           isOpenDoc={!!docPath && (gitTarget ?? docPath) === docPath}
           docDirty={tabs.find((t) => !t.viewer && t.path === docPath)?.dirty ?? false}
           onCompare={startCompare}
+          onViewRevision={(p, pn) => void startRevisionView(p, pn)}
           onFileRestored={(p) => {
             // the open document's file changed on disk (discard / its undo): reload it
             if (p !== docPath) return

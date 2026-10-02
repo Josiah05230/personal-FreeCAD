@@ -1739,10 +1739,12 @@ export const api = {
 
   save: () => rpc<{ path: string }>('document.save'),
   saveAs: (path: string) => rpc<{ path: string }>('document.saveAs', { path }),
-  open: (path: string) =>
+  /** readOnly: open for viewing only (an old revision) - the sidecar refuses
+   *  every editing call with this reason until the next open */
+  open: (path: string, readOnly?: string) =>
     rpc<{ path: string; name: string; partNumber: { pn: string; name: string; description: string } | null }>(
       'document.open',
-      { path }
+      readOnly ? { path, readOnly } : { path }
     ),
   autosave: () => rpc<{ saved: boolean; recoveryPath?: string; reason?: string }>('document.autosave'),
   checkRecovery: (path: string) =>
@@ -1863,6 +1865,9 @@ export const api = {
   pnResolve: (pnSeqOrFull: string) =>
     rpc<{ path: string; row: PartRecord }>('pn.resolve', { pnSeqOrFull }),
   pnHistory: (pnSeq: string) => rpc<{ revisions: PartRecord[] }>('pn.history', { pnSeq }),
+  /** every revision of a part (by sequence or any revision's PN), oldest first, with its file */
+  pnRevisionFiles: (pnSeqOrFull: string) =>
+    rpc<{ revisions: RevisionFile[] }>('pn.revisionFiles', { pnSeqOrFull }),
   pnTagDocument: (pn: string, name: string, description: string) =>
     rpc<{ ok: boolean }>('pn.tagDocument', { pn, name, description }),
   pnRepoForPath: (path: string) =>
@@ -2021,6 +2026,12 @@ export interface PartRecord {
    *  authoritative (a file may have moved by hand), but good enough to
    *  join a registry row to a Data Panel folder entry for display/search. */
   repo_relpath?: string
+}
+
+/** pn.revisionFiles: one revision of a part and where its file is (null = not found) */
+export interface RevisionFile extends PartRecord {
+  path: string | null
+  current: boolean
 }
 
 /** One kit-item in an assembly's captured BOM (pn.bomFor / pn.saveBom / assembly.bomPns). */
