@@ -614,6 +614,7 @@ export function Viewport({
         },
         testSketchUVToWorld: (u, v) => stateRef.current?.sketch?.uvToWorld(u, v) ?? null,
         testSymbolWorldScale: () => stateRef.current?.sketch?.testSymbolWorldScale() ?? null,
+        testDimLabelWorldScale: () => stateRef.current?.sketch?.testDimLabelWorldScale() ?? null,
         testPendingConState: () => stateRef.current?.sketch?.testPendingConState() ?? null,
         testConstrainedIndices: () => stateRef.current?.sketch?.testConstrainedIndices() ?? [],
         testEntityColorHex: (idx) => stateRef.current?.sketch?.testEntityColorHex(idx) ?? null,

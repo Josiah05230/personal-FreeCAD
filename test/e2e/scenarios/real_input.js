@@ -1401,7 +1401,7 @@ note('--- centre-point arc: real drag of an endpoint changes the sweep, not the 
   await idle();
 }
 
-note('--- constraint symbols stay a constant on-screen size across a real zoom ---');
+note('--- constraint symbols and dimension labels stay a constant on-screen size across a real zoom ---');
 {
   await G.cancelSketch().catch(() => {});
   await idle();
@@ -1422,6 +1422,12 @@ note('--- constraint symbols stay a constant on-screen size across a real zoom -
     cons.some((c) => c.type === 'Horizontal' && (c.refs[0].new === li || c.refs[0].geo === li)),
     'the line got an auto Horizontal constraint (so a symbol sprite exists to check)'
   );
+
+  G.sketch.select([li]);
+  G.sketch.setDimension(li, 30);
+  await sleep(80);
+  const dimBefore = G.dimLabelWorldScale();
+  assert(typeof dimBefore === 'number' && dimBefore > 0, 'the line has a dimension label');
 
   const before = G.symbolWorldScale();
   note('symbol world-space scale before zoom: ' + before);
@@ -1454,6 +1460,13 @@ note('--- constraint symbols stay a constant on-screen size across a real zoom -
   assert(
     changedEnough,
     `THE BUG: a constraint symbol's world-space scale must change with zoom (fixed PIXEL size, not fixed world size) - before=${before}, after=${after}`
+  );
+  // the label is rebuilt at the new zoom: its world size scales with the symbol's
+  const dimAfter = G.dimLabelWorldScale();
+  note(`dimension label world height: ${dimBefore} -> ${dimAfter}`);
+  assert(
+    typeof dimAfter === 'number' && Math.abs(dimAfter / dimBefore - after / before) < 0.02,
+    `a dimension label keeps its on-screen size when zooming (label x${(dimAfter / dimBefore).toFixed(3)}, symbol x${(after / before).toFixed(3)})`
   );
 
   await G.cancelSketch();

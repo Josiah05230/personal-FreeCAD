@@ -120,6 +120,8 @@ export interface ViewportApi {
   /** world-space scale.x of the first constraint-symbol sprite, while a
    *  sketch is open (test hook - verifies rescaleScreenSpace tracks zoom) */
   testSymbolWorldScale: () => number | null
+  /** world height of the first sketch dimension label (test hook - must track zoom) */
+  testDimLabelWorldScale: () => number | null
   /** current "click the constraint, then click the geometry" pick state
    *  (test hook, diagnostics only - see SketchController.testPendingConState) */
   testPendingConState: () => { pendingCon: string | null; selectedPts: number; selected: number } | null

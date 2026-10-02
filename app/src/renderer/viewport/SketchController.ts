@@ -338,6 +338,11 @@ export class SketchController {
   private geomV = 0 // bumped whenever committed geometry / constraints change
   private dimV = -1 // last geomV the static dimensions were built for
   private dimHadLive = false
+  /** pxPerMm the dimensions were last built at - every part of a dimension
+   *  (label, arrowheads, offsets) is a screen size, so a zoom rebuilds them */
+  private dimPpm = 0
+  /** value-label textures by text + style, so a zoom's rebuilds reuse them */
+  private dimTexCache = new Map<string, THREE.CanvasTexture>()
   /** per-owner-entity label nudge: [perp, along] mm for a linear dim, [du, dv]
    *  mm for a radial one. Set by dragging the dimension's value label. */
   private dimOffsets = new Map<number, [number, number]>()
@@ -4084,6 +4089,8 @@ export class SketchController {
    *  instead of staying constant. Call this every frame while a sketch is
    *  active; it is cheap (a scale.set per sprite, no texture/geometry work). */
   rescaleScreenSpace(): void {
+    // dimensions: rebuilt at the new zoom (redrawDims skips when it hasn't changed)
+    if (this.dimGroup.children.length) this.redrawDims()
     if (!this.symGroup.children.length) return
     for (const c of this.symGroup.children) {
       const px = (c.userData as { targetPx?: number }).targetPx
@@ -4099,6 +4106,18 @@ export class SketchController {
   testSymbolWorldScale(): number | null {
     const c = this.symGroup.children[0]
     return c ? c.scale.x : null
+  }
+
+  /** World-space height of the first dimension value label (test hook: a
+   *  fixed on-screen size means it changes with zoom), after this frame's
+   *  zoom check. */
+  testDimLabelWorldScale(): number | null {
+    this.redrawDims()
+    let h: number | null = null
+    this.dimGroup.traverse((o) => {
+      if (h == null && (o as THREE.Sprite).isSprite) h = o.scale.y
+    })
+    return h
   }
 
   /** Current "click the constraint, then click the geometry" pick state
@@ -4187,6 +4206,20 @@ export class SketchController {
   }
 
   private dimLabel(text: string, at: THREE.Vector3, driven = true, selected = false): THREE.Sprite {
+    const s = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: this.dimLabelTex(text, driven, selected), depthTest: false, transparent: true })
+    )
+    s.position.copy(at)
+    const h = this.mmForPx(18) // ~18px tall on screen
+    s.scale.set(h * (160 / 44), h, 1)
+    s.renderOrder = 40
+    return s
+  }
+
+  private dimLabelTex(text: string, driven: boolean, selected: boolean): THREE.CanvasTexture {
+    const key = `${driven ? 1 : 0}${selected ? 1 : 0}${text}`
+    const hit = this.dimTexCache.get(key)
+    if (hit) return hit
     const dpr = 2
     const c = document.createElement('canvas')
     c.width = 160 * dpr
@@ -4210,14 +4243,8 @@ export class SketchController {
     g.fillText(text, 80, 23)
     const tex = new THREE.CanvasTexture(c)
     tex.colorSpace = THREE.SRGBColorSpace
-    const s = new THREE.Sprite(
-      new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true })
-    )
-    s.position.copy(at)
-    const h = this.mmForPx(18) // ~18px tall on screen
-    s.scale.set(h * (160 / 44), h, 1)
-    s.renderOrder = 40
-    return s
+    this.dimTexCache.set(key, tex)
+    return tex
   }
 
   private clearDims(): void {
@@ -4228,8 +4255,7 @@ export class SketchController {
         any.geometry?.dispose?.()
         const m = any.material as THREE.Material | undefined
         if (m && m !== this.dimMat && m !== this.dimDrivenMat) {
-          ;(m as THREE.SpriteMaterial).map?.dispose?.()
-          m.dispose()
+          m.dispose() // label textures stay in dimTexCache
         }
       })
     }
@@ -4406,11 +4432,19 @@ export class SketchController {
   private redrawDims(): void {
     const dimPending = this.tool === 'dimension' && this.dimPicks.length > 0
     const live = this.pending.length > 0 || dimPending
-    if (this.geomV === this.dimV && !live && !this.dimHadLive) return
+    const ppm = this.pxPerMm()
+    const zoomed = this.dimPpm > 0 && Math.abs(ppm / this.dimPpm - 1) > 0.01
+    if (this.geomV === this.dimV && !live && !this.dimHadLive && !zoomed) return
     this.dimV = this.geomV
     this.dimHadLive = live
+    this.dimPpm = ppm
     this.clearDims()
     this.dimLabelUV.clear()
+    if (this.dimTexCache.size > 300) {
+      // nothing uses them once clearDims ran
+      for (const t of this.dimTexCache.values()) t.dispose()
+      this.dimTexCache.clear()
+    }
 
     // Dimensions are only shown once the user assigns them - never by default.
     for (let ci = 0; ci < this.constraints.length; ci++) {
@@ -4933,6 +4967,9 @@ export class SketchController {
     for (const c of this.symGroup.children) (c as THREE.Sprite).material.dispose()
     for (const t of this.symTexCache.values()) t.dispose()
     this.symTexCache.clear()
+    this.clearDims()
+    for (const t of this.dimTexCache.values()) t.dispose()
+    this.dimTexCache.clear()
     for (const c of this.fillGroup.children) (c as THREE.Mesh).geometry.dispose()
     this.fillMat.dispose()
     this.group.removeFromParent()

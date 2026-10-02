@@ -5703,6 +5703,7 @@ export function App(): JSX.Element {
       moveGizmoGrabPoint: (id: string) => vpApi.current?.testGizmoGrabPoint(id) ?? null,
       applyOrbit: (yaw: number, pitch: number) => vpApi.current?.testApplyOrbit(yaw, pitch),
       symbolWorldScale: () => vpApi.current?.testSymbolWorldScale() ?? null,
+      dimLabelWorldScale: () => vpApi.current?.testDimLabelWorldScale() ?? null,
       pendingConState: () => vpApi.current?.testPendingConState() ?? null,
       constrainedIndices: () => vpApi.current?.testConstrainedIndices() ?? [],
       entityColorHex: (idx: number) => vpApi.current?.testEntityColorHex(idx) ?? null,
