@@ -2468,14 +2468,14 @@ def _set_feature_values(o, values):
     if T in ("PartDesign::Pad", "PartDesign::Pocket"):
         num("Length", "length")
         flag("Reversed", "reversed")
-        if "midplane" in v:
-            try:
-                if hasattr(o, "SideType"):
-                    o.SideType = "Symmetric" if v["midplane"] else "Dimension"
-                else:
-                    o.Midplane = bool(v["midplane"])
-            except Exception:
-                pass
+        if "mode" in v or "midplane" in v or "throughAll" in v:
+            _set_extent(o, v)
+        if hasattr(o, "Length2"):
+            num("Length2", "length2")
+        if hasattr(o, "Offset"):
+            num("Offset", "offset")
+        if hasattr(o, "TaperAngle") and "taper" in v:
+            num("TaperAngle", "taper")
     elif T in ("PartDesign::Revolution", "PartDesign::Groove"):
         num("Angle", "angle")
         flag("Reversed", "reversed")
@@ -2527,6 +2527,102 @@ def _set_feature_values(o, values):
     # PartDesign::Mirrored has only its plane (a ref, handled in _set_feature_refs)
 
 
+def _set_extent(o, v):
+    """Extrude extent from the dialog: Blind (optionally Symmetric, or a cut's
+    Through All), Two Sides (SideType "Two sides" + Length2, native in 1.1)
+    or To object (UpToFace, whose face _set_feature_refs points). Switching
+    to To object needs a target face - one is already there, or comes in the
+    same edit's refs."""
+    mode = str(v.get("mode") or "")
+    if not mode:
+        mode = "To object" if str(o.Type) == "UpToFace" else \
+            "Two Sides" if str(getattr(o, "SideType", "")) == "Two sides" else "Blind"
+    side = "One side"
+    if mode == "To object":
+        o.Type = "UpToFace"
+    else:
+        through = bool(v.get("throughAll")) and o.TypeId == "PartDesign::Pocket" and mode == "Blind"
+        o.Type = "ThroughAll" if through else "Length"
+        if mode == "Two Sides":
+            side = "Two sides"
+        elif v.get("midplane") and not through:
+            side = "Symmetric"
+    if hasattr(o, "SideType"):
+        o.SideType = side
+    elif hasattr(o, "Midplane"):
+        o.Midplane = side == "Symmetric"
+
+
+def _match_face(src_shape, sub, dst_shape):
+    """The face of dst_shape that is the same surface as src_shape's `sub`
+    (same plane / surface type, nearest centre) - face NUMBERS differ between
+    a feature's result and its base shape, so a face picked on one is looked
+    up on the other by geometry. None if nothing matches."""
+    try:
+        f = src_shape.getElement(sub)
+    except Exception:
+        return None
+    best, best_d = None, None
+    planar = type(f.Surface).__name__ == "Plane"
+    n = f.normalAt(0.5, 0.5) if planar else None
+    c = f.CenterOfMass
+    for i, g in enumerate(dst_shape.Faces):
+        if type(g.Surface).__name__ != type(f.Surface).__name__:
+            continue
+        if planar:
+            gn = g.normalAt(0.5, 0.5)
+            if abs(abs(gn.dot(n)) - 1.0) > 1e-6:
+                continue
+            if abs((g.CenterOfMass - c).dot(n)) > 1e-5:
+                continue  # parallel, but not the same plane
+        dist = (g.CenterOfMass - c).Length
+        if best_d is None or dist < best_d:
+            best, best_d = "Face%d" % (i + 1), dist
+    return best
+
+
+def _extent_target_ref(o):
+    """An extrude's To object face as a GeomRef on what the viewport shows
+    while editing it (the feature's own result), or None."""
+    link = getattr(o, "UpToFace", None)
+    if not link or str(getattr(o, "Type", "")) != "UpToFace":
+        return None
+    feat, subs = link[0], list(link[1] or [])
+    if feat is None or not subs:
+        return None
+    body = o.getParentGeoFeatureGroup()
+    shown = getattr(o, "Shape", None)
+    sub = subs[0]
+    if body is not None and shown is not None and not shown.isNull():
+        sub = _match_face(feat.Shape, sub, shown) or sub
+    return {"kind": "face", "bodyId": body.Name if body is not None else feat.Name, "sub": sub}
+
+
+def _set_extent_target(d, o, body, ref):
+    """Point an extrude's UpToFace at a face picked while editing it. The
+    pick is on the feature's own result (what's shown), and a feature can't
+    reference itself, so the same face is found on its base shape."""
+    if ref.get("kind") != "face":
+        o.UpToFace = _resolve_ref(d, body, ref)
+        return
+    src = d.getObject(ref.get("bodyId") or "")
+    if src is not body:
+        o.UpToFace = _resolve_ref(d, body, ref)  # another body's face, as on create
+        return
+    base = getattr(o, "BaseFeature", None)
+    if base is None or getattr(base, "Shape", None) is None or base.Shape.isNull():
+        raise RpcError(APP_ERROR, "there is no earlier solid in this body to extrude up to")
+    sub = ref["sub"]
+    shown = getattr(o, "Shape", None)
+    if shown is not None and not shown.isNull():
+        sub = _match_face(shown, sub, base.Shape)
+    if not sub:
+        raise RpcError(APP_ERROR,
+                       "that face isn't on the model before this extrude - pick a face "
+                       "of the existing solid to extrude up to")
+    o.UpToFace = (base, [sub])
+
+
 def _set_feature_refs(d, o, body, refs):
     """Re-point a feature's Profile / Base / ReferenceAxis from UI refs."""
     r = refs or {}
@@ -2544,6 +2640,9 @@ def _set_feature_refs(d, o, body, refs):
                 base = src.Tip if (src is not None and src.TypeId == "PartDesign::Body") else src
                 if base is not None and pr.get("sub"):
                     o.Profile = (base, [pr["sub"]])
+        up = r.get("upTo")
+        if up and hasattr(o, "UpToFace"):
+            _set_extent_target(d, o, body, up)
         ax = r.get("axis")
         if ax and hasattr(o, "ReferenceAxis"):
             try:
@@ -2624,9 +2723,18 @@ def feature_get(id):
         st = getattr(o, "SideType", None)
         values["midplane"] = (str(st) == "Symmetric") if st is not None \
             else bool(getattr(o, "Midplane", False))
-        values["mode"] = "To object" if str(getattr(o, "Type", "Length")) == "UpToFace" else "Blind"
+        typ = str(getattr(o, "Type", "Length"))
+        values["mode"] = ("To object" if typ == "UpToFace"
+                          else "Two Sides" if str(st) == "Two sides" else "Blind")
+        values["length2"] = _prop_value(o, "Length2") if hasattr(o, "Length2") else 0.0
+        values["offset"] = float(getattr(o, "Offset", 0.0) or 0.0)
+        values["taper"] = float(getattr(o, "TaperAngle", 0.0) or 0.0)
+        values["throughAll"] = typ == "ThroughAll"
         values["operation"] = "Cut" if T == "PartDesign::Pocket" else "Join"
         refs["profile"] = _profile_ref(o)
+        up = _extent_target_ref(o)
+        if up:
+            refs["upTo"] = up
     elif T in ("PartDesign::Revolution", "PartDesign::Groove"):
         values["angle"] = _prop_value(o, "Angle")
         values["cut"] = (T == "PartDesign::Groove")
@@ -2720,6 +2828,8 @@ def feature_update(id, values=None, refs=None, exprs=None):
         return tree_get()
     _set_feature_values(o, values or {})
     _set_feature_refs(d, o, body, refs or {})
+    if str(getattr(o, "Type", "")) == "UpToFace" and not getattr(o, "UpToFace", None):
+        raise RpcError(APP_ERROR, "pick the face to extrude up to")
     for prop, e in (exprs or {}).items():
         if not (e and hasattr(o, prop)):
             continue

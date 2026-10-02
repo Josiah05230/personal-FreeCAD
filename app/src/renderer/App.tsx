@@ -260,6 +260,8 @@ export function App(): JSX.Element {
   const [sketches, setSketches] = useState<SketchRender[]>([])
   const [datums, setDatums] = useState<DatumDTO[]>([])
   const [bodies, setBodies] = useState<BodyTree[]>([])
+  const bodiesRef = useRef(bodies)
+  bodiesRef.current = bodies
   const [imported, setImported] = useState<ImportedNode[]>([])
   // vertex is OFF by default - enable it in the Select dropdown when you
   // actually need to snap to corners (Fusion-style). Faces / edges / bodies
@@ -491,6 +493,9 @@ export function App(): JSX.Element {
     refGeom: SketchRefGeom | null
     /** true when re-entering an existing sketch (cancel must NOT delete it) */
     isEdit?: boolean
+    /** editing: where the timeline marker was before (null = at the end) -
+     *  Finish / Cancel put it back there */
+    prevMarker?: string | null
   } | null>(null)
   const [sketchTool, setSketchTool] = useState<SketchTool>('line')
   const [sketchCount, setSketchCount] = useState(0)
@@ -1221,6 +1226,7 @@ export function App(): JSX.Element {
   const editSketch = useCallback(
     async (sketchId: string) => {
       const r = await api.sketchReopen(sketchId)
+      const prevMarker = bodiesRef.current.find((b) => b.id === r.bodyId)?.marker ?? null
       setSketchInitial(r.entities)
       setSketchInitialCons(r.constraints ?? [])
       setSketchInitialProjected(r.projected ?? [])
@@ -1229,7 +1235,8 @@ export function App(): JSX.Element {
         bodyId: r.bodyId ?? '',
         frame: r.frame,
         refGeom: r.refGeom,
-        isEdit: true
+        isEdit: true,
+        prevMarker
       })
       resetSketchUi()
       setSketchTool('select')
@@ -1276,7 +1283,7 @@ export function App(): JSX.Element {
     // silently drop every OTHER still-valid constraint on that same entity
     // (FreeCAD auto-removes a deleted geometry's dependent constraints).
     const movedEnts = vpApi.current?.getEditedBaseSketchEntities() ?? []
-    const { frame, isEdit, bodyId: sketchBodyId } = sketchSession
+    const { frame, isEdit, bodyId: sketchBodyId, prevMarker } = sketchSession
     // optimistic origin-plane entry may not have the real id back yet
     let id = sketchSession.sketchId
     if (!id && sketchOnRef.current) {
@@ -1351,6 +1358,13 @@ export function App(): JSX.Element {
         finalTree = await apiQuiet.treeGet()
         setBodies(finalTree.bodies)
         setImported(finalTree.imported ?? [])
+        // everything downstream was evaluated at the end (above); now put the
+        // marker back where it was if the timeline had been rolled back
+        if (prevMarker) {
+          await apiQuiet.rollTo(sketchBodyId, prevMarker).catch(() => undefined)
+          rollCacheRef.current.clear()
+          await refreshScene()
+        }
       }
       // A feature downstream of this sketch (Sweep, Pad, ...) can fail to
       // regenerate on recompute with NO exception thrown - FreeCAD just
@@ -1399,11 +1413,11 @@ export function App(): JSX.Element {
           await refreshScene()
         })()
       } else {
-        // editing an existing sketch rolled the marker back to it (editSketch)
-        // - roll home again, same as cancelling a full feature edit does
+        // editing an existing sketch rolled the marker to it (editSketch)
+        // - put it back where it was, same as cancelling a feature edit does
         if (sketchSession.isEdit && sketchSession.bodyId) {
           void apiQuiet
-            .rollTo(sketchSession.bodyId, null)
+            .rollTo(sketchSession.bodyId, sketchSession.prevMarker ?? null)
             .catch(() => {})
             .then(() => refreshScene())
         } else {
@@ -1458,6 +1472,10 @@ export function App(): JSX.Element {
     label: string
     values: OpValues
     refs: import('./rpc').FeatureEdit['refs']
+    bodyId: string
+    /** where the timeline marker was when the edit started (null = at the end) -
+     *  Finish / Cancel put it back there, not at the end */
+    prevMarker: string | null
   } | null>(null)
   const [editInit, setEditInit] = useState<OpValues | null>(null)
   const [editLabel, setEditLabel] = useState<string | null>(null)
@@ -1502,6 +1520,9 @@ export function App(): JSX.Element {
       if (kind === 'extrude' || kind === 'revolve') {
         if (sk) refs.profile = { kind: 'sketch', id: sk.sketchId }
         else if (fc[0]) refs.profile = { kind: 'face', bodyId: fc[0].bodyId, sub: fc[0].sub }
+        // "To object": the face after the profile is the target, same as creating
+        const up = kind === 'extrude' && v?.mode === 'To object' ? fc[sk ? 0 : 1] : undefined
+        if (up) refs.upTo = { kind: 'face', bodyId: up.bodyId, sub: up.sub }
         if (kind === 'revolve') {
           if (ed[0]) refs.axis = { kind: 'edge', bodyId: ed[0].bodyId, sub: ed[0].sub }
           else if (pl?.role) refs.axis = { kind: 'origin', role: pl.role }
@@ -1674,7 +1695,9 @@ export function App(): JSX.Element {
           await api.featureUpdate(edit.id, v, buildEditRefs(kind, v), exprs)
         } finally {
           try {
-            if (bodyId) await apiQuiet.rollTo(bodyId, null) // back to the tip
+            // back to where the marker was before the edit (the end, unless
+            // the timeline had been rolled back)
+            if (edit.bodyId) await apiQuiet.rollTo(edit.bodyId, edit.prevMarker)
           } catch {
             /* refreshScene below re-syncs anyway */
           }
@@ -2768,7 +2791,7 @@ export function App(): JSX.Element {
       setEditLabel(null)
       try {
         if (snap) await api.featureUpdate(snap.id, snap.values, snap.refs ?? {})
-        if (bodyId) await apiQuiet.rollTo(bodyId, null)
+        if (snap?.bodyId) await apiQuiet.rollTo(snap.bodyId, snap.prevMarker)
       } catch {
         /* refreshScene re-syncs */
       }
@@ -3186,6 +3209,9 @@ export function App(): JSX.Element {
           sub: r.profile.sub,
           point: [0, 0, 0]
         } as Selection)
+      // extrude "To object": its target face, after the profile
+      if (r.upTo?.kind === 'face')
+        sels.push({ kind: 'face', bodyId: r.upTo.bodyId, sub: r.upTo.sub, point: [0, 0, 0] } as Selection)
       // sweep: the path, either another sketch or one or more connected
       // body edges (ctrl/shift-clicked around a bend)
       if (r.path?.kind === 'sketch') sels.push({ kind: 'sketch', sketchId: r.path.id } as Selection)
@@ -3227,7 +3253,9 @@ export function App(): JSX.Element {
         id,
         label: info.label,
         values: info.values ?? {},
-        refs: r
+        refs: r,
+        bodyId: bid,
+        prevMarker: bodies.find((b) => b.id === bid)?.marker ?? null
       }
       livePreviewRef.current.editing = id
       livePreviewRef.current.seq++

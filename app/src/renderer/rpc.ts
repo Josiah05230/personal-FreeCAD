@@ -226,6 +226,8 @@ export interface FeatureEdit {
     features?: string[]
     /** mirror / pattern Type dropdown value ('Body' | 'Features' | 'Faces') */
     scope?: string
+    /** extrude "To object": the face it extrudes up to */
+    upTo?: GeomRef
   }
   exprs?: Record<string, string>
 }

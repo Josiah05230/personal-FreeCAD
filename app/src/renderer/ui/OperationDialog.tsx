@@ -58,6 +58,9 @@ interface FieldSpec {
   /** a negative value here means "the other direction": send its magnitude and
    *  toggle this boolean field instead (so -5 length == 5 length + Flip) */
   flipWith?: string
+  /** set when the feature is made and can't change on an edit - shown greyed
+   *  out with this as the reason */
+  fixedInEdit?: string
 }
 
 /** One labeled, independently-clickable selection box (Profile, Path, Axis,
@@ -140,7 +143,8 @@ const SPECS: Record<OpKind, OpSpec> = {
         type: 'select',
         default: 'Join',
         options: ['New body', 'Join', 'Cut', 'Intersect'],
-        wide: true
+        wide: true,
+        fixedInEdit: 'Join / Cut / Intersect / New body is set when the extrude is made - delete it and extrude again to change it'
       },
       {
         key: 'mode',
@@ -1395,6 +1399,8 @@ export function OperationDialog({
             {f.type === 'select' && (
               <select
                 value={String(values[f.key] ?? f.default)}
+                disabled={!!editingLabel && !!f.fixedInEdit}
+                title={editingLabel && f.fixedInEdit ? f.fixedInEdit : undefined}
                 onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
               >
                 {f.options!.map((o) => (
