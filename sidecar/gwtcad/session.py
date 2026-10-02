@@ -8,6 +8,8 @@ import time
 
 import FreeCAD as App
 
+from . import hasher as _hasher
+
 _DEFAULT_NAME = "GWTCAD"
 _state = {"name": _DEFAULT_NAME, "path": None}
 
@@ -572,7 +574,7 @@ def _enable_undo(d):
 def doc(create=True):
     d = _find(_state["name"])
     if d is None and create:
-        d = _enable_undo(App.newDocument(_DEFAULT_NAME))
+        d = _enable_undo(_hasher.new_document(_DEFAULT_NAME))
         _state["name"] = d.Name
         _state["path"] = None
     return d
@@ -583,7 +585,7 @@ def reset():
     if d is not None:
         _settle_detail_views(d)
         App.closeDocument(d.Name)
-    d = _enable_undo(App.newDocument(_DEFAULT_NAME))
+    d = _enable_undo(_hasher.new_document(_DEFAULT_NAME))
     _state["name"] = d.Name
     _state["path"] = None
     _shown_datums.clear()

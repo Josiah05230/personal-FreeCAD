@@ -92,7 +92,8 @@ def _write_part_file(fcstd, pn, name, description, model=None, existing=False):
     document back afterwards."""
     import FreeCAD as App
     prev = App.ActiveDocument.Name if App.ActiveDocument else None
-    d = App.openDocument(fcstd) if existing else App.newDocument("gwtcad_copyin")
+    from . import hasher as _hasher
+    d = App.openDocument(fcstd) if existing else _hasher.new_document("gwtcad_copyin")
     try:
         if model:
             ext = os.path.splitext(model)[1].lower()

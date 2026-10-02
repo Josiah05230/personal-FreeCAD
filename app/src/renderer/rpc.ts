@@ -1744,7 +1744,13 @@ export const api = {
   /** readOnly: open for viewing only (an old revision) - the sidecar refuses
    *  every editing call with this reason until the next open */
   open: (path: string, readOnly?: string) =>
-    rpc<{ path: string; name: string; partNumber: { pn: string; name: string; description: string } | null }>(
+    rpc<{
+      path: string
+      name: string
+      partNumber: { pn: string; name: string; description: string } | null
+      /** link properties re-derived with element hashing turned off (sidecar hasher.py) */
+      referencesMigrated?: number
+    }>(
       'document.open',
       readOnly ? { path, readOnly } : { path }
     ),

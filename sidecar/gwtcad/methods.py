@@ -28,6 +28,7 @@ from . import copy_in as _copy_in  # noqa: F401 (registers pn.copyIn)
 from .tessellate import tessellate_shape
 from . import mesh_pool as _mesh_pool
 from . import mesh_disk as _mesh_disk
+from . import hasher as _hasher
 from .vocab import op_name, next_label
 from . import expr as _expr
 
@@ -5498,12 +5499,27 @@ def document_open(path, readOnly=None):
     if not session.part_number():
         session.set_part_number(_recover_part_number(d, path) or None)
     d.recompute()
+    # element names off the hasher (references survive dimension edits) and
+    # text whose shape isn't stored rebuilt - GWT-CAD-NEEDS.md #1 / #2
+    # A released part (active / discontinued) is locked - never dimension-
+    # edited, so it keeps its names; its next revision migrates once opened.
+    lifecycle = None
+    try:
+        pnum = session.part_number()
+        if pnum and pnum.get("pn"):
+            row = _partnumbers.pn_current_row(pnum["pn"])["row"]
+            lifecycle = (row or {}).get("lifecycle")
+    except Exception:
+        pass
+    migrated = 0 if (readOnly or lifecycle in ("active", "discontinued")) else _hasher.migrate(d)
+    _hasher.rebuild_transient(d)
     try:
         from . import materials as _materials
         _materials.reapply_custom_materials()
     except Exception:
         pass
-    return {"path": path, "name": d.Name, "partNumber": session.part_number() or None}
+    return {"path": path, "name": d.Name, "partNumber": session.part_number() or None,
+            "referencesMigrated": migrated}
 
 
 @method("document.info")

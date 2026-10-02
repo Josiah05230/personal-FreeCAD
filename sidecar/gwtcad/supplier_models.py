@@ -31,6 +31,7 @@ import tempfile
 import zipfile
 
 import FreeCAD as App
+from . import hasher as _hasher_mod
 import Part
 
 from .registry import method, RpcError, APP_ERROR
@@ -963,7 +964,7 @@ def _generate_supplier_drawing(pn):
     result ={"pn": pn, "ok": True, "pdfUploaded": False, "errors": []}
     tmpdir = tempfile.mkdtemp(prefix="gwtcad-supplier-drawing-")
     try:
-        doc = App.newDocument(pn)
+        doc = _hasher_mod.new_document(pn)
         try:
             shape = Part.Shape()
             shape.read(stp_path)

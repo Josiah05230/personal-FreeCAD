@@ -3752,11 +3752,16 @@ export function App(): JSX.Element {
       // below), reuse that tab instead of piling up a duplicate
       const existing = tabs.find((x) => x.path === p)
       const id = existing?.id ?? `d${Date.now()}`
+      // the engine re-derived this part's stored element references with
+      // hashing off (fillets / attachments now survive dimension edits) -
+      // a save keeps that, so the open costs it only once
+      const migrated = (opened.referencesMigrated ?? 0) > 0
       setTabs((t) =>
         existing
-          ? t
-          : [...t.filter((x) => x.name !== 'Untitled' || x.dirty), { id, name: basename(p), dirty: false, path: p }]
+          ? t.map((x) => (x.id === existing.id && migrated ? { ...x, dirty: true } : x))
+          : [...t.filter((x) => x.name !== 'Untitled' || x.dirty), { id, name: basename(p), dirty: migrated, path: p }]
       )
+      if (migrated) flashSketchNotice(`Updated ${basename(p)}'s references so dimension edits keep fillets and attachments - save to keep it`)
       setActiveTab(id)
       setDocPath(p)
       setDrawingPageId(null)
