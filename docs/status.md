@@ -130,6 +130,17 @@ the seed + step + trace tail to replay.
 
 ## Recent notable changes
 
+- **Old revisions are read-only, reached from the newest** (2026-10-01). Once
+  a part has a newer revision, the older revision's files are hidden from the
+  Data Panel and its search, and opening one by path opens the newest instead.
+  The History panel lists every revision (reason, date) with "View (read
+  only)" for older ones: `document.open(readOnly=reason)` makes the sidecar
+  refuse every call outside `registry._READ_ONLY_OK` until the next open.
+  Versions also merge in earlier revisions' commits (tagged by PN). The
+  upstream Review peek uses the same read-only open, and peeks no longer
+  overwrite `docPath` (Done reviewing used to reopen the peeked file).
+  E2E: `revision_save.js`.
+
 - **Interactive input fixes, batch 4** (2026-09-10). A run of real bugs found
   by testing the actual pointer/keyboard path (new E2E scenario
   `real_input.js` dispatches genuine synthetic events at the canvas, not the
