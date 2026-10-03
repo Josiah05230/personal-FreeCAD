@@ -151,6 +151,39 @@ def _simplify(p, tol):
     return p[keep]
 
 
+_edge_cache = {}  # id(mesh points) -> (points array kept alive, segments)
+
+
+def _edge_segments(shapes, pts, diag):
+    """Every CAD edge of the model as 3D line segments: (starts, ends, flag
+    for the first segment of each edge). Sampled ONCE per model to a chord
+    tolerance - a straight edge is a single segment - and reused by every
+    view; the per-view pixel sampling is then plain array arithmetic.
+    (Sampling each edge every pixel, per view, was most of a view's time.)"""
+    hit = _edge_cache.get(id(pts))
+    if hit is not None and hit[0] is pts:
+        return hit[1]
+    tol = max(diag / 20000.0, 1e-4)
+    a, b, start = [], [], []
+    for s in shapes:
+        for e in s.Edges:
+            try:
+                q = e.discretize(Deflection=tol)
+            except Exception:
+                continue
+            if len(q) < 2:
+                continue
+            xyz = [(p.x, p.y, p.z) for p in q]
+            a.extend(xyz[:-1])
+            b.extend(xyz[1:])
+            start.extend([True] + [False] * (len(xyz) - 2))
+    segs = (np.array(a, float).reshape(-1, 3), np.array(b, float).reshape(-1, 3), np.array(start, bool))
+    if len(_edge_cache) > 4:
+        _edge_cache.clear()
+    _edge_cache[id(pts)] = (pts, segs)
+    return segs
+
+
 def model_mesh(shapes):
     """The coarse mesh render_view_svg works from - build it once and pass
     it to every view of the same model."""
@@ -182,28 +215,33 @@ def render_view_svg(shapes, direction, max_w=None, max_h=None, scale=None, mesh=
     zb = _depth_buffer(p2, depth, tris, w, h)
     eps = diag * 2e-3
 
-    polylines = []
-    for s in shapes:
-        for e in s.Edges:
-            try:
-                q = e.discretize(Distance=max(span.max() / _RES * _EDGE_STEP_PX, 1e-4))
-            except Exception:
-                continue
-            polylines.append(np.array([(p.x, p.y, p.z) for p in q]))
-    for seg in _silhouettes(pts, tris, face_ids, d):
-        n = max(2, int(np.linalg.norm((seg[1] - seg[0]) @ np.stack([u, v], 1)) * px / _EDGE_STEP_PX) + 1)
-        polylines.append(np.linspace(seg[0], seg[1], n))
-
     if scale is None:
         scale = min(max_w / span[0], max_h / span[1])
+
+    # every curve as one long list of 3D segments: the model's CAD edges
+    # (sampled once per model, to a chord tolerance - see _edge_segments)
+    # and this view's silhouettes
+    seg_a, seg_b, seg_start = _edge_segments(shapes, pts, diag)
+    sil = _silhouettes(pts, tris, face_ids, d)
+    if sil:
+        sa = np.array([q[0] for q in sil])
+        sb = np.array([q[1] for q in sil])
+        seg_a = np.concatenate([seg_a, sa])
+        seg_b = np.concatenate([seg_b, sb])
+        seg_start = np.concatenate([seg_start, np.ones(len(sa), bool)])
     paths = []
-    for pl in polylines:
-        if len(pl) < 2:
-            continue
-        puv = np.stack([pl @ u, pl @ v], axis=1)
-        sx = (puv[:, 0] - lo[0]) * px + 1
-        sy = (hi[1] - puv[:, 1]) * px + 1
-        dz = -(pl @ d)
+    if len(seg_a):
+        proj = np.stack([u, v, -d], axis=1)  # model -> (u, v, depth)
+        pa, pb = seg_a @ proj, seg_b @ proj
+        # sample every segment at pixel spacing, all in one pass
+        n = np.maximum(np.ceil(np.hypot(pb[:, 0] - pa[:, 0], pb[:, 1] - pa[:, 1]) * px / _EDGE_STEP_PX)
+                       .astype(int), 1) + 1
+        first = np.concatenate([[0], np.cumsum(n)[:-1]])
+        seg_of = np.repeat(np.arange(len(n)), n)
+        t = (np.arange(int(n.sum())) - first[seg_of]) / (n[seg_of] - 1)
+        smp = pa[seg_of] + (pb[seg_of] - pa[seg_of]) * t[:, None]
+        sx = (smp[:, 0] - lo[0]) * px + 1
+        sy = (hi[1] - smp[:, 1]) * px + 1
         ix = np.clip(sx.astype(int), 0, w - 1)
         iy = np.clip(sy.astype(int), 0, h - 1)
         # visible where nothing nearer covers the sample (check the pixel and
@@ -211,13 +249,30 @@ def render_view_svg(shapes, direction, max_w=None, max_h=None, scale=None, mesh=
         near = zb[iy, ix]
         for oy, ox in ((0, 1), (1, 0), (0, -1), (-1, 0)):
             near = np.maximum(near, zb[np.clip(iy + oy, 0, h - 1), np.clip(ix + ox, 0, w - 1)])
-        vis = dz <= near + eps
-        sheet = np.stack([(puv[:, 0] - lo[0]) * scale, (hi[1] - puv[:, 1]) * scale], axis=1)
-        # split into visible runs, each simplified to the points that shape it
-        idx = np.flatnonzero(np.diff(np.concatenate([[0], vis.astype(np.int8), [0]])))
-        for a, b in zip(idx[0::2], idx[1::2]):
-            if b - a > 1:
-                run = _simplify(sheet[a:b], _SIMPLIFY_MM)
+        vis = smp[:, 2] <= near + eps
+        sheet = np.stack([(smp[:, 0] - lo[0]) * scale, (hi[1] - smp[:, 1]) * scale], axis=1)
+        # a run of visible samples is one line; it also ends where its curve
+        # does. Consecutive segments of one curve share an end point, which
+        # is sampled twice - the run just carries on through it.
+        curve_first = np.zeros(len(vis), bool)
+        curve_first[first[seg_start]] = True
+        prev_vis = np.concatenate([[False], vis[:-1]])
+        starts = np.flatnonzero(vis & (curve_first | ~prev_vis))
+        nxt_first = np.concatenate([curve_first[1:], [True]])
+        nxt_vis = np.concatenate([vis[1:], [False]])
+        ends = np.flatnonzero(vis & (nxt_first | ~nxt_vis))
+        seg_last = first + n - 1
+        for a, b in zip(starts, ends):
+            if b <= a:
+                continue
+            sa_, sb_ = seg_of[a], seg_of[b]
+            if sa_ == sb_:
+                run = sheet[[a, b]]  # within one straight segment: just its ends
+            else:
+                # the run's two ends plus the curve's own vertices between them
+                mid = seg_last[sa_:sb_]
+                run = _simplify(sheet[np.concatenate([[a], mid[(mid > a) & (mid < b)], [b]])], _SIMPLIFY_MM)
+            if len(run) >= 2 and (len(run) > 2 or abs(run[0][0] - run[1][0]) + abs(run[0][1] - run[1][1]) > 1e-9):
                 paths.append(["%.2f,%.2f" % (x, y) for x, y in run])
 
     wmm, hmm = span[0] * scale, span[1] * scale

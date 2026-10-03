@@ -37,6 +37,7 @@ import Part
 from .registry import method, RpcError, APP_ERROR
 from . import partnumbers as _pn
 from . import drawing as _drawing
+from . import hlr as _hlr
 from . import tables as _tables
 from . import sheet_templates as _sheet_templates
 from . import firebase_storage as _storage
@@ -305,6 +306,15 @@ def _iso_extent(bb):
 
 
 def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, notes=None):
+    # the layout below recomputes the document itself while it settles the
+    # views' scale and spacing: without TechDraw's 2D face search, like
+    # every other view compute (see gwtcad.hlr) - also when this runs in the
+    # background drawing job or a script, outside any RPC
+    with _hlr.no_face_search():
+        return _apply_grainwave_template_body(doc, page_id, part_obj, pn, name, description, notes)
+
+
+def _apply_grainwave_template_body(doc, page_id, part_obj, pn, name, description, notes=None):
     """Ports DrawingSheet.tsx's loadSheetTemplate (the real "Load Template"
     action a user drives by hand in the GUI) into a headless, scripted
     equivalent for the auto-generated purchased-part drawing - same
