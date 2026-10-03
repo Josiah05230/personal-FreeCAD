@@ -143,6 +143,215 @@ def _broken_scale(view):
         return 1.0
 
 
+# --------------------------------------------------------------------------- #
+# break mapping
+#
+# view.mapPoint3dToView() / mapPoint2dFromView() re-cut the view's whole
+# source shape on EVERY call (0.5s a point on four connector models, several
+# seconds on a harness), and every dimension on a broken view needs a few of
+# them each time the page is read. But a break only slides everything past
+# it back by (its length - the gap): along each sheet axis the mapping is
+# piecewise linear. So it is worked out once per computed view from a few
+# FreeCAD calls, checked against one more, and then it is arithmetic. A view
+# it can't describe (a break askew to the sheet axes, or a failed check)
+# keeps using FreeCAD's own calls.
+# --------------------------------------------------------------------------- #
+
+_break_maps = {}  # (doc name, view name) -> {"key":..., "map": _BreakMap | None}
+
+
+class _BreakMap(object):
+    def __init__(self, ax, bx, ay, by, unit, spans, gaps):
+        self.ax, self.bx, self.ay, self.by = ax, bx, ay, by
+        self.unit = unit    # projectPoint units per model mm
+        self.spans = spans  # per axis (0 = x, 1 = y): sorted [(lo, hi)] in projectPoint units
+        self.gaps = gaps    # per axis: what each break closes up to, same units
+
+    def _fold(self, u, axis):
+        """unbroken coordinate -> coordinate with the breaks closed up"""
+        g, cut = self.gaps[axis], 0.0
+        for lo, hi in self.spans[axis]:
+            if u >= hi:
+                cut += (hi - lo) - g
+            elif u > lo:
+                # inside a removed span (nothing is drawn there): FreeCAD
+                # puts it past the far edge, mirrored - matched, not improved
+                return (hi - cut - ((hi - lo) - g)) + (hi - u) * g / (hi - lo)
+        return u - cut
+
+    def _unfold(self, w, axis):
+        g, u = self.gaps[axis], w
+        for lo, hi in self.spans[axis]:
+            if u <= lo:
+                break
+            # at or past the break's near edge: it belongs to the far side
+            # (the gap itself holds nothing - same as FreeCAD's own inverse)
+            u += (hi - lo) - g
+        return u
+
+    def forward(self, view, point):
+        p = view.projectPoint(point)
+        return (self.ax * self._fold(p.x, 0) + self.bx, self.ay * self._fold(p.y, 1) + self.by)
+
+    def inverse(self, xy):
+        """a point of the broken view -> where it is on the unbroken projection (model mm)"""
+        return (self._unfold((xy[0] - self.bx) / self.ax, 0) / self.unit,
+                self._unfold((xy[1] - self.by) / self.ay, 1) / self.unit)
+
+
+def _break_map_key(view):
+    edges = list(view.getVisibleEdges() or [])
+    bb = None
+    if edges:
+        import Part
+        b = Part.Compound(edges).BoundBox
+        bb = (round(b.XMin, 4), round(b.YMin, 4), round(b.XMax, 4), round(b.YMax, 4))
+    d = view.Direction
+    return (float(view.Scale), float(view.Gap), _get_tag(view, "_gwt_breaks"),
+            (round(d.x, 9), round(d.y, 9), round(d.z, 9)), len(edges), bb)
+
+
+def _build_break_map(view):
+    normal = App.Vector(view.Direction)
+    normal.normalize()
+    native = [(App.Vector(*b["start"]), App.Vector(*b["end"]))
+              for b in json.loads(_get_tag(view, "_gwt_breaks") or "[]") if b.get("start") and b.get("end")]
+    if not native:
+        return None
+    pp = view.projectPoint
+    spans, far = [[], []], [None, None]
+    for start, end in native:
+        a, b = pp(start), pp(end)
+        dx, dy = abs(b.x - a.x), abs(b.y - a.y)
+        if min(dx, dy) > 1e-6 * max(dx, dy, 1e-9):
+            return None  # askew to the sheet axes
+        axis = 0 if dx >= dy else 1
+        lo, hi = sorted((a.x, b.x) if axis == 0 else (a.y, b.y))
+        spans[axis].append((lo, hi))
+        along = end - start
+        along = along - normal * along.dot(normal)
+        along.normalize()
+        # a model point 10 mm past this break's far (higher) side
+        beyond = (end if (b.x if axis == 0 else b.y) >= (a.x if axis == 0 else a.y) else start)
+        step = along if beyond is end else along * -1
+        if far[axis] is None or hi > far[axis][0]:
+            far[axis] = (hi, beyond + step * 10.0)
+    for axis in (0, 1):
+        spans[axis].sort()
+        for (_l0, h0), (l1, _h1) in zip(spans[axis], spans[axis][1:]):
+            if l1 < h0 - 1e-9:
+                return None  # overlapping breaks
+    # two points before every break fix scale + origin of both axes
+    s0, e0 = native[0]
+    d0 = e0 - s0
+    d0 = d0 - normal * d0.dot(normal)
+    d0.normalize()
+    n0 = normal.cross(d0)
+    ref = pp(s0)
+    # move "before every break" on BOTH sheet axes: step back along each
+    def before(extra_along, extra_across):
+        q = App.Vector(s0)
+        for axis in (0, 1):
+            if not spans[axis]:
+                continue
+            first = spans[axis][0][0]
+            cur = pp(q)
+            c = cur.x if axis == 0 else cur.y
+            # which model direction raises this sheet coordinate
+            for v in (d0, n0):
+                t = pp(q + v)
+                dc = (t.x - cur.x) if axis == 0 else (t.y - cur.y)
+                if abs(dc) > 1e-9:
+                    q = q - v * ((c - first) / dc + 10.0 / abs(dc) * (1 if dc > 0 else -1))
+                    break
+        return q + d0 * extra_along + n0 * extra_across
+    def lowering(q, v):
+        """v or -v: whichever moves q toward lower sheet coordinates (away from every break)"""
+        c, t = pp(q), pp(q + v)
+        dx, dy = t.x - c.x, t.y - c.y
+        return v * (-1.0 if (dx if abs(dx) >= abs(dy) else dy) > 0 else 1.0)
+    p0 = before(0.0, 0.0)
+    p1 = p0 + lowering(p0, d0) * 100.0 + lowering(p0, n0) * 60.0
+    u0, u1 = pp(p0), pp(p1)
+    m0, m1 = view.mapPoint3dToView(p0), view.mapPoint3dToView(p1)
+    if abs(u1.x - u0.x) < 1e-9 or abs(u1.y - u0.y) < 1e-9:
+        return None
+    ax = (m1.x - m0.x) / (u1.x - u0.x)
+    ay = (m1.y - m0.y) / (u1.y - u0.y)
+    bx, by = m0.x - ax * u0.x, m0.y - ay * u0.y
+    unit = math.hypot(u1.x - u0.x, u1.y - u0.y) / (p1 - p0).Length
+    gaps = [0.0, 0.0]
+    for axis in (0, 1):
+        if not spans[axis]:
+            continue
+        q = far[axis][1]
+        u, m = pp(q), view.mapPoint3dToView(q)
+        folded = ((m.x - bx) / ax) if axis == 0 else ((m.y - by) / ay)
+        removed = (u.x if axis == 0 else u.y) - folded  # sum(length - gap)
+        total = sum(hi - lo for lo, hi in spans[axis])
+        gaps[axis] = (total - removed) / len(spans[axis])
+        if gaps[axis] < -1e-6:
+            return None
+    bm = _BreakMap(ax, bx, ay, by, unit, spans, gaps)
+    # check against FreeCAD itself, per axis: a point just before the LAST
+    # break (so past every earlier one), clear of the break before it
+    for axis in (0, 1):
+        if not spans[axis]:
+            continue
+        lo = spans[axis][-1][0]
+        room = (lo - spans[axis][-2][1]) / 2.0 if len(spans[axis]) > 1 else 3.0 * unit
+        for start, end in native:
+            a, b = pp(start), pp(end)
+            ca, cb = (a.x, b.x) if axis == 0 else (a.y, b.y)
+            if abs(min(ca, cb) - lo) < 1e-9 and abs(cb - ca) > 1e-9:
+                near = start if ca <= cb else end
+                step = (start - end) if ca <= cb else (end - start)
+                step = step - normal * step.dot(normal)
+                step.normalize()
+                q = near + step * (min(room, 3.0 * unit) / unit)
+                got, want = bm.forward(view, q), view.mapPoint3dToView(q)
+                err = abs(got[0] - want.x) if axis == 0 else abs(got[1] - want.y)
+                if err > 1e-6 * max(1.0, abs(want.x), abs(want.y)):
+                    return None
+                break
+    return bm
+
+
+def _break_map(view):
+    """The view's _BreakMap, or None when FreeCAD's own calls must be used."""
+    k = (view.Document.Name, view.Name)
+    try:
+        key = _break_map_key(view)
+        hit = _break_maps.get(k)
+        if hit is None or hit["key"] != key:
+            try:
+                bm = _build_break_map(view)
+            except Exception:
+                bm = None
+            hit = _break_maps[k] = {"key": key, "map": bm}
+        return hit["map"]
+    except Exception:
+        return None
+
+
+def _broken_map_point(view, model_point):
+    """view.mapPoint3dToView(model_point) as (x, y), without the re-cut."""
+    bm = _break_map(view)
+    if bm is not None:
+        return bm.forward(view, model_point)
+    p = view.mapPoint3dToView(model_point)
+    return (p.x, p.y)
+
+
+def _broken_unmap_point(view, xy):
+    """view.mapPoint2dFromView((x, y)) as (x, y) on the unbroken projection."""
+    bm = _break_map(view)
+    if bm is not None:
+        return bm.inverse(xy)
+    p = view.mapPoint2dFromView(App.Vector(xy[0], xy[1], 0))
+    return (p.x, p.y)
+
+
 def _compute_project_offset(view):
     if _is_native_broken(view):
         return (0.0, 0.0)  # mapPoint3dToView already lands in the edges' own frame
@@ -202,9 +411,9 @@ def _project(view, model_point, offset=None):
         # view (and in the same centred, scaled frame as its edges), so a
         # dimension across a break is drawn at the right place while its
         # VALUE still comes from the model (the true length).
-        p = view.mapPoint3dToView(model_point)
+        p = _broken_map_point(view, model_point)
         k = _broken_scale(view)
-        return (p.x * k, p.y * k)
+        return (p[0] * k, p[1] * k)
     if offset is None:
         offset = _project_offset(view)
     p = view.projectPoint(model_point)
@@ -2078,11 +2287,13 @@ def make_detail(doc, page_id, base_view_id, anchor_xy, radius):
     }
 
 
-def make_broken(doc, page_id, base_view_id, breaks, drop_base=False):
+def make_broken(doc, page_id, base_view_id, breaks, drop_base=False, x=None, y=None, label=None):
     """`breaks`: list of {"axis":"x"|"y","pos":float,"gap":float}.
     drop_base=True removes the base view before anything computes - with a
     base from make_view(compute=False) the broken view is then the only
-    hidden-line pass (see make_broken_view)."""
+    hidden-line pass (see make_broken_view). x, y (and label) place the view
+    before it computes: moving a view afterwards re-runs its hidden-line
+    removal."""
     page = get_page(doc, page_id)
     base = doc.getObject(base_view_id)
     if base is None:
@@ -2102,8 +2313,11 @@ def make_broken(doc, page_id, base_view_id, breaks, drop_base=False):
         view.CoarseView = base.CoarseView
     # see make_section's comment - avoid "Broken Broken" from echoing
     # view.Name (FreeCAD's own auto-name) back into the label.
-    view.Label = "%s broken" % base_dir.title()
+    view.Label = label or "%s broken" % base_dir.title()
     _tag(view, "_gwt_dir", base_dir)
+    if x is not None and y is not None:
+        view.X, view.Y = float(x), float(y)
+        _tag(view, "_gwt_placed", "1")
     if drop_base:
         doc.removeObject(base.Name)
 
@@ -2157,13 +2371,13 @@ def make_broken(doc, page_id, base_view_id, breaks, drop_base=False):
     brk = []
     k = _broken_scale(view) if native else 1.0
     for i, start, end, gap in native:
-        a, b_ = view.mapPoint3dToView(start), view.mapPoint3dToView(end)
-        horizontal = abs(b_.x - a.x) >= abs(b_.y - a.y)
+        a, b_ = _broken_map_point(view, start), _broken_map_point(view, end)
+        horizontal = abs(b_[0] - a[0]) >= abs(b_[1] - a[1])
         brk.append({
             "sketch": view.Breaks[len(brk)].Name,
             "axis": "x" if horizontal else "y",
-            "position": k * ((a.x + b_.x) / 2.0 if horizontal else (a.y + b_.y) / 2.0),
-            "gap": k * (abs(b_.x - a.x) if horizontal else abs(b_.y - a.y)),
+            "position": k * ((a[0] + b_[0]) / 2.0 if horizontal else (a[1] + b_[1]) / 2.0),
+            "gap": k * (abs(b_[0] - a[0]) if horizontal else abs(b_[1] - a[1])),
             "start": [start.x, start.y, start.z],
             "end": [end.x, end.y, end.z],
         })
@@ -2191,34 +2405,38 @@ def make_broken(doc, page_id, base_view_id, breaks, drop_base=False):
     }
 
 
-def make_broken_view(doc, page_id, sources, direction="front", scale=1.0, breaks=None, coarse=False):
+def make_broken_view(doc, page_id, sources, direction="front", scale=1.0, breaks=None, coarse=False,
+                     x=None, y=None, label=None):
     """A broken view straight from its sources, in ONE hidden-line pass: the
     plain view it is described by is never computed. (make_view +
     make_broken + remove_view costs a pass for the base and, before the
     breaks are in, another for the broken view.)"""
     base = make_view(doc, page_id, sources, direction=direction, scale=scale, coarse=coarse,
                      compute=False)
-    return make_broken(doc, page_id, base["id"], breaks, drop_base=True)
+    return make_broken(doc, page_id, base["id"], breaks, drop_base=True, x=x, y=y, label=label)
 
 
 def broken_view_size(doc, page_id, sources, direction="front", breaks=None):
     """(width, height) a broken view of `sources` takes at scale 1, without
-    drawing them: each source is stood in for by its bounding box, which has
-    the same outer extents in an axis-aligned view and costs nothing to cut
-    and project. For choosing a scale before the one real (slow) view -
+    drawing them: one box around all of them stands in, which has the same
+    outer extents in an axis-aligned view and costs nothing to cut and
+    project. For choosing a scale before the one real (slow) view -
     extents only; in an isometric view the boxes over-estimate."""
     import Part
-    boxes = []
+    # ONE box around everything: breaks slide whole spans by fixed amounts,
+    # so the overall extents come out the same - and a box per source would
+    # overlap its neighbours (a wire's box runs through its connectors'),
+    # which FreeCAD's break cut silently leaves unbroken
+    bb = App.BoundBox()
     for o in (sources if isinstance(sources, (list, tuple)) else [sources]):
-        bb = Part.getShape(o).BoundBox
-        if not bb.isValid():
-            continue
-        boxes.append(Part.makeBox(max(bb.XLength, 1e-3), max(bb.YLength, 1e-3), max(bb.ZLength, 1e-3),
-                                  App.Vector(bb.XMin, bb.YMin, bb.ZMin)))
-    if not boxes:
+        b = Part.getShape(o).BoundBox
+        if b.isValid():
+            bb.add(b)
+    if not bb.isValid():
         raise RpcError(APP_ERROR, "nothing to measure")
     stand_in = doc.addObject("Part::Feature", "GwtViewExtents")
-    stand_in.Shape = Part.makeCompound(boxes)
+    stand_in.Shape = Part.makeBox(max(bb.XLength, 1e-3), max(bb.YLength, 1e-3), max(bb.ZLength, 1e-3),
+                                  App.Vector(bb.XMin, bb.YMin, bb.ZMin))
     stand_in.Visibility = False
     made = [stand_in]
     try:
@@ -2522,8 +2740,8 @@ def _dimension_raw_value(dim):
             # where it is on the unbroken projection, so a dimension across a
             # break reads the true model length.
             k = _broken_scale(view)
-            m = [view.mapPoint2dFromView(App.Vector(p[0] / k, p[1] / k, 0)) for p in pts[:2]]
-            dx, dy = m[1].x - m[0].x, m[1].y - m[0].y
+            m = [_broken_unmap_point(view, (p[0] / k, p[1] / k)) for p in pts[:2]]
+            dx, dy = m[1][0] - m[0][0], m[1][1] - m[0][1]
             if dim.Type == "DistanceX":
                 return abs(dx)
             if dim.Type == "DistanceY":

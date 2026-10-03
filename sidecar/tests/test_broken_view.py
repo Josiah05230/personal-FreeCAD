@@ -114,3 +114,52 @@ def test_inch_dimension_format():
     assert drawing._format_dimension(3048.0, "DistanceX", {"precision": 1}) == "3048.0mm"
     assert drawing._format_dimension_tolerance(
         {"toleranceMode": "symmetric", "tolerancePlus": 0.5, "precision": 1}) == ["±0.5"]
+
+
+def test_broken_view_in_one_pass_sized_from_boxes_and_mapped_without_freecad():
+    """make_broken_view needs no computed base view; broken_view_size gives
+    its size from a bounding box; and points map into the view through the
+    cached break mapping exactly as FreeCAD's own (slow) call does."""
+    d = App.newDocument("brokenfast")
+    bar = d.addObject("Part::Feature", "Bar")
+    bar.Shape = Part.makeBox(3048, 20, 20)
+    lug = d.addObject("Part::Feature", "Lug")  # overlaps the bar: one box must still break
+    lug.Shape = Part.makeBox(40, 60, 20, App.Vector(1500, -20, 0))
+    page = drawing.create_page(d, label="Drawing")["id"]
+    breaks = [{"start": [100, 0, 0], "end": [1400, 0, 0], "gap": 10},
+              {"start": [1700, 0, 0], "end": [2948, 0, 0], "gap": 10}]
+
+    w, h = drawing.broken_view_size(d, page, [bar, lug], direction="top", breaks=breaks)
+    assert not [o for o in d.Objects if o.Name.startswith("GwtViewExtents")]  # cleaned up
+
+    v = drawing.make_broken_view(d, page, [bar, lug], direction="top", scale=0.5, breaks=breaks,
+                                 x=120, y=90, label="Top")
+    view = d.getObject(v["id"])
+    assert [o.TypeId for o in d.Objects].count("TechDraw::DrawViewPart") == 0  # the base never stayed
+    assert (float(view.X), float(view.Y), view.Label) == (120.0, 90.0, "Top")
+    b = v["bbox"]
+    assert abs((b[2] - b[0]) - w * 0.5) < 0.5 and abs((b[3] - b[1]) - h * 0.5) < 0.5
+    assert b[2] - b[0] < 400  # 3048 mm, shortened
+
+    assert drawing._break_map(view) is not None
+    for p in ((0, 5, 0), (99, 0, 20), (1450, -15, 3), (1650, 30, 0), (3000, 10, 10)):
+        want = view.mapPoint3dToView(App.Vector(*p))
+        got = drawing._broken_map_point(view, App.Vector(*p))
+        assert abs(got[0] - want.x) < 1e-6 and abs(got[1] - want.y) < 1e-6
+    # across both breaks the model length comes back
+    a = drawing._broken_map_point(view, App.Vector(50, 0, 0))
+    c = drawing._broken_map_point(view, App.Vector(3000, 0, 0))
+    ua, uc = drawing._broken_unmap_point(view, a), drawing._broken_unmap_point(view, c)
+    assert abs(abs(uc[0] - ua[0]) - 2950.0) < 1e-6
+    App.closeDocument(d.Name)
+
+
+def test_face_search_is_off_only_while_computing():
+    from gwtcad import hlr
+    g = App.ParamGet("User parameter:BaseApp/Preferences/Mod/TechDraw/General")
+    before = g.GetBool("HandleFaces", True)
+    with hlr.no_face_search():
+        with hlr.no_face_search():
+            assert g.GetBool("HandleFaces", True) is False
+        assert g.GetBool("HandleFaces", True) is False
+    assert g.GetBool("HandleFaces", True) == before
