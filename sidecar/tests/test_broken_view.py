@@ -65,6 +65,30 @@ def test_native_break_respects_view_scale():
     App.closeDocument(d.Name)
 
 
+def test_dimension_between_two_objects_across_a_break():
+    d = App.newDocument("twoobj")
+    a = d.addObject("Part::Feature", "A")
+    a.Shape = Part.makeBox(40, 20, 20)
+    b = d.addObject("Part::Feature", "B")
+    b.Shape = Part.makeBox(40, 20, 20, App.Vector(3008, 0, 0))
+    wire = d.addObject("Part::Feature", "Wire")
+    wire.Shape = Part.makeBox(2968, 2, 2, App.Vector(40, 9, 9))
+    page = drawing.create_page(d, label="Drawing")["id"]
+    base = drawing.make_view(d, page, [wire, a, b], direction="front", scale=1.0)
+    broken = drawing.make_broken(d, page, base["id"], [
+        {"start": [200, 0, 0], "end": [2848, 0, 0], "gap": 10}])
+    # A's far left corner to B's far right corner: the whole 3048
+    av = next("Vertex%d" % (i + 1) for i, v in enumerate(a.Shape.Vertexes) if v.Point.x == 0)
+    bv = next("Vertex%d" % (i + 1) for i, v in enumerate(b.Shape.Vertexes) if v.Point.x == 3048)
+    dim = drawing.add_dimension(d, page, broken["id"],
+                                [{"obj": "A", "sub": av}, {"obj": "B", "sub": bv}], "DistanceX")
+    assert dim["value"] == pytest.approx(3048, abs=0.5)
+    bb = broken["bbox"]
+    assert dim["p1"][0] == pytest.approx(bb[0], abs=0.5)
+    assert dim["p2"][0] == pytest.approx(bb[2], abs=0.5)
+    App.closeDocument(d.Name)
+
+
 def test_inch_dimension_format():
     assert drawing._format_dimension(3048.0, "DistanceX", {"unit": "in", "precision": 1}) == '120.0"'
     assert drawing._format_dimension(3048.0, "DistanceX", {"precision": 1}) == "3048.0mm"

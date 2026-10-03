@@ -2261,6 +2261,13 @@ def add_dimension(doc, page_id, view_id, refs, kind="Distance"):
     page.addView(dim)
     dim.Type = _norm_dim_type(kind)
     dim.References2D = [(view, str(r["sub"])) for r in refs]
+    # A ref may name the object its sub-element is on ({"obj": "WireA",
+    # "sub": "Vertex2"}) - any object in the view, not only its first
+    # source - so an assembly can be dimensioned between two components
+    # (connector to connector on a harness). Kept in a tag: References2D
+    # itself can only name the view.
+    if any(r.get("obj") for r in refs):
+        _tag(dim, DIM_OBJS_TAG, json.dumps([{"obj": r.get("obj") or "", "sub": str(r["sub"])} for r in refs]))
     doc.recompute()
 
     value = _dimension_raw_value(dim)
@@ -2290,6 +2297,30 @@ def remove_dimension(doc, dim_id):
 # that side of the outline so it draws as an ordinary Distance (extension
 # lines + arrows), not the ordinate style DistanceX/DistanceY get.
 DIM_EXTENT_TAG = "_gwt_dimExtent"
+# refs that name their own object (see add_dimension): JSON list of
+# {"obj": <object name, "" = the view's first source>, "sub": "VertexN"}.
+DIM_OBJS_TAG = "_gwt_dimObjs"
+
+
+def _object_ref_points(dim, view):
+    """Projected points of a dimension whose refs name their objects, read
+    from each object's geometry as it is placed in the document now."""
+    raw = _get_tag(dim, DIM_OBJS_TAG)
+    if not raw:
+        return None
+    import Part
+    pts = []
+    for r in json.loads(raw)[:2]:
+        obj = view.Document.getObject(r["obj"]) if r.get("obj") else (view.Source[0] if view.Source else None)
+        if obj is None:
+            return None
+        shape = Part.getShape(obj)
+        sub = getattr(shape, r["sub"], None)
+        if sub is None:
+            return None
+        point = sub.Point if r["sub"].startswith("Vertex") else sub.valueAt(sub.FirstParameter)
+        pts.append(_project(view, point))
+    return pts if len(pts) == 2 else None
 
 
 def _extent_points(view, spec):
@@ -2319,6 +2350,9 @@ def _dimension_linear_points(dim):
         extent = _get_tag(dim, DIM_EXTENT_TAG)
         if extent:
             return _extent_points(view, extent)
+        named = _object_ref_points(dim, view)
+        if named:
+            return named
         shape = view.Source[0].Shape if view.Source else None
         if shape is None:
             return None
