@@ -852,6 +852,7 @@ def feature_combine(op="Fuse", baseBodyId=None, toolBodyIds=None, keepTools=Fals
     boolean = base.newObject("PartDesign::Boolean", "Boolean")
     boolean.Label = next_label(base, "PartDesign::Boolean")
     boolean.Type = op  # Fuse | Cut | Common
+    build._gwt_tag(boolean, "GwtKind", "combine")
     boolean.Group = tools
     d.recompute()
     if not base.Shape.isValid():
@@ -929,17 +930,11 @@ def feature_chamfer(edges, size=2.0, mode="Equal", size2=0.0, angle=45.0, points
     f = build.dress_up(body, "PartDesign::Chamfer", tip, edges, "Chamfer")
     f.Size = float(size)
     m = str(mode or "Equal").lower()
-    try:
-        if m.startswith("two"):
-            f.ChamferType = "Two distances"
-            f.Size2 = float(size2) if float(size2 or 0) > 0 else float(size)
-        elif "angle" in m:
-            f.ChamferType = "Distance and angle"
-            f.Angle = float(angle)
-        else:
-            f.ChamferType = "Equal distance"
-    except Exception:
-        pass  # older builds: single-distance only, Size already set
+    _set_chamfer_type(f, m)
+    if m.startswith("two"):
+        f.Size2 = float(size2) if float(size2 or 0) > 0 else float(size)
+    elif "angle" in m:
+        f.Angle = float(angle)
     body.Document.recompute()
     if not body.Shape.isValid():
         raise RpcError(APP_ERROR, "chamfer produced an invalid shape")
@@ -954,15 +949,7 @@ def feature_shell(faces, thickness=2.0, direction="Inside"):
     tip = _solid_tip(body)
     f = build.dress_up(body, "PartDesign::Thickness", tip, faces, "Shell")
     f.Value = float(thickness)
-    dr = str(direction or "Inside").lower()
-    try:
-        if dr.startswith("out"):
-            f.Reversed = True
-        elif dr.startswith("both"):
-            if hasattr(f, "Mode"):
-                f.Mode = "RectoVerso"
-    except Exception:
-        pass
+    _set_shell_direction(f, direction)
     body.Document.recompute()
     if not body.Shape.isValid():
         raise RpcError(APP_ERROR, "shell produced an invalid shape")
@@ -1140,33 +1127,17 @@ def feature_rib(sketchId, thickness=3.0, reversed=False, midplane=True):
             except Exception:
                 pass
 
-    import Part
-    try:
-        w = sk.Shape.Wires[0]
-        span = w.BoundBox.DiagonalLength or 10.0
-        off = w.makeOffset2D(float(thickness) / 2.0, openResult=True, intersection=True)
-        Part.Face(off)  # validity check
-    except Exception:
-        raise RpcError(APP_ERROR,
-                       "rib needs an open profile that spans between solid walls")
+    _rib_outline(sk, float(thickness))  # fails early, before anything is added
     helper = body.newObject("Sketcher::SketchObject", "Sketch")
     helper.Label = next_label(body, "Sketcher::SketchObject")
-    helper.Placement = sk.Placement
-    inv = sk.Placement.inverse()
-    for e in off.Edges:
-        try:
-            a = inv.multVec(e.valueAt(e.FirstParameter))
-            b = inv.multVec(e.valueAt(e.LastParameter))
-            helper.addGeometry(
-                Part.LineSegment(App.Vector(a.x, a.y, 0), App.Vector(b.x, b.y, 0)), False)
-        except Exception:
-            pass
-    d.recompute()
-    pad = build.pad(body, helper, max(span, float(thickness) * 4), midplane=True)
+    pad = build.pad(body, helper, 10.0, midplane=True)
     try:
         pad.Label = next_label(body, "PartDesign::Pad").replace("Extrude", "Rib")
     except Exception:
         pass
+    build._gwt_tag(pad, "GwtKind", "rib")
+    build._gwt_tag(pad, "GwtRibSketch", sk.Name)
+    _rib_profile(d, pad, sk, float(thickness))
     sk.Visibility = False
     helper.Visibility = False
     d.recompute()
@@ -2345,7 +2316,30 @@ _TYPE_KIND = {
     "PartDesign::PolarPattern": "patternCircular",
     "PartDesign::AdditivePipe": "sweep",
     "PartDesign::SubtractivePipe": "sweep",
+    "PartDesign::AdditiveLoft": "loft",
+    "PartDesign::SubtractiveLoft": "loft",
+    "PartDesign::Plane": "datumPlane",
+    "PartDesign::Line": "datumAxis",
+    "PartDesign::Point": "datumPoint",
+    "PartDesign::AdditiveBox": "box",
+    "PartDesign::SubtractiveBox": "box",
+    "PartDesign::AdditiveCylinder": "cylinder",
+    "PartDesign::SubtractiveCylinder": "cylinder",
+    "PartDesign::AdditiveSphere": "sphere",
+    "PartDesign::SubtractiveSphere": "sphere",
+    "PartDesign::AdditiveTorus": "torus",
+    "PartDesign::SubtractiveTorus": "torus",
 }
+
+
+def _feature_kind(o):
+    """The operation dialog that edits `o`, or None. A Pad made by Rib or a
+    Boolean made by Combine is tagged at creation (GwtKind), since the same
+    TypeIds are also built by Extrude and by the intersect / new-body paths."""
+    tag = getattr(o, "GwtKind", "") if "GwtKind" in getattr(o, "PropertiesList", []) else ""
+    if tag in ("rib", "combine"):
+        return tag
+    return _TYPE_KIND.get(o.TypeId) or _scripted_kind(o)
 
 
 def _scripted_kind(o):
@@ -2447,10 +2441,45 @@ def _transform_scope_of(body, o):
     return "Features", orig
 
 
+def _set_shell_direction(o, direction):
+    """Shell Direction -> Thickness. Reversed=True (FreeCAD 1.1's default) is
+    the wall going inward, False outward; Both is Mode RectoVerso."""
+    dr = str(direction or "Inside").lower()
+    if hasattr(o, "Mode"):
+        o.Mode = "RectoVerso" if dr.startswith("both") else "Skin"
+    o.Reversed = not dr.startswith("out")
+
+
+def _set_chamfer_type(o, mode):
+    """Dialog chamfer Type -> ChamferType, matched against this build's own
+    enumeration (1.1 spells it "Distance and Angle")."""
+    want = str(mode or "Equal").lower()
+    key = "two" if want.startswith("two") else "angle" if "angle" in want else "equal"
+    try:
+        opts = o.getEnumerationsOfProperty("ChamferType")
+    except Exception:
+        opts = ["Equal distance", "Two distances", "Distance and Angle"]
+    for opt in opts:
+        if key in opt.lower():
+            o.ChamferType = opt
+            return
+
+
 def _set_feature_values(o, values):
     """Write dialog OpValues back onto a PartDesign feature (best effort)."""
     T = o.TypeId
     v = values or {}
+    kind = _feature_kind(o)
+    if kind == "rib":
+        if v.get("thickness") is not None:
+            sk = o.Document.getObject(getattr(o, "GwtRibSketch", "") or "")
+            if sk is not None:
+                _rib_profile(o.Document, o, sk, float(v["thickness"]))
+        return
+    if kind == "combine":
+        if v.get("op") in ("Fuse", "Cut", "Common"):
+            o.Type = v["op"]
+        return
 
     def num(prop, key):
         if key in v and v[key] is not None:
@@ -2479,18 +2508,72 @@ def _set_feature_values(o, values):
             num("TaperAngle", "taper")
     elif T in ("PartDesign::Revolution", "PartDesign::Groove"):
         num("Angle", "angle")
+        if v.get("full"):
+            o.Angle = 360.0
         flag("Reversed", "reversed")
     elif T == "PartDesign::Fillet":
         num("Radius", "radius")
     elif T == "PartDesign::Chamfer":
         num("Size", "size")
+        if "mode" in v:
+            _set_chamfer_type(o, v.get("mode"))
+        if str(getattr(o, "ChamferType", "")).lower().startswith("two"):
+            num("Size2", "size2")
+        if "angle" in str(getattr(o, "ChamferType", "")).lower():
+            num("Angle", "angle")
     elif T == "PartDesign::Thickness":
         num("Value", "thickness")
+        if "direction" in v:
+            _set_shell_direction(o, v["direction"])
     elif T == "PartDesign::Draft":
         num("Angle", "angle")
     elif T == "PartDesign::Hole":
         num("Diameter", "diameter")
+        if "throughAll" in v:
+            o.DepthType = "ThroughAll" if v["throughAll"] else "Dimension"
         num("Depth", "depth")
+        if "cutType" in v:
+            ct = str(v["cutType"] or "None")
+            o.HoleCutType = ct if ct in ("Counterbore", "Countersink") else "None"
+        if str(o.HoleCutType) != "None":
+            if float(v.get("cutDiameter") or 0) > 0:
+                num("HoleCutDiameter", "cutDiameter")
+            if str(o.HoleCutType) == "Counterbore" and float(v.get("cutDepth") or 0) > 0:
+                num("HoleCutDepth", "cutDepth")
+    elif T in ("PartDesign::AdditiveLoft", "PartDesign::SubtractiveLoft"):
+        flag("Ruled", "ruled")
+        flag("Closed", "closed")
+    elif T in ("PartDesign::AdditiveBox", "PartDesign::SubtractiveBox"):
+        num("Length", "length")
+        num("Width", "width")
+        num("Height", "height")
+        try:  # stays centred on its plane origin, like when it was made
+            o.AttachmentOffset = App.Placement(
+                App.Vector(-float(o.Length) / 2.0, -float(o.Width) / 2.0, 0), o.AttachmentOffset.Rotation)
+        except Exception:
+            pass
+    elif T in ("PartDesign::AdditiveCylinder", "PartDesign::SubtractiveCylinder",
+               "PartDesign::AdditiveSphere", "PartDesign::SubtractiveSphere"):
+        if v.get("diameter") is not None:
+            o.Radius = float(v["diameter"]) / 2.0
+        if hasattr(o, "Height"):
+            num("Height", "height")
+    elif T in ("PartDesign::AdditiveTorus", "PartDesign::SubtractiveTorus"):
+        if v.get("meanDiameter") is not None:
+            o.Radius1 = float(v["meanDiameter"]) / 2.0
+        if v.get("sectionDiameter") is not None:
+            o.Radius2 = float(v["sectionDiameter"]) / 2.0
+        if float(o.Radius2) >= float(o.Radius1):
+            raise RpcError(APP_ERROR, "the section diameter must be smaller than the mean diameter")
+    elif T in ("PartDesign::Plane", "PartDesign::Line", "PartDesign::Point"):
+        if T != "PartDesign::Point" and ("offset" in v or "angle" in v or "flip" in v):
+            off = o.AttachmentOffset
+            z = float(v.get("offset", abs(off.Base.z)) or 0)
+            flip = bool(v.get("flip", off.Base.z < 0))
+            rot = off.Rotation
+            if T == "PartDesign::Plane" and "angle" in v:
+                rot = App.Rotation(App.Vector(1, 0, 0), float(v.get("angle") or 0))
+            o.AttachmentOffset = App.Placement(App.Vector(0, 0, -z if flip else z), rot)
     elif T in ("PartDesign::AdditivePipe", "PartDesign::SubtractivePipe"):
         # "operation" (Join vs Cut) is really TWO DIFFERENT FreeCAD TypeIds
         # (AdditivePipe / SubtractivePipe) - not a property on either, so it
@@ -2628,6 +2711,33 @@ def _set_feature_refs(d, o, body, refs):
     """Re-point a feature's Profile / Base / ReferenceAxis from UI refs."""
     r = refs or {}
     T = o.TypeId
+    if _feature_kind(o) == "rib":
+        pr = r.get("profile")
+        if pr and pr.get("kind") == "sketch" and pr.get("id") != getattr(o, "GwtRibSketch", ""):
+            sk = d.getObject(pr["id"])
+            if sk is None or sk.TypeId != "Sketcher::SketchObject":
+                raise RpcError(APP_ERROR, "pick the rib's profile sketch")
+            build._gwt_tag(o, "GwtRibSketch", sk.Name)
+            _rib_profile(d, o, sk, float(getattr(o, "GwtRibThickness", "") or 3))
+        return
+    if T in ("PartDesign::AdditiveLoft", "PartDesign::SubtractiveLoft") and r.get("sketches"):
+        objs = [d.getObject(x) for x in r["sketches"]]
+        objs = [x for x in objs if x is not None]
+        if len(objs) < 2:
+            raise RpcError(APP_ERROR, "a loft needs at least two profiles")
+        o.Profile = objs[0]
+        o.Sections = objs[1:]
+        return
+    if T in ("PartDesign::Plane", "PartDesign::Line", "PartDesign::Point") and r.get("datumRefs"):
+        kind = {"PartDesign::Plane": "plane", "PartDesign::Line": "axis"}.get(T, "point")
+        off = o.AttachmentOffset
+        ang = 0.0
+        try:
+            ang = math.degrees(off.Rotation.Angle) * (1 if off.Rotation.Axis.x >= 0 else -1)
+        except Exception:
+            pass
+        _attach_datum(d, body, o, kind, r["datumRefs"], abs(off.Base.z), ang, off.Base.z < 0)
+        return
     if T in ("PartDesign::Pad", "PartDesign::Pocket",
              "PartDesign::Revolution", "PartDesign::Groove"):
         pr = r.get("profile")
@@ -2645,7 +2755,14 @@ def _set_feature_refs(d, o, body, refs):
         if up and hasattr(o, "UpToFace"):
             _set_extent_target(d, o, body, up)
         ax = r.get("axis")
-        if ax and hasattr(o, "ReferenceAxis"):
+        if ax and ax.get("kind") == "sketchAxis" and hasattr(o, "ReferenceAxis"):
+            # the profile sketch's own vertical / horizontal line
+            prof = o.Profile[0] if isinstance(o.Profile, (tuple, list)) else o.Profile
+            if getattr(prof, "TypeId", "") == "Sketcher::SketchObject":
+                o.ReferenceAxis = (prof, ["H_Axis" if ax.get("which") == "H" else "V_Axis"])
+            else:
+                raise RpcError(APP_ERROR, "a face profile has no sketch axis - pick an edge or X/Y/Z")
+        elif ax and hasattr(o, "ReferenceAxis"):
             try:
                 o.ReferenceAxis = _resolve_ref(d, body, ax)
             except Exception:
@@ -2697,11 +2814,82 @@ def _set_feature_refs(d, o, body, refs):
             o.Originals = _body_solid_features(body)
 
 
+def _revolve_axis_choice(o, axis_ref):
+    """The revolve dialog's Axis dropdown value for a committed feature."""
+    if not axis_ref:
+        return "Sketch vertical"
+    if axis_ref.get("kind") == "origin":
+        return {"X_Axis": "X", "Y_Axis": "Y", "Z_Axis": "Z"}.get(axis_ref.get("role"),
+                                                              "Selected edge / datum")
+    if axis_ref.get("kind") == "sketch":
+        prof = getattr(o, "Profile", None)
+        prof = prof[0] if isinstance(prof, (tuple, list)) and prof else prof
+        sub = axis_ref.get("sub") or ""
+        if prof is not None and axis_ref.get("id") == getattr(prof, "Name", None):
+            if sub == "V_Axis":
+                return "Sketch vertical"
+            if sub == "H_Axis":
+                return "Sketch horizontal"
+    return "Selected edge / datum"
+
+
+def _support_links(o):
+    """A datum's AttachmentSupport as a list of (obj, [sub]) links."""
+    out = []
+    for l in list(getattr(o, "AttachmentSupport", None) or []):
+        if isinstance(l, (tuple, list)) and l:
+            subs = l[1] if len(l) > 1 else [""]
+            subs = list(subs) if isinstance(subs, (tuple, list)) else [subs]
+            out.append((l[0], subs or [""]))
+    return out
+
+
+def _rib_outline(sk, thickness):
+    """A rib's open profile thickened to a closed outline, as (a, b) line
+    segments in the sketch's own coordinates. A lone straight line has no
+    plane of its own for makeOffset2D, so it becomes a rectangle directly."""
+    if not sk.Shape.Edges:
+        raise RpcError(APP_ERROR, "the rib sketch is empty")
+    w = Part.Wire(Part.__sortEdges__([e.copy() for e in sk.Shape.Edges]))
+    w.transformShape(sk.Placement.inverse().toMatrix())
+    h = thickness / 2.0
+    edges = w.Edges
+    if all(type(e.Curve).__name__ in ("Line", "LineSegment") for e in edges):
+        p0, p1 = w.Vertexes[0].Point, w.Vertexes[-1].Point
+        if len(edges) == 1 or (p1 - p0).Length < 1e-9 or all(
+                abs((e.Vertexes[-1].Point - e.Vertexes[0].Point).normalize()
+                    .cross((p1 - p0).normalize()).Length) < 1e-9 for e in edges):
+            dv = p1 - p0
+            n = App.Vector(-dv.y, dv.x, 0).normalize() * h
+            c = [p0 + n, p1 + n, p1 - n, p0 - n]
+            return [(c[i], c[(i + 1) % 4]) for i in range(4)]
+    try:
+        off = w.makeOffset2D(h, openResult=True, intersection=True)
+        Part.Face(off)  # validity check
+    except Exception:
+        raise RpcError(APP_ERROR, "rib needs an open profile that spans between solid walls")
+    return [(e.valueAt(e.FirstParameter), e.valueAt(e.LastParameter)) for e in off.Edges]
+
+
+def _rib_profile(d, rib, sk, thickness):
+    """(Re)draw a rib's helper sketch: the open profile offset to a closed
+    outline `thickness` wide, padded symmetric (FreeCAD 1.1 has no Rib)."""
+    helper = rib.Profile[0] if isinstance(rib.Profile, (tuple, list)) else rib.Profile
+    helper.deleteAllGeometry()
+    helper.Placement = sk.Placement
+    span = 10.0
+    for a, b in _rib_outline(sk, float(thickness)):
+        helper.addGeometry(Part.LineSegment(App.Vector(a.x, a.y, 0), App.Vector(b.x, b.y, 0)), False)
+        span = max(span, (b - a).Length)
+    rib.Length = max(sk.Shape.BoundBox.DiagonalLength or span, float(thickness) * 4)
+    build._gwt_tag(rib, "GwtRibThickness", float(thickness))
+
+
 @method("feature.get")
 def feature_get(id):
     """Everything the operation dialog needs to reopen a committed feature."""
     d, o = _obj(id)
-    kind = _TYPE_KIND.get(o.TypeId) or _scripted_kind(o)
+    kind = _feature_kind(o)
     if kind is None:
         return {"id": id, "label": o.Label, "kind": None}
     T = o.TypeId
@@ -2718,7 +2906,17 @@ def feature_get(id):
         refs["planeOrAxis"] = _link_ref(getattr(o, "PlaneSupport", None))
         return {"id": id, "label": o.Label, "kind": kind,
                 "values": values, "refs": refs, "exprs": session.feature_exprs(id)}
-    if T in ("PartDesign::Pad", "PartDesign::Pocket"):
+    # rib / combine first: their TypeIds (Pad, Boolean) are shared with other tools
+    if kind == "rib":
+        values["thickness"] = float(getattr(o, "GwtRibThickness", "") or 0) or _prop_value(o, "Length")
+        values["reversed"] = bool(getattr(o, "Reversed", False))
+        src = o.Document.getObject(getattr(o, "GwtRibSketch", "") or "")
+        if src is not None:
+            refs["profile"] = {"kind": "sketch", "id": src.Name}
+    elif kind == "combine":
+        values["op"] = str(getattr(o, "Type", "Fuse"))
+        values["keepTools"] = False
+    elif T in ("PartDesign::Pad", "PartDesign::Pocket"):
         values["length"] = _prop_value(o, "Length")
         values["reversed"] = bool(getattr(o, "Reversed", False))
         st = getattr(o, "SideType", None)
@@ -2738,18 +2936,29 @@ def feature_get(id):
             refs["upTo"] = up
     elif T in ("PartDesign::Revolution", "PartDesign::Groove"):
         values["angle"] = _prop_value(o, "Angle")
+        values["full"] = values["angle"] >= 360.0 - 1e-6
         values["cut"] = (T == "PartDesign::Groove")
+        values["operation"] = "Cut" if T == "PartDesign::Groove" else "Join"
         values["reversed"] = bool(getattr(o, "Reversed", False))
         refs["profile"] = _profile_ref(o)
         refs["axis"] = _axis_ref(o)
+        values["axis"] = _revolve_axis_choice(o, refs["axis"])
     elif T == "PartDesign::Fillet":
         values["radius"] = _prop_value(o, "Radius")
         refs["edges"] = list(o.Base[1]) if getattr(o, "Base", None) else []
     elif T == "PartDesign::Chamfer":
         values["size"] = _prop_value(o, "Size")
+        ct = str(getattr(o, "ChamferType", "Equal distance")).lower()
+        values["mode"] = ("Two distances" if ct.startswith("two")
+                          else "Distance and angle" if "angle" in ct else "Equal")
+        values["size2"] = _prop_value(o, "Size2") if hasattr(o, "Size2") else values["size"]
+        values["angle"] = _prop_value(o, "Angle") if hasattr(o, "Angle") else 45.0
         refs["edges"] = list(o.Base[1]) if getattr(o, "Base", None) else []
     elif T == "PartDesign::Thickness":
         values["thickness"] = _prop_value(o, "Value")
+        # Thickness.Reversed True (FreeCAD's default) is the wall going inward
+        values["direction"] = ("Both" if str(getattr(o, "Mode", "")) == "RectoVerso"
+                               else "Inside" if getattr(o, "Reversed", True) else "Outside")
         refs["faces"] = list(o.Base[1]) if getattr(o, "Base", None) else []
     elif T == "PartDesign::Draft":
         values["angle"] = _prop_value(o, "Angle")
@@ -2757,6 +2966,48 @@ def feature_get(id):
     elif T == "PartDesign::Hole":
         values["diameter"] = _prop_value(o, "Diameter")
         values["depth"] = _prop_value(o, "Depth")
+        values["throughAll"] = str(getattr(o, "DepthType", "")) == "ThroughAll"
+        ct = str(getattr(o, "HoleCutType", "None"))
+        values["cutType"] = ct if ct in ("Counterbore", "Countersink") else "None"
+        values["cutDiameter"] = _prop_value(o, "HoleCutDiameter") if ct != "None" else 0.0
+        values["cutDepth"] = _prop_value(o, "HoleCutDepth") if ct == "Counterbore" else 0.0
+    elif kind == "loft":
+        values["operation"] = "Cut" if T == "PartDesign::SubtractiveLoft" else "Join"
+        values["ruled"] = bool(getattr(o, "Ruled", False))
+        values["closed"] = bool(getattr(o, "Closed", False))
+        secs = [getattr(o, "Profile", None)] + list(getattr(o, "Sections", []) or [])
+        ids = []
+        for x in secs:
+            x = x[0] if isinstance(x, (tuple, list)) else x
+            if x is not None:
+                ids.append(getattr(x, build.REF_TAG, "") or x.Name)
+        refs["sketches"] = ids
+    elif kind in ("datumPlane", "datumAxis", "datumPoint"):
+        off = getattr(o, "AttachmentOffset", None)
+        z = float(off.Base.z) if off is not None else 0.0
+        values["offset"] = abs(z)
+        values["flip"] = z < 0
+        if kind == "datumPlane":
+            try:
+                values["angle"] = round(math.degrees(off.Rotation.Angle) *
+                                        (1 if off.Rotation.Axis.x >= 0 else -1), 6)
+            except Exception:
+                values["angle"] = 0.0
+        refs["datumRefs"] = [r for r in (_link_ref(l) for l in _support_links(o)) if r]
+    elif kind in ("box", "cylinder", "sphere", "torus"):
+        values["operation"] = "Cut" if T.startswith("PartDesign::Subtractive") else "Join"
+        if kind == "box":
+            values["length"] = _prop_value(o, "Length")
+            values["width"] = _prop_value(o, "Width")
+            values["height"] = _prop_value(o, "Height")
+        elif kind == "cylinder":
+            values["diameter"] = 2 * _prop_value(o, "Radius")
+            values["height"] = _prop_value(o, "Height")
+        elif kind == "sphere":
+            values["diameter"] = 2 * _prop_value(o, "Radius")
+        else:
+            values["meanDiameter"] = 2 * _prop_value(o, "Radius1")
+            values["sectionDiameter"] = 2 * _prop_value(o, "Radius2")
     elif T in ("PartDesign::AdditivePipe", "PartDesign::SubtractivePipe"):
         values["operation"] = "Cut" if T == "PartDesign::SubtractivePipe" else "Join"
         values["orientation"] = "Path" if str(getattr(o, "Mode", "Frenet")) == "Frenet" else "Parallel"
@@ -2791,7 +3042,7 @@ def feature_update(id, values=None, refs=None, exprs=None):
     """Commit an edit: write params + refs onto the existing feature, full
     recompute, surgical rollback on failure, then return the tree."""
     d, o = _obj(id)
-    kind = _TYPE_KIND.get(o.TypeId) or _scripted_kind(o)
+    kind = _feature_kind(o)
     if kind is None:
         raise RpcError(APP_ERROR, "%s cannot be edited this way" % o.Label)
     body = o.getParentGeoFeatureGroup()
@@ -2840,6 +3091,11 @@ def feature_update(id, values=None, refs=None, exprs=None):
             session.set_feature_expr(id, prop, str(e))
         except Exception:
             pass
+    if kind in ("datumPlane", "datumAxis", "datumPoint"):
+        d.recompute()
+        if "Invalid" in (getattr(o, "State", []) or []):
+            raise RpcError(APP_ERROR, "the datum can't be placed from those references")
+        return tree_get()
     # Transformed features (Mirror / Pattern) only fold in with the dirty
     # recompute dance
     if o.TypeId in ("PartDesign::Mirrored", "PartDesign::LinearPattern",

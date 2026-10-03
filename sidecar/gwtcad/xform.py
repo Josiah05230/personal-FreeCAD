@@ -131,6 +131,11 @@ def _solid_of(o):
     s = getattr(o, "Shape", None)
     if (s is None or s.isNull()) and getattr(o, "Tip", None) is not None:
         s = getattr(o.Tip, "Shape", None)
+    # a body's shape can come back as a compound holding its solid(s), which
+    # has no CenterOfMass of its own - measure the solid(s) inside
+    if s is not None and not s.isNull() and s.ShapeType == "Compound" and s.Solids:
+        sol = s.Solids
+        s = sol[0] if len(sol) == 1 else sol[0].multiFuse(sol[1:])
     return s
 
 

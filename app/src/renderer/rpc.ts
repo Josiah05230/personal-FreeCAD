@@ -228,6 +228,10 @@ export interface FeatureEdit {
     scope?: string
     /** extrude "To object": the face it extrudes up to */
     upTo?: GeomRef
+    /** loft: its profile sketches in order */
+    sketches?: string[]
+    /** datum plane / axis / point: what it's attached to */
+    datumRefs?: GeomRef[]
   }
   exprs?: Record<string, string>
 }
@@ -340,6 +344,8 @@ export type GeomRef =
   | { kind: 'edge'; bodyId: string; sub: string }
   | { kind: 'vertex'; bodyId: string; sub: string }
   | { kind: 'sketch'; id: string; sub?: string }
+  /** revolve edit: the profile sketch's own vertical (V) / horizontal (H) line */
+  | { kind: 'sketchAxis'; which: 'V' | 'H' }
 
 export interface Param {
   name: string

@@ -1517,17 +1517,28 @@ export function App(): JSX.Element {
       const pl = selection.find((s) => s.kind === 'plane') as
         | { role?: string; planeId: string }
         | undefined
-      if (kind === 'extrude' || kind === 'revolve') {
+      if (kind === 'extrude' || kind === 'revolve' || kind === 'rib') {
         if (sk) refs.profile = { kind: 'sketch', id: sk.sketchId }
-        else if (fc[0]) refs.profile = { kind: 'face', bodyId: fc[0].bodyId, sub: fc[0].sub }
+        else if (fc[0] && kind !== 'rib') refs.profile = { kind: 'face', bodyId: fc[0].bodyId, sub: fc[0].sub }
         // "To object": the face after the profile is the target, same as creating
         const up = kind === 'extrude' && v?.mode === 'To object' ? fc[sk ? 0 : 1] : undefined
         if (up) refs.upTo = { kind: 'face', bodyId: up.bodyId, sub: up.sub }
         if (kind === 'revolve') {
-          if (ed[0]) refs.axis = { kind: 'edge', bodyId: ed[0].bodyId, sub: ed[0].sub }
-          else if (pl?.role) refs.axis = { kind: 'origin', role: pl.role }
-          else if (pl) refs.axis = { kind: 'plane', id: pl.planeId }
+          // the Axis dropdown, same as creating: X/Y/Z, a picked edge / datum,
+          // or the profile sketch's own vertical / horizontal line
+          const { axisRef, axisCode } = revolveAxisRef(String(v?.axis ?? ''), selection, sk?.sketchId)
+          refs.axis = axisRef ?? { kind: 'sketchAxis', which: axisCode }
         }
+      } else if (kind === 'loft') {
+        refs.sketches = selection
+          .filter((s) => s.kind === 'sketch')
+          .map((s) => (s as { sketchId: string }).sketchId)
+      } else if (kind === 'datumPlane' || kind === 'datumAxis' || kind === 'datumPoint') {
+        // re-attach only when the picks changed - an unchanged datum keeps its
+        // own links (they can point at an earlier feature than the tip)
+        const now = selection.map(selectionToRef).filter(Boolean) as import('./rpc').GeomRef[]
+        const was = editingFeatureRef.current?.refs?.datumRefs ?? []
+        if (now.length && JSON.stringify(now) !== JSON.stringify(was)) refs.datumRefs = now
       } else if (kind === 'fillet' || kind === 'chamfer') {
         // Face* subs ride in the same list - PartDesign rounds all their edges
         refs.edges = [...ed.map((e) => e.sub), ...fc.map((f) => f.sub)]
@@ -3209,6 +3220,15 @@ export function App(): JSX.Element {
           sub: r.profile.sub,
           point: [0, 0, 0]
         } as Selection)
+      // loft: its profiles in order
+      for (const id of r.sketches ?? []) sels.push({ kind: 'sketch', sketchId: id } as Selection)
+      // datum: what it's attached to
+      for (const g of r.datumRefs ?? []) {
+        if (g.kind === 'origin') sels.push({ kind: 'plane', planeId: '', role: g.role } as Selection)
+        else if (g.kind === 'plane') sels.push({ kind: 'plane', planeId: g.id } as Selection)
+        else if (g.kind === 'face' || g.kind === 'edge' || g.kind === 'vertex')
+          sels.push({ kind: g.kind, bodyId: g.bodyId, sub: g.sub, point: [0, 0, 0] } as Selection)
+      }
       // extrude "To object": its target face, after the profile
       if (r.upTo?.kind === 'face')
         sels.push({ kind: 'face', bodyId: r.upTo.bodyId, sub: r.upTo.sub, point: [0, 0, 0] } as Selection)

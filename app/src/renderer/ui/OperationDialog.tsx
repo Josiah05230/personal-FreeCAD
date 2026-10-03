@@ -226,6 +226,7 @@ const SPECS: Record<OpKind, OpSpec> = {
         type: 'select',
         default: 'Join',
         options: ['New body', 'Join', 'Cut', 'Intersect'],
+        fixedInEdit: 'Set when the feature is made - delete it and make it again to change it',
         wide: true
       },
       { key: 'full', label: 'Full (360)', type: 'checkbox', default: true },
@@ -287,6 +288,7 @@ const SPECS: Record<OpKind, OpSpec> = {
         type: 'select',
         default: 'Join',
         options: ['New body', 'Join', 'Cut', 'Intersect'],
+        fixedInEdit: 'Set when the feature is made - delete it and make it again to change it',
         wide: true
       },
       {
@@ -318,6 +320,7 @@ const SPECS: Record<OpKind, OpSpec> = {
         type: 'select',
         default: 'Join',
         options: ['New body', 'Join', 'Cut', 'Intersect'],
+        fixedInEdit: 'Set when the feature is made - delete it and make it again to change it',
         wide: true
       },
       { key: 'ruled', label: 'Ruled (straight between sections)', type: 'checkbox', default: false },
@@ -342,7 +345,13 @@ const SPECS: Record<OpKind, OpSpec> = {
         default: 'Fuse',
         options: ['Fuse', 'Cut', 'Common']
       },
-      { key: 'keepTools', label: 'Keep tool bodies', type: 'checkbox', default: false }
+      {
+        key: 'keepTools',
+        label: 'Keep tool bodies',
+        type: 'checkbox',
+        default: false,
+        fixedInEdit: 'The tool bodies were kept or used up when Combine ran'
+      }
     ]
   },
   patternCircular: {
@@ -1392,6 +1401,8 @@ export function OperationDialog({
             {f.type === 'checkbox' && (
               <input
                 type="checkbox"
+                disabled={!!editingLabel && !!f.fixedInEdit}
+                title={editingLabel && f.fixedInEdit ? f.fixedInEdit : undefined}
                 checked={Boolean(values[f.key] ?? f.default)}
                 onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.checked }))}
               />
