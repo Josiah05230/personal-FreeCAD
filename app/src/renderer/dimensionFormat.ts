@@ -28,7 +28,11 @@ export function formatDimension(
   fmt: DimensionFormat = {}
 ): string {
   const f = { ...DEFAULT_DIM_FORMAT, ...fmt }
-  let s = value.toFixed(Math.max(0, f.precision))
+  // unit 'in': a length shown in inches (the model is always mm) - same
+  // rule as the sidecar's _format_dimension, which draws the PDF.
+  const isAngle = type === 'Angle' || type === 'Angle3Pt'
+  const inches = fmt.unit === 'in' && !isAngle
+  let s = (inches ? value / 25.4 : value).toFixed(Math.max(0, f.precision))
 
   if (!f.trailingZeros && s.includes('.')) {
     s = s.replace(/0+$/, '').replace(/\.$/, '')
@@ -38,7 +42,7 @@ export function formatDimension(
   }
 
   const radialPrefix = RADIAL_PREFIX[type] ?? ''
-  const unitSuffix = f.unitSuffix ? (type === 'Angle' || type === 'Angle3Pt' ? '°' : 'mm') : ''
+  const unitSuffix = f.unitSuffix ? (isAngle ? '°' : inches ? '"' : 'mm') : ''
   // user-typed callout text (e.g. "2X ", "4X ", " TYP") wraps AROUND the
   // automatic radial prefix/unit suffix, not instead of them - "2X R4.00"
   // keeps both the count and the fact that it's a radius, not "2X4.00"

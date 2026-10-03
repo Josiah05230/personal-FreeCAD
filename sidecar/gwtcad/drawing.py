@@ -111,7 +111,30 @@ def _project_offset(view):
     return _compute_project_offset(view)
 
 
+def _is_native_broken(view):
+    """A TechDraw::DrawBrokenView with real Breaks set: FreeCAD itself has
+    removed the broken-out spans and closed the view up, so its edges are in
+    a COMPRESSED frame that projectPoint() knows nothing about - points go
+    through view.mapPoint3dToView() instead (see _project)."""
+    return (getattr(view, "TypeId", "") == "TechDraw::DrawBrokenView"
+            and bool(getattr(view, "Breaks", None)))
+
+
+def _broken_scale(view):
+    """A native broken view's edges (and mapPoint3dToView) come back at
+    model size whatever its Scale - unlike a plain view, whose edges already
+    carry it (confirmed live: a 3048 mm bar broken to 210 mm read 210 at
+    Scale 1.0 and at 0.5). So the sheet frame of a broken view is its own
+    geometry times Scale, applied here in one place."""
+    try:
+        return float(view.Scale) or 1.0
+    except Exception:
+        return 1.0
+
+
 def _compute_project_offset(view):
+    if _is_native_broken(view):
+        return (0.0, 0.0)  # mapPoint3dToView already lands in the edges' own frame
     edges = list(view.getVisibleEdges() or []) + list(view.getHiddenEdges() or [])
     if not edges:
         return (0.0, 0.0)
@@ -162,6 +185,15 @@ def _project(view, model_point, offset=None):
     view's own visible/hidden edge polylines already use for the sheet SVG.
     Pass a pre-computed `offset` (from _project_offset) when projecting many
     points against the same view to avoid recomputing it each time."""
+    if _is_native_broken(view):
+        # A broken view's geometry is closed up across each break; FreeCAD's
+        # own mapping puts a model point where it lands in that shortened
+        # view (and in the same centred, scaled frame as its edges), so a
+        # dimension across a break is drawn at the right place while its
+        # VALUE still comes from the model (the true length).
+        p = view.mapPoint3dToView(model_point)
+        k = _broken_scale(view)
+        return (p.x * k, p.y * k)
     if offset is None:
         offset = _project_offset(view)
     p = view.projectPoint(model_point)
@@ -686,6 +718,11 @@ def _format_dimension(value, dtype, fmt):
     measured value; this is that same formatting done server-side for PDF
     export instead of in the browser."""
     precision = max(0, int(fmt.get("precision", 2)))
+    # "unit": "in" shows a length in inches (the model is always mm) - harness
+    # and other US-built parts are specified in inches.
+    inches = fmt.get("unit") == "in" and dtype not in ("Angle", "Angle3Pt")
+    if inches:
+        value = value / 25.4
     s = "%.*f" % (precision, value)
     if fmt.get("trailingZeros", True) is False and "." in s:
         s = s.rstrip("0").rstrip(".")
@@ -698,7 +735,7 @@ def _format_dimension(value, dtype, fmt):
     radial_prefix = _RADIAL_DIM_PREFIX.get(dtype, "")
     unit_suffix = ""
     if fmt.get("unitSuffix", True):  # on unless turned off - see dimensionFormat.ts
-        unit_suffix = "°" if dtype in ("Angle", "Angle3Pt") else "mm"  # ° = °
+        unit_suffix = "°" if dtype in ("Angle", "Angle3Pt") else ('"' if inches else "mm")  # ° = °
     return "%s%s%s%s%s" % (fmt.get("textPrefix") or "", radial_prefix, s, unit_suffix,
                             fmt.get("textSuffix") or "")
 
@@ -1394,6 +1431,11 @@ def _compute_view_payload(view):
         hid = _edges_to_polylines(view.getHiddenEdges())
     if not vis and not hid:
         raise RpcError(APP_ERROR, "drawing view produced no geometry")
+    if _is_native_broken(view):
+        k = _broken_scale(view)
+        if abs(k - 1.0) > 1e-9:
+            vis = [[(x * k, y * k) for x, y in poly] for poly in vis]
+            hid = [[(x * k, y * k) for x, y in poly] for poly in hid]
     return vis, hid
 
 
@@ -2017,12 +2059,71 @@ def make_broken(doc, page_id, base_view_id, breaks):
     page.addView(view)
     view.Source = base.Source
     view.Direction = base.Direction
+    if hasattr(base, "XDirection"):
+        view.XDirection = base.XDirection
     view.Scale = base.Scale
     # see make_section's comment - avoid "Broken Broken" from echoing
     # view.Name (FreeCAD's own auto-name) back into the label.
     view.Label = "%s broken" % _get_tag(base, "_gwt_dir", "front").title()
+    _tag(view, "_gwt_dir", _get_tag(base, "_gwt_dir", "front"))
+
+    # A break given as a MODEL span ("start"/"end": two 3D points, the two
+    # cut planes pass through them, square to start->end) is a REAL break:
+    # a sketch of two parallel lines in the view plane goes into the view's
+    # native Breaks, and FreeCAD removes everything between them and closes
+    # the view up by Gap. A long part (a 40 ft harness) then fits on the
+    # sheet at a readable scale and its dimensions still read true length
+    # (see _project). A break given only as a view position ("pos") stays
+    # what it always was: zigzag marks over the unshortened view.
+    import Part
+    native, flat = [], []
+    for i, b in enumerate(breaks or []):
+        if b.get("start") is not None and b.get("end") is not None:
+            native.append((i, App.Vector(*b["start"]), App.Vector(*b["end"]), float(b.get("gap", 10.0))))
+        else:
+            flat.append(b)
+    if native:
+        normal = App.Vector(view.Direction)
+        normal.normalize()
+        sketches = []
+        for i, start, end, _gap in native:
+            along = end - start
+            along = along - normal * along.dot(normal)  # in the view plane
+            length = along.Length
+            if length < 1e-6:
+                raise RpcError(APP_ERROR, "break %d has no length in this view" % i)
+            xa = App.Vector(along)
+            xa.normalize()
+            ya = normal.cross(xa)
+            rot = App.Rotation(App.Matrix(xa.x, ya.x, normal.x, 0, xa.y, ya.y, normal.y, 0,
+                                          xa.z, ya.z, normal.z, 0, 0, 0, 0, 1))
+            sk = doc.addObject("Sketcher::SketchObject", "BreakSketch")
+            sk.Placement = App.Placement(start, rot)
+            sk.Label = "Break %d" % (len(sketches) + 1)
+            reach = 1.0e5  # the two cut lines only need to be longer than the part
+            sk.addGeometry(Part.LineSegment(App.Vector(0, -reach, 0), App.Vector(0, reach, 0)), False)
+            sk.addGeometry(Part.LineSegment(App.Vector(length, -reach, 0), App.Vector(length, reach, 0)), False)
+            sk.Visibility = False
+            sketches.append(sk)
+        doc.recompute()
+        view.Breaks = sketches
+        view.Gap = native[0][3]
+        doc.recompute()
+
     brk = []
-    for b in (breaks or []):
+    k = _broken_scale(view) if native else 1.0
+    for i, start, end, gap in native:
+        a, b_ = view.mapPoint3dToView(start), view.mapPoint3dToView(end)
+        horizontal = abs(b_.x - a.x) >= abs(b_.y - a.y)
+        brk.append({
+            "sketch": view.Breaks[len(brk)].Name,
+            "axis": "x" if horizontal else "y",
+            "position": k * ((a.x + b_.x) / 2.0 if horizontal else (a.y + b_.y) / 2.0),
+            "gap": k * (abs(b_.x - a.x) if horizontal else abs(b_.y - a.y)),
+            "start": [start.x, start.y, start.z],
+            "end": [end.x, end.y, end.z],
+        })
+    for b in flat:
         brk.append({
             "sketch": None,
             "axis": str(b.get("axis", "x")),
@@ -2036,7 +2137,7 @@ def make_broken(doc, page_id, base_view_id, breaks):
     vis, hid = _part_view_payload(view)
     return {
         "id": view.Name, "label": view.Label, "direction": _get_tag(base, "_gwt_dir", "front"),
-        "kind": "broken", "breaks": brk, "scale": 1.0,
+        "kind": "broken", "breaks": brk, "scale": float(view.Scale) if native else 1.0,
         "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid),
     }
 
@@ -2288,6 +2389,18 @@ def _dimension_raw_value(dim):
             return math.degrees(math.acos(abs(cosang)))
         # Distance family: 2D distance in the view's own projected plane.
         pts = _dimension_linear_points(dim)
+        if pts and _is_native_broken(view):
+            # The points sit in the shortened view; FreeCAD maps each back to
+            # where it is on the unbroken projection, so a dimension across a
+            # break reads the true model length.
+            k = _broken_scale(view)
+            m = [view.mapPoint2dFromView(App.Vector(p[0] / k, p[1] / k, 0)) for p in pts[:2]]
+            dx, dy = m[1].x - m[0].x, m[1].y - m[0].y
+            if dim.Type == "DistanceX":
+                return abs(dx)
+            if dim.Type == "DistanceY":
+                return abs(dy)
+            return math.hypot(dx, dy)
         if pts:
             s = _uv_scale(view)  # back to model mm from a group view's scaled frame
             dx = (pts[1][0] - pts[0][0]) / s

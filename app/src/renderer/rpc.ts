@@ -495,6 +495,8 @@ export interface DimensionFormat {
   leadingZero?: boolean
   trailingZeros?: boolean
   unitSuffix?: boolean
+  /** 'in' shows a length in inches (the model is always mm); default 'mm'. */
+  unit?: 'mm' | 'in'
   /** Tolerance display, real and rendered (not just stored) - 'symmetric'
    *  shows "value ±tolerancePlus"; 'deviation' shows two lines, the upper
    *  and lower LIMIT DEVIATIONS themselves (genuinely signed - e.g. an ISO
