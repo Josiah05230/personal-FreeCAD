@@ -1464,6 +1464,132 @@ def _draw_part_in_doc(doc, fcstd_path, pn, row):
     return True
 
 
+def _redraw_legacy_pages(doc, pn, row):
+    """Bring every drawing page in `doc` made before views were Y up
+    (drawing.YUP_TAG) up to date. Such a page was laid out for mirrored
+    views, with a "bottom" view standing in for the top one. A generated
+    page nobody has edited since is rebuilt from scratch (same sources,
+    notes and title); an edited or hand-made one keeps everything on it and
+    only has its stand-in view turned into the real top view. Returns
+    [(page id, "regenerated" | "converted")] - empty when nothing needed it."""
+    out = []
+    for page in [o for o in doc.Objects if o.TypeId == "TechDraw::DrawPage"]:
+        if _drawing._get_tag(page, _drawing.YUP_TAG):
+            continue
+        _drawing._ensure_page_live(doc, page)
+        objs = _drawing._page_objects(page)
+        if not any(o.TypeId == "TechDraw::DrawProjGroup" for o in objs):
+            _drawing._tag(page, _drawing.YUP_TAG, "1")  # image / broken views: nothing was mirrored
+            continue
+        info = _auto_drawing_info(page)
+        untouched = bool(info) and info.get("sig") == page_signature(page)
+        problem = _title_block_problem(pn, row) if row else "no registry row"
+        sources = _drawing_sources(doc, page)
+        if untouched and sources and not problem:
+            label = page.Label
+            notes = []
+            if (row.get("mfg") or "").strip() and (row.get("mfg_pn") or "").strip() and row.get("mfg") != "GWT":
+                notes = ["%s IS EQUIVALENT TO %s %s" % (pn, row["mfg"].upper(), row["mfg_pn"])]
+            # anything else the page said (overall size of an image-drawn part
+            # is re-derived by the template itself)
+            notes += [n for n in info.get("notes", [])
+                      if " IS EQUIVALENT TO " not in n and not n.startswith("OVERALL SIZE ")]
+            name, description = _title_block_text(row)
+            _drawing.delete_page(doc, page.Name)
+            new_page = _drawing.create_page(doc, label=label)
+            _apply_grainwave_template(doc, new_page["id"], sources, pn, name, description, notes=notes)
+            _stamp_auto_drawing(doc, doc.getObject(new_page["id"]), pn, name, description, notes)
+            out.append((new_page["id"], "regenerated"))
+            continue
+        # The stand-in: a Bottom item tagged and labelled as the top view.
+        # Swap it for a real Top projection (re-typing the item in place
+        # keeps its old projection). Dimensions that were on it measured
+        # the mirrored bottom view, so they go with it.
+        for grp in [o for o in objs if o.TypeId == "TechDraw::DrawProjGroup"]:
+            for item in list(grp.Views):
+                if (item.TypeId != "TechDraw::DrawProjGroupItem" or str(item.Type) != "Bottom"
+                        or _drawing._get_tag(item, "_gwt_dir", "") != "top"):
+                    continue
+                for dim in [o for o in objs if o.TypeId == "TechDraw::DrawViewDimension"
+                            and o.References2D and o.References2D[0][0].Name == item.Name]:
+                    doc.removeObject(dim.Name)
+                coarse = getattr(item, "CoarseView", None)
+                grp.removeProjection("Bottom")
+                top = grp.addProjection("Top")
+                top.Label = "Top"
+                if coarse is not None:
+                    top.CoarseView = coarse
+                _drawing._tag(top, "_gwt_dir", "top")
+                _drawing._tag(top, "_gwt_kind", "part")
+        _drawing._tag(page, _drawing.YUP_TAG, "1")
+        _recompute_page_views(doc, page)
+        if untouched:  # generated, but its title can't be rebuilt yet: keep it "untouched"
+            info["sig"] = page_signature(page)
+            _drawing._tag(page, "_gwt_autogen", json.dumps(info))
+        out.append((page.Name, "converted"))
+    return out
+
+
+def redraw_part_drawing(pn, upload=True):
+    """Redraw a part's drawing if it predates Y-up views (see
+    _redraw_legacy_pages), save it and refresh its PDF on the portal. The
+    caller commits. A no-op for a part with no drawing or one already
+    current."""
+    cfg = _pn._load_config()
+    rows = _pn._read_registry(cfg)
+    row = _pn._row_for_pn(rows, pn) or _pn._current_row(rows, pn[:-1])
+    if row is None:
+        raise RpcError(APP_ERROR, "unknown PN: %s" % pn)
+    repo = _pn._repo_path_for_type(cfg, row["project"], row["type"])
+    fcstd_path, _rel = _pn._find_part_file(repo, "%s.FCStd" % pn, row.get("repo_relpath"))
+    if fcstd_path is None or not _file_has_drawing(fcstd_path):
+        return {"pn": pn, "ok": True, "skipped": "no drawing"}
+    real = os.path.realpath(fcstd_path)
+    if any(d.FileName and os.path.realpath(d.FileName) == real for d in App.listDocuments().values()):
+        return {"pn": pn, "ok": True, "skipped": "open in the app"}
+    saved_pn = _session.part_number()
+    doc = App.openDocument(fcstd_path)
+    try:
+        done = _redraw_legacy_pages(doc, pn, row)
+        if not done:
+            return {"pn": pn, "ok": True, "skipped": "already current"}
+        from .methods import _apply_part_number_props
+        _apply_part_number_props(doc)
+        doc.save()
+        _drawing.mark_pages_lazy_on_disk(fcstd_path, doc)
+        uploaded = False
+        if upload:
+            try:
+                upload_page_pdf(doc, done[0][0], pn)
+                uploaded = True
+            except Exception as e:
+                App.Console.PrintWarning("%s: redrawn, PDF not uploaded: %s\n" % (pn, e))
+    finally:
+        App.closeDocument(doc.Name)
+        _session.set_part_number(saved_pn)
+    return {"pn": pn, "ok": True, "redrawn": [a for _id, a in done], "pdfUploaded": uploaded,
+            "path": fcstd_path, "repo": repo}
+
+
+def legacy_drawing_candidates():
+    """(pn, path) for every current-revision part with a drawing, lightest
+    file first - redraw_part_drawing itself skips the ones already current."""
+    cfg = _pn._load_config()
+    if not cfg.get("registryPath"):
+        return []
+    out = []
+    for row in _pn._current_rows(_pn._read_registry(cfg)):
+        try:
+            repo = _pn._repo_path_for_type(cfg, row["project"], row["type"])
+        except RpcError:
+            continue
+        path, _rel = _pn._find_part_file(repo, "%s.FCStd" % row["pn"], row.get("repo_relpath"))
+        if path is not None and _file_has_drawing(path):
+            out.append((row["pn"], path))
+    out.sort(key=lambda t: os.path.getsize(t[1]))
+    return out
+
+
 @method("drawing.generateForPart")
 def generate_part_drawing(pn, commit=True):
     """Give a part that already has its own .FCStd (a designed part, or a

@@ -340,10 +340,17 @@ def mark_pages_lazy_on_disk(path, doc=None):
     return True
 
 
+# A page made since views are drawn Y up (2026-10-03). One without it was
+# laid out for the old mirrored views - supplier_models.redraw_part_drawing
+# brings it up to date.
+YUP_TAG = "_gwt_yup"
+
+
 def create_page(doc, label=None):
     page = doc.addObject("TechDraw::DrawPage", "Drawing")
     tmpl = doc.addObject("TechDraw::DrawSVGTemplate", "Template")
     page.Template = tmpl
+    _tag(page, YUP_TAG, "1")
     if label:
         page.Label = label
     session.add_drawing(label=page.Label, drawing_id=page.Name)
