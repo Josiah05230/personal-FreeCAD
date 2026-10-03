@@ -1594,10 +1594,42 @@ def _midplane_placement(d, body, linkA, linkB):
     return Placement(mid, Rotation(Vector(0, 0, 1), nrm))
 
 
+def _first_valid_mode(d, obj, modes):
+    """Set the first MapMode in `modes` that FreeCAD actually accepts for the
+    object's current support (a mode that doesn't fit leaves it "Invalid"
+    without raising). Returns the mode, or None if none fit."""
+    for m in modes:
+        try:
+            obj.MapMode = m
+            d.recompute()
+        except Exception:
+            continue
+        if "Invalid" not in (obj.State or []):
+            return m
+    return None
+
+
+def _mid_half(linkA, linkB):
+    """Signed half-distance from planar face/plane A to B along A's normal."""
+    def origin_normal(link):
+        o, subs = link[0], link[1]
+        sub = subs[0] if subs else ""
+        if sub.startswith("Face"):
+            f = o.Shape.getElement(sub)
+            c = f.CenterOfMass
+            return c, f.normalAt(*f.Surface.parameter(c))
+        return o.Placement.Base, o.Placement.Rotation.multVec(App.Vector(0, 0, 1))
+    cA, nA = origin_normal(linkA)
+    cB, _nB = origin_normal(linkB)
+    return (cB - cA).dot(nA) / 2.0
+
+
 _PLANE_MODES = ["FlatFace", "ThreePointsPlane", "OXY", "NormalToEdge", "ParallelPlane"]
 _AXIS_MODES = {
     "2v": "TwoPointLine", "2f": "IntersectionLine",
-    "1f": "Normal", "1e": "Tangent",
+    # a flat face's normal through its centre: its largest axis of inertia
+    # ("Normal" is not a Line mode in 1.1 - it left the axis invalid)
+    "1f": "AxisOfInertia1", "1e": "Tangent",
 }
 
 
@@ -1614,10 +1646,22 @@ def _attach_datum(d, body, obj, kind, refs, offset=0.0, angle=0.0, flip=False):
     if kind == "plane":
         planar = [_is_planar_face_link(l)[0] for l in links]
         if n == 2 and all(planar):
-            obj.MapMode = "Deactivated"
-            obj.Placement = _midplane_placement(d, body, links[0], links[1])
+            # mid-plane: on the first face, pushed half way to the second. It
+            # stays attached (follows the first face) and keeps both faces, so
+            # it reopens with them; GwtMidHalf is the half-way part of the offset
+            obj.AttachmentSupport = links
+            half = _mid_half(links[0], links[1])
+            if _first_valid_mode(d, obj, ["FlatFace"]) is None:
+                obj.MapMode = "Deactivated"
+                obj.Placement = _midplane_placement(d, body, links[0], links[1])
+                half = 0.0
+            build._gwt_tag(obj, "GwtMidHalf", repr(half))
+            obj.AttachmentOffset = Placement(Vector(0, 0, half + sign * float(offset)),
+                                             Rotation(Vector(1, 0, 0), float(angle)))
             d.recompute()
+            return
         else:
+            build._gwt_tag(obj, "GwtMidHalf", "0")
             obj.AttachmentSupport = links
             if n == 3 and all(k == "vertex" for k in kinds):
                 mode = "ThreePointsPlane"
@@ -1629,13 +1673,8 @@ def _attach_datum(d, body, obj, kind, refs, offset=0.0, angle=0.0, flip=False):
                 mode = "ParallelPlane"
             else:
                 mode = "FlatFace"
-            for m in [mode] + [x for x in _PLANE_MODES if x != mode] + ["Deactivated"]:
-                try:
-                    obj.MapMode = m
-                    d.recompute()
-                    break
-                except Exception:
-                    continue
+            if _first_valid_mode(d, obj, [mode] + [x for x in _PLANE_MODES if x != mode]) is None:
+                raise RpcError(APP_ERROR, "a plane can't be placed from those references")
         obj.AttachmentOffset = Placement(Vector(0, 0, sign * float(offset)),
                                          Rotation(Vector(1, 0, 0), float(angle)))
         d.recompute()
@@ -1648,14 +1687,10 @@ def _attach_datum(d, body, obj, kind, refs, offset=0.0, angle=0.0, flip=False):
                else "1f" if n == 1 and kinds[0] in ("face", "plane")
                else "1e" if n == 1 and kinds[0] == "edge"
                else None)
-        for m in ([_AXIS_MODES[key]] if key else []) + ["Tangent", "TwoPointLine",
-                  "Normal", "IntersectionLine", "AxisOfCurvature", "Deactivated"]:
-            try:
-                obj.MapMode = m
-                d.recompute()
-                break
-            except Exception:
-                continue
+        if _first_valid_mode(d, obj, ([_AXIS_MODES[key]] if key else []) + [
+                "Tangent", "TwoPointLine", "IntersectionLine", "AxisOfCurvature",
+                "AxisOfInertia1"]) is None:
+            raise RpcError(APP_ERROR, "an axis can't be placed from those references")
         if float(offset):
             obj.AttachmentOffset = Placement(Vector(0, 0, sign * float(offset)), Rotation())
         d.recompute()
@@ -1674,7 +1709,12 @@ def _attach_datum(d, body, obj, kind, refs, offset=0.0, angle=0.0, flip=False):
             pmid = e.valueAt(0.5 * (u0 + u1))
         except Exception:
             pmid = e.CenterOfMass
-        _mode_or_manual(d, obj, ["MidPoint", "CenterOfMass"], pmid)
+        # half way along the edge, and it stays there when the edge changes
+        try:
+            obj.MapPathParameter = 0.5
+        except Exception:
+            pass
+        _mode_or_manual(d, obj, ["OnEdge", "CenterOfMass"], pmid)
     elif n >= 2 and all(k == "edge" for k in kinds):
         eA = links[0][0].Shape.getElement(links[0][1][0])
         eB = links[1][0].Shape.getElement(links[1][1][0])
@@ -1683,9 +1723,9 @@ def _attach_datum(d, body, obj, kind, refs, offset=0.0, angle=0.0, flip=False):
             pnt = pts[0][0]
         except Exception:
             pnt = eA.CenterOfMass
-        _mode_or_manual(d, obj, ["IntersectionPoint"], pnt)
+        _mode_or_manual(d, obj, ["ProximityPoint1"], pnt)
     else:
-        _mode_or_manual(d, obj, ["IntersectionPoint", "CenterOfMass"], None)
+        _mode_or_manual(d, obj, ["ProximityPoint1", "CenterOfMass"], None)
     d.recompute()
 
 
@@ -1697,8 +1737,10 @@ def _mode_or_manual(d, obj, modes, fallback_point):
         try:
             obj.MapMode = m
             d.recompute()
+            if "Invalid" in (obj.State or []):
+                continue  # not a mode for this support (it doesn't raise)
             b = obj.Placement.Base
-            if fallback_point is None or (b - fallback_point).Length < 1e-6 or b.Length > 1e-9:
+            if fallback_point is None or (b - fallback_point).Length < 1e-6:
                 return
         except Exception:
             continue
@@ -2568,12 +2610,14 @@ def _set_feature_values(o, values):
     elif T in ("PartDesign::Plane", "PartDesign::Line", "PartDesign::Point"):
         if T != "PartDesign::Point" and ("offset" in v or "angle" in v or "flip" in v):
             off = o.AttachmentOffset
-            z = float(v.get("offset", abs(off.Base.z)) or 0)
-            flip = bool(v.get("flip", off.Base.z < 0))
+            half = _mid_half_of(o)
+            cur = float(off.Base.z) - half
+            z = float(v.get("offset", abs(cur)) or 0)
+            flip = bool(v.get("flip", cur < 0))
             rot = off.Rotation
             if T == "PartDesign::Plane" and "angle" in v:
                 rot = App.Rotation(App.Vector(1, 0, 0), float(v.get("angle") or 0))
-            o.AttachmentOffset = App.Placement(App.Vector(0, 0, -z if flip else z), rot)
+            o.AttachmentOffset = App.Placement(App.Vector(0, 0, half + (-z if flip else z)), rot)
     elif T in ("PartDesign::AdditivePipe", "PartDesign::SubtractivePipe"):
         # "operation" (Join vs Cut) is really TWO DIFFERENT FreeCAD TypeIds
         # (AdditivePipe / SubtractivePipe) - not a property on either, so it
@@ -2731,12 +2775,13 @@ def _set_feature_refs(d, o, body, refs):
     if T in ("PartDesign::Plane", "PartDesign::Line", "PartDesign::Point") and r.get("datumRefs"):
         kind = {"PartDesign::Plane": "plane", "PartDesign::Line": "axis"}.get(T, "point")
         off = o.AttachmentOffset
+        cur = float(off.Base.z) - _mid_half_of(o)
         ang = 0.0
         try:
             ang = math.degrees(off.Rotation.Angle) * (1 if off.Rotation.Axis.x >= 0 else -1)
         except Exception:
             pass
-        _attach_datum(d, body, o, kind, r["datumRefs"], abs(off.Base.z), ang, off.Base.z < 0)
+        _attach_datum(d, body, o, kind, r["datumRefs"], abs(cur), ang, cur < 0)
         return
     if T in ("PartDesign::Pad", "PartDesign::Pocket",
              "PartDesign::Revolution", "PartDesign::Groove"):
@@ -2833,6 +2878,14 @@ def _revolve_axis_choice(o, axis_ref):
     return "Selected edge / datum"
 
 
+def _mid_half_of(o):
+    """The half-way part of a mid-plane's AttachmentOffset (0 for any other datum)."""
+    try:
+        return float(getattr(o, "GwtMidHalf", "") or 0) if "GwtMidHalf" in o.PropertiesList else 0.0
+    except Exception:
+        return 0.0
+
+
 def _support_links(o):
     """A datum's AttachmentSupport as a list of (obj, [sub]) links."""
     out = []
@@ -2840,7 +2893,9 @@ def _support_links(o):
         if isinstance(l, (tuple, list)) and l:
             subs = l[1] if len(l) > 1 else [""]
             subs = list(subs) if isinstance(subs, (tuple, list)) else [subs]
-            out.append((l[0], subs or [""]))
+            # several picks on one object are stored as one link with many subs
+            for sub in (subs or [""]):
+                out.append((l[0], [sub]))
     return out
 
 
@@ -2984,7 +3039,7 @@ def feature_get(id):
         refs["sketches"] = ids
     elif kind in ("datumPlane", "datumAxis", "datumPoint"):
         off = getattr(o, "AttachmentOffset", None)
-        z = float(off.Base.z) if off is not None else 0.0
+        z = (float(off.Base.z) if off is not None else 0.0) - _mid_half_of(o)
         values["offset"] = abs(z)
         values["flip"] = z < 0
         if kind == "datumPlane":
@@ -4711,7 +4766,9 @@ def _datum_dto(o):
             "ptype": "origin" if getattr(o, "Role", "") else "construction",
         }
     if o.TypeId in ("App::Line", "PartDesign::Line"):
-        d = p.multVec(App.Vector(1, 0, 0)).sub(b)
+        # an origin axis runs along its local X, a construction axis along Z
+        local = App.Vector(0, 0, 1) if o.TypeId == "PartDesign::Line" else App.Vector(1, 0, 0)
+        d = p.multVec(local).sub(b)
         role = getattr(o, "Role", "") or o.Label
         return {
             "id": o.Name, "label": o.Label, "kind": "axis",

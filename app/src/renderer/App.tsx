@@ -1509,7 +1509,12 @@ export function App(): JSX.Element {
 
   // current selection -> the ref shape feature.update / feature.editPreview want
   const buildEditRefs = useCallback(
-    (kind: OpKind, v?: OpValues): import('./rpc').FeatureEdit['refs'] => {
+    (
+      kind: OpKind,
+      v?: OpValues,
+      /** the refs the edit started with (the commit clears editingFeatureRef first) */
+      startRefs?: import('./rpc').FeatureEdit['refs']
+    ): import('./rpc').FeatureEdit['refs'] => {
       const refs: import('./rpc').FeatureEdit['refs'] = {}
       const sk = selection.find((s) => s.kind === 'sketch') as { sketchId: string } | undefined
       const fc = selection.filter((s) => s.kind === 'face') as Array<{ bodyId: string; sub: string }>
@@ -1537,7 +1542,7 @@ export function App(): JSX.Element {
         // re-attach only when the picks changed - an unchanged datum keeps its
         // own links (they can point at an earlier feature than the tip)
         const now = selection.map(selectionToRef).filter(Boolean) as import('./rpc').GeomRef[]
-        const was = editingFeatureRef.current?.refs?.datumRefs ?? []
+        const was = (startRefs ?? editingFeatureRef.current?.refs)?.datumRefs ?? []
         if (now.length && JSON.stringify(now) !== JSON.stringify(was)) refs.datumRefs = now
       } else if (kind === 'fillet' || kind === 'chamfer') {
         // Face* subs ride in the same list - PartDesign rounds all their edges
@@ -1703,7 +1708,7 @@ export function App(): JSX.Element {
         setEditLabel(null)
         setOp(null)
         try {
-          await api.featureUpdate(edit.id, v, buildEditRefs(kind, v), exprs)
+          await api.featureUpdate(edit.id, v, buildEditRefs(kind, v, edit.refs), exprs)
         } finally {
           try {
             // back to where the marker was before the edit (the end, unless

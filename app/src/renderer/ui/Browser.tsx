@@ -442,6 +442,7 @@ export function Browser({
                         handlers.onSelect({ kind: 'plane', planeId: f.id, label: f.label }, add)
                       }
                       selected={isSel((s) => s.kind === 'plane' && s.planeId === f.id)}
+                      onEditDbl={() => handlers.onEdit(f.id)}
                       menu={featMenu(f.id)}
                     />
                   )

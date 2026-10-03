@@ -237,3 +237,159 @@ await fresh();
   assertEq(g.op, 'Cut', 'now Cut');
   await noErrors('combine');
 }
+
+// ---- construction geometry on real model geometry ----
+const datumOf = async (id) => (await rpc('scene.get')).datums.find((x) => x.id === id);
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const planeNormal = (p) => cross(p.x, p.y);
+// the face / edge of the shown body matching a test on its vertices
+async function subs() {
+  const m = (await rpc('scene.get')).meshes[0];
+  const faces = m.faceGroups.map((fg) => {
+    const pts = [];
+    for (let t = fg.start; t < fg.start + fg.count; t++) {
+      const i = m.indices[t] * 3;
+      pts.push([m.positions[i], m.positions[i + 1], m.positions[i + 2]]);
+    }
+    return { sub: 'Face' + (fg.face + 1), pts };
+  });
+  const edges = (m.edges || []).map((e) => {
+    const p = e.points;
+    return { sub: 'Edge' + (e.edge + 1), a: [p[0], p[1], p[2]], b: p.slice(-3) };
+  });
+  return { id: m.id, faces, edges };
+}
+const faceWhere = async (axis, value) => {
+  const s = await subs();
+  const f = s.faces.find((x) => x.pts.every((p) => near(p[axis], value)));
+  return { kind: 'face', bodyId: s.id, sub: f.sub };
+};
+async function editWithPicks(id, picks, values) {
+  await G.editFeature(id);
+  await waitFor(() => !!G.getState().op, 4000);
+  const kind = G.getState().op;
+  if (picks) {
+    G.select(picks.map((r) => ({ ...r, point: [0, 0, 0] })));
+    await sleep(40);
+  }
+  const loaded = (await rpc('feature.get', { id })).values || {};
+  await G.applyOp(kind, { ...loaded, ...(values || {}) });
+  await idle();
+}
+
+note('--- plane on a model face: offset, flip, re-pick another face, with a later feature ---');
+await fresh();
+{
+  await box(20, 20, 10);
+  const top = await faceWhere(2, 10);
+  await rpc('datum.plane', { refs: [top], offset: 5 });
+  await G.refresh();
+  await idle();
+  const pl = await newest(/^DatumPlane/);
+  assert(near((await datumOf(pl)).origin[2], 15), 'made 5 above the top face');
+  // a later feature that uses the plane
+  const s = await sketchOn({ kind: 'plane', id: pl }, [{ type: 'rect', a: [2, 2], b: [6, 6] }]);
+  await rpc('feature.extrude', { sketchId: s, length: 3 });
+  await G.refresh();
+  await idle();
+
+  await edit(pl, { offset: 8 });
+  assert(near((await datumOf(pl)).origin[2], 18), `offset 8 -> z 18 (${(await datumOf(pl)).origin[2]})`);
+  await edit(pl, { offset: 8, flip: true });
+  assert(near((await datumOf(pl)).origin[2], 2), `flipped -> z 2 (${(await datumOf(pl)).origin[2]})`);
+  await noErrors('plane offset with a later feature');
+
+  // re-pick: the x = 20 side face (picked while the edit shows the model at the plane)
+  await G.editFeature(pl);
+  await waitFor(() => !!G.getState().op, 4000);
+  const side = await faceWhere(0, 20);
+  G.select([{ ...side, point: [0, 0, 0] }]);
+  await sleep(40);
+  await G.applyOp('datumPlane', { offset: 4, angle: 0, flip: false });
+  await idle();
+  const d2 = await datumOf(pl);
+  const n = planeNormal(d2);
+  assert(near(Math.abs(n[0]), 1) && near(d2.origin[0], 24), `now 4 off the x=20 face (normal ${n.map((v) => v.toFixed(2))}, x ${d2.origin[0]})`);
+  await noErrors('plane re-picked onto another face');
+}
+
+note('--- plane through an edge: angle ---');
+await fresh();
+{
+  await box(20, 20, 10);
+  const s = await subs();
+  const e = s.edges.find((x) => near(x.a[2], 10) && near(x.b[2], 10) && near(x.a[1], 0) && near(x.b[1], 0));
+  await rpc('datum.plane', { refs: [{ kind: 'edge', bodyId: s.id, sub: e.sub }], offset: 0, angle: 0 });
+  await G.refresh();
+  await idle();
+  const pl = await newest(/^DatumPlane/);
+  const n0 = planeNormal(await datumOf(pl));
+  await edit(pl, { angle: 30 });
+  const g = (await rpc('feature.get', { id: pl })).values;
+  const n1 = planeNormal(await datumOf(pl));
+  const dot = Math.abs(n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2]);
+  assert(near(g.angle, 30) && near(dot, Math.cos(Math.PI / 6), 1e-3), `tilted 30 degrees (angle ${g.angle}, cos ${dot.toFixed(4)})`);
+  await noErrors('angled plane');
+}
+
+note('--- mid-plane between two faces: offset, and it reopens with both faces ---');
+await fresh();
+{
+  await box(20, 20, 10);
+  const a = await faceWhere(0, 0);
+  const b = await faceWhere(0, 20);
+  await rpc('datum.plane', { refs: [a, b], offset: 0 });
+  await G.refresh();
+  await idle();
+  const pl = await newest(/^DatumPlane/);
+  assert(near((await datumOf(pl)).origin[0], 10), 'made at x = 10');
+  const g = await rpc('feature.get', { id: pl });
+  assertEq((g.refs.datumRefs || []).length, 2, 'reopens knowing its two faces');
+  await edit(pl, { offset: 3 });
+  assert(near(Math.abs((await datumOf(pl)).origin[0] - 10), 3), `offset 3 from the middle (x ${(await datumOf(pl)).origin[0]})`);
+  await noErrors('mid-plane');
+}
+
+note('--- axis: along an edge, offset + flip, re-pick to a face normal ---');
+await fresh();
+{
+  await box(20, 20, 10);
+  const s = await subs();
+  const e = s.edges.find((x) => near(x.a[0], 0) && near(x.b[0], 0) && near(x.a[1], 0) && near(x.b[1], 0));
+  await rpc('datum.axis', { refs: [{ kind: 'edge', bodyId: s.id, sub: e.sub }] });
+  await G.refresh();
+  await idle();
+  const ax = await newest(/^DatumLine/);
+  let d = await datumOf(ax);
+  assert(near(Math.abs(d.dir[2]), 1), `made along the vertical edge (dir ${d.dir.map((v) => v.toFixed(2))})`);
+  let g = await rpc('feature.get', { id: ax });
+  assertEq(g.kind, 'datumAxis', 'reopens in the Axis dialog');
+  assertEq((g.refs.datumRefs || []).length, 1, 'knows its edge');
+  await edit(ax, { offset: 6, flip: true });
+  g = await rpc('feature.get', { id: ax });
+  assert(near(g.values.offset, 6) && g.values.flip === true, `offset 6 flipped (${g.values.offset}, ${g.values.flip})`);
+  await editWithPicks(ax, [await faceWhere(0, 20)], { offset: 0, flip: false });
+  d = await datumOf(ax);
+  assert(near(Math.abs(d.dir[0]), 1), `now the normal of the x=20 face (dir ${d.dir.map((v) => v.toFixed(2))})`);
+  await noErrors('axis');
+}
+
+note('--- point: face centre -> re-pick to an edge midpoint ---');
+await fresh();
+{
+  await box(20, 20, 10);
+  await rpc('datum.point', { refs: [await faceWhere(2, 10)] });
+  await G.refresh();
+  await idle();
+  const pt = await newest(/^DatumPoint/);
+  let d = await datumOf(pt);
+  assert(near(d.origin[0], 10) && near(d.origin[1], 10) && near(d.origin[2], 10), `made at the top centre (${d.origin})`);
+  const g = await rpc('feature.get', { id: pt });
+  assertEq(g.kind, 'datumPoint', 'reopens in the Point dialog');
+  const s = await subs();
+  const e = s.edges.find((x) => near(x.a[0], 0) && near(x.b[0], 0) && near(x.a[1], 0) && near(x.b[1], 0));
+  await editWithPicks(pt, [{ kind: 'edge', bodyId: s.id, sub: e.sub }], {});
+  d = await datumOf(pt);
+  assert(near(d.origin[0], 0) && near(d.origin[1], 0) && near(d.origin[2], 5), `now the edge midpoint (${d.origin})`);
+  await noErrors('point');
+}
