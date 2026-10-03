@@ -25,6 +25,7 @@ import FreeCAD as App
 
 from .registry import RpcError, APP_ERROR
 from . import session
+from .hlr import recompute as _rc  # recompute without TechDraw's 2D face search
 
 _DIRS = {
     "front": (0, -1, 0),
@@ -59,15 +60,25 @@ def _norm_dim_type(kind):
 
 
 def _edges_to_polylines(edges, tol=0.2):
+    """A view's TechDraw edges as polylines in the view's own Y-UP frame.
+
+    TechDraw hands its edges back with Y pointing DOWN the page (its
+    internal, Qt-style frame), while projectPoint()/mapPoint3dToView() -
+    what dimensions, leaders and notes are placed with (_project) - are Y
+    up. Taking the edges as they came drew every view mirrored top to
+    bottom against the model and against its own dimensions (an L-shaped
+    part whose tab hangs down drew with the tab up; found 2026-10-03,
+    symmetric parts had hidden it). The flip happens here, once, for every
+    kind of view."""
     out = []
     for e in edges:
         try:
-            pts = [(p.x, p.y) for p in e.discretize(Deflection=tol)]
+            pts = [(p.x, -p.y) for p in e.discretize(Deflection=tol)]
         except Exception:
             try:
                 a = e.valueAt(e.FirstParameter)
                 b = e.valueAt(e.LastParameter)
-                pts = [(a.x, a.y), (b.x, b.y)]
+                pts = [(a.x, -a.y), (b.x, -b.y)]
             except Exception:
                 continue
         if len(pts) >= 2:
@@ -143,7 +154,7 @@ def _compute_project_offset(view):
         for t in (e.FirstParameter, e.LastParameter):
             pt = e.valueAt(t)
             xs2d.append(pt.x)
-            ys2d.append(pt.y)
+            ys2d.append(-pt.y)  # raw TechDraw edges are Y down - see _edges_to_polylines
     if not xs2d:
         return (0.0, 0.0)
     min2d = (min(xs2d), min(ys2d))
@@ -280,7 +291,7 @@ def _ensure_page_live(doc, page):
     page.KeepUpdated = True
     for v in page.Views:
         v.touch()
-    doc.recompute()
+    _rc(doc)
 
 
 _KEEP_UPDATED_TRUE = re.compile(
@@ -336,7 +347,7 @@ def create_page(doc, label=None):
     if label:
         page.Label = label
     session.add_drawing(label=page.Label, drawing_id=page.Name)
-    doc.recompute()
+    _rc(doc)
     return {"id": page.Name, "label": page.Label}
 
 
@@ -380,7 +391,7 @@ def delete_page(doc, page_id):
         except Exception:
             pass
     session.remove_drawing(page_id)
-    doc.recompute()
+    _rc(doc)
 
 
 def rename_page(doc, page_id, label):
@@ -528,8 +539,14 @@ def page_contents(doc, page_id):
                     # calculation (table_y clearance included) assumed,
                     # because those calculations correctly treated bbox as
                     # already centered while this "x"/"y" silently didn't.
+                    # item.Y is TechDraw's own offset, Y UP (the Top item of a
+                    # third-angle group is at +Y, above the front view), and
+                    # the sheet's Y runs down: the item's centre is at
+                    # group.Y - item.Y, its top edge item_bbox max-Y above
+                    # that. (It was added, which put Top BELOW front - and is
+                    # why the template used to ask for a "bottom" view there.)
                     "x": float(o.X) + float(item.X) + item_bbox[0],
-                    "y": float(o.Y) + float(item.Y) + item_bbox[1],
+                    "y": float(o.Y) - float(item.Y) - item_bbox[3],
                 }
                 views.append(entry)
         elif tid == "TechDraw::DrawViewDimension":
@@ -1401,7 +1418,7 @@ def _snapshot_sources(view):
         _tag(snap, SNAPSHOT_TAG, o.Name)
         new.append(snap)
     owner.Source = new
-    doc.recompute()
+    _rc(doc)
     return True
 
 
@@ -1423,7 +1440,7 @@ def _compute_view_payload(view):
         # this view in the other mode, and keep it there
         view.CoarseView = not view.CoarseView
         _tag(view, "_gwt_exact", "" if view.CoarseView else "1")
-        view.Document.recompute()
+        _rc(view.Document)
         vis = _edges_to_polylines(view.getVisibleEdges())
         hid = _edges_to_polylines(view.getHiddenEdges())
     if not vis and not hid and _snapshot_sources(view):
@@ -1432,16 +1449,10 @@ def _compute_view_payload(view):
     if not vis and not hid:
         raise RpcError(APP_ERROR, "drawing view produced no geometry")
     if _is_native_broken(view):
-        # TechDraw hands back a view's edges with Y pointing DOWN the page;
-        # mapPoint3dToView (what _project uses on a broken view) is Y up. A
-        # broken view is drawn Y up, so what is above in the model is above
-        # on the sheet and its dimensions and leaders land on the geometry
-        # they measure. (Plain views and projection groups still take the
-        # edges as they come - a separate, older problem: they draw mirrored
-        # top to bottom.)
         k = _broken_scale(view)
-        vis = [[(x * k, -y * k) for x, y in poly] for poly in vis]
-        hid = [[(x * k, -y * k) for x, y in poly] for poly in hid]
+        if abs(k - 1.0) > 1e-9:
+            vis = [[(x * k, y * k) for x, y in poly] for poly in vis]
+            hid = [[(x * k, y * k) for x, y in poly] for poly in hid]
     return vis, hid
 
 
@@ -1460,7 +1471,7 @@ def _compute_view_payload(view):
 # --------------------------------------------------------------------------- #
 
 _CACHE_ENTRY = "GwtDrawingCache.json"
-_CACHE_VERSION = 2  # 2: group-view offsets in the scaled frame (_uv_scale)
+_CACHE_VERSION = 3  # 3: view polylines Y up (_edges_to_polylines); 2: group-view offsets in the scaled frame
 # position/cosmetic properties that never change a view's projected edges
 _KEY_SKIP = {"X", "Y", "Label", "Label2", "Visibility", "LockPosition", "Caption",
              "ExpressionEngine", "Views", "Anchor", "spacingX", "spacingY",
@@ -1733,7 +1744,7 @@ def set_view_scale(doc, view_id, scale):
         target.ScaleType = "Custom"
     target.Scale = scale
     _tag(view, "_gwt_scaled", "1")
-    doc.recompute()
+    _rc(doc)
     vis, hid = _part_view_payload(view)
     return {"id": view.Name, "scale": 1.0, "needsFit": False,
             "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid)}
@@ -1821,13 +1832,16 @@ def _rescale_from_cache(doc, view, target, scale):
             "visible": e["visible"], "hidden": e["hidden"], "bbox": _view_bbox(e["visible"], e["hidden"])}
 
 
-def make_view(doc, page_id, source_obj, direction="front", scale=1.0, coarse=False, x=None, y=None):
+def make_view(doc, page_id, source_obj, direction="front", scale=1.0, coarse=False, x=None, y=None,
+              compute=True):
     """source_obj is normally a single body/object; also accepts a real list
     (an assembly's several App::Link components) - TechDraw's own Source
     property natively unions the projected geometry of every object in it,
     same mechanism the GUI uses for "select the whole assembly, add view".
     `coarse` uses polygonal hidden-line removal from the very first compute
-    (exact HLR on a threaded or spring-laden vendor model takes minutes)."""
+    (exact HLR on a threaded or spring-laden vendor model takes minutes).
+    compute=False adds the view without running its hidden-line removal - for
+    a view that only exists to be replaced (the base of make_broken)."""
     page = get_page(doc, page_id)
     direction = _norm_dir(direction)
     d = _DIRS[direction]
@@ -1849,7 +1863,10 @@ def make_view(doc, page_id, source_obj, direction="front", scale=1.0, coarse=Fal
         _tag(view, "_gwt_placed", "1")
     _tag(view, "_gwt_dir", direction)
     _tag(view, "_gwt_kind", "part")
-    doc.recompute()
+    if not compute:
+        return {"id": view.Name, "label": view.Label, "direction": direction, "kind": "part",
+                "scale": 1.0, "needsFit": False, "visible": [], "hidden": [], "bbox": None}
+    _rc(doc)
 
     vis, hid = _part_view_payload(view)
     return {
@@ -1924,7 +1941,7 @@ def make_projection_group(doc, page_id, source_obj, directions, anchor=None, sca
         grp.spacingX, grp.spacingY = float(sx), float(sy)
     grp.ScaleType = "Custom"
     grp.Scale = float(scale)
-    doc.recompute()
+    _rc(doc)
 
     items = []
     for d in dirs:
@@ -1945,7 +1962,7 @@ def make_projection_group(doc, page_id, source_obj, directions, anchor=None, sca
         grp.Scale = float(scale)
     # every item is added first and the group computes once - a recompute
     # after each addition re-laid-out and re-ran the earlier items
-    doc.recompute()
+    _rc(doc)
 
     out = []
     for d, item in items:
@@ -2008,7 +2025,7 @@ def make_section(doc, page_id, base_view_id, plane="XY", offset=0.0, flip=False)
     base.Visibility = False
     _tag(view, "_gwt_kind", "section")
     _tag(view, "_gwt_base", base.Name)
-    doc.recompute()
+    _rc(doc)
 
     vis, hid = _part_view_payload(view)
     return {
@@ -2037,13 +2054,13 @@ def make_detail(doc, page_id, base_view_id, anchor_xy, radius):
     view.Label = "%s detail" % _get_tag(base, "_gwt_dir", "front").title()
     _tag(view, "_gwt_kind", "detail")
     _tag(view, "_gwt_base", base.Name)
-    doc.recompute()
+    _rc(doc)
     # DrawViewDetail computes its cut on a background worker in this FreeCAD
     # build; closing/saving the document before it settles segfaults
     # headlessly (confirmed live - "waiting for detail cut to finish" then a
     # SIGSEGV in App.closeDocument/doc.saveAs with no such wait). One more
     # recompute + a short sleep reliably lets it finish first.
-    doc.recompute()
+    _rc(doc)
     time.sleep(0.3)
 
     vis, hid = _part_view_payload(view)
@@ -2115,10 +2132,14 @@ def make_broken(doc, page_id, base_view_id, breaks):
             sk.addGeometry(Part.LineSegment(App.Vector(length, -reach, 0), App.Vector(length, reach, 0)), False)
             sk.Visibility = False
             sketches.append(sk)
-        doc.recompute()
+        # only the sketches: a document recompute here would run the new
+        # view's hidden-line removal once WITHOUT its breaks, then again with
+        for sk in sketches:
+            sk.recompute()
         view.Breaks = sketches
         view.Gap = native[0][3]
-        doc.recompute()
+        _tag(view, "_gwt_kind", "broken")
+        _rc(doc)  # the view's one hidden-line pass
 
     brk = []
     k = _broken_scale(view) if native else 1.0
@@ -2142,7 +2163,12 @@ def make_broken(doc, page_id, base_view_id, breaks):
         })
     _tag(view, "_gwt_kind", "broken")
     _tag(view, "_gwt_breaks", json.dumps(brk))
-    doc.recompute()
+    if native:
+        # already computed above; the tag is bookkeeping, not geometry - don't
+        # let it send the view through hidden-line removal a second time
+        view.purgeTouched()
+    else:
+        _rc(doc)
 
     vis, hid = _part_view_payload(view)
     return {
@@ -2172,7 +2198,7 @@ def convert_view(doc, page_id, view_id, to_kind, **kw):
                 orphaned.append(o.Name)
 
     doc.removeObject(view.Name)
-    doc.recompute()
+    _rc(doc)
 
     if to_kind == "part":
         new = doc.addObject("TechDraw::DrawViewPart", "View")
@@ -2185,7 +2211,7 @@ def convert_view(doc, page_id, view_id, to_kind, **kw):
         _tag(new, "_gwt_kind", "part")
         _tag(new, "_gwt_scaled", "1")  # keeps the converted view's real size
         new.X, new.Y = x, y
-        doc.recompute()
+        _rc(doc)
         vis, hid = _part_view_payload(new)
         payload = {"id": new.Name, "label": new.Label, "direction": direction,
                    "kind": "part", "scale": 1.0, "needsFit": False,
@@ -2222,7 +2248,7 @@ def remove_view(doc, view_id):
                 removed_dims.append(o.Name)
                 doc.removeObject(o.Name)
     doc.removeObject(view.Name)
-    doc.recompute()
+    _rc(doc)
     return {"ok": True, "removedDimensions": removed_dims}
 
 
@@ -2238,7 +2264,7 @@ def set_view_position(doc, view_id, x, y):
     view.X = float(x)
     view.Y = float(y)
     _tag(view, "_gwt_placed", "1")
-    doc.recompute()
+    _rc(doc)
 
 
 def set_projection_group_position(doc, group_id, x, y):
@@ -2254,7 +2280,7 @@ def set_projection_group_position(doc, group_id, x, y):
         raise RpcError(APP_ERROR, "no such projection group: %r" % group_id)
     grp.X = float(x)
     grp.Y = float(y)
-    doc.recompute()
+    _rc(doc)
     return {"id": grp.Name, "x": float(grp.X), "y": float(grp.Y)}
 
 
@@ -2278,7 +2304,7 @@ def add_dimension(doc, page_id, view_id, refs, kind="Distance"):
     # itself can only name the view.
     if any(r.get("obj") for r in refs):
         _tag(dim, DIM_OBJS_TAG, json.dumps([{"obj": r.get("obj") or "", "sub": str(r["sub"])} for r in refs]))
-    doc.recompute()
+    _rc(doc)
 
     value = _dimension_raw_value(dim)
     geom = _dimension_geom(dim)
@@ -2293,7 +2319,7 @@ def remove_dimension(doc, dim_id):
     if dim is None or dim.TypeId != "TechDraw::DrawViewDimension":
         raise RpcError(APP_ERROR, "no such dimension: %r" % dim_id)
     doc.removeObject(dim.Name)
-    doc.recompute()
+    _rc(doc)
     return {"ok": True}
 
 
@@ -2773,7 +2799,7 @@ def set_dimension_type(doc, dim_id, kind):
     if dim is None or dim.TypeId != "TechDraw::DrawViewDimension":
         raise RpcError(APP_ERROR, "no such dimension: %r" % dim_id)
     dim.Type = _norm_dim_type(kind)
-    doc.recompute()
+    _rc(doc)
     return {"id": dim.Name, "type": dim.Type, "value": _dimension_raw_value(dim)}
 
 
@@ -2800,7 +2826,7 @@ def add_cleanup_line(doc, view_id, p1, p2):
     a = App.Vector(float(p1[0]), float(p1[1]), 0)
     b = App.Vector(float(p2[0]), float(p2[1]), 0)
     tag = view.makeCosmeticLine(a, b)
-    doc.recompute()
+    _rc(doc)
     return {"id": str(tag), "viewId": view.Name, "p1": list(p1), "p2": list(p2)}
 
 
@@ -2824,7 +2850,7 @@ def remove_cleanup_line(doc, view_id, line_id):
         return
     try:
         view.removeCosmeticEdge(line_id)
-        doc.recompute()
+        _rc(doc)
     except Exception:
         pass
 
@@ -2888,7 +2914,7 @@ def add_image(doc, page_id, path, x=0.0, y=0.0, width=None, height=None):
     img = doc.addObject("TechDraw::DrawViewImage", "Image")
     page.addView(img)
     img.ImageFile = str(path)
-    doc.recompute()
+    _rc(doc)
     img.X = float(x)
     img.Y = float(y)
     # Width/Height default to the image's own native pixel size (already
@@ -2899,7 +2925,7 @@ def add_image(doc, page_id, path, x=0.0, y=0.0, width=None, height=None):
         img.Width = float(width)
     if height is not None:
         img.Height = float(height)
-    doc.recompute()
+    _rc(doc)
     return _image_dto(img)
 
 
@@ -2916,7 +2942,7 @@ def set_image_transform(doc, image_id, x=None, y=None, width=None, height=None):
         img.Width = float(width)
     if height is not None:
         img.Height = float(height)
-    doc.recompute()
+    _rc(doc)
     return _image_dto(img)
 
 
@@ -2925,7 +2951,7 @@ def remove_image(doc, image_id):
     if img is None or img.TypeId != "TechDraw::DrawViewImage":
         raise RpcError(APP_ERROR, "no such image: %r" % image_id)
     doc.removeObject(img.Name)
-    doc.recompute()
+    _rc(doc)
     return {"ok": True}
 
 
@@ -2951,7 +2977,7 @@ def add_note(doc, page_id, text, x, y, leader_view_id=None, leader_point=None,
         ann.TextStyle = str(textStyle)
     if color:
         ann.TextColor = _hex_to_rgb(color)
-    doc.recompute()
+    _rc(doc)
 
     leader_id = None
     leader_uv = None
@@ -2987,7 +3013,7 @@ def add_note(doc, page_id, text, x, y, leader_view_id=None, leader_point=None,
             ]
             _tag(leader, "_gwt_leaderView", view.Name)
             _tag(leader, "_gwt_leaderUV", json.dumps(list(leader_uv)))
-            doc.recompute()
+            _rc(doc)
             leader_id = leader.Name
 
     dto = _note_dto(ann)
@@ -3003,7 +3029,7 @@ def set_note_text(doc, note_id, text):
     if ann is None or ann.TypeId != "TechDraw::DrawViewAnnotation":
         raise RpcError(APP_ERROR, "no such note: %r" % note_id)
     ann.Text = str(text).split("\n")  # see add_note's comment on Text being a StringList
-    doc.recompute()
+    _rc(doc)
     return _note_dto(ann)
 
 
@@ -3019,7 +3045,7 @@ def set_note_style(doc, note_id, font=None, textSize=None, textStyle=None, color
         ann.TextStyle = str(textStyle)
     if color:
         ann.TextColor = _hex_to_rgb(color)
-    doc.recompute()
+    _rc(doc)
     return _note_dto(ann)
 
 
@@ -3029,7 +3055,7 @@ def move_note(doc, note_id, x, y):
         raise RpcError(APP_ERROR, "no such note: %r" % note_id)
     ann.X = float(x)
     ann.Y = float(y)
-    doc.recompute()
+    _rc(doc)
     return _note_dto(ann)
 
 
@@ -3041,7 +3067,7 @@ def remove_note(doc, note_id):
         if o.TypeId == "TechDraw::DrawLeaderLine" and getattr(o, "LeaderParent", None) is ann:
             doc.removeObject(o.Name)
     doc.removeObject(ann.Name)
-    doc.recompute()
+    _rc(doc)
     return {"ok": True}
 
 

@@ -180,6 +180,9 @@ def _projection_group_footprint(doc, group_views):
     local bbox into the group's shared frame - this sums bbox + offset per
     item, THEN unions across items, which is the real footprint the fit
     scale must be computed against."""
+    # Returned in SHEET sense (Y down from the group's own position), which
+    # is what the placement below works in: a view's bbox and its item
+    # offset are both Y up, so its top edge is -(offset + bbox max-Y).
     min_x = min_y = 1e9
     max_x = max_y = -1e9
     for v in group_views:
@@ -187,9 +190,9 @@ def _projection_group_footprint(doc, group_views):
         vmin_x, vmin_y, vmax_x, vmax_y = v["bbox"]
         ox, oy = float(item.X), float(item.Y)
         min_x = min(min_x, vmin_x + ox)
-        min_y = min(min_y, vmin_y + oy)
+        min_y = min(min_y, -(oy + vmax_y))
         max_x = max(max_x, vmax_x + ox)
-        max_y = max(max_y, vmax_y + oy)
+        max_y = max(max_y, -(oy + vmin_y))
     return [min_x, min_y, max_x, max_y]
 
 
@@ -370,17 +373,12 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
         table_x = _SHEET_W - _MARGIN - table_w
         table_y = _SHEET_H - _MARGIN - table_h
 
-    # "bottom" (not "top") is the direction that actually lands ABOVE "front"
-    # once ProjectionType is "Third angle" - confirmed by direct rendering
-    # test: FreeCAD's own AutoDistribute places "Top"'s item at Y=+30
-    # (BELOW front, since page Y grows downward) and "Bottom"'s item at
-    # Y=-30 (ABOVE front) in third-angle mode, the reverse of the plain
-    # English reading of those names. Geometrically "bottom" here still
-    # shows the same face a hand-drawn third-angle top view would (the
-    # face away from the viewer, which is what belongs above front) -
-    # confirmed by comparing the rendered geometry against the earlier
-    # "top" projection, not just the label.
-    group_dirs = ["front", "bottom", "right"]
+    # Third angle: the top view sits above the front, the right view to its
+    # right. (This asked for "bottom" until 2026-10-03: views were drawn
+    # mirrored top to bottom and a group's items stacked upside down, so a
+    # mirrored bottom view above the front passed for a top view - see
+    # drawing._edges_to_polylines.)
+    group_dirs = ["front", "top", "right"]
     sources = part_obj if isinstance(part_obj, (list, tuple)) else [part_obj]
     bb3 = sources[0].Shape.BoundBox
     for o in sources[1:]:
@@ -430,18 +428,6 @@ def _apply_grainwave_template(doc, page_id, part_obj, pn, name, description, not
     grp = doc.getObject(probe["groupId"])
     grp.ScaleType = "Custom"
     _coarsen_views(doc)
-
-    # Relabel the "bottom" item as "Top" on the sheet - it occupies the
-    # position and shows the face a reader expects from a "Top" view (see
-    # the group_dirs comment above), so the on-page callout should say
-    # "Top", not leak FreeCAD's own inverted-from-third-angle-convention
-    # internal type name to a reader who has no reason to know about it.
-    for v in probe["views"]:
-        if v["direction"] == "bottom":
-            item = doc.getObject(v["id"])
-            item.Label = "Top"
-            _drawing._tag(item, "_gwt_dir", "top")
-            v["direction"] = "top"
 
     # Real available budget for the group's WHOLE footprint (geometry +
     # spacing), measured against actual sheet geometry - not a guessed
