@@ -9,6 +9,8 @@ import sys
 import time
 import traceback
 
+from . import hlr as _hlr
+
 METHODS = {}
 
 # Timestamped one-line-per-call trace to stderr (the main process prefixes it
@@ -207,12 +209,15 @@ def dispatch(payload):
             )
         _trace("rpc #%s %s %s%s" % (rpc_id, name, _pk, "" if txn is None else " [txn]"))
     try:
-        if isinstance(params, dict):
-            result = fn(**params)
-        elif isinstance(params, list):
-            result = fn(*params)
-        else:
-            result = fn(params)
+        # any call can recompute a drawing view (a model edit with a live
+        # page): no TechDraw 2D face search for the length of the call
+        with _hlr.no_face_search():
+            if isinstance(params, dict):
+                result = fn(**params)
+            elif isinstance(params, list):
+                result = fn(*params)
+            else:
+                result = fn(params)
         if txn is not None:
             try:
                 txn.commitTransaction()

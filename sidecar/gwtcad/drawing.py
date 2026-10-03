@@ -2078,12 +2078,16 @@ def make_detail(doc, page_id, base_view_id, anchor_xy, radius):
     }
 
 
-def make_broken(doc, page_id, base_view_id, breaks):
-    """`breaks`: list of {"axis":"x"|"y","pos":float,"gap":float}."""
+def make_broken(doc, page_id, base_view_id, breaks, drop_base=False):
+    """`breaks`: list of {"axis":"x"|"y","pos":float,"gap":float}.
+    drop_base=True removes the base view before anything computes - with a
+    base from make_view(compute=False) the broken view is then the only
+    hidden-line pass (see make_broken_view)."""
     page = get_page(doc, page_id)
     base = doc.getObject(base_view_id)
     if base is None:
         raise RpcError(APP_ERROR, "broken view needs a base view")
+    base_dir = _get_tag(base, "_gwt_dir", "front")
 
     view = doc.addObject("TechDraw::DrawBrokenView", "Broken")
     page.addView(view)
@@ -2098,8 +2102,10 @@ def make_broken(doc, page_id, base_view_id, breaks):
         view.CoarseView = base.CoarseView
     # see make_section's comment - avoid "Broken Broken" from echoing
     # view.Name (FreeCAD's own auto-name) back into the label.
-    view.Label = "%s broken" % _get_tag(base, "_gwt_dir", "front").title()
-    _tag(view, "_gwt_dir", _get_tag(base, "_gwt_dir", "front"))
+    view.Label = "%s broken" % base_dir.title()
+    _tag(view, "_gwt_dir", base_dir)
+    if drop_base:
+        doc.removeObject(base.Name)
 
     # A break given as a MODEL span ("start"/"end": two 3D points, the two
     # cut planes pass through them, square to start->end) is a REAL break:
@@ -2179,10 +2185,55 @@ def make_broken(doc, page_id, base_view_id, breaks):
 
     vis, hid = _part_view_payload(view)
     return {
-        "id": view.Name, "label": view.Label, "direction": _get_tag(base, "_gwt_dir", "front"),
+        "id": view.Name, "label": view.Label, "direction": base_dir,
         "kind": "broken", "breaks": brk, "scale": float(view.Scale) if native else 1.0,
         "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid),
     }
+
+
+def make_broken_view(doc, page_id, sources, direction="front", scale=1.0, breaks=None, coarse=False):
+    """A broken view straight from its sources, in ONE hidden-line pass: the
+    plain view it is described by is never computed. (make_view +
+    make_broken + remove_view costs a pass for the base and, before the
+    breaks are in, another for the broken view.)"""
+    base = make_view(doc, page_id, sources, direction=direction, scale=scale, coarse=coarse,
+                     compute=False)
+    return make_broken(doc, page_id, base["id"], breaks, drop_base=True)
+
+
+def broken_view_size(doc, page_id, sources, direction="front", breaks=None):
+    """(width, height) a broken view of `sources` takes at scale 1, without
+    drawing them: each source is stood in for by its bounding box, which has
+    the same outer extents in an axis-aligned view and costs nothing to cut
+    and project. For choosing a scale before the one real (slow) view -
+    extents only; in an isometric view the boxes over-estimate."""
+    import Part
+    boxes = []
+    for o in (sources if isinstance(sources, (list, tuple)) else [sources]):
+        bb = Part.getShape(o).BoundBox
+        if not bb.isValid():
+            continue
+        boxes.append(Part.makeBox(max(bb.XLength, 1e-3), max(bb.YLength, 1e-3), max(bb.ZLength, 1e-3),
+                                  App.Vector(bb.XMin, bb.YMin, bb.ZMin)))
+    if not boxes:
+        raise RpcError(APP_ERROR, "nothing to measure")
+    stand_in = doc.addObject("Part::Feature", "GwtViewExtents")
+    stand_in.Shape = Part.makeCompound(boxes)
+    stand_in.Visibility = False
+    made = [stand_in]
+    try:
+        v = make_broken_view(doc, page_id, [stand_in], direction=direction, scale=1.0, breaks=breaks)
+        view = doc.getObject(v["id"])
+        made = list(getattr(view, "Breaks", []) or []) + [view, stand_in]
+        b = v["bbox"]
+        return (b[2] - b[0], b[3] - b[1])
+    finally:
+        for o in made:
+            try:
+                doc.removeObject(o.Name)
+            except Exception:
+                pass
+        _rc(doc)
 
 
 def convert_view(doc, page_id, view_id, to_kind, **kw):
