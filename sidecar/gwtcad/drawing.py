@@ -2068,6 +2068,10 @@ def make_broken(doc, page_id, base_view_id, breaks):
     if hasattr(base, "XDirection"):
         view.XDirection = base.XDirection
     view.Scale = base.Scale
+    # same hidden-line mode as the view it replaces: exact HLR on a dense
+    # vendor model takes minutes, and a broken view redoes it every recompute
+    if hasattr(base, "CoarseView"):
+        view.CoarseView = base.CoarseView
     # see make_section's comment - avoid "Broken Broken" from echoing
     # view.Name (FreeCAD's own auto-name) back into the label.
     view.Label = "%s broken" % _get_tag(base, "_gwt_dir", "front").title()
