@@ -89,6 +89,26 @@ def test_dimension_between_two_objects_across_a_break():
     App.closeDocument(d.Name)
 
 
+def test_broken_view_is_right_side_up():
+    d = App.newDocument("brokenup")
+    bar = Part.makeBox(3048, 20, 20)
+    tab = Part.makeBox(20, 20, 100, App.Vector(3000, 0, -100))  # hangs DOWN near the right end
+    part = d.addObject("Part::Feature", "L")
+    part.Shape = bar.fuse(tab)
+    page = drawing.create_page(d, label="Drawing")["id"]
+    base = drawing.make_view(d, page, part, direction="front", scale=1.0)
+    broken = drawing.make_broken(d, page, base["id"], [
+        {"start": [100, 0, 0], "end": [2900, 0, 0], "gap": 10}])
+    # only the bar is left of centre: it must be at the TOP of the view
+    bar_ys = [y for poly in broken["visible"] for x, y in poly if x < 0]
+    assert min(bar_ys) > 0
+    # and the tab's tip projects onto the bottom edge, where it is drawn
+    view = d.getObject(broken["id"])
+    tip = drawing._project(view, App.Vector(3010, 10, -100))
+    assert tip[1] == pytest.approx(broken["bbox"][1], abs=0.5)
+    App.closeDocument(d.Name)
+
+
 def test_inch_dimension_format():
     assert drawing._format_dimension(3048.0, "DistanceX", {"unit": "in", "precision": 1}) == '120.0"'
     assert drawing._format_dimension(3048.0, "DistanceX", {"precision": 1}) == "3048.0mm"

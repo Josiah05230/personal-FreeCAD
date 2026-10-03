@@ -1432,10 +1432,16 @@ def _compute_view_payload(view):
     if not vis and not hid:
         raise RpcError(APP_ERROR, "drawing view produced no geometry")
     if _is_native_broken(view):
+        # TechDraw hands back a view's edges with Y pointing DOWN the page;
+        # mapPoint3dToView (what _project uses on a broken view) is Y up. A
+        # broken view is drawn Y up, so what is above in the model is above
+        # on the sheet and its dimensions and leaders land on the geometry
+        # they measure. (Plain views and projection groups still take the
+        # edges as they come - a separate, older problem: they draw mirrored
+        # top to bottom.)
         k = _broken_scale(view)
-        if abs(k - 1.0) > 1e-9:
-            vis = [[(x * k, y * k) for x, y in poly] for poly in vis]
-            hid = [[(x * k, y * k) for x, y in poly] for poly in hid]
+        vis = [[(x * k, -y * k) for x, y in poly] for poly in vis]
+        hid = [[(x * k, -y * k) for x, y in poly] for poly in hid]
     return vis, hid
 
 
