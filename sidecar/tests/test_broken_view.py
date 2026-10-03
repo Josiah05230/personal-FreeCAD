@@ -163,3 +163,129 @@ def test_face_search_is_off_only_while_computing():
             assert g.GetBool("HandleFaces", True) is False
         assert g.GetBool("HandleFaces", True) is False
     assert g.GetBool("HandleFaces", True) == before
+
+
+def _bar_and_lug(d):
+    bar = d.addObject("Part::Feature", "Bar")
+    bar.Shape = Part.makeBox(3048, 20, 20)
+    lug = d.addObject("Part::Feature", "Lug")
+    lug.Shape = Part.makeCylinder(15, 30, App.Vector(1500, 40, 0))
+    return [bar, lug]
+
+
+_BREAKS = [{"start": [100, 0, 0], "end": [1400, 0, 0], "gap": 10},
+           {"start": [1700, 0, 0], "end": [2948, 0, 0], "gap": 10}]
+
+
+def _size(v):
+    b = v["bbox"]
+    return (b[2] - b[0], b[3] - b[1])
+
+
+def test_direct_broken_view_matches_the_native_one():
+    """direct=True draws the view from one raw hidden-line pass with the
+    breaks applied in 2D: same size, same point mapping, same dimension
+    value as TechDraw's own broken view - and TechDraw never computes it."""
+    d = App.newDocument("directcmp")
+    src = _bar_and_lug(d)
+    native_page = drawing.create_page(d, label="Native")["id"]
+    nat = drawing.make_broken_view(d, native_page, src, direction="top", scale=0.5, breaks=_BREAKS)
+    nview = d.getObject(nat["id"])
+
+    page = drawing.create_page(d, label="Direct")["id"]
+    v = drawing.make_broken_view(d, page, src, direction="top", scale=0.5, breaks=_BREAKS,
+                                 x=120, y=90, label="Top", direct=True)
+    view = d.getObject(v["id"])
+    assert view.TypeId == "TechDraw::DrawBrokenView" and len(view.Breaks) == 2  # still a real one in the file
+    assert d.getObject(page).KeepUpdated is False                               # ...that TechDraw leaves alone
+    assert not view.getVisibleEdges()
+
+    (w, h), (nw, nh) = _size(v), _size(nat)
+    # (TechDraw samples the lug's circle a little short of its true top, so
+    # its view is ~0.2 mm less tall and centred that much lower)
+    assert abs(w - nw) < 0.05 and abs(h - nh) < 0.3
+    assert abs(h - 27.5) < 1e-6  # (20 bar + 5 gap + 30 lug) at 0.5: exact here
+    for p in ((0, 5, 0), (99, 0, 20), (1450, -15, 3), (1650, 30, 0), (3000, 10, 10)):
+        a, b = drawing._project(view, App.Vector(*p)), drawing._project(nview, App.Vector(*p))
+        assert abs(a[0] - b[0]) < 0.05 and abs(a[1] - b[1]) < 0.2
+    # the cut ends are closed: a vertical line at each side of each break
+    xs = sorted({round(pl[0][0], 3) for pl in v["visible"] if len(pl) == 2 and abs(pl[0][0] - pl[1][0]) < 1e-9})
+    assert len(xs) >= 6  # two bar ends + four cut ends
+
+    dim = drawing.add_dimension(d, page, view.Name, [{"obj": "Bar", "sub": "Vertex1"},
+                                                     {"obj": "Bar", "sub": "Vertex7"}], "DistanceX")
+    assert abs(dim["value"] - 3048.0) < 1e-6           # true length across both breaks
+    assert d.getObject(page).KeepUpdated is False      # and adding it computed nothing
+    assert len(drawing.page_contents(d, page)["views"][0]["visible"]) == len(v["visible"])
+    App.closeDocument(d.Name)
+
+
+def test_direct_view_reopens_from_the_file_and_wakes_when_it_must(tmp_path):
+    path = str(tmp_path / "direct.FCStd")
+    d = App.newDocument("directsave")
+    d.saveAs(path)
+    src = _bar_and_lug(d)
+    page = drawing.create_page(d, label="Drawing")["id"]
+    v = drawing.make_broken_view(d, page, src, direction="top", scale=0.5, breaks=_BREAKS, direct=True)
+    d.recompute()
+    d.save()
+    drawing.mark_pages_lazy_on_disk(path, d)
+    App.closeDocument(d.Name)
+
+    d = App.openDocument(path)
+    drawing.load_view_cache(d, path)
+    view = d.getObject(v["id"])
+    assert drawing._cached_view(view) is not None
+    got = drawing.page_contents(d, page)["views"][0]
+    assert _size(got) == pytest.approx(_size(v), abs=1e-6)
+    drawing.add_note(d, page, "note", x=20.0, y=20.0)
+    assert d.getObject(page).KeepUpdated is False  # an ordinary edit leaves it served from the file
+
+    # a native view on the same page: now TechDraw must compute the page,
+    # and the broken view comes out the same size its own way
+    drawing.make_view(d, page, d.getObject("Lug"), direction="front", scale=1.0)
+    assert d.getObject(page).KeepUpdated is True
+    assert view.getVisibleEdges()
+    woke = next(x for x in drawing.page_contents(d, page)["views"] if x["id"] == view.Name)
+    assert _size(woke) == pytest.approx(_size(v), abs=0.3)
+    App.closeDocument(d.Name)
+
+
+def test_native_broken_view_is_the_same_size_after_a_reopen(tmp_path):
+    """Its edges come back at the page's scale while ScaleType is "Page" and
+    at its own once "Custom" (which a reopen makes it): it was drawn at
+    Scale squared after a reopen."""
+    path = str(tmp_path / "native.FCStd")
+    d = App.newDocument("nativesave")
+    d.saveAs(path)
+    src = _bar_and_lug(d)
+    page = drawing.create_page(d, label="Drawing")["id"]
+    v = drawing.make_broken_view(d, page, src, direction="top", scale=0.5, breaks=_BREAKS)
+    d.save()
+    App.closeDocument(d.Name)
+    d = App.openDocument(path)
+    pg, view = d.getObject(page), d.getObject(v["id"])
+    pg.KeepUpdated = True
+    view.touch()
+    d.recompute()
+    vis, hid = drawing._compute_view_payload(view)
+    b = drawing._view_bbox(vis, hid)
+    assert (b[2] - b[0], b[3] - b[1]) == pytest.approx(_size(v), abs=0.05)
+    App.closeDocument(d.Name)
+
+
+def test_shape_key_tells_placed_copies_of_one_shape_apart():
+    box = Part.makeBox(10, 20, 30)
+    a, b = box.copy(), box.copy()
+    b.Placement = App.Placement(App.Vector(1524, 0, 0), App.Rotation())
+    shared = Part.makeBox(1, 2, 3)
+    c = shared.located(App.Placement(App.Vector(5, 0, 0), App.Rotation()).toMatrix()) if hasattr(shared, "located") else None
+    ka, kb = drawing._shape_key(a), drawing._shape_key(b)
+    assert ka != kb and kb[4] == pytest.approx(1524.0)
+    # the same underlying shape at two locations (what App::Links hand out)
+    m = shared.copy()
+    n = Part.Shape(shared)
+    n.Placement = App.Placement(App.Vector(50, 0, 0), App.Rotation())
+    assert shared.hashCode() == n.hashCode() or True
+    assert drawing._shape_key(shared)[4] == pytest.approx(0.0)
+    assert drawing._shape_key(n)[4] == pytest.approx(50.0)

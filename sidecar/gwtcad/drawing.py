@@ -25,6 +25,7 @@ import FreeCAD as App
 
 from .registry import RpcError, APP_ERROR
 from . import session
+from . import hlr as _hlr
 from .hlr import recompute as _rc  # recompute without TechDraw's 2D face search
 
 _DIRS = {
@@ -161,11 +162,32 @@ _break_maps = {}  # (doc name, view name) -> {"key":..., "map": _BreakMap | None
 
 
 class _BreakMap(object):
-    def __init__(self, ax, bx, ay, by, unit, spans, gaps):
+    def __init__(self, ax, bx, ay, by, unit, spans, gaps, basis=None):
         self.ax, self.bx, self.ay, self.by = ax, bx, ay, by
         self.unit = unit    # projectPoint units per model mm
         self.spans = spans  # per axis (0 = x, 1 = y): sorted [(lo, hi)] in projectPoint units
         self.gaps = gaps    # per axis: what each break closes up to, same units
+        # a direct view (see _direct_broken) projects with its own axes: the
+        # TechDraw object behind it is never computed, so can't be asked
+        self.basis = basis  # None | (ex, ey) model-space unit vectors
+
+    def dump(self):
+        return json.dumps({"ax": self.ax, "bx": self.bx, "ay": self.ay, "by": self.by, "unit": self.unit,
+                           "spans": self.spans, "gaps": self.gaps,
+                           "basis": [list(v) for v in self.basis] if self.basis else None})
+
+    @staticmethod
+    def load(text):
+        d = json.loads(text)
+        basis = tuple(App.Vector(*v) for v in d["basis"]) if d.get("basis") else None
+        return _BreakMap(d["ax"], d["bx"], d["ay"], d["by"], d["unit"],
+                         [[tuple(x) for x in a] for a in d["spans"]], d["gaps"], basis)
+
+    def project(self, view, point):
+        if self.basis:
+            return (point.dot(self.basis[0]), point.dot(self.basis[1]))
+        p = view.projectPoint(point)
+        return (p.x, p.y)
 
     def _fold(self, u, axis):
         """unbroken coordinate -> coordinate with the breaks closed up"""
@@ -190,8 +212,8 @@ class _BreakMap(object):
         return u
 
     def forward(self, view, point):
-        p = view.projectPoint(point)
-        return (self.ax * self._fold(p.x, 0) + self.bx, self.ay * self._fold(p.y, 1) + self.by)
+        u, v = self.project(view, point)
+        return (self.ax * self._fold(u, 0) + self.bx, self.ay * self._fold(v, 1) + self.by)
 
     def inverse(self, xy):
         """a point of the broken view -> where it is on the unbroken projection (model mm)"""
@@ -320,6 +342,13 @@ def _build_break_map(view):
 def _break_map(view):
     """The view's _BreakMap, or None when FreeCAD's own calls must be used."""
     k = (view.Document.Name, view.Name)
+    stored = _get_tag(view, DIRECT_MAP_TAG)
+    if stored and _page_is_lazy(view):
+        # a direct view (never computed by TechDraw): the mapping it was drawn with
+        hit = _break_maps.get(k)
+        if hit is None or hit["key"] != stored:
+            hit = _break_maps[k] = {"key": stored, "map": _BreakMap.load(stored)}
+        return hit["map"]
     try:
         key = _break_map_key(view)
         hit = _break_maps.get(k)
@@ -350,6 +379,25 @@ def _broken_unmap_point(view, xy):
         return bm.inverse(xy)
     p = view.mapPoint2dFromView(App.Vector(xy[0], xy[1], 0))
     return (p.x, p.y)
+
+
+def _broken_edge_scale(view):
+    """What a native broken view's EDGES must be multiplied by to be at its
+    Scale on the sheet. They come back at the scale TechDraw computed them
+    with - the page's while ScaleType is "Page" (what a DrawBrokenView starts
+    as; TechDraw switches it to "Custom" when the file is reopened), the
+    view's own once it is "Custom" - where mapPoint3dToView is always model
+    size. Assuming model size drew a reopened view at Scale squared."""
+    try:
+        want = float(view.Scale) or 1.0
+        if getattr(view, "ScaleType", "Custom") == "Page":
+            page = _page_of(view)
+            have = float(getattr(page, "Scale", 1.0)) if page is not None else 1.0
+        else:
+            have = want
+        return want / (have or 1.0)
+    except Exception:
+        return 1.0
 
 
 def _compute_project_offset(view):
@@ -497,6 +545,13 @@ def _ensure_page_live(doc, page):
     so this is the one place that needs to know."""
     if getattr(page, "KeepUpdated", True):
         return
+    if _get_tag(page, STATIC_PAGE_TAG):
+        # its views carry their own geometry (direct views): nothing to
+        # compute while every one of them is still served from the cache
+        views = _page_part_views(page)
+        if views and all(_cached_view(v) is not None for v in views):
+            return
+        _tag(page, STATIC_PAGE_TAG, "")
     page.KeepUpdated = True
     for v in page.Views:
         v.touch()
@@ -1665,7 +1720,7 @@ def _compute_view_payload(view):
     if not vis and not hid:
         raise RpcError(APP_ERROR, "drawing view produced no geometry")
     if _is_native_broken(view):
-        k = _broken_scale(view)
+        k = _broken_edge_scale(view)
         if abs(k - 1.0) > 1e-9:
             vis = [[(x * k, y * k) for x, y in poly] for poly in vis]
             hid = [[(x * k, y * k) for x, y in poly] for poly in hid]
@@ -1783,7 +1838,13 @@ def _area_of(shape, pts):
 def _shape_key(shape):
     # hashCode identifies the underlying shape (new geometry = new code) and
     # is free, while Area on a dense model is not
-    h = shape.hashCode()
+    # ...plus where it is: every link to one model shares that model's
+    # hashCode, so by the code alone each took the first one's key (and its
+    # position) - a saved view then missed its cache on reopen, or not, by luck
+    try:
+        h = (shape.hashCode(), tuple(round(v, 6) for v in shape.Placement.Matrix.A))
+    except Exception:
+        h = shape.hashCode()
     hit = _shape_key_memo.get(h)
     if hit is not None:
         return hit
@@ -2306,6 +2367,8 @@ def make_broken(doc, page_id, base_view_id, breaks, drop_base=False, x=None, y=N
     view.Direction = base.Direction
     if hasattr(base, "XDirection"):
         view.XDirection = base.XDirection
+    if hasattr(view, "ScaleType"):
+        view.ScaleType = "Custom"  # its own Scale from the start, as it will be after a reopen
     view.Scale = base.Scale
     # same hidden-line mode as the view it replaces: exact HLR on a dense
     # vendor model takes minutes, and a broken view redoes it every recompute
@@ -2405,12 +2468,346 @@ def make_broken(doc, page_id, base_view_id, breaks, drop_base=False, x=None, y=N
     }
 
 
+# --------------------------------------------------------------------------- #
+# direct broken views
+#
+# TechDraw's DrawBrokenView cuts every source solid at every break before
+# its hidden-line removal: a harness of ten connector models and five breaks
+# is ~40s (60s reopened), though the hidden-line removal of the whole
+# assembly is under 2s and only the wires cross a break. A DIRECT view does
+# that one hidden-line pass itself (TechDraw.projectEx on all the sources
+# together, so parts still hide each other) and applies the breaks to the 2D
+# result - clip out each span, slide the rest together, close the cut ends.
+#
+# The file still holds a real DrawBrokenView of the real sources (plain
+# FreeCAD computes it its own way). GWT-CAD keeps its page lazy and serves
+# the view from the saved-geometry cache, like any drawing it reopens; the
+# moment that cache stops matching (the model changed, a native view joined
+# the page) the page wakes and TechDraw computes it for real.
+# --------------------------------------------------------------------------- #
+
+DIRECT_MAP_TAG = "_gwt_breakmap"   # on the view: the _BreakMap it was drawn with
+STATIC_PAGE_TAG = "_gwt_static"    # on the page: its views carry their own geometry
+
+
+_basis_cache = {}
+
+
+def _view_basis(doc, direction):
+    """Model-space unit vectors along a view's sheet X and Y, exactly as
+    TechDraw lays out a plain view in this direction - asked once per
+    direction of a throwaway view of a tiny box (on its own bare page, so
+    nothing else is touched)."""
+    if direction in _basis_cache:
+        return _basis_cache[direction]
+    import Part
+    made = []
+    try:
+        page = doc.addObject("TechDraw::DrawPage", "GwtBasisPage")
+        made.append(page)
+        tmpl = doc.addObject("TechDraw::DrawSVGTemplate", "GwtBasisTemplate")
+        made.append(tmpl)
+        page.Template = tmpl
+        box = doc.addObject("Part::Feature", "GwtBasisBox")
+        made.insert(0, box)
+        box.Shape = Part.makeBox(1, 2, 3)
+        v = doc.addObject("TechDraw::DrawViewPart", "GwtBasisView")
+        made.insert(0, v)
+        page.addView(v)
+        v.Source = [box]
+        v.Direction = App.Vector(*_DIRS[direction])
+        for o in (box, v):
+            o.recompute()
+        o0 = v.projectPoint(App.Vector(0, 0, 0))
+        ax = [v.projectPoint(App.Vector(*e)) for e in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+        ex = App.Vector(*[a.x - o0.x for a in ax])
+        ey = App.Vector(*[a.y - o0.y for a in ax])
+        if abs(ex.Length - 1.0) > 1e-6 or abs(ey.Length - 1.0) > 1e-6 or abs(ex.dot(ey)) > 1e-6:
+            raise RpcError(APP_ERROR, "no view axes for %s" % direction)
+        _basis_cache[direction] = (ex, ey)
+        return ex, ey
+    finally:
+        for o in made:
+            try:
+                doc.removeObject(o.Name)
+            except Exception:
+                pass
+
+
+def _clip_fold(polys, spans, gap):
+    """Apply breaks to 2D polylines: drop what lies inside each span, slide
+    the rest together leaving `gap`, and close the cut ends. spans: per
+    axis, sorted [(lo, hi)]."""
+    def fold(c, axis):
+        cut = 0.0
+        for lo, hi in spans[axis]:
+            if c >= hi - 1e-9:
+                cut += (hi - lo) - gap
+        return c - cut
+
+    def side_fold(p, mid):
+        # a point ON a span edge belongs to the side its piece is on
+        return tuple(fold(p[a] + (1e-7 if mid[a] > p[a] else -1e-7), a) for a in (0, 1))
+
+    out, cuts = [], {}
+    bounds = [(a, b) for a in (0, 1) for lo, hi in spans[a] for b in (lo, hi)]
+    for poly in polys:
+        cur = []
+        for p0, p1 in zip(poly, poly[1:]):
+            ts = {0.0, 1.0}
+            for a, b in bounds:
+                d = p1[a] - p0[a]
+                if abs(d) > 1e-12:
+                    t = (b - p0[a]) / d
+                    if 0.0 < t < 1.0:
+                        ts.add(t)
+            ts = sorted(ts)
+            for ta, tb in zip(ts, ts[1:]):
+                pa = (p0[0] + (p1[0] - p0[0]) * ta, p0[1] + (p1[1] - p0[1]) * ta)
+                pb = (p0[0] + (p1[0] - p0[0]) * tb, p0[1] + (p1[1] - p0[1]) * tb)
+                mid = ((pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0)
+                if any(lo < mid[a] < hi for a in (0, 1) for lo, hi in spans[a]):
+                    if len(cur) >= 2:
+                        out.append(cur)
+                    cur = []
+                    continue
+                fa, fb = side_fold(pa, mid), side_fold(pb, mid)
+                # where a piece starts or ends on a span edge, it was cut there
+                for q, f in ((pa, fa), (pb, fb)):
+                    for a, b in bounds:
+                        if abs(q[a] - b) < 1e-9:
+                            cuts.setdefault((a, round(f[a], 6)), []).append(f)
+                if not cur:
+                    cur = [fa]
+                cur.append(fb)
+        if len(cur) >= 2:
+            out.append(cur)
+    # close the cut ends: along a cut line, outline crossings pair up
+    # (into the material, out of it)
+    for (a, _c), pts in cuts.items():
+        o = 1 - a
+        uniq = []
+        for q in sorted(pts, key=lambda q: q[o]):
+            if not uniq or abs(q[o] - uniq[-1][o]) > 1e-6:
+                uniq.append(q)
+        if len(uniq) % 2 == 0:
+            for q0, q1 in zip(uniq[0::2], uniq[1::2]):
+                out.append([q0, q1])
+    return out
+
+
+def _direct_broken(doc, page, view, sources, direction, native_breaks):
+    """Geometry + break mapping for `view` without TechDraw computing it.
+    Returns (visible polylines at sheet scale, _BreakMap) or None when this
+    view can't be done directly (a break askew to the sheet axes)."""
+    import Part
+    import TechDraw
+    ex, ey = _view_basis(doc, direction)
+    ez = ex.cross(ey)
+    spans = [[], []]
+    for start, end in native_breaks:
+        a, b = (start.dot(ex), start.dot(ey)), (end.dot(ex), end.dot(ey))
+        dx, dy = abs(b[0] - a[0]), abs(b[1] - a[1])
+        if min(dx, dy) > 1e-6 * max(dx, dy, 1e-9):
+            return None
+        axis = 0 if dx >= dy else 1
+        spans[axis].append(tuple(sorted((a[axis], b[axis]))))
+    for axis in (0, 1):
+        spans[axis].sort()
+        if any(l1 < h0 - 1e-9 for (_l0, h0), (l1, _h1) in zip(spans[axis], spans[axis][1:])):
+            return None
+    comp = Part.makeCompound([Part.getShape(o) for o in sources])
+    # turn the model so the view's axes are X and Y: projectEx along Z then
+    # hands back edges straight in the view's own (Y up) frame
+    comp.Placement = App.Placement(App.Vector(), App.Rotation(App.Matrix(
+        ex.x, ex.y, ex.z, 0, ey.x, ey.y, ey.z, 0, ez.x, ez.y, ez.z, 0, 0, 0, 0, 1)))
+    with _hlr.no_face_search():
+        res = TechDraw.projectEx(comp, App.Vector(0, 0, 1))
+    # hard edges, outlines and smooth edges (a fillet's tangent lines), no
+    # hidden lines - what TechDraw's own views show by default. A round
+    # wire's SEAM comes back among the smooth edges and would draw as a line
+    # down its middle: those are dropped.
+    seams = []
+    for f in comp.Faces:
+        if type(f.Surface).__name__ not in ("Cylinder", "Cone"):
+            continue
+        for e in f.Edges:
+            try:
+                if e.isSeam(f) and len(e.Vertexes) == 2:
+                    a, b = e.Vertexes[0].Point, e.Vertexes[1].Point
+                    seams.append((a.x, a.y, b.x, b.y))
+            except Exception:
+                continue
+
+    def on_seam(e):
+        if type(e.Curve).__name__ not in ("Line", "LineSegment") or len(e.Vertexes) != 2:
+            return False
+        ends = [(v.Point.x, v.Point.y) for v in e.Vertexes]
+        for ax_, ay_, bx_, by_ in seams:
+            dx, dy = bx_ - ax_, by_ - ay_
+            n2 = dx * dx + dy * dy
+            ok = True
+            for qx, qy in ends:
+                if n2 < 1e-12:
+                    dist = math.hypot(qx - ax_, qy - ay_)
+                else:
+                    t = max(0.0, min(1.0, ((qx - ax_) * dx + (qy - ay_) * dy) / n2))
+                    dist = math.hypot(qx - (ax_ + t * dx), qy - (ay_ + t * dy))
+                if dist > 1e-4:
+                    ok = False
+                    break
+            if ok:
+                return True
+        return False
+
+    polys = []
+    for e in list(res[0].Edges) + list(res[3].Edges) + [e for e in res[1].Edges if not on_seam(e)]:
+        try:
+            pts = [(q.x, q.y) for q in e.discretize(Deflection=0.2)]
+        except Exception:
+            continue
+        if len(pts) >= 2:
+            polys.append(pts)
+    if not polys:
+        return None
+    gap = float(view.Gap)
+    folded = _clip_fold(polys, spans, gap)
+    if not folded:
+        return None
+    xs = [q[0] for pl in folded for q in pl]
+    ys = [q[1] for pl in folded for q in pl]
+    cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0  # a view sits centred on its geometry
+    k = _broken_scale(view)
+    vis = [[((x - cx) * k, (y - cy) * k) for x, y in pl] for pl in folded]
+    bm = _BreakMap(1.0, -cx, 1.0, -cy, 1.0, spans, [gap, gap], basis=(ex, ey))
+    return vis, bm
+
+
+def _page_part_views(page):
+    out = []
+    for v in page.Views:
+        if v.TypeId == "TechDraw::DrawProjGroup":
+            out += [i for i in v.Views if i.TypeId == "TechDraw::DrawProjGroupItem"]
+        elif v.TypeId in ("TechDraw::DrawViewPart", "TechDraw::DrawViewSection",
+                          "TechDraw::DrawViewDetail", "TechDraw::DrawBrokenView"):
+            out.append(v)
+    return out
+
+
+def _make_broken_direct(doc, page_id, sources, direction, scale, breaks, coarse, x, y, label):
+    """make_broken_view without TechDraw's cut-everything compute. None when
+    it doesn't apply - the caller then makes the view the native way."""
+    import Part
+    page = doc.getObject(page_id)
+    if page is None or page.TypeId != "TechDraw::DrawPage":
+        return None
+    if _page_part_views(page) and not (_get_tag(page, STATIC_PAGE_TAG) and not getattr(page, "KeepUpdated", True)):
+        return None  # a live page with native views on it stays native
+    spec = [b for b in (breaks or []) if b.get("start") is not None and b.get("end") is not None]
+    if not spec or len(spec) != len(breaks or []):
+        return None
+    direction = _norm_dir(direction)
+    sources = list(sources) if isinstance(sources, (list, tuple)) else [sources]
+    made = []
+    was_lazy = not getattr(page, "KeepUpdated", True)
+    try:
+        ex_ey = None
+        page.KeepUpdated = False  # TechDraw leaves this page's views alone
+        view = doc.addObject("TechDraw::DrawBrokenView", "Broken")
+        made.append(view)
+        page.addView(view)
+        view.Source = sources
+        view.Direction = App.Vector(*_DIRS[direction])
+        if hasattr(view, "ScaleType"):
+            view.ScaleType = "Custom"
+        view.Scale = float(scale)
+        if coarse and hasattr(view, "CoarseView"):
+            view.CoarseView = True
+        view.Label = label or "%s broken" % direction.title()
+        if x is not None and y is not None:
+            view.X, view.Y = float(x), float(y)
+            _tag(view, "_gwt_placed", "1")
+        normal = App.Vector(view.Direction)
+        normal.normalize()
+        native, sketches = [], []
+        for i, b in enumerate(spec):
+            start, end = App.Vector(*b["start"]), App.Vector(*b["end"])
+            along = end - start
+            along = along - normal * along.dot(normal)
+            if along.Length < 1e-6:
+                raise RpcError(APP_ERROR, "break %d has no length in this view" % i)
+            length = along.Length
+            xa = App.Vector(along)
+            xa.normalize()
+            ya = normal.cross(xa)
+            sk = doc.addObject("Sketcher::SketchObject", "BreakSketch")
+            made.append(sk)
+            sk.Placement = App.Placement(start, App.Rotation(App.Matrix(
+                xa.x, ya.x, normal.x, 0, xa.y, ya.y, normal.y, 0, xa.z, ya.z, normal.z, 0, 0, 0, 0, 1)))
+            sk.Label = "Break %d" % (len(sketches) + 1)
+            reach = 1.0e5
+            sk.addGeometry(Part.LineSegment(App.Vector(0, -reach, 0), App.Vector(0, reach, 0)), False)
+            sk.addGeometry(Part.LineSegment(App.Vector(length, -reach, 0), App.Vector(length, reach, 0)), False)
+            sk.Visibility = False
+            sk.recompute()
+            sketches.append(sk)
+            native.append((start, end))
+        view.Breaks = sketches
+        view.Gap = float(spec[0].get("gap", 10.0))
+        got = _direct_broken(doc, page, view, sources, direction, native)
+        if got is None:
+            raise RpcError(APP_ERROR, "not a direct view")
+        vis, bm = got
+        k = _broken_scale(view)
+        brk = []
+        for (start, end), sk in zip(native, sketches):
+            a, b_ = bm.forward(view, start), bm.forward(view, end)
+            horizontal = abs(b_[0] - a[0]) >= abs(b_[1] - a[1])
+            brk.append({
+                "sketch": sk.Name, "axis": "x" if horizontal else "y",
+                "position": k * ((a[0] + b_[0]) / 2.0 if horizontal else (a[1] + b_[1]) / 2.0),
+                "gap": k * (abs(b_[0] - a[0]) if horizontal else abs(b_[1] - a[1])),
+                "start": [start.x, start.y, start.z], "end": [end.x, end.y, end.z],
+            })
+        _tag(view, "_gwt_dir", direction)
+        _tag(view, "_gwt_kind", "broken")
+        _tag(view, "_gwt_breaks", json.dumps(brk))
+        _tag(view, DIRECT_MAP_TAG, bm.dump())
+        _tag(page, STATIC_PAGE_TAG, "1")
+        if _view_cache["doc"] != doc.Name:
+            _view_cache["doc"], _view_cache["views"] = doc.Name, {}
+        _view_cache["views"][view.Name] = {"key": _view_key(view), "visible": vis, "hidden": [],
+                                           "offset": [0.0, 0.0]}
+        try:
+            view.purgeTouched()
+        except Exception:
+            pass
+        return {"id": view.Name, "label": view.Label, "direction": direction, "kind": "broken",
+                "breaks": brk, "scale": float(view.Scale), "visible": vis, "hidden": [],
+                "bbox": _view_bbox(vis, [])}
+    except Exception:
+        for o in made:
+            try:
+                doc.removeObject(o.Name)
+            except Exception:
+                pass
+        if not was_lazy:
+            page.KeepUpdated = True
+        return None
+
+
 def make_broken_view(doc, page_id, sources, direction="front", scale=1.0, breaks=None, coarse=False,
-                     x=None, y=None, label=None):
+                     x=None, y=None, label=None, direct=False):
     """A broken view straight from its sources, in ONE hidden-line pass: the
     plain view it is described by is never computed. (make_view +
     make_broken + remove_view costs a pass for the base and, before the
-    breaks are in, another for the broken view.)"""
+    breaks are in, another for the broken view.)
+    direct=True skips TechDraw's own compute where it can (see "direct
+    broken views"): seconds instead of most of a minute on an assembly."""
+    if direct:
+        v = _make_broken_direct(doc, page_id, sources, direction, scale, breaks, coarse, x, y, label)
+        if v is not None:
+            return v
     base = make_view(doc, page_id, sources, direction=direction, scale=scale, coarse=coarse,
                      compute=False)
     return make_broken(doc, page_id, base["id"], breaks, drop_base=True, x=x, y=y, label=label)
