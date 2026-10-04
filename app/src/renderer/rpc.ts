@@ -411,6 +411,9 @@ export interface DrawingBreak {
   axis: 'x' | 'y'
   position: number
   gap: number
+  /** extents of the break line along itself (view coordinates), one per
+   *  thing the break actually cuts. Absent = across the whole view. */
+  spans?: [number, number][]
 }
 
 export interface DrawingView {

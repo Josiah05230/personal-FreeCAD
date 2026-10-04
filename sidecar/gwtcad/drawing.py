@@ -1248,7 +1248,7 @@ def export_page_svg(doc, page_id):
 
         parts.append('<g transform="translate(%s %s)">' % (_fmt(vx), _fmt(vy)))
         parts.append(
-            '<rect width="%s" height="%s" fill="#ffffff01" stroke="#00000022" stroke-width="0.3"/>' % (_fmt(w), _fmt(h))
+            '<rect width="%s" height="%s" fill="#ffffff01" stroke="none"/>' % (_fmt(w), _fmt(h))  # the frame is a screen aid, not part of the drawing
         )
         # nested <svg> with the view's own viewBox, mirroring ViewBox's
         # render exactly: viewBox="minX -maxY (maxX-minX) (maxY-minY)", scaled
@@ -1276,8 +1276,9 @@ def export_page_svg(doc, page_id):
                 gap = float(b.get("gap", 10.0))
                 for offset in (-gap / 2, gap / 2):
                     line_pos = pos + offset
-                    pts = _break_line_points(axis, line_pos, min_x, min_y, max_x, max_y)
-                    parts.append(_svg_polyline(pts, "#0696d7", 0.4))
+                    for span in (b.get("spans") or [None]):
+                        pts = _break_line_points(axis, line_pos, min_x, min_y, max_x, max_y, span)
+                        parts.append(_svg_polyline(pts, "#0696d7", 0.4))
         parts.append("</svg>")
         # view label under the view, same font size/color/format as
         # ViewBox's own <text> ("{label} - {direction} (kind)")
@@ -1432,13 +1433,33 @@ def export_page_svg(doc, page_id):
                 _fmt(gx), _fmt(gy)))
             parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s" stroke-width="0.2"/>' % (
                 _fmt(p2x), _fmt(p2y), _fmt(base_x), _fmt(base_y)))
-            parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s" stroke-width="0.2"/>' % (
-                _fmt(p1x + perpx * perp_off), _fmt(p1y + perpy * perp_off), _fmt(base_x), _fmt(base_y)))
+            # the dimension line stops either side of the value (and its
+            # tolerance): text never sits on a line
+            sx, sy = p1x + perpx * perp_off, p1y + perpy * perp_off
+            line_len = math.hypot(base_x - sx, base_y - sy)
+            if line_len > 1e-9:
+                lux, luy = (base_x - sx) / line_len, (base_y - sy) / line_len
+                t_label = (label_x - sx) * lux + (label_y - sy) * luy
+                if abs(lux) > abs(luy):
+                    tol_w = max([_measure_text(t, 2.2) for t in tol_lines] or [0.0])
+                    before = value_width / 2 + 1.0
+                    after = value_width / 2 + 1.0 + (tol_w + 1.0 if tol_lines else 0.0)
+                    if lux < 0:
+                        before, after = after, before
+                else:
+                    before = after = 3.4 / 2 + 0.8
+                for t0, t1 in ((0.0, t_label - before), (t_label + after, line_len)):
+                    t0, t1 = max(0.0, t0), min(line_len, t1)
+                    if t1 - t0 > 1e-6:
+                        parts.append('<line x1="%s" y1="%s" x2="%s" y2="%s" stroke-width="0.2"/>' % (
+                            _fmt(sx + lux * t0), _fmt(sy + luy * t0), _fmt(sx + lux * t1), _fmt(sy + luy * t1)))
+            # centred on the line by an explicit offset: dominant-baseline is
+            # ignored by the PDF converter, which left the value above the line
             parts.append(
-                '<text x="%s" y="%s" font-size="3.4" text-anchor="middle" dominant-baseline="middle" stroke="none">%s</text>'
-                % (_fmt(label_x), _fmt(label_y), text)
+                '<text x="%s" y="%s" font-size="3.4" text-anchor="middle" stroke="none">%s</text>'
+                % (_fmt(label_x), _fmt(label_y + 1.2), text)
             )
-            parts.append(tolerance_svg(label_x, label_y, "middle", "middle"))
+            parts.append(tolerance_svg(label_x, label_y + 0.8, "middle"))
             parts.append("</g>")
             continue
 
@@ -1612,12 +1633,21 @@ def export_page_svg(doc, page_id):
     return "\n".join(parts)
 
 
-def _break_line_points(axis, pos, min_x, min_y, max_x, max_y):
+def _break_line_points(axis, pos, min_x, min_y, max_x, max_y, span=None):
     """Port of DrawingSheet.tsx's breakLinePoints - a jagged zigzag glyph
     across a view's bbox at the given axis/position, standard CAD convention
     for marking a broken-out section. Returns points in the view's own local
     (y-up, pre-flip) coordinate space, same as _edges_to_polylines' output,
     so _svg_polyline's own Y-flip applies to it identically."""
+    if span:
+        # only across what the break actually cuts (its extent along the
+        # break line, in view coordinates), not the whole view
+        lo, hi = float(min(span)), float(max(span))
+        amp = max(0.8, min(2.0, (hi - lo) * 0.12))
+        n = 3
+        if axis == "x":
+            return [(pos + (-amp if i % 2 == 0 else amp), lo + (hi - lo) * i / n) for i in range(n + 1)]
+        return [(lo + (hi - lo) * i / n, pos + (-amp if i % 2 == 0 else amp)) for i in range(n + 1)]
     zigzags = 5
     amp = (max_x - min_x) * 0.02 if axis == "x" else (max_y - min_y) * 0.02
     pts = []

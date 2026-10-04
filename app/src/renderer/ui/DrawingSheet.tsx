@@ -202,8 +202,23 @@ function breakLinePoints(
   minX: number,
   minY: number,
   maxX: number,
-  maxY: number
+  maxY: number,
+  only?: [number, number]
 ): [number, number][] {
+  if (only) {
+    // only across what the break actually cuts, not the whole view
+    const lo = Math.min(only[0], only[1])
+    const hi = Math.max(only[0], only[1])
+    const a = Math.max(0.8, Math.min(2, (hi - lo) * 0.12))
+    const n = 3
+    const out: [number, number][] = []
+    for (let i = 0; i <= n; i++) {
+      const along = lo + ((hi - lo) * i) / n
+      const off = pos + (i % 2 === 0 ? -a : a)
+      out.push(axis === 'x' ? [off, along] : [along, off])
+    }
+    return out
+  }
   const zigzags = 5
   const amp = axis === 'x' ? (maxX - minX) * 0.02 : (maxY - minY) * 0.02
   const pts: [number, number][] = []
@@ -437,22 +452,22 @@ function ViewBox({
         {view.kind === 'broken' &&
           (view.breaks ?? []).map((b, i) => {
             const half = b.gap / 2
-            const lineA = breakLinePoints(b.axis, b.position - half, minX, minY, maxX, maxY)
-            const lineB = breakLinePoints(b.axis, b.position + half, minX, minY, maxX, maxY)
+            const spans: ([number, number] | undefined)[] = b.spans?.length ? b.spans : [undefined]
             return (
               <g key={`brk${i}`}>
-                <polyline
-                  points={flip(lineA).map((p) => p.join(',')).join(' ')}
-                  fill="none"
-                  stroke="#0696d7"
-                  strokeWidth={0.4}
-                />
-                <polyline
-                  points={flip(lineB).map((p) => p.join(',')).join(' ')}
-                  fill="none"
-                  stroke="#0696d7"
-                  strokeWidth={0.4}
-                />
+                {spans.flatMap((only, k) =>
+                  [b.position - half, b.position + half].map((at, side) => (
+                    <polyline
+                      key={`${k}-${side}`}
+                      points={flip(breakLinePoints(b.axis, at, minX, minY, maxX, maxY, only))
+                        .map((p) => p.join(','))
+                        .join(' ')}
+                      fill="none"
+                      stroke="#0696d7"
+                      strokeWidth={0.4}
+                    />
+                  ))
+                )}
               </g>
             )
           })}
@@ -3755,7 +3770,33 @@ export const DrawingSheet = forwardRef<
                   {/* extension line: measured point out to the offset baseline */}
                   <line x1={p2x} y1={p2y} x2={baseX} y2={baseY} strokeWidth={0.2} />
                   {/* dimension line: along the axis, datum-side to the label */}
-                  <line x1={p1x + perpx * perpOff} y1={p1y + perpy * perpOff} x2={baseX} y2={baseY} strokeWidth={0.2} />
+                  {(() => {
+                    // the line stops either side of the value: text never sits on a line
+                    const sx = p1x + perpx * perpOff
+                    const sy = p1y + perpy * perpOff
+                    const lineLen = Math.hypot(baseX - sx, baseY - sy)
+                    if (lineLen < 1e-9) return null
+                    const lux = (baseX - sx) / lineLen
+                    const luy = (baseY - sy) / lineLen
+                    const tLabel = (labelX - sx) * lux + (labelY - sy) * luy
+                    const horizontal = Math.abs(lux) > Math.abs(luy)
+                    const half = horizontal ? measureText(text, 3.4) / 2 + 1 : 3.4 / 2 + 0.8
+                    // room for the tolerance, which follows the value on its right
+                    const tol = horizontal ? 8 : 0
+                    const before = horizontal && lux < 0 ? half + tol : half
+                    const after = horizontal && lux >= 0 ? half + tol : half
+                    const segs: [number, number][] = [
+                      [0, tLabel - before],
+                      [tLabel + after, lineLen]
+                    ]
+                    return segs.map(([a0, a1], i) => {
+                      const t0 = Math.max(0, a0)
+                      const t1 = Math.min(lineLen, a1)
+                      return t1 - t0 > 1e-6 ? (
+                        <line key={i} x1={sx + lux * t0} y1={sy + luy * t0} x2={sx + lux * t1} y2={sy + luy * t1} strokeWidth={0.2} />
+                      ) : null
+                    })
+                  })()}
                   <text x={labelX} y={labelY} fontSize={3.4} textAnchor="middle" dominantBaseline="middle" stroke="none">
                     {text}
                   </text>
