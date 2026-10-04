@@ -241,6 +241,23 @@ _drawing_seq = [0]
 # is just the override storage, keyed by the DrawViewDimension's object name.
 _dim_formats = {}
 
+# Coloured fills drawn under a drawing view's line work (harness wires in
+# their insulation colour), keyed by the view's object name: a list of
+# {"points": [[x, y], ...], "color": "#rrggbb", "width": mm} in the same
+# sheet-mm frame as the view's visible/hidden polylines.
+_view_fills = {}
+
+
+def view_fills(view_id):
+    return [dict(f) for f in _view_fills.get(view_id, [])]
+
+
+def set_view_fills(view_id, fills):
+    if fills:
+        _view_fills[view_id] = [dict(f) for f in fills]
+    else:
+        _view_fills.pop(view_id, None)
+
 # Document-wide default dimension format; None means "use the built-in
 # default" (2 decimals, leading zero, no trailing-zero stripping, unit shown).
 _dim_format_default = {}
@@ -374,6 +391,8 @@ def load_state(blob):
             pass
     _dim_formats.clear()
     _dim_formats.update(blob.get("dimFormats", {}) or {})
+    _view_fills.clear()
+    _view_fills.update(blob.get("viewFills", {}) or {})
     _dim_format_default.clear()
     _dim_format_default.update(blob.get("dimFormatDefault", {}) or {})
     _colors.clear()
@@ -421,6 +440,7 @@ def dump_state():
             "sections": list(_sections.values()),
             "drawings": list(_drawings.values()),
             "dimFormats": all_dim_formats(),
+            "viewFills": {k: [dict(f) for f in v] for k, v in _view_fills.items()},
             "dimFormatDefault": dim_format_default(),
             "partNumber": part_number(),
             "decals": _decals_dump()}

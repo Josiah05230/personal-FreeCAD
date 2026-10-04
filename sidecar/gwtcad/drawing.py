@@ -705,6 +705,9 @@ def page_contents(doc, page_id):
                 "needsFit": _needs_fit(o, kind),
                 "visible": vis, "hidden": hid, "bbox": _view_bbox(vis, hid),
             }
+            fills = session.view_fills(o.Name)
+            if fills:
+                entry["fills"] = fills                   # coloured fills under the line work
             # view.X/Y round-trip now (fixed 2026-09-20: a view's on-sheet
             # position was pure client-side layout state - dragging one
             # visibly moved it within the session, but view.X/Y was never
@@ -1256,6 +1259,8 @@ def export_page_svg(doc, page_id):
             '<svg x="0" y="0" width="%s" height="%s" viewBox="%s %s %s %s">'
             % (_fmt(w), _fmt(h), _fmt(min_x), _fmt(-max_y), _fmt(max_x - min_x), _fmt(max_y - min_y))
         )
+        for f in v.get("fills") or []:                   # colour first, line work on top
+            parts.append(_svg_polyline(f["points"], escape(f["color"]), float(f["width"])))
         for poly in v.get("hidden", []):
             parts.append(_svg_polyline(poly, "#999", 0.25, "1.4 1"))
         for poly in v.get("visible", []):

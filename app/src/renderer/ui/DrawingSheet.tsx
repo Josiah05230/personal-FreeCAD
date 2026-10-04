@@ -406,6 +406,15 @@ function ViewBox({
         viewBox={`${minX} ${-maxY} ${maxX - minX} ${maxY - minY}`}
         style={{ pointerEvents: 'none' }}
       >
+        {(view.fills ?? []).map((f, i) => (
+          <polyline
+            key={`f${i}`}
+            points={flip(f.points).map((p) => p.join(',')).join(' ')}
+            fill="none"
+            stroke={f.color}
+            strokeWidth={f.width}
+          />
+        ))}
         {view.hidden.map((poly, i) => (
           <polyline
             key={`h${i}`}

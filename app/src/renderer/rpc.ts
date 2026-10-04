@@ -427,6 +427,9 @@ export interface DrawingView {
   needsFit?: boolean
   visible: number[][][] // [poly][point][x,y]
   hidden: number[][][]
+  /** coloured fills drawn under the line work (harness wires in their
+   *  insulation colour), same sheet-mm frame as visible/hidden */
+  fills?: { points: number[][]; color: string; width: number }[]
   bbox: [number, number, number, number]
   orphanedDimensions?: string[]
   /** Client-side-only visual break glyphs for a 'broken' view - FreeCAD's
