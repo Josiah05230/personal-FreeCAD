@@ -1303,6 +1303,10 @@ def export_page_svg(doc, page_id):
         text = escape(_format_dimension(d["value"], d["type"], fmt))
         tol_lines = _format_dimension_tolerance(fmt)
         value_width = _measure_text(text, 3.4)
+        # a +/- tolerance reads as part of the value, at the value's own
+        # height; only a stacked +upper/-lower pair is set smaller, so its
+        # two lines fit beside the one line of the value
+        tol_size = 3.4 if len(tol_lines) == 1 else 2.2
 
         def tolerance_svg(x, y, anchor, dominant_baseline=None):
             if not tol_lines:
@@ -1323,8 +1327,8 @@ def export_page_svg(doc, page_id):
                     % (_fmt(tol_x), escape(tol_lines[0]), _fmt(tol_x), escape(tol_lines[1]))
                 )
             return (
-                '<text x="%s" y="%s" font-size="2.2" text-anchor="start"%s stroke="none">%s</text>'
-                % (_fmt(tol_x), _fmt(y), baseline_attr, body)
+                '<text x="%s" y="%s" font-size="%s" text-anchor="start"%s stroke="none">%s</text>'
+                % (_fmt(tol_x), _fmt(y), _fmt(tol_size), baseline_attr, body)
             )
 
         gx, gy, scale = pl["x"], pl["y"], pl["scale"]
@@ -1441,7 +1445,7 @@ def export_page_svg(doc, page_id):
                 lux, luy = (base_x - sx) / line_len, (base_y - sy) / line_len
                 t_label = (label_x - sx) * lux + (label_y - sy) * luy
                 if abs(lux) > abs(luy):
-                    tol_w = max([_measure_text(t, 2.2) for t in tol_lines] or [0.0])
+                    tol_w = max([_measure_text(t, tol_size) for t in tol_lines] or [0.0])
                     before = value_width / 2 + 1.0
                     after = value_width / 2 + 1.0 + (tol_w + 1.0 if tol_lines else 0.0)
                     if lux < 0:
@@ -1459,7 +1463,7 @@ def export_page_svg(doc, page_id):
                 '<text x="%s" y="%s" font-size="3.4" text-anchor="middle" stroke="none">%s</text>'
                 % (_fmt(label_x), _fmt(label_y + 1.2), text)
             )
-            parts.append(tolerance_svg(label_x, label_y + 0.8, "middle"))
+            parts.append(tolerance_svg(label_x, label_y + (1.2 if tol_size == 3.4 else 0.8), "middle"))
             parts.append("</g>")
             continue
 

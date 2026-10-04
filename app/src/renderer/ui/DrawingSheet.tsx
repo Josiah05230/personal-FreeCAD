@@ -3379,7 +3379,15 @@ export const DrawingSheet = forwardRef<
               const valueLeft = textAnchor === 'start' ? x : textAnchor === 'end' ? x - valueWidth : x - valueWidth / 2
               const tolX = valueLeft + valueWidth + 1
               return (
-                <text x={tolX} y={y} fontSize={2.2} textAnchor="start" dominantBaseline={dominantBaseline} stroke="none">
+                <text
+                  x={tolX}
+                  y={y}
+                  // a +/- tolerance is the value's own height; only a stacked pair is smaller
+                  fontSize={tol.lines.length === 1 ? 3.4 : 2.2}
+                  textAnchor="start"
+                  dominantBaseline={dominantBaseline}
+                  stroke="none"
+                >
                   {tol.lines.length === 1 ? (
                     tol.lines[0]
                   ) : (
@@ -3782,7 +3790,7 @@ export const DrawingSheet = forwardRef<
                     const horizontal = Math.abs(lux) > Math.abs(luy)
                     const half = horizontal ? measureText(text, 3.4) / 2 + 1 : 3.4 / 2 + 0.8
                     // room for the tolerance, which follows the value on its right
-                    const tol = horizontal ? 8 : 0
+                    const tol = horizontal ? 12 : 0
                     const before = horizontal && lux < 0 ? half + tol : half
                     const after = horizontal && lux >= 0 ? half + tol : half
                     const segs: [number, number][] = [
