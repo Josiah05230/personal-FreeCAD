@@ -116,13 +116,15 @@ const LIGHT_RIGS: Record<string, LightRig> = {
   flat: { hemi: 4.0, key: 0.2, fill: 0.2, keyPos: [0, 0, 1], fillPos: [0, 0, -1] }
 }
 
-/** 45-degree section hatching, one 14mm tile, tiled by the caller. */
+/** 45-degree section hatching on a solid cut-face colour, one 14mm tile,
+ *  tiled by the caller. */
 function hatchTexture(): THREE.Texture {
   const c = document.createElement('canvas')
   c.width = 32
   c.height = 32
   const ctx = c.getContext('2d')!
-  ctx.clearRect(0, 0, 32, 32)
+  ctx.fillStyle = 'rgb(206,211,217)'
+  ctx.fillRect(0, 0, 32, 32)
   ctx.strokeStyle = 'rgba(70,80,92,0.85)'
   ctx.lineWidth = 2
   for (let i = -32; i < 64; i += 8) {
@@ -393,6 +395,8 @@ export function Viewport({
     lastRadius: number
     preSketchCam: { pos: THREE.Vector3; up: THREE.Vector3; pivot: THREE.Vector3 } | null
     sectionCap: THREE.Mesh | null
+    /** stencil-only copies of the bodies that mark where the cut plane passes through solid */
+    sectionStencil: THREE.Group | null
     hemi: THREE.HemisphereLight
     key: THREE.DirectionalLight
     fill: THREE.DirectionalLight
@@ -405,7 +409,8 @@ export function Viewport({
 
   useEffect(() => {
     const host = hostRef.current!
-    const renderer = new THREE.WebGLRenderer({ antialias: true })
+    // stencil: the section view's cut faces (see the section effect below)
+    const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, perfProfile().pixelRatioCap))
     renderer.setSize(host.clientWidth, host.clientHeight)
     renderer.outputColorSpace = THREE.SRGBColorSpace
@@ -474,6 +479,7 @@ export function Viewport({
       lastRadius: 60,
       preSketchCam: null,
       sectionCap: null,
+      sectionStencil: null,
       hemi,
       key,
       fill,
@@ -686,7 +692,8 @@ export function Viewport({
       const off = new THREE.WebGLRenderer({
         antialias: true,
         alpha: transparent,
-        preserveDrawingBuffer: true
+        preserveDrawingBuffer: true,
+        stencil: true
       })
       off.setPixelRatio(1)
       off.setSize(W, H, false)
@@ -1352,6 +1359,19 @@ export function Viewport({
       // whatever size they were last built at instead of tracking the
       // current zoom (user report, 2026-09-11)
       stateRef.current?.sketch?.rescaleScreenSpace()
+      // a hidden body has no cut face either
+      const cut = stateRef.current?.sectionStencil
+      if (cut) {
+        for (const c of cut.children) {
+          let o: THREE.Object3D | null = c.userData.src as THREE.Object3D
+          let shown = true
+          while (o && shown) {
+            shown = o.visible
+            o = o.parent
+          }
+          c.visible = shown
+        }
+      }
       gizmo.updateScale(controls.camera, host.clientHeight)
       renderer.render(scene, controls.camera)
     }
@@ -1518,16 +1538,7 @@ export function Viewport({
       constant = -section.offset * (section.flip ? -1 : 1)
       planes.push(new THREE.Plane(n.clone(), constant))
     }
-    st.scene.traverse((o) => {
-      const m = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined
-      if (!m || o === st.sectionCap) return
-      for (const mat of Array.isArray(m) ? m : [m]) {
-        mat.clippingPlanes = planes
-        mat.clipShadows = true
-        mat.needsUpdate = true
-      }
-    })
-
+    // last section's cut faces go first, so the traverse below never sees them
     if (st.sectionCap) {
       st.scene.remove(st.sectionCap)
       st.sectionCap.geometry.dispose()
@@ -1536,35 +1547,84 @@ export function Viewport({
       cm.dispose()
       st.sectionCap = null
     }
+    if (st.sectionStencil) {
+      st.scene.remove(st.sectionStencil)
+      const seen = new Set<THREE.Material>()
+      for (const c of st.sectionStencil.children) seen.add((c as THREE.Mesh).material as THREE.Material)
+      seen.forEach((m) => m.dispose()) // geometry belongs to the bodies
+      st.sectionStencil = null
+    }
+    st.scene.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined
+      if (!m) return
+      for (const mat of Array.isArray(m) ? m : [m]) {
+        mat.clippingPlanes = planes
+        mat.clipShadows = true
+        mat.needsUpdate = true
+      }
+    })
+
     if (section && n && st.content) {
-      // a hatched quad sitting in the cut plane, sized to the model, so the
-      // section reads as a real cut face rather than just a clipped-away void
+      // The cut faces: hatching ONLY where the plane passes through solid.
+      // (It used to be one hatched sheet across the whole model in the cut
+      // plane, which covered everything behind it.) Each body is drawn into
+      // the stencil buffer, clipped like the model, flipping the stencil at
+      // every surface it crosses: a sight line that meets the cut plane
+      // inside material crosses an odd number of surfaces behind it, one in
+      // a hollow or outside an even number. So the stencil ends up set
+      // exactly on the cut material, and the hatched quad draws only there.
+      // (Parity, not front-face/back-face counting: the body meshes'
+      // triangle winding is not consistent face to face.)
       const box = new THREE.Box3().setFromObject(st.content)
       if (!box.isEmpty()) {
+        const parity = new THREE.MeshBasicMaterial({
+          side: THREE.DoubleSide,
+          colorWrite: false,
+          depthWrite: false,
+          depthTest: false
+        })
+        parity.clippingPlanes = planes
+        parity.stencilWrite = true
+        parity.stencilFunc = THREE.AlwaysStencilFunc
+        parity.stencilFail = THREE.InvertStencilOp
+        parity.stencilZFail = THREE.InvertStencilOp
+        parity.stencilZPass = THREE.InvertStencilOp
+        const group = new THREE.Group()
+        st.content.updateWorldMatrix(true, true)
+        st.content.traverse((o) => {
+          const body = o as THREE.Mesh
+          if (!body.isMesh || !body.name.startsWith('body:')) return
+          const sm = new THREE.Mesh(body.geometry, parity)
+          sm.matrixAutoUpdate = false
+          sm.matrix.copy(body.matrixWorld)
+          sm.renderOrder = 1
+          sm.userData = { src: body }
+          group.add(sm)
+        })
+        st.scene.add(group)
+        st.sectionStencil = group
+
         const size = box.getSize(new THREE.Vector3())
         const center = box.getCenter(new THREE.Vector3())
         const diag = Math.max(size.length(), 1)
         const tex = hatchTexture()
         tex.repeat.set(diag / 14, diag / 14)
-        const cap = new THREE.Mesh(
-          new THREE.PlaneGeometry(diag, diag),
-          new THREE.MeshBasicMaterial({
-            map: tex,
-            transparent: true,
-            opacity: 0.9,
-            side: THREE.DoubleSide,
-            depthWrite: false,
-            polygonOffset: true,
-            polygonOffsetFactor: -1
-          })
-        )
+        const capMat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide })
+        capMat.stencilWrite = true
+        capMat.stencilRef = 0
+        capMat.stencilFunc = THREE.NotEqualStencilFunc
+        capMat.stencilFail = THREE.ReplaceStencilOp
+        capMat.stencilZFail = THREE.ReplaceStencilOp
+        capMat.stencilZPass = THREE.ReplaceStencilOp
+        const cap = new THREE.Mesh(new THREE.PlaneGeometry(diag, diag), capMat)
         cap.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n)
         // centre the quad on the model's cross-section: project the model centre
         // onto the cut plane (n·x + constant = 0)
         cap.position.copy(
           center.clone().sub(n.clone().multiplyScalar(center.dot(n) + constant))
         )
-        cap.renderOrder = 5
+        cap.renderOrder = 5 // after every stencil copy
+        cap.onAfterRender = (r) => r.clearStencil()
         st.scene.add(cap)
         st.sectionCap = cap
       }
