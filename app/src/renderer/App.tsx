@@ -5874,6 +5874,7 @@ export function App(): JSX.Element {
         setSelection([{ kind: 'face', bodyId, sub, point: [0, 0, 0] } as Selection]),
       selectSketch: (sketchId: string) => setSelection([{ kind: 'sketch', sketchId } as Selection]),
       clearSelection: () => setSelection([]),
+      setSection: (v: SectionState | null) => setSection(v),
       // the timeline's feature-chip selection (Mirror / Pattern Type=Features)
       selectFeatures: (ids: string[]) => setTimelineSel(ids ?? []),
       addComponentFile: (p: string) => addComponentFile(p),
@@ -5979,6 +5980,7 @@ export function App(): JSX.Element {
         opReady: opReadyRef.current,
         sketchMode: !!sketchSession,
         selection: selection.map(selKey),
+        tabs: tabs.map((t) => ({ name: t.name, path: t.path ?? null, active: t.id === activeTab })),
         bodies: bodies.map((b) => ({
           id: b.id,
           marker: b.marker ?? null,
@@ -6875,18 +6877,55 @@ export function App(): JSX.Element {
               })().catch((e) => window.alert((e as Error).message))
             }}
             onClose={(id) => {
-              if (tabs.length <= 1) return
               const closing = tabs.find((t) => t.id === id)
-              setTabs((t) => t.filter((x) => x.id !== id))
-              if (closing?.viewer) {
+              if (!closing) return
+              const at = tabs.findIndex((t) => t.id === id)
+              const rest = tabs.filter((t) => t.id !== id)
+              if (closing.viewer) {
+                setTabs((t) => t.filter((x) => x.id !== id))
                 if (id === activeTab) {
-                  const back = tabs.find((t) => !t.viewer && t.path === docPath) ?? tabs.find((t) => t.id !== id)
+                  const back = rest.find((t) => !t.viewer && t.path === docPath) ?? rest[Math.min(at, rest.length - 1)]
                   if (back) setActiveTab(back.id)
+                  else newDesign() // nothing left: a fresh tab fills the space
                 }
                 return
               }
-              const p = closing?.path
-              if (p && !tabs.some((t) => t.id !== id && t.path === p)) void releaseStandaloneLock(p)
+              const p = closing.path
+              const release = (): void => {
+                if (p && !rest.some((t) => t.path === p)) void releaseStandaloneLock(p)
+              }
+              // is this the document the engine holds (what the viewport shows)?
+              const held = id === activeTab || (!!p && p === docPath && !rest.some((t) => !t.viewer && t.path === p))
+              if (!held) {
+                setTabs((t) => t.filter((x) => x.id !== id))
+                release()
+                return
+              }
+              // Closing the document on screen: it must leave the viewport
+              // too. Move to the nearest tab that has a file to reopen (the
+              // one that slides into this tab's place first), or start a new
+              // design when there is none - never keep showing a closed part.
+              const order = [...rest.slice(at), ...rest.slice(0, at).reverse()]
+              const next = order.find((t) => !t.viewer && !!t.path && t.path !== p)
+              void (async () => {
+                const autosaveOn =
+                  autosaveTestRef.current.enabled ??
+                  (window.cad.isE2E ? false : loadAutosavePrefs().enabled)
+                const saved = !!closing.dirty && autosaveOn && (await runAutosave('switch')) === 'saved'
+                if (
+                  closing.dirty &&
+                  !saved &&
+                  !window.confirm(
+                    `${closing.name} has unsaved changes that will be lost if you close it.\n\n` +
+                      `Click OK to close anyway, or Cancel to keep it open and save first.`
+                  )
+                )
+                  return
+                setTabs((t) => t.filter((x) => x.id !== id))
+                release()
+                if (next?.path) await openDesign(next.path)
+                else newDesign()
+              })().catch((e) => window.alert((e as Error).message))
             }}
             onNew={newDesign}
           />
