@@ -419,6 +419,10 @@ export function DataPanel({
         ]
       : [
           { label: OPEN_LABEL[fileKind(it.name) ?? 'design'], onClick: () => onOpenFile(it.path) },
+          // a design can also go to a second, independent window (another monitor)
+          ...((fileKind(it.name) ?? 'design') === 'design'
+            ? [{ label: 'Open in new window', onClick: () => void window.cad.openInNewWindow(it.path) }]
+            : []),
           ...fileExtras(it),
           { label: 'Rename…', onClick: () => void rename(it) },
           { label: 'Move to folder…', onClick: () => void move(it) },

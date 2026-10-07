@@ -12,6 +12,8 @@ import * as gitWatch from './gitWatch'
 import { FileIndex, FolderRelevance } from './fileFilter'
 import * as dpPrefs from './dataPanelPrefs'
 import * as softDel from './softDelete'
+import { FileWatch } from './fileWatch'
+import { spawn } from 'child_process'
 import { extOf, fileKind, isSkippedDir } from '../shared/fileTypes'
 
 // repo root is one level above app/ in dev; in a packaged build this is
@@ -31,6 +33,11 @@ if (process.argv.includes('--e2e')) {
 
 let win: BrowserWindow | null = null
 let sidecar: Sidecar | null = null
+// the open document + its linked parts, watched for changes by other windows / scripts
+const fileWatch = new FileWatch((path) => win?.webContents.send('watch:changed', path))
+// engine calls that write or (re)read the document's own files: what is on
+// disk afterwards is this window's doing, not an outside change
+const WRITES_FILES = /^(document\.(save|saveAs|open)|pn\.|supplierModels\.|export\.|kicad\.|io\.)/
 /** the file path this process currently holds a standalone-open lock on
  *  (lockfile.ts), if any - tracked here so before-quit can release it
  *  synchronously without an IPC round-trip during teardown. A crash skips
@@ -113,7 +120,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('cad:rpc', async (_e, method: string, params: Record<string, unknown>) => {
     if (!sidecar) throw new Error('sidecar unavailable')
     try {
-      return await sidecar.rpc(method, params ?? {})
+      const r = await sidecar.rpc(method, params ?? {})
+      if (WRITES_FILES.test(method)) await fileWatch.rebase()
+      return r
     } catch (err) {
       // greppable one-liner in the run log so a watcher / dev can react fast
       process.stderr.write(`[GUI-ERR] rpc ${method}: ${(err as Error).message}\n`)
@@ -121,6 +130,36 @@ app.whenReady().then(async () => {
     }
   })
   ipcMain.handle('cad:sidecarStatus', () => ({ started: !!sidecar }))
+  // ---- live reload: which files this window has open (see fileWatch.ts) ----
+  ipcMain.handle('watch:set', (_e, paths: string[]) => fileWatch.set(paths ?? []))
+  ipcMain.handle('watch:rebase', () => fileWatch.rebase())
+  // ---- several windows: each is its own app process with its own engine ----
+  // `--open <file>` is the file a window starts on (see app:launchFile)
+  ipcMain.handle('app:launchFile', () => {
+    const i = process.argv.indexOf('--open')
+    return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : null
+  })
+  ipcMain.handle('app:openInNewWindow', (_e, path: string) => {
+    // packaged: the app binary takes the flag itself; from source, electron
+    // needs the app's own path first
+    const args = app.isPackaged ? ['--open', path] : [app.getAppPath(), '--open', path]
+    const env = { ...process.env }
+    delete env.ELECTRON_RUN_AS_NODE
+    const child = spawn(process.execPath, [...args, ...(process.argv.includes('--no-sandbox') ? ['--no-sandbox'] : [])], {
+      detached: true,
+      stdio: 'ignore',
+      env
+    })
+    child.unref()
+    return { pid: child.pid ?? null }
+  })
+  if (process.argv.includes('--e2e')) {
+    // tests stand in for "another window saved this file" by putting a
+    // different file's bytes over it
+    ipcMain.handle('e2e:copyOver', async (_e, src: string, dest: string) => {
+      await copyFile(src, dest)
+    })
+  }
   // app's own package.json version, shown in the status bar so the user can
   // always tell which build they're on at a glance (user request, 2026-09-12:
   // "I just want to always make sure/know I am using the newest one") -

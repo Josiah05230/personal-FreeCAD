@@ -5806,6 +5806,102 @@ export function App(): JSX.Element {
     },
     [asmTree, asmPins, leaveCurrentDoc, openDesign, flashSketchNotice]
   )
+  // ---- live reload: a file this window has open changed on disk ----
+  // Another GWT-CAD window, or a script (Claude building parts), saved the
+  // open document or one of the parts an open assembly links. With nothing
+  // unsaved here the window simply reloads and says so; with unsaved edits
+  // it asks. The main process does the watching (fileWatch.ts) and never
+  // reports this window's own saves.
+  const linkedPartPaths = useMemo(() => {
+    const out = new Set<string>()
+    const walk = (items: { linkedPath?: string | null; children?: unknown }[] | undefined): void => {
+      for (const c of items ?? []) {
+        if (c.linkedPath) out.add(c.linkedPath)
+        walk(c.children as { linkedPath?: string | null; children?: unknown }[] | undefined)
+      }
+    }
+    walk(asmTree?.components)
+    return [...out].sort()
+  }, [asmTree])
+  useEffect(() => {
+    void window.cad.watchSet(docPath ? [docPath, ...linkedPartPaths.filter((p) => p !== docPath)] : []).catch(() => undefined)
+  }, [docPath, linkedPartPaths])
+
+  const [diskChange, setDiskChange] = useState<{ own: boolean; names: string[] } | null>(null)
+  const pendingDiskRef = useRef<Set<string>>(new Set())
+  const reloadFromDisk = useCallback(
+    async (note: string) => {
+      if (!docPath) return
+      refinedRef.current.clear()
+      const opened = await api.open(docPath)
+      setCurrentPn(opened.partNumber?.pn ?? null)
+      await refreshScene()
+      markDirty(false)
+      setDiskChange(null)
+      flashSketchNotice(note)
+    },
+    [docPath, refreshScene, markDirty, flashSketchNotice]
+  )
+  const diskCtx = useRef({ docPath, linkedPartPaths, tabs, activeTab, op, sketching: !!sketchSession, ready: status.phase === 'ready', reloadFromDisk })
+  diskCtx.current = { docPath, linkedPartPaths, tabs, activeTab, op, sketching: !!sketchSession, ready: status.phase === 'ready', reloadFromDisk }
+  const processDiskChanges = useCallback(async () => {
+    const c = diskCtx.current
+    const pending = pendingDiskRef.current
+    if (!pending.size) return
+    // mid-command is no moment to swap the document out: wait for a lull
+    if (!c.ready || c.op !== null || c.sketching || reviewingRef.current || isPromptOpen() || cmdRef.current.busy || rpcInFlight() > 0)
+      return
+    const changed = [...pending].filter((p) => p === c.docPath || c.linkedPartPaths.includes(p))
+    pending.clear()
+    if (!changed.length || !c.docPath) return
+    const own = changed.includes(c.docPath)
+    const names = changed.map((p) => basename(p))
+    const dirty = c.tabs.find((t) => t.id === c.activeTab && !t.viewer)?.dirty ?? false
+    if (dirty) {
+      setDiskChange({ own, names })
+      return
+    }
+    await c
+      .reloadFromDisk(
+        own
+          ? `${basename(c.docPath)} was changed on disk - reloaded`
+          : `${names.join(', ')} changed - assembly updated`
+      )
+      .catch((e) => flashSketchNotice(`Reload failed: ${(e as Error).message}`))
+  }, [flashSketchNotice])
+  useEffect(() => {
+    const off = window.cad.onFileChanged((p) => {
+      pendingDiskRef.current.add(p)
+      void processDiskChanges()
+    })
+    // anything that arrived mid-command is picked up at the next lull
+    const id = window.setInterval(() => void processDiskChanges(), 1000)
+    return () => {
+      off()
+      window.clearInterval(id)
+    }
+  }, [processDiskChanges])
+
+  // a window launched to open one file (Open in new window: `--open <file>`)
+  const launchedRef = useRef(false)
+  useEffect(() => {
+    if (status.phase !== 'ready' || launchedRef.current) return
+    launchedRef.current = true
+    void window.cad
+      .launchFile()
+      .then((p) => (p ? openDesignRef.current(p) : undefined))
+      .catch((e) => flashSketchNotice(`Couldn't open the file this window was started with: ${(e as Error).message}`))
+  }, [status.phase, flashSketchNotice])
+  const openInNewWindow = useCallback(
+    (path: string) => {
+      void window.cad
+        .openInNewWindow(path)
+        .then(() => flashSketchNotice(`Opening ${basename(path)} in a new window…`))
+        .catch((e) => window.alert(`Couldn't open a new window: ${(e as Error).message}`))
+    },
+    [flashSketchNotice]
+  )
+
   // ...and a part inside a sub-assembly, by its own file
   const openPartFileInTab = useCallback(
     async (path: string) => {
@@ -7165,6 +7261,38 @@ export function App(): JSX.Element {
                       <button onClick={() => setSketchNotice(null)}>Dismiss</button>
                     </div>
                   )}
+                  {diskChange && (
+                    <div className="hintbar warn disk-change">
+                      <span>
+                        {diskChange.own
+                          ? `${basename(docPath ?? '')} was changed on disk by another window or a script, and you have unsaved changes here.`
+                          : `${diskChange.names.join(', ')} changed on disk, and this assembly has unsaved changes.`}
+                      </span>
+                      {diskChange.own ? (
+                        <button
+                          onClick={() =>
+                            void reloadFromDisk(`${basename(docPath ?? '')} reloaded from disk`).catch((e) =>
+                              window.alert((e as Error).message)
+                            )
+                          }
+                        >
+                          Reload (drop my changes)
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() =>
+                            void (async () => {
+                              await save()
+                              await reloadFromDisk(`${diskChange.names.join(', ')} changed - assembly updated`)
+                            })().catch((e) => window.alert((e as Error).message))
+                          }
+                        >
+                          Save and update
+                        </button>
+                      )}
+                      <button onClick={() => setDiskChange(null)}>{diskChange.own ? 'Keep mine' : 'Not now'}</button>
+                    </div>
+                  )}
                   {viewingRev ? (
                     <div className="hintbar warn review-banner">
                       <span>
@@ -7277,6 +7405,7 @@ export function App(): JSX.Element {
                               void openComponentInTab(id).catch((e) => window.alert((e as Error).message)),
                             onOpenPath: (p) =>
                               void openPartFileInTab(p).catch((e) => window.alert((e as Error).message)),
+                            onOpenInWindow: (p) => openInNewWindow(p),
                             pins: asmPins,
                             onSetPin: setComponentPin,
                             tool: asmTool,

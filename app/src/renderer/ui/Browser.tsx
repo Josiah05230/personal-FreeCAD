@@ -371,6 +371,14 @@ export function Browser({
                       ...(o.kind === 'link' && assembly?.onOpenComponent
                         ? [
                             { label: 'Open in new tab', onClick: () => assembly.onOpenComponent?.(o.id) },
+                            ...((): MenuItem[] => {
+                              const path =
+                                assembly.pins[o.id]?.sourcePath ??
+                                assembly.tree?.components.find((c) => c.id === o.id)?.linkedPath
+                              return path && assembly.onOpenInWindow
+                                ? [{ label: 'Open in new window', onClick: () => assembly.onOpenInWindow?.(path) }]
+                                : []
+                            })(),
                             { separator: true, label: '' }
                           ]
                         : []),

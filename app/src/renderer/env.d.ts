@@ -181,6 +181,12 @@ interface CadBridge {
   gitAddRemote(filePath: string, name: string, url: string): Promise<void>
   lockAcquire(filePath: string): Promise<LockAcquireResult>
   lockRelease(filePath: string): Promise<void>
+  watchSet(paths: string[]): Promise<void>
+  watchRebase(): Promise<void>
+  onFileChanged(fn: (path: string) => void): () => void
+  launchFile(): Promise<string | null>
+  openInNewWindow(path: string): Promise<{ pid: number | null }>
+  e2eCopyOver(src: string, dest: string): Promise<void>
   lockCurrent(filePath: string): Promise<LockInfo | null>
   onLockPublishProblem(
     fn: (filePath: string, r: { status: 'held'; lock: LockInfo; mine?: boolean } | { status: 'unreachable' }) => void

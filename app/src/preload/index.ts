@@ -112,6 +112,20 @@ const cad = {
   /** true when launched by the E2E harness (`--e2e <scenario>`) - the renderer
    *  suppresses one-shot modals like the first-run wizard so scenarios run clean */
   isE2E: process.argv.includes('--e2e'),
+  /** live reload: the files this window has open (document + linked parts) */
+  watchSet: (paths: string[]) => ipcRenderer.invoke('watch:set', paths) as Promise<void>,
+  watchRebase: () => ipcRenderer.invoke('watch:rebase') as Promise<void>,
+  /** one of the watched files was changed on disk by another window or a script */
+  onFileChanged: (fn: (path: string) => void) => {
+    const h = (_e: unknown, path: string): void => fn(path)
+    ipcRenderer.on('watch:changed', h)
+    return () => ipcRenderer.removeListener('watch:changed', h)
+  },
+  /** the file this window was launched to open (`--open <file>`), if any */
+  launchFile: () => ipcRenderer.invoke('app:launchFile') as Promise<string | null>,
+  /** open a file in a second, independent GWT-CAD window (another monitor) */
+  openInNewWindow: (path: string) => ipcRenderer.invoke('app:openInNewWindow', path) as Promise<{ pid: number | null }>,
+  e2eCopyOver: (src: string, dest: string) => ipcRenderer.invoke('e2e:copyOver', src, dest) as Promise<void>,
   rpc<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     return ipcRenderer.invoke('cad:rpc', method, params) as Promise<T>
   },

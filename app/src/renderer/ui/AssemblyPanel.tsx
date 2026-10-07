@@ -29,6 +29,7 @@ export function AssemblyPanel({
   onGround,
   onOpenComponent,
   onOpenPath,
+  onOpenInWindow,
   pins,
   onSetPin,
   tool,
@@ -45,6 +46,8 @@ export function AssemblyPanel({
   onOpenComponent?: (id: string) => void
   /** open a part that sits inside a sub-assembly, by its file */
   onOpenPath?: (path: string, label: string) => void
+  /** open a part's file in a second, independent GWT-CAD window */
+  onOpenInWindow?: (path: string) => void
   pins: AsmPinFile
   onSetPin: (
     componentId: string,
@@ -115,6 +118,11 @@ export function AssemblyPanel({
       )
       return open.has(key) ? [row, ...subRows(kids, key, depth + 1)] : [row]
     })
+
+  // the real part file behind the right-clicked component (a pinned one links a cached copy)
+  const menuPath = menu
+    ? (pins[menu.id]?.sourcePath ?? tree?.components.find((c) => c.id === menu.id)?.linkedPath ?? null)
+    : null
 
   return (
     <div className="asmpanel-tree">
@@ -232,6 +240,11 @@ export function AssemblyPanel({
               onClick: () => onOpenComponent?.(menu.id)
             },
             {
+              label: 'Open in new window',
+              disabled: !onOpenInWindow || !menuPath,
+              onClick: () => menuPath && onOpenInWindow?.(menuPath)
+            },
+            {
               label: tree?.components.find((c) => c.id === menu.id)?.grounded ? 'Unground' : 'Ground (fix in place)',
               onClick: () => onGround(menu.id)
             }
@@ -249,6 +262,11 @@ export function AssemblyPanel({
               label: 'Open in new tab',
               disabled: !onOpenPath,
               onClick: () => onOpenPath?.(subMenu.path, subMenu.label)
+            },
+            {
+              label: 'Open in new window',
+              disabled: !onOpenInWindow,
+              onClick: () => onOpenInWindow?.(subMenu.path)
             }
           ]}
         />
