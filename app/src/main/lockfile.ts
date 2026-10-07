@@ -62,6 +62,12 @@ function isMine(lock: LockInfo, partFilePath: string): boolean {
   )
 }
 
+/** The lock belongs to this user on this machine - another GWT-CAD window
+ *  of theirs (or another clone): not "someone else has it open". */
+function sameUserHere(lock: LockInfo): boolean {
+  return lock.holder === (userInfo().username || 'unknown') && lock.machine === hostname()
+}
+
 function lockPath(partFilePath: string): string {
   return join(dirname(partFilePath), `.${basename(partFilePath)}.gwtcad-lock.json`)
 }
@@ -84,7 +90,7 @@ function isStale(lock: LockInfo): boolean {
 export type AcquireResult =
   | { status: 'acquired' }
   | { status: 'reclaimed'; previousHolder: string; previousOpenedAt: string }
-  | { status: 'held'; lock: LockInfo }
+  | { status: 'held'; lock: LockInfo; mine?: boolean }
   | { status: 'unreachable' } // couldn't confirm/deny - degrade to a warning, never block
 
 /** Attempt to acquire the lock for the part at `partFilePath`. Caller
@@ -144,7 +150,7 @@ async function acquireLocally(
   // instead of blocking or waiting out the staleness window.
   const mineButDead = mine && !pidAlive(existing!.pid)
   if (existing && !isStale(existing) && !mineButDead) {
-    return { status: 'held', lock: existing }
+    return { status: 'held', lock: existing, mine: sameUserHere(existing) }
   }
   const reclaiming = existing && isStale(existing) && !mine
 
@@ -177,7 +183,7 @@ async function commitLock(partFilePath: string, lock: LockInfo): Promise<string>
 
 export type PublishResult =
   | { status: 'published' }
-  | { status: 'held'; lock: LockInfo } // someone else's lock landed first
+  | { status: 'held'; lock: LockInfo; mine?: boolean } // someone else's lock landed first
   | { status: 'unreachable' } // committed locally, not confirmed remotely
 
 /** Push the lock commit. On a rejected push, drop our lock commit, pull,
@@ -213,7 +219,7 @@ export async function publishLock(
   }
   const afterPull = readLock(partFilePath)
   if (afterPull && !isMine(afterPull, partFilePath) && !isStale(afterPull)) {
-    return { status: 'held', lock: afterPull }
+    return { status: 'held', lock: afterPull, mine: sameUserHere(afterPull) }
   }
   try {
     await commitLock(partFilePath, lock)

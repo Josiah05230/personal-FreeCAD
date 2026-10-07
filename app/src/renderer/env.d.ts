@@ -102,7 +102,7 @@ interface LockInfo {
 type LockAcquireResult =
   | { status: 'acquired' }
   | { status: 'reclaimed'; previousHolder: string; previousOpenedAt: string }
-  | { status: 'held'; lock: LockInfo }
+  | { status: 'held'; lock: LockInfo; mine?: boolean }
   | { status: 'unreachable' }
 interface UpstreamChange {
   filePath: string
@@ -183,7 +183,7 @@ interface CadBridge {
   lockRelease(filePath: string): Promise<void>
   lockCurrent(filePath: string): Promise<LockInfo | null>
   onLockPublishProblem(
-    fn: (filePath: string, r: { status: 'held'; lock: LockInfo } | { status: 'unreachable' }) => void
+    fn: (filePath: string, r: { status: 'held'; lock: LockInfo; mine?: boolean } | { status: 'unreachable' }) => void
   ): () => void
   gitWatchCheckOne(filePath: string): Promise<UpstreamChange | null>
   gitWatchCheckMany(filePaths: string[]): Promise<UpstreamChange[]>

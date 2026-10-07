@@ -724,10 +724,21 @@ export interface DrawingPageContents {
   cleanupLines: Record<string, CleanupLine[]>
 }
 
+/** A part inside a sub-assembly (read from the sub-assembly's own file) */
+export interface AssemblySubComponent {
+  id: string
+  label: string
+  linkedPath?: string | null
+  isAssembly?: boolean
+  children?: AssemblySubComponent[]
+}
 export interface AssemblyComponent {
   id: string
   label: string
   grounded: boolean
+  /** this component is itself an assembly - `children` is what it's made of, recursively */
+  isAssembly?: boolean
+  children?: AssemblySubComponent[]
   /** file the App::Link currently resolves to - the resolved pin cache path
    *  for a pinned component, or the live source path when unpinned */
   linkedPath?: string | null

@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import type { AssemblyTree } from '../rpc'
+import { ContextMenu } from './ContextMenu'
+import type { AssemblyTree, AssemblySubComponent } from '../rpc'
 
 /**
  * Assembly panel content - components (with grounding + git pinning) and a
@@ -26,6 +27,8 @@ export function AssemblyPanel({
   tree,
   onAddComponent,
   onGround,
+  onOpenComponent,
+  onOpenPath,
   pins,
   onSetPin,
   tool,
@@ -38,6 +41,10 @@ export function AssemblyPanel({
   tree: AssemblyTree | null
   onAddComponent: () => void
   onGround: (id: string) => void
+  /** open a component's own part file in another tab (right-click / double-click) */
+  onOpenComponent?: (id: string) => void
+  /** open a part that sits inside a sub-assembly, by its file */
+  onOpenPath?: (path: string, label: string) => void
   pins: AsmPinFile
   onSetPin: (
     componentId: string,
@@ -59,6 +66,55 @@ export function AssemblyPanel({
   onExplodeDistanceChange: (d: number) => void
 }): JSX.Element {
   const [pinEditFor, setPinEditFor] = useState<string | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  // sub-assemblies fold open level by level: keys are the id path from the top
+  const [open, setOpen] = useState<Set<string>>(new Set())
+  const [subMenu, setSubMenu] = useState<{ x: number; y: number; path: string; label: string } | null>(null)
+  const toggle = (key: string): void =>
+    setOpen((s) => {
+      const n = new Set(s)
+      if (n.has(key)) n.delete(key)
+      else n.add(key)
+      return n
+    })
+  const fold = (key: string, has: boolean): JSX.Element => (
+    <span
+      className={has ? 'asm-fold' : 'asm-fold none'}
+      onClick={(e) => {
+        e.stopPropagation()
+        if (has) toggle(key)
+      }}
+      onDoubleClick={(e) => e.stopPropagation()}
+    >
+      {has ? (open.has(key) ? '▾' : '▸') : ''}
+    </span>
+  )
+  // what a sub-assembly is made of (read from its own file): listed, and
+  // openable, but grounded / pinned / joined in THAT assembly, not here
+  const subRows = (items: AssemblySubComponent[], parentKey: string, depth: number): JSX.Element[] =>
+    items.flatMap((s) => {
+      const key = `${parentKey}/${s.id}`
+      const kids = s.children ?? []
+      const row = (
+        <div
+          key={key}
+          className="asm-row asm-sub"
+          style={{ paddingLeft: 10 + depth * 14 }}
+          title={s.linkedPath ?? undefined}
+          onDoubleClick={() => s.linkedPath && onOpenPath?.(s.linkedPath, s.label)}
+          onContextMenu={(e) => {
+            e.preventDefault()
+            if (s.linkedPath) setSubMenu({ x: e.clientX, y: e.clientY, path: s.linkedPath, label: s.label })
+          }}
+        >
+          <span className="asm-name">
+            {fold(key, kids.length > 0)}
+            {s.label}
+          </span>
+        </div>
+      )
+      return open.has(key) ? [row, ...subRows(kids, key, depth + 1)] : [row]
+    })
 
   return (
     <div className="asmpanel-tree">
@@ -94,8 +150,19 @@ export function AssemblyPanel({
         const sourcePath = pin?.sourcePath ?? c.linkedPath ?? ''
         return (
           <div key={c.id} className="asm-comp">
-            <div className="asm-row">
-              <span className="asm-name">{c.label}</span>
+            <div
+              className="asm-row"
+              title={onOpenComponent ? 'Right-click or double-click to open this part in another tab' : undefined}
+              onDoubleClick={() => onOpenComponent?.(c.id)}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                setMenu({ x: e.clientX, y: e.clientY, id: c.id })
+              }}
+            >
+              <span className="asm-name">
+                {fold(c.id, (c.children ?? []).length > 0)}
+                {c.label}
+              </span>
               <button
                 className={c.grounded ? 'asm-ground on' : 'asm-ground'}
                 title="Ground (fix in place)"
@@ -136,6 +203,7 @@ export function AssemblyPanel({
                 </button>
               </div>
             )}
+            {open.has(c.id) && subRows(c.children ?? [], c.id, 1)}
             {pinEditFor === c.id && (
               <PinEditor
                 sourcePath={sourcePath}
@@ -151,6 +219,40 @@ export function AssemblyPanel({
           </div>
         )
       })}
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            {
+              label: 'Open in new tab',
+              disabled: !onOpenComponent,
+              onClick: () => onOpenComponent?.(menu.id)
+            },
+            {
+              label: tree?.components.find((c) => c.id === menu.id)?.grounded ? 'Unground' : 'Ground (fix in place)',
+              onClick: () => onGround(menu.id)
+            }
+          ]}
+        />
+      )}
+
+      {subMenu && (
+        <ContextMenu
+          x={subMenu.x}
+          y={subMenu.y}
+          onClose={() => setSubMenu(null)}
+          items={[
+            {
+              label: 'Open in new tab',
+              disabled: !onOpenPath,
+              onClick: () => onOpenPath?.(subMenu.path, subMenu.label)
+            }
+          ]}
+        />
+      )}
 
       <div className="asm-section">Joints</div>
       {tree?.joints.map((j) => (

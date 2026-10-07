@@ -3572,8 +3572,21 @@ export function App(): JSX.Element {
       )
       return true // never block purely because we couldn't reach the remote
     }
-    // held by someone else, and not stale
     const opened = new Date(result.lock.openedAt).toLocaleString()
+    if (result.mine) {
+      // It's YOU, in another GWT-CAD window on this machine: nobody to wait
+      // for and nothing to ask - it used to pop the same "<you> has it open,
+      // your changes won't auto-push" warning as for another person. Open
+      // it normally (saving and pushing work as usual) and just say so.
+      heldLocksRef.current.add(p)
+      lockedByOtherRef.current.delete(p)
+      flashSketchNotice(
+        `${basename(p)} is also open in another GWT-CAD window of yours (since ${opened}) - ` +
+          `whichever window saves last wins`
+      )
+      return true
+    }
+    // held by someone else, and not stale
     const openAnyway = window.confirm(
       `${result.lock.holder} has ${basename(p)} open (opened ${opened}, on ${result.lock.machine}).\n\n` +
         `Click OK to open it anyway (your changes won't auto-push while someone else has it - ` +
@@ -3588,6 +3601,10 @@ export function App(): JSX.Element {
   useEffect(
     () =>
       window.cad.onLockPublishProblem((p, r) => {
+        if (r.status === 'held' && r.mine) {
+          // your own other window got there first: nothing to warn about
+          return
+        }
         if (r.status === 'held') {
           heldLocksRef.current.delete(p)
           lockedByOtherRef.current.add(p)
@@ -5742,6 +5759,62 @@ export function App(): JSX.Element {
 
   // test / automation bridge - drives the same handlers the buttons call, so an
   // out-of-band script can exercise the app end to end (see test/e2e).
+  // ---- leaving the document on screen (tab switch / close / open a component) ----
+  // The engine holds one document, so showing another replaces it: the one
+  // being left is SAVED first, every time, when it may be saved in place
+  // (an in-work or non-company file - same rules as background autosave,
+  // whether or not that is switched on). When it can't be - a released
+  // part needs a new revision, someone else holds the lock - the user is
+  // told why and chooses. False = stay where you are.
+  const leaveCurrentDoc = useCallback(
+    async (what: string): Promise<boolean> => {
+      const leaving =
+        tabs.find((t) => t.id === activeTab && !t.viewer) ?? tabs.find((t) => !t.viewer && t.path === docPath)
+      if (!leaving?.dirty) return true
+      const saveOnLeave = autosaveTestRef.current.enabled ?? !window.cad.isE2E
+      if (saveOnLeave && (await runAutosave('switch')) === 'saved') return true
+      const log = autosaveLogRef.current
+      const why = saveOnLeave ? (log.lastSkip ?? log.lastDefer ?? null) : null
+      return window.confirm(
+        `${leaving.name} has unsaved changes that will be lost if you ${what}` +
+          (why ? ` (it could not be saved automatically: ${why})` : '') +
+          `.\n\nClick OK to go ahead anyway, or Cancel to stay and save first.`
+      )
+    },
+    [tabs, activeTab, docPath, runAutosave]
+  )
+
+  // Assembly tree: open a component's own part file in another tab. The
+  // assembly's tab stays; switching back reopens it, which re-reads every
+  // linked file - so a part saved over there (and leaving its tab saves it)
+  // is what the assembly shows.
+  const openComponentInTab = useCallback(
+    async (componentId: string) => {
+      const comp = asmTree?.components.find((c) => c.id === componentId)
+      const path = asmPins[componentId]?.sourcePath ?? comp?.linkedPath ?? null
+      if (!path) {
+        window.alert(`${comp?.label ?? componentId} has no part file of its own to open.`)
+        return
+      }
+      if (asmPins[componentId]?.ref) {
+        flashSketchNotice(
+          `${comp?.label ?? componentId} is pinned to ${asmPins[componentId].ref} here - edits to the part won't show in this assembly until it's unpinned.`
+        )
+      }
+      if (!(await leaveCurrentDoc('open another part'))) return
+      await openDesign(path)
+    },
+    [asmTree, asmPins, leaveCurrentDoc, openDesign, flashSketchNotice]
+  )
+  // ...and a part inside a sub-assembly, by its own file
+  const openPartFileInTab = useCallback(
+    async (path: string) => {
+      if (!(await leaveCurrentDoc('open another part'))) return
+      await openDesign(path)
+    },
+    [leaveCurrentDoc, openDesign]
+  )
+
   useEffect(() => {
     const bridge = {
       perf: PERF,
@@ -5875,6 +5948,7 @@ export function App(): JSX.Element {
       selectSketch: (sketchId: string) => setSelection([{ kind: 'sketch', sketchId } as Selection]),
       clearSelection: () => setSelection([]),
       setSection: (v: SectionState | null) => setSection(v),
+      openComponentInTab: (id: string) => openComponentInTab(id),
       // the timeline's feature-chip selection (Mirror / Pattern Type=Features)
       selectFeatures: (ids: string[]) => setTimelineSel(ids ?? []),
       addComponentFile: (p: string) => addComponentFile(p),
@@ -6056,7 +6130,8 @@ export function App(): JSX.Element {
     runAutosave,
     viewingRev,
     startRevisionView,
-    endReview
+    endReview,
+    openComponentInTab
   ])
 
   // ---- boot ----
@@ -6851,28 +6926,11 @@ export function App(): JSX.Element {
                 setTabs((t) => t.filter((x) => x.id !== id))
                 return
               }
-              // reopening replaces the sidecar's one document, so unsaved
-              // edits to the tab being left would be lost - autosave them
-              // first when that's allowed (in-work / non-company), else ask
-              // (from a viewer tab, the document being left is the one the engine holds)
-              const leaving =
-                tabs.find((t) => t.id === activeTab && !t.viewer) ?? tabs.find((t) => !t.viewer && t.path === docPath)
+              // reopening replaces the sidecar's one document: the tab being
+              // left is saved first (see leaveCurrentDoc)
               const targetPath = target.path
               void (async () => {
-                const autosaveOn =
-                  autosaveTestRef.current.enabled ??
-                  (window.cad.isE2E ? false : loadAutosavePrefs().enabled)
-                const saved =
-                  !!leaving?.dirty && autosaveOn && (await runAutosave('switch')) === 'saved'
-                if (
-                  leaving?.dirty &&
-                  !saved &&
-                  !window.confirm(
-                    `${leaving.name} has unsaved changes that will be lost if you switch tabs.\n\n` +
-                      `Click OK to switch anyway, or Cancel to stay and save first.`
-                  )
-                )
-                  return
+                if (!(await leaveCurrentDoc('switch tabs'))) return
                 await openDesign(targetPath)
               })().catch((e) => window.alert((e as Error).message))
             }}
@@ -6908,19 +6966,7 @@ export function App(): JSX.Element {
               const order = [...rest.slice(at), ...rest.slice(0, at).reverse()]
               const next = order.find((t) => !t.viewer && !!t.path && t.path !== p)
               void (async () => {
-                const autosaveOn =
-                  autosaveTestRef.current.enabled ??
-                  (window.cad.isE2E ? false : loadAutosavePrefs().enabled)
-                const saved = !!closing.dirty && autosaveOn && (await runAutosave('switch')) === 'saved'
-                if (
-                  closing.dirty &&
-                  !saved &&
-                  !window.confirm(
-                    `${closing.name} has unsaved changes that will be lost if you close it.\n\n` +
-                      `Click OK to close anyway, or Cancel to keep it open and save first.`
-                  )
-                )
-                  return
+                if (!(await leaveCurrentDoc('close it'))) return
                 setTabs((t) => t.filter((x) => x.id !== id))
                 release()
                 if (next?.path) await openDesign(next.path)
@@ -7227,6 +7273,10 @@ export function App(): JSX.Element {
                             tree: asmTree,
                             onAddComponent: addComponent,
                             onGround: groundComponent,
+                            onOpenComponent: (id) =>
+                              void openComponentInTab(id).catch((e) => window.alert((e as Error).message)),
+                            onOpenPath: (p) =>
+                              void openPartFileInTab(p).catch((e) => window.alert((e as Error).message)),
                             pins: asmPins,
                             onSetPin: setComponentPin,
                             tool: asmTool,

@@ -362,7 +362,18 @@ export function Browser({
                     onToggle={(v) => handlers.onToggleVisibility(o.id, v)}
                     onPick={(add) => handlers.onSelect({ kind: 'body', bodyId: o.id }, add)}
                     selected={isBodySel(o.id)}
+                    onEditDbl={
+                      o.kind === 'link' && assembly?.onOpenComponent
+                        ? () => assembly.onOpenComponent?.(o.id)
+                        : undefined
+                    }
                     menu={[
+                      ...(o.kind === 'link' && assembly?.onOpenComponent
+                        ? [
+                            { label: 'Open in new tab', onClick: () => assembly.onOpenComponent?.(o.id) },
+                            { separator: true, label: '' }
+                          ]
+                        : []),
                       { label: 'Rename…', onClick: () => handlers.onRename(o.id) },
                       { separator: true, label: '' },
                       { label: 'Delete', danger: true, onClick: () => handlers.onDelete(o.id) }

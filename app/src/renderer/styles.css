@@ -2475,6 +2475,23 @@ code {
   background: var(--accent-soft);
 }
 
+/* fold arrow of a sub-assembly; an empty one keeps leaf rows lined up */
+.asm-fold {
+  display: inline-block;
+  width: 12px;
+  cursor: pointer;
+  color: var(--text-dim, #8a94a3);
+  user-select: none;
+}
+
+.asm-fold.none {
+  cursor: default;
+}
+
+.asm-sub {
+  color: var(--text-dim, #a9b2be);
+}
+
 .asm-ground {
   background: transparent;
   border: 1px solid var(--line-soft);

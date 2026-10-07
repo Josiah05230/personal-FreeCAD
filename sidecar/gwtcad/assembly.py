@@ -590,6 +590,35 @@ def explode_state(doc):
     return {"components": out, "active": any_active}
 
 
+def _sub_components(target, seen, depth=0):
+    """What a linked sub-assembly is made of, recursively: one entry per
+    component of the assembly `target` (an Assembly::AssemblyObject in its
+    own document), each with its own children if it is an assembly too.
+    `seen` holds the files already on this branch (an assembly can't contain
+    itself, but a broken file could say so)."""
+    sub_doc = getattr(target, "Document", None)
+    if sub_doc is None or depth > 12:
+        return []
+    out = []
+    for o in sub_doc.Objects:
+        if o.TypeId != "App::Link":
+            continue
+        child = None
+        path = None
+        try:
+            child = o.LinkedObject
+            if child is not None and getattr(child, "Document", None) is not None:
+                path = child.Document.FileName or None
+        except Exception:
+            child = None
+        is_asm = child is not None and child.TypeId == "Assembly::AssemblyObject"
+        entry = {"id": o.Name, "label": o.Label, "linkedPath": path, "isAssembly": bool(is_asm)}
+        if is_asm and path and path not in seen:
+            entry["children"] = _sub_components(child, seen | {path}, depth + 1)
+        out.append(entry)
+    return out
+
+
 def tree(doc):
     asm = None
     for o in doc.Objects:
@@ -603,15 +632,27 @@ def tree(doc):
         if o.TypeId == "App::Link":
             p = o.Placement
             linked_path = None
+            target = None
             try:
                 target = o.LinkedObject
                 if target is not None and getattr(target, "Document", None) is not None:
                     linked_path = target.Document.FileName or None
             except Exception:
                 linked_path = None
+            # a component that is itself an assembly lists what it is made
+            # of, all the way down (the tree folds each level open)
+            is_asm = target is not None and target.TypeId == "Assembly::AssemblyObject"
+            children = []
+            if is_asm:
+                try:
+                    children = _sub_components(target, {doc.FileName, linked_path} - {None})
+                except Exception:
+                    children = []
             comps.append({
                 "id": o.Name,
                 "label": o.Label,
+                "isAssembly": bool(is_asm),
+                "children": children,
                 "grounded": bool(getattr(o, "Grounded", False)),
                 # the file this link's target currently lives in - NOT
                 # necessarily the original source (a pinned component is

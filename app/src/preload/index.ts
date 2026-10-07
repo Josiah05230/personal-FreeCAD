@@ -101,7 +101,7 @@ export interface LockInfo {
 export type LockAcquireResult =
   | { status: 'acquired' }
   | { status: 'reclaimed'; previousHolder: string; previousOpenedAt: string }
-  | { status: 'held'; lock: LockInfo }
+  | { status: 'held'; lock: LockInfo; mine?: boolean }
   | { status: 'unreachable' }
 export interface UpstreamChange {
   filePath: string
@@ -260,9 +260,9 @@ const cad = {
    *  without success: someone else's lock landed first ('held'), or the
    *  remote couldn't be reached ('unreachable') */
   onLockPublishProblem: (
-    fn: (filePath: string, r: { status: 'held'; lock: LockInfo } | { status: 'unreachable' }) => void
+    fn: (filePath: string, r: { status: 'held'; lock: LockInfo; mine?: boolean } | { status: 'unreachable' }) => void
   ) => {
-    const h = (_e: unknown, filePath: string, r: { status: 'held'; lock: LockInfo } | { status: 'unreachable' }): void =>
+    const h = (_e: unknown, filePath: string, r: { status: 'held'; lock: LockInfo; mine?: boolean } | { status: 'unreachable' }): void =>
       fn(filePath, r)
     ipcRenderer.on('lock:published', h)
     return () => ipcRenderer.removeListener('lock:published', h)
