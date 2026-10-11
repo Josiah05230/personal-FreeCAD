@@ -1301,7 +1301,7 @@ def export_page_svg(doc, page_id):
             continue
         fmt = _dim_format_for(d["id"])
         text = escape(_format_dimension(d["value"], d["type"], fmt))
-        tol_lines = _format_dimension_tolerance(fmt)
+        tol_lines = _format_dimension_tolerance(fmt) or []      # None: no tolerance on this dimension
         value_width = _measure_text(text, 3.4)
         # a +/- tolerance reads as part of the value, at the value's own
         # height; only a stacked +upper/-lower pair is set smaller, so its
