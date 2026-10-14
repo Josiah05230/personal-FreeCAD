@@ -86,6 +86,10 @@ def _coordinate():
             if result and result.get("generated"):
                 _commit(result["repo"], result["path"], pn)
                 _log("%s: drawn in %.0fs" % (pn, time.time() - t0))
+                if result.get("pdfError"):
+                    # the worker's stderr is not kept: say it here, or the
+                    # portal goes without this drawing and nobody knows why
+                    _log("%s: PDF NOT UPLOADED to the portal: %s" % (pn, result["pdfError"]))
             else:
                 _log("%s: %s" % (pn, (result or {}).get("skipped") or (result or {}).get("error") or "no result"))
         time.sleep(0.5)

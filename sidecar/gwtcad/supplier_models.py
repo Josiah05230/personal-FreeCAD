@@ -1449,7 +1449,10 @@ def upload_page_pdf(doc, page_id, pn):
 
 def _draw_part_in_doc(doc, fcstd_path, pn, row):
     """Add the GrainWave drawing for `pn` to `doc` from its own solids and
-    save it. False when there is nothing solid to draw."""
+    save it. False when there is nothing solid to draw; otherwise a dict,
+    with "pdfError" set when the drawing was saved but its PDF did not reach
+    the portal (the caller reports it: a drawing nobody can see must never
+    pass for done)."""
     bodies = _drawable_bodies(doc)
     if not bodies:
         return False
@@ -1467,11 +1470,13 @@ def _draw_part_in_doc(doc, fcstd_path, pn, row):
     # the portal shows cad-exports/<PN>/<PN>.pdf; drawings made here used to
     # stay inside the .FCStd, so 40 parts had a drawing nobody could see.
     # Best effort: no Firebase key or offline must not cost the drawing.
+    made = {"pdfError": None}
     try:
         upload_page_pdf(doc, page["id"], pn)
     except Exception as e:
+        made["pdfError"] = str(e)
         App.Console.PrintWarning("%s: drawing saved, PDF not uploaded: %s\n" % (pn, e))
-    return True
+    return made
 
 
 def _redraw_legacy_pages(doc, pn, row):
@@ -1637,7 +1642,10 @@ def generate_part_drawing(pn, commit=True):
         _pn._sync_pull(repo)
         _pn._commit_and_push(repo, "%s: add auto-generated drawing" % pn, lambda: True,
                              paths=_pn._part_paths(fcstd_path))
-    return {"pn": pn, "ok": True, "generated": True, "path": fcstd_path, "repo": repo}
+    out = {"pn": pn, "ok": True, "generated": True, "path": fcstd_path, "repo": repo}
+    if made.get("pdfError"):
+        out["pdfError"] = made["pdfError"]
+    return out
 
 
 def missing_drawing_candidates():
