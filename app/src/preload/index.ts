@@ -114,6 +114,8 @@ const cad = {
   isE2E: process.argv.includes('--e2e'),
   /** live reload: the files this window has open (document + linked parts) */
   watchSet: (paths: string[]) => ipcRenderer.invoke('watch:set', paths) as Promise<void>,
+  gitPullAfterOpen: (filePath: string) =>
+    ipcRenderer.invoke('git:pullAfterOpen', filePath) as Promise<{ conflict: boolean; changed: boolean }>,
   watchRebase: () => ipcRenderer.invoke('watch:rebase') as Promise<void>,
   /** one of the watched files was changed on disk by another window or a script */
   onFileChanged: (fn: (path: string) => void) => {

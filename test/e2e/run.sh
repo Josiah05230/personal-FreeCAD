@@ -12,7 +12,10 @@ export ELECTRON_DISABLE_SANDBOX=1
 : "${DISPLAY:=:1}"
 export DISPLAY
 
-echo "[e2e] building app..."
+# Each scenario's window renders off-screen and is never shown (see HIDDEN
+# in app/src/main/index.ts), so a run never pops up on - or steals focus
+# from - the desktop. GWTCAD_SHOW=1 bash test/e2e/run.sh ... to watch one.
+echo "[e2e] building app... (windows hidden; GWTCAD_SHOW=1 to watch)"
 ( cd "$APP" && ./node_modules/.bin/electron-vite build >/tmp/gwtcad-e2e-build.log 2>&1 ) || {
   echo "[e2e] build FAILED - see /tmp/gwtcad-e2e-build.log"; tail -20 /tmp/gwtcad-e2e-build.log; exit 1;
 }

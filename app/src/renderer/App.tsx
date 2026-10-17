@@ -510,6 +510,9 @@ export function App(): JSX.Element {
   const [sketchPendingCon, setSketchPendingCon] = useState<SketchConstraintType | null>(null)
   const [sketchNotice, setSketchNotice] = useState<string | null>(null)
   const sketchNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // live reload (see processDiskChanges): files changed on disk, waiting for a lull
+  const pendingDiskRef = useRef<Set<string>>(new Set())
+  const processDiskChangesRef = useRef<() => Promise<void>>(async () => undefined)
   const flashSketchNotice = useCallback((msg: string) => {
     setSketchNotice(msg)
     if (sketchNoticeTimer.current) clearTimeout(sketchNoticeTimer.current)
@@ -3515,34 +3518,6 @@ export function App(): JSX.Element {
   // on disk. Returns false only when the user should be stopped from
   // opening at all (a real merge conflict they need to resolve first) -
   // every other outcome (offline, no repo, clean pull) returns true.
-  const autoPullBeforeOpen = useCallback(async (p: string): Promise<boolean> => {
-    const st = await window.cad.gitStatus(p).catch(() => ({ isRepo: false }) as GitStatus)
-    if (!st.isRepo || !st.hasUpstream) return true
-    // no separate reachability probe first - that was one more ~0.6s
-    // round-trip on every open; a pull that can't reach the remote says so
-    try {
-      const res = await window.cad.gitPull(p)
-      setGitOffline(false)
-      if (res.conflict) {
-        return window.confirm(
-          `${basename(p)} has a merge conflict pulling the latest version.\n\n` +
-            `Click OK to open it anyway with your local copy (unresolved conflict markers ` +
-            `may be present - use the Git panel to resolve), or Cancel to stop here.`
-        )
-      }
-      return true
-    } catch (e) {
-      const msg = (e as Error).message
-      if (OFFLINE_GIT_ERROR.test(msg)) {
-        setGitOffline(true)
-        return true // proceed with whatever's on local disk - never block on offline
-      }
-      // a real git error (not a conflict, not offline - e.g. auth) - report
-      // but still don't block opening; the file on disk is still usable
-      flashSketchNotice(`Couldn't sync ${basename(p)} before opening: ${msg}`)
-      return true
-    }
-  }, [flashSketchNotice])
 
   // Standalone-open lock: only for a part opened DIRECTLY (never one merely
   // referenced live inside an open assembly - see the upstream-watch
@@ -3625,13 +3600,43 @@ export function App(): JSX.Element {
   // session already holds p's lock (switching back to an open tab): the
   // lock proves nobody else pushed to it since, so there is nothing to pull
   // and nothing to lock, and a tab switch stays a local-only operation.
+  // An open no longer waits on the network: the lock is decided against
+  // what's on disk (a local commit; its push already ran in the background,
+  // and a lock someone else pushed first still comes back as "they opened it
+  // first"), the file opens from disk, and the pull runs afterwards. If it
+  // brings in a newer version of the open file, that goes through the same
+  // live reload as any outside change (see processDiskChanges).
+  const pullAfterOpen = useCallback(
+    async (p: string) => {
+      const st = await window.cad.gitStatus(p).catch(() => ({ isRepo: false }) as GitStatus)
+      if (!st.isRepo || !st.hasUpstream) return
+      try {
+        const res = await window.cad.gitPullAfterOpen(p)
+        setGitOffline(false)
+        if (res.conflict) {
+          flashSketchNotice(`Pulling the latest ${basename(p)} hit a merge conflict - resolve it in the Git panel`)
+          return
+        }
+        if (res.changed) {
+          pendingDiskRef.current.add(p)
+          void processDiskChangesRef.current()
+        }
+      } catch (e) {
+        const msg = (e as Error).message
+        if (OFFLINE_GIT_ERROR.test(msg)) setGitOffline(true)
+        else flashSketchNotice(`Couldn't sync ${basename(p)}: ${msg}`)
+      }
+    },
+    [flashSketchNotice]
+  )
   const prepareToOpen = useCallback(
     async (p: string): Promise<boolean> => {
       if (heldLocksRef.current.has(p)) return true
-      if (!(await autoPullBeforeOpen(p))) return false
-      return acquireStandaloneLock(p)
+      if (!(await acquireStandaloneLock(p))) return false
+      void pullAfterOpen(p)
+      return true
     },
-    [autoPullBeforeOpen, acquireStandaloneLock]
+    [acquireStandaloneLock, pullAfterOpen]
   )
 
   // ---- file ops ----
@@ -5828,7 +5833,6 @@ export function App(): JSX.Element {
   }, [docPath, linkedPartPaths])
 
   const [diskChange, setDiskChange] = useState<{ own: boolean; names: string[] } | null>(null)
-  const pendingDiskRef = useRef<Set<string>>(new Set())
   const reloadFromDisk = useCallback(
     async (note: string) => {
       if (!docPath) return
@@ -5869,6 +5873,7 @@ export function App(): JSX.Element {
       )
       .catch((e) => flashSketchNotice(`Reload failed: ${(e as Error).message}`))
   }, [flashSketchNotice])
+  processDiskChangesRef.current = processDiskChanges
   useEffect(() => {
     const off = window.cad.onFileChanged((p) => {
       pendingDiskRef.current.add(p)

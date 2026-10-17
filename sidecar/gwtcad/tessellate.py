@@ -13,13 +13,22 @@ import math
 import numpy as np
 
 # tessellation deflection in mm - smaller = finer. Tuned later / made adaptive.
-SURFACE_DEFLECTION = 0.10
-EDGE_DEFLECTION = 0.05
+# 0.10 / 0.35 rad made a 1 mm hole an octagon and a rounded end visibly
+# faceted when zoomed in; 0.03 / 0.2 is ~1.75x the triangles (a quarter of a
+# second on a typical part; heavy models mesh in the background anyway)
+SURFACE_DEFLECTION = 0.03
+EDGE_DEFLECTION = 0.03  # edges at least as fine as the faces they bound
+# ...and at most this many radians per segment: a sag limit alone left a
+# 1.6 mm radius at 22 degree steps, a visibly polygonal outline
+EDGE_ANGULAR = 0.1
 # angular deflection in radians. Part's per-face tessellate applies a much
 # finer fixed angle, so every small circle becomes ~60 segments: a PCB face
 # with 300+ drilled holes took ~6s and 40k triangles on its own, and tiny
 # fillets/torii came out as 8k triangles each.
-ANGULAR_DEFLECTION = 0.35
+ANGULAR_DEFLECTION = 0.2
+# how vertex normals are made - part of every cached mesh's key, so a change
+# re-meshes instead of serving the old look (see mesh_disk._key)
+NORMALS = "angle-weighted+analytic-1"
 
 # "draft" quality: what a heavy shape shows first while mesh_pool builds the
 # full mesh in the background (see methods.scene_get). Linear deflection
@@ -250,19 +259,105 @@ def _mesh_whole_shape(shape, lin, ang):
     uniq, inv = np.unique((seg[:, None] * nP + Tr).ravel(), return_inverse=True)
     newT = inv.reshape(-1, 3)
     newP = P[uniq % nP]
+    # each triangle counts at a vertex by its corner angle there: a plain
+    # average let the long thin triangles of a curved face pull the normal
+    # off and the face shaded in blotches
     acc = np.zeros_like(newP)
     for k in range(3):
-        np.add.at(acc, newT[:, k], fn)
+        e1 = newP[newT[:, (k + 1) % 3]] - newP[newT[:, k]]
+        e2 = newP[newT[:, (k + 2) % 3]] - newP[newT[:, k]]
+        l1, l2 = np.linalg.norm(e1, axis=1), np.linalg.norm(e2, axis=1)
+        cosang = np.einsum("ij,ij->i", e1, e2) / np.maximum(l1 * l2, 1e-24)
+        np.add.at(acc, newT[:, k], fn * np.arccos(np.clip(cosang, -1.0, 1.0))[:, None])
     la = np.linalg.norm(acc, axis=1)
     nz = la > 1e-12
     acc[nz] /= la[nz, None]
     vseg = uniq // nP
     fill = ~nz & has[vseg]
     acc[fill] = refs[vseg[fill]]
+    # curved faces: the TRUE surface normal at every vertex, not the average
+    # of the flat triangles around it (long thin triangles on a cylinder or a
+    # fillet skew that average and the surface shades in blotches)
+    _exact_normals(faces, newP, vseg, acc)
     starts = np.flatnonzero(np.r_[True, seg[1:] != seg[:-1]])
     counts = np.diff(np.r_[starts, len(seg)])
     groups = [{"face": int(seg[a]), "start": int(a) * 3, "count": int(c) * 3} for a, c in zip(starts, counts)]
     return newP.ravel().tolist(), acc.ravel().tolist(), newT.ravel().tolist(), groups, s, _face_pair_dots(uniq % nP, vseg, acc)
+
+
+def _unit_rows(v):
+    n = np.linalg.norm(v, axis=1)
+    ok = n > 1e-12
+    v[ok] /= n[ok, None]
+    return v, ok
+
+
+def _analytic_normals(face, P):
+    """Surface normals of `face` at points P (n x 3), up to sign, or None
+    when the surface has no closed form here (or the face is planar: its
+    averaged normals are already exact)."""
+    surf = face.Surface
+    kind = type(surf).__name__
+    if kind == "Cylinder":
+        c, a = np.array(tuple(surf.Center)), np.array(tuple(surf.Axis))
+        q = P - c
+        return _unit_rows(q - np.outer(q @ a, a))
+    if kind == "Sphere":
+        return _unit_rows(P - np.array(tuple(surf.Center)))
+    if kind == "Toroid":
+        c, a = np.array(tuple(surf.Center)), np.array(tuple(surf.Axis))
+        q = P - c
+        radial, ok = _unit_rows(q - np.outer(q @ a, a))
+        n, ok2 = _unit_rows(q - radial * float(surf.MajorRadius))
+        return n, ok & ok2
+    if kind == "Cone":
+        apex, a = np.array(tuple(surf.Apex)), np.array(tuple(surf.Axis))
+        q = P - apex
+        radial, ok = _unit_rows(q - np.outer(q @ a, a))
+        sa = float(surf.SemiAngle)
+        # the normal is square to the cone's generator (apex -> point)
+        n1 = radial * math.cos(sa) - a * math.sin(sa)
+        n2 = radial * math.cos(sa) + a * math.sin(sa)
+        pick = np.abs(np.einsum("ij,ij->i", n1, q)) <= np.abs(np.einsum("ij,ij->i", n2, q))
+        return _unit_rows(np.where(pick[:, None], n1, n2))[0], ok
+    return None
+
+
+def _exact_normals(faces, P, vseg, acc):
+    """Replace the averaged vertex normals of cylinders, cones, spheres and
+    tori with the exact surface normal, in place. Signs follow the averaged normals (which are
+    already oriented outward); a face whose exact normals disagree with them
+    overall keeps the averages - better a soft shade than a wrong one."""
+    order = np.argsort(vseg, kind="stable")
+    bounds = np.flatnonzero(np.r_[True, vseg[order][1:] != vseg[order][:-1], True])
+    for a, b in zip(bounds[:-1], bounds[1:]):
+        idx = order[a:b]
+        k = int(vseg[idx[0]])
+        if k >= len(faces):
+            continue
+        face = faces[k]
+        try:
+            kind = type(face.Surface).__name__
+        except Exception:
+            continue
+        if kind == "Plane":
+            continue
+        got = None
+        try:
+            got = _analytic_normals(face, P[idx])
+        except Exception:
+            got = None
+        if got is None:
+            continue  # B-spline etc.: the angle-weighted average stands (asking
+            # FreeCAD per vertex cost ~0.7ms a point - seconds on an imported part)
+        n, ok = got
+        cur = acc[idx]
+        d = np.einsum("ij,ij->i", n, cur)
+        n[d < 0] *= -1.0
+        good = ok & (np.abs(d) > 1e-9)
+        if not good.any() or np.median(np.abs(d[good])) < 0.8:
+            continue  # the exact surface doesn't match this face's mesh: keep the averages
+        acc[idx[good]] = n[good]
 
 
 def _face_pair_dots(orig, vseg, nrm):
@@ -357,7 +452,7 @@ def tessellate_shape(shape, draft=False):
     for ei, edge in enumerate(shape.Edges):
         pts = []
         try:
-            for p in edge.discretize(Deflection=EDGE_DEFLECTION):
+            for p in edge.discretize(Angular=EDGE_ANGULAR, Curvature=EDGE_DEFLECTION):
                 pts.extend((p.x, p.y, p.z))
         except Exception:
             try:

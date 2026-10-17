@@ -442,6 +442,11 @@ export async function pushForceWithLease(filePath: string, remote = 'origin'): P
   })
 }
 
+/** The repo's current HEAD commit (for "did that pull bring anything in?") */
+export async function headCommit(filePath: string): Promise<string> {
+  return (await git(dirname(filePath), ['rev-parse', 'HEAD'])).trim()
+}
+
 export async function pull(filePath: string, remote = 'origin'): Promise<{ conflict: boolean }> {
   const cwd = dirname(filePath)
   try {

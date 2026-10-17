@@ -30,7 +30,7 @@ def _dir():
 
 def _key(sig):
     settings = (FORMAT, sys.version_info[:2], _tess.SURFACE_DEFLECTION, _tess.ANGULAR_DEFLECTION,
-                _tess.EDGE_DEFLECTION, _tess.TANGENT_ANGLE_DEG)
+                _tess.EDGE_DEFLECTION, _tess.EDGE_ANGULAR, _tess.TANGENT_ANGLE_DEG, _tess.NORMALS)
     return hashlib.sha1(repr((settings, sig)).encode()).hexdigest()
 
 

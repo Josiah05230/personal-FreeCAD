@@ -251,7 +251,13 @@ function buildBody(m: RenderMesh): THREE.Object3D[] {
     flatShading: wantFlat,
     transparent,
     opacity,
-    depthWrite: !transparent
+    depthWrite: !transparent,
+    // faces sit a hair behind their own edges: the edge lines lie exactly on
+    // the faces, and without this the two fought for the same depth - edges
+    // drew dotted and broken at shallow angles, worst on light colours
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1
   })
   // per-face colour overrides (view layer). Split the index buffer into groups
   // and give each overridden face a material clone tinted to its colour - one
@@ -291,12 +297,13 @@ function buildBody(m: RenderMesh): THREE.Object3D[] {
   // hidden-line it stays as an invisible depth mask so back edges are occluded)
   if (wireOnly) {
     if (R.shading === 'hidden-line') {
-      mat.colorWrite = false
-      mat.opacity = 1
-      mat.transparent = false
-      mat.polygonOffset = true
-      mat.polygonOffsetFactor = 1
-      mat.polygonOffsetUnits = 1
+      // every face material, per-face colour clones included (they used to
+      // stay visible and opaque in hidden-line)
+      for (const fm of Array.isArray(meshMat) ? meshMat : [meshMat]) {
+        fm.colorWrite = false
+        fm.opacity = 1
+        fm.transparent = false
+      }
     } else {
       mesh.visible = false
     }
@@ -475,8 +482,10 @@ export function syncScene(
   const desired: Desired[] = [
     ...datums.map((d) => ({ key: `datum:${d.id}`, sig: datumSig(d), build: () => [buildDatum(d)], frame: false })),
     ...canvases.map((c) => ({ key: `canvas:${c.id}`, sig: canvasSig(c), build: () => [buildCanvas(c)], frame: true })),
-    ...meshes.map((m) => ({ key: `body:${m.id}`, sig: bodySig(m), build: () => buildBody(m), frame: true })),
-    ...sketches.map((s) => ({ key: `sketch:${s.id}`, sig: sketchSig(s), build: () => buildSketch(s), frame: true })),
+    // hidden things don't frame either: a drawing's hidden break sketches
+    // (long cut lines) made a harness open framed metres out, as a speck
+    ...meshes.map((m) => ({ key: `body:${m.id}`, sig: bodySig(m), build: () => buildBody(m), frame: m.visible !== false })),
+    ...sketches.map((s) => ({ key: `sketch:${s.id}`, sig: sketchSig(s), build: () => buildSketch(s), frame: s.visible !== false })),
     ...decalNodes(meshes, RENDER.shading)
   ]
   const want = new Set(desired.map((d) => d.key))

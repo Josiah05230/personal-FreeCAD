@@ -78,7 +78,8 @@ say "smoke-testing the packaged binary"
   cd "$UNPACKED"
   unset ELECTRON_RUN_AS_NODE
   export DISPLAY="${DISPLAY:-:1}"
-  timeout 40 ./gwt-cad --no-sandbox >/tmp/gwtcad-pkg-smoke.log 2>&1 &
+  # hidden: the smoke test needs the app to boot, not a window on the desktop
+  GWTCAD_HIDDEN=1 timeout 40 ./gwt-cad --no-sandbox >/tmp/gwtcad-pkg-smoke.log 2>&1 &
   pid=$!
   ok=0
   for _ in $(seq 1 30); do

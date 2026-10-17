@@ -17,6 +17,7 @@ export FUZZ_STEPS="${FUZZ_STEPS:-60}"
 unset ELECTRON_RUN_AS_NODE
 export ELECTRON_DISABLE_SANDBOX=1
 : "${DISPLAY:=:1}"; export DISPLAY
+# the fuzzer's windows are off-screen (never shown) like run.sh's - GWTCAD_SHOW=1 to watch
 
 echo "[fuzz-loop] building app once..."
 ( cd "$APP" && ./node_modules/.bin/electron-vite build >/tmp/gwtcad-fuzz-build.log 2>&1 ) || {

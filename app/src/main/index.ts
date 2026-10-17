@@ -12,7 +12,7 @@ import * as gitWatch from './gitWatch'
 import { FileIndex, FolderRelevance } from './fileFilter'
 import * as dpPrefs from './dataPanelPrefs'
 import * as softDel from './softDelete'
-import { FileWatch } from './fileWatch'
+import { FileWatch, sigOf } from './fileWatch'
 import { spawn } from 'child_process'
 import { extOf, fileKind, isSkippedDir } from '../shared/fileTypes'
 
@@ -75,6 +75,20 @@ const fileIndex = new FileIndex()
 void dpPrefs.loadPrefs().then((p) => fileIndex.setSkip(p.hidden))
 void softDel.purgeOld()
 
+// Test and screenshot runs draw into an off-screen window that is never
+// shown: same app, same rendering (capturePage still works), but nothing
+// appears on - or takes focus from - the desktop of whoever is at the
+// machine. GWTCAD_SHOW=1 shows it anyway (to watch a test); GWTCAD_HIDDEN=1
+// hides any launch (the packaged smoke test).
+const HIDDEN =
+  process.env.GWTCAD_SHOW !== '1' &&
+  (process.env.GWTCAD_HIDDEN === '1' ||
+    ['--e2e', '--drive', '--shot'].some((f) => process.argv.includes(f)))
+
+// off-screen with GPU compositing left stale stripes and black regions in
+// captured frames; software rendering draws them cleanly
+if (HIDDEN) app.disableHardwareAcceleration()
+
 async function createWindow(): Promise<void> {
   win = new BrowserWindow({
     width: 1600,
@@ -87,11 +101,13 @@ async function createWindow(): Promise<void> {
       sandbox: false,
       contextIsolation: true,
       // Chromium's PDF viewer, for opening PDFs in a viewer tab
-      plugins: true
+      plugins: true,
+      ...(HIDDEN ? { offscreen: true, backgroundThrottling: false } : {})
     }
   })
 
-  win.once('ready-to-show', () => win?.show())
+  if (HIDDEN) win.webContents.setFrameRate(60)
+  else win.once('ready-to-show', () => win?.show())
 
   win.webContents.on('console-message', (_e, level, message, line, source) => {
     const tag = ['v', 'i', 'w', 'e'][level] ?? '?'
@@ -120,8 +136,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('cad:rpc', async (_e, method: string, params: Record<string, unknown>) => {
     if (!sidecar) throw new Error('sidecar unavailable')
     try {
+      // an open reads the file as it is NOW: that, not whatever is on disk
+      // once the open returns, is what this window has
+      const opening = method === 'document.open' && typeof params?.path === 'string' ? (params.path as string) : null
+      const openedAs = opening ? await sigOf(opening) : null
       const r = await sidecar.rpc(method, params ?? {})
-      if (WRITES_FILES.test(method)) await fileWatch.rebase()
+      if (WRITES_FILES.test(method)) await fileWatch.rebase(opening ?? undefined)
+      if (opening) fileWatch.setBase(opening, openedAs)
       return r
     } catch (err) {
       // greppable one-liner in the run log so a watcher / dev can react fast
@@ -411,6 +432,16 @@ app.whenReady().then(async () => {
     gitw.pushForceWithLease(filePath, remote)
   )
   ipcMain.handle('git:pull', (_e, filePath: string, remote?: string) => gitw.pull(filePath, remote))
+  // the pull an open no longer waits for: queued behind the open's lock
+  // commit/push, and says whether it brought anything in
+  ipcMain.handle('git:pullAfterOpen', (_e, filePath: string) =>
+    lockfile.queued(async () => {
+      const head = (): Promise<string> => gitw.headCommit(filePath).catch(() => '')
+      const before = await head()
+      const r = await gitw.pull(filePath)
+      return { conflict: r.conflict, changed: (await head()) !== before }
+    })
+  )
   ipcMain.handle('git:fetch', (_e, filePath: string, remote?: string) => gitw.fetch(filePath, remote))
   ipcMain.handle('git:isReachable', (_e, filePath: string, remote?: string) =>
     gitw.isReachable(filePath, remote)

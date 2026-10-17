@@ -2387,6 +2387,22 @@ def make_detail(doc, page_id, base_view_id, anchor_xy, radius):
     }
 
 
+def _break_reach(sources):
+    """Half-length of a break's two cut lines: past the sources on every
+    side, and no more - they live in the document as hidden sketches, and
+    100 m lines once threw off anything that measured the model."""
+    import Part
+    bb = App.BoundBox()
+    for o in (sources or []):
+        try:
+            b = Part.getShape(o).BoundBox
+            if b.isValid():
+                bb.add(b)
+        except Exception:
+            pass
+    return max(2.0 * bb.DiagonalLength, 100.0) if bb.isValid() else 1.0e4
+
+
 def make_broken(doc, page_id, base_view_id, breaks, drop_base=False, x=None, y=None, label=None):
     """`breaks`: list of {"axis":"x"|"y","pos":float,"gap":float}.
     drop_base=True removes the base view before anything computes - with a
@@ -2456,7 +2472,7 @@ def make_broken(doc, page_id, base_view_id, breaks, drop_base=False, x=None, y=N
             sk = doc.addObject("Sketcher::SketchObject", "BreakSketch")
             sk.Placement = App.Placement(start, rot)
             sk.Label = "Break %d" % (len(sketches) + 1)
-            reach = 1.0e5  # the two cut lines only need to be longer than the part
+            reach = _break_reach(view.Source)  # the two cut lines only need to cross the part
             sk.addGeometry(Part.LineSegment(App.Vector(0, -reach, 0), App.Vector(0, reach, 0)), False)
             sk.addGeometry(Part.LineSegment(App.Vector(length, -reach, 0), App.Vector(length, reach, 0)), False)
             sk.Visibility = False
@@ -2784,7 +2800,7 @@ def _make_broken_direct(doc, page_id, sources, direction, scale, breaks, coarse,
             sk.Placement = App.Placement(start, App.Rotation(App.Matrix(
                 xa.x, ya.x, normal.x, 0, xa.y, ya.y, normal.y, 0, xa.z, ya.z, normal.z, 0, 0, 0, 0, 1)))
             sk.Label = "Break %d" % (len(sketches) + 1)
-            reach = 1.0e5
+            reach = _break_reach(sources)
             sk.addGeometry(Part.LineSegment(App.Vector(0, -reach, 0), App.Vector(0, reach, 0)), False)
             sk.addGeometry(Part.LineSegment(App.Vector(length, -reach, 0), App.Vector(length, reach, 0)), False)
             sk.Visibility = False

@@ -111,6 +111,12 @@ function pidAlive(pid: number): boolean {
 // background, and a release (or another acquire) starting before it lands
 // used to interleave commits/resets in the same repo.
 let lockQueue: Promise<unknown> = Promise.resolve()
+/** Run `fn` in the same queue as the lock's own git work (commit, push),
+ *  so other git calls on the repo - the background pull after an open -
+ *  never race it for the index. */
+export function queued<T>(fn: () => Promise<T>): Promise<T> {
+  return serialized(fn)
+}
 function serialized<T>(fn: () => Promise<T>): Promise<T> {
   const run = lockQueue.then(fn)
   lockQueue = run.catch(() => undefined)

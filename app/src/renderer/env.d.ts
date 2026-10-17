@@ -182,6 +182,7 @@ interface CadBridge {
   lockAcquire(filePath: string): Promise<LockAcquireResult>
   lockRelease(filePath: string): Promise<void>
   watchSet(paths: string[]): Promise<void>
+  gitPullAfterOpen(filePath: string): Promise<{ conflict: boolean; changed: boolean }>
   watchRebase(): Promise<void>
   onFileChanged(fn: (path: string) => void): () => void
   launchFile(): Promise<string | null>

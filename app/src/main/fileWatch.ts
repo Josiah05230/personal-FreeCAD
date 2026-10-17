@@ -15,7 +15,7 @@ const POLL_MS = 700
 
 type Sig = string | null
 
-async function sigOf(path: string): Promise<Sig> {
+export async function sigOf(path: string): Promise<Sig> {
   try {
     const s = await stat(path)
     return `${s.mtimeMs}:${s.size}`
@@ -26,6 +26,11 @@ async function sigOf(path: string): Promise<Sig> {
 
 export class FileWatch {
   private files = new Map<string, { base: Sig; pending: Sig | undefined }>()
+  // what each file was when it was last opened, until it is watched again:
+  // the window's watched set briefly lags an open (it still lists the old
+  // document), and dropping the entry then re-adding it at "whatever is on
+  // disk now" hid a pull that landed in between
+  private openedAs = new Map<string, Sig>()
   private timer: NodeJS.Timeout | null = null
   private ticking = false
 
@@ -35,7 +40,12 @@ export class FileWatch {
   async set(paths: string[]): Promise<void> {
     const want = new Set(paths.filter(Boolean))
     for (const p of [...this.files.keys()]) if (!want.has(p)) this.files.delete(p)
-    for (const p of want) if (!this.files.has(p)) this.files.set(p, { base: await sigOf(p), pending: undefined })
+    for (const p of want) {
+      if (this.files.has(p)) continue
+      const opened = this.openedAs.get(p)
+      this.openedAs.delete(p)
+      this.files.set(p, { base: opened !== undefined ? opened : await sigOf(p), pending: undefined })
+    }
     if (this.files.size && !this.timer) this.timer = setInterval(() => void this.tick(), POLL_MS)
     if (!this.files.size && this.timer) {
       clearInterval(this.timer)
@@ -43,12 +53,22 @@ export class FileWatch {
     }
   }
 
-  /** What is on disk now is what this window knows (it just wrote or read it). */
-  async rebase(): Promise<void> {
+  /** What is on disk now is what this window knows (it just wrote or read it).
+   *  `except` keeps its own baseline (see setBase). */
+  async rebase(except?: string): Promise<void> {
     for (const [p, f] of this.files) {
+      if (p === except) continue
       f.base = await sigOf(p)
       f.pending = undefined
     }
+  }
+
+  /** `path` was opened as it was at `sig` - watch it from there, so a change
+   *  that lands while it is being opened (a pull) still reports. */
+  setBase(path: string, sig: Sig): void {
+    this.openedAs.set(path, sig)
+    this.files.set(path, { base: sig, pending: undefined })
+    if (!this.timer) this.timer = setInterval(() => void this.tick(), POLL_MS)
   }
 
   private async tick(): Promise<void> {
