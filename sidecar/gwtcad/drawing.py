@@ -1078,6 +1078,28 @@ def _measure_text(s, font_size):
     return w * font_size
 
 
+def _wrap_cell(value, font_size, cell_w, row_h):
+    """A one-line cell value too wide for its cell, broken at a word onto
+    two lines at the SAME size when two lines fit the row (title block
+    descriptions: user, 2026-10-17, a description printed smaller than the
+    rest of the block looked wrong). Returns (text, line_pitch_em); the text
+    is unchanged when it already fits or cannot be wrapped into two lines."""
+    avail = cell_w - 3.0
+    if "\n" in value or _measure_text(value, font_size) <= avail:
+        return value, 1.2
+    pitch = 1.05
+    if row_h < font_size * (1.0 + pitch) + 1.2:          # two lines would not fit the row
+        return value, 1.2
+    words = value.split(" ")
+    for cut in range(len(words) - 1, 0, -1):
+        first, second = " ".join(words[:cut]), " ".join(words[cut:])
+        if _measure_text(first, font_size) <= avail:
+            if _measure_text(second, font_size) <= avail:
+                return first + "\n" + second, pitch
+            break
+    return value, 1.2
+
+
 def _fit_cell_font_size(value, font_size, cell_w):
     """Port of DrawingSheet.tsx's fitCellFontSize - shrink a table cell's
     text just enough that its widest line stays inside the cell (1.5 mm
@@ -1591,14 +1613,16 @@ def export_page_svg(doc, page_id):
                     continue  # covered by a merge, not its top-left
                 cell_y = row_h * (ri + header_rows) + row_h - 1.5
                 value = str(row.get(c.get("source", ""), ""))
-                lines = value.split("\n")
-                n_lines = len(lines)
                 x = col_x(ci) + 1.5
                 cell_w = sum(col_w(ci + k) for k in range(m["cs"] if m else 1))
+                value, pitch = _wrap_cell(value, text_size, cell_w, row_h * (m["rs"] if m and m.get("rs") else 1))
+                lines = value.split("\n")
+                n_lines = len(lines)
+                # shrinking is the last resort (drawqa flags shrunk text)
                 cell_size = _fit_cell_font_size(value, text_size, cell_w)
                 tspans = "".join(
                     '<tspan x="%s" dy="%s">%s</tspan>'
-                    % (_fmt(x), ("%gem" % (-(n_lines - 1) * 1.2)) if i == 0 else "1.2em", escape(line) or "&#160;")
+                    % (_fmt(x), ("%gem" % (-(n_lines - 1) * pitch)) if i == 0 else "%gem" % pitch, escape(line) or "&#160;")
                     for i, line in enumerate(lines)
                 )
                 parts.append(
@@ -1782,6 +1806,9 @@ def _compute_view_payload(view):
 
 _CACHE_ENTRY = "GwtDrawingCache.json"
 _CACHE_VERSION = 3  # 3: view polylines Y up (_edges_to_polylines); 2: group-view offsets in the scaled frame
+# Bump only with a converter in load_view_cache: a version the loader cannot
+# read makes every older file recompute its hidden lines on its next export,
+# which on a big part (CMP0020) took about an hour instead of seconds.
 # position/cosmetic properties that never change a view's projected edges
 _KEY_SKIP = {"X", "Y", "Label", "Label2", "Visibility", "LockPosition", "Caption",
              "ExpressionEngine", "Views", "Anchor", "spacingX", "spacingY",
@@ -1986,6 +2013,36 @@ def load_view_cache(doc, path):
         return
     if data.get("version") == _CACHE_VERSION:
         _view_cache["views"] = data.get("views", {})
+    elif data.get("version") == 2:
+        # converted, not thrown away: discarding it made every file saved
+        # before 2026-10-03 recompute its hidden lines on the next export
+        # (CMP0020's perfboard, 2,080 faces: about an hour)
+        _view_cache["views"] = {k: _cache_v2_to_v3(e) for k, e in data.get("views", {}).items()}
+
+
+def _cache_v2_to_v3(e):
+    """Version 3 stores view polylines Y up (_edges_to_polylines flips
+    TechDraw's Y-down edges); version 2 stored them as TechDraw gave them,
+    except native broken views, which were already flipped. The offset is
+    the projected-vertex min corner minus the edge-endpoint min corner
+    (_compute_project_offset), and each polyline's first and last points are
+    exactly its edge's endpoints, so the version 3 offset follows from the
+    stored data: dy3 = dy2 + min(y ends) + max(y ends)."""
+    if not isinstance(e, dict) or "visible" not in e:
+        return e
+    key = e.get("key") or []
+    type_id = key[0][0] if key and isinstance(key[0], list) and key[0] else ""
+    if type_id == "TechDraw::DrawBrokenView":
+        return e
+    polys = [p for p in (e.get("visible") or []) + (e.get("hidden") or []) if p]
+    out = dict(e)
+    if polys:
+        ends = [p[0][1] for p in polys] + [p[-1][1] for p in polys]
+        off = e.get("offset") or [0.0, 0.0]
+        out["offset"] = [off[0], off[1] + min(ends) + max(ends)]
+    flip = lambda ps: [[[x, -y] for x, y in poly] for poly in (ps or [])]
+    out["visible"], out["hidden"] = flip(e.get("visible")), flip(e.get("hidden"))
+    return out
 
 
 def _part_views(doc):
