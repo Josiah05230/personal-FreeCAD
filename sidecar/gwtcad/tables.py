@@ -176,6 +176,10 @@ def _cell_value(row, col):
         name = raw[1:].strip()
         try:
             value = _resolve_param_ref(name)
+            # a part's NAME is always printed as one upper-case word, however
+            # the registry stores it (drawing rule; drawqa refuses otherwise)
+            if name.upper() == "NAME":
+                return str(value).upper()
             return ("%g" % value) if isinstance(value, float) else str(value)
         except Exception:
             return raw  # unresolved reference - show the literal "=NAME" so it reads as a mistake, not blank
