@@ -13,6 +13,7 @@ library already bundled in FreeCAD's Python - deliberately not
 `google-cloud-storage`, which pulls in a much heavier `grpc` dependency
 for what is otherwise three plain HTTP PUTs.
 """
+import re
 import json
 import os
 
@@ -103,7 +104,28 @@ def upload_bytes(storage_path, data, content_type):
     return {"storagePath": storage_path}
 
 
+def _drawing_gate(local_path, pn):
+    """A part's drawing PDF reaches the portal only if drawqa finds nothing
+    wrong with it: blank title block fields, the wrong part number, a
+    missing BOM line, text or geometry off the page (user, 2026-10-17:
+    drawings must NEVER go out empty, blank, off-page or wrong). Raises with
+    every problem; the caller reports it (e.g. draw_missing's pdfError)."""
+    from . import drawqa
+    row, bom = None, None
+    try:
+        from . import partnumbers as _pn
+        cfg = _pn._load_config()
+        row = _pn._row_for_pn(_pn._read_registry(cfg), pn)
+        bom = (_pn.pn_bom_for(pn) or {}).get("items") or None
+    except Exception:  # noqa: BLE001 - registry unreachable: check the drawing on its own
+        pass
+    drawqa.gate(local_path, pn, row=row, bom=bom)
+
+
 def upload_file(local_path, storage_path, content_type):
+    m = re.match(r"^cad-exports/([A-Z]{3}\d{4})/\1\.pdf$", storage_path)
+    if m:
+        _drawing_gate(local_path, m.group(1))
     with open(local_path, "rb") as f:
         return upload_bytes(storage_path, f.read(), content_type)
 
