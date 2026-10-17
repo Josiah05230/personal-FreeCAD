@@ -1033,7 +1033,7 @@ def pn_resolve_bom_filenames(filenames):
 
 
 @method("pn.saveBom")
-def pn_save_bom(pn, items):
+def pn_save_bom(pn, items, keepDocuments=True):
     """Replace bom.csv's rows for this exact assembly pn with the given
     kit-item list (each {pn, componentName, qty} - the shape
     pn.resolveBomFilenames already returns). Called by the caller right
@@ -1049,7 +1049,9 @@ def pn_save_bom(pn, items):
     ship in the box (registry type Z rows named "document", added from the
     portal or by hand), and those never exist in the CAD assembly. Rows for
     documents already on this pn are kept unless the new list names them
-    itself, so re-saving the CAD does not drop them (user, 2026-10-17)."""
+    itself, so re-saving the CAD does not drop them (user, 2026-10-17).
+    keepDocuments=False replaces them too: for a caller that sends the
+    kit's whole intended BOM (a portal or script edit, not a CAD capture)."""
     cfg = _load_config()
     repo = _registry_path(cfg)
 
@@ -1057,7 +1059,7 @@ def pn_save_bom(pn, items):
         docs = {r["pn"] for r in _read_registry(cfg) if r.get("type") == "Z" and (r.get("name") or "").lower() == "document"}
         named = {item.get("pn", "") for item in items}
         old = _read_bom(cfg)
-        kept_docs = [r for r in old if r.get("pn") == pn and r.get("item_pn") in docs and r.get("item_pn") not in named]
+        kept_docs = [r for r in old if keepDocuments and r.get("pn") == pn and r.get("item_pn") in docs and r.get("item_pn") not in named]
         rows = [r for r in old if r.get("pn") != pn]
         for item in items:
             rows.append({
