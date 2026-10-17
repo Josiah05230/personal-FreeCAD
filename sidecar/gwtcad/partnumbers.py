@@ -1043,18 +1043,29 @@ def pn_save_bom(pn, items):
     An assembly with an empty items list still gets a (now-empty) entry
     removed rather than left stale - "no items" and "never captured" both
     end up as "no rows for this pn", which is what pn.bomFor below treats
-    as "no BOM"."""
+    as "no BOM".
+
+    Documents are the exception: a kit's BOM can call out the documents that
+    ship in the box (registry type Z rows named "document", added from the
+    portal or by hand), and those never exist in the CAD assembly. Rows for
+    documents already on this pn are kept unless the new list names them
+    itself, so re-saving the CAD does not drop them (user, 2026-10-17)."""
     cfg = _load_config()
     repo = _registry_path(cfg)
 
     def attempt():
-        rows = [r for r in _read_bom(cfg) if r.get("pn") != pn]
+        docs = {r["pn"] for r in _read_registry(cfg) if r.get("type") == "Z" and (r.get("name") or "").lower() == "document"}
+        named = {item.get("pn", "") for item in items}
+        old = _read_bom(cfg)
+        kept_docs = [r for r in old if r.get("pn") == pn and r.get("item_pn") in docs and r.get("item_pn") not in named]
+        rows = [r for r in old if r.get("pn") != pn]
         for item in items:
             rows.append({
                 "pn": pn, "item_pn": item.get("pn", ""),
                 "item_component_name": item.get("componentName", ""),
                 "qty": str(int(item.get("qty") or 1)),
             })
+        rows.extend(kept_docs)
         _write_bom(cfg, rows)
         return True
 
