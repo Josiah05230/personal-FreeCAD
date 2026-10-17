@@ -85,9 +85,12 @@ const HIDDEN =
   (process.env.GWTCAD_HIDDEN === '1' ||
     ['--e2e', '--drive', '--shot'].some((f) => process.argv.includes(f)))
 
-// off-screen with GPU compositing left stale stripes and black regions in
-// captured frames; software rendering draws them cleanly
-if (HIDDEN) app.disableHardwareAcceleration()
+// Off-screen with GPU compositing left stale stripes and black regions in
+// CAPTURED frames; software rendering draws them cleanly but is slower,
+// which timing-sensitive scenarios feel. So: software only when a capture
+// is the point (--shot, E2E_SHOT); GPU for plain test runs.
+if (HIDDEN && (process.argv.includes('--shot') || !!process.env.E2E_SHOT || process.env.GWTCAD_SOFTWARE_GL === '1'))
+  app.disableHardwareAcceleration()
 
 async function createWindow(): Promise<void> {
   win = new BrowserWindow({

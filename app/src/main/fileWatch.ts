@@ -12,6 +12,8 @@
 import { stat } from 'fs/promises'
 
 const POLL_MS = 700
+// how long an open's "as opened" baseline waits for the watch list to catch up
+const OPENED_AS_MS = 10000
 
 type Sig = string | null
 
@@ -30,7 +32,7 @@ export class FileWatch {
   // the window's watched set briefly lags an open (it still lists the old
   // document), and dropping the entry then re-adding it at "whatever is on
   // disk now" hid a pull that landed in between
-  private openedAs = new Map<string, Sig>()
+  private openedAs = new Map<string, { sig: Sig; at: number }>()
   private timer: NodeJS.Timeout | null = null
   private ticking = false
 
@@ -44,7 +46,10 @@ export class FileWatch {
       if (this.files.has(p)) continue
       const opened = this.openedAs.get(p)
       this.openedAs.delete(p)
-      this.files.set(p, { base: opened !== undefined ? opened : await sigOf(p), pending: undefined })
+      // only for the moment right after an open: an old one would report a
+      // file this window has since saved (or linked) as changed
+      const fresh = opened !== undefined && Date.now() - opened.at < OPENED_AS_MS
+      this.files.set(p, { base: fresh ? opened.sig : await sigOf(p), pending: undefined })
     }
     if (this.files.size && !this.timer) this.timer = setInterval(() => void this.tick(), POLL_MS)
     if (!this.files.size && this.timer) {
@@ -56,6 +61,7 @@ export class FileWatch {
   /** What is on disk now is what this window knows (it just wrote or read it).
    *  `except` keeps its own baseline (see setBase). */
   async rebase(except?: string): Promise<void> {
+    for (const p of [...this.openedAs.keys()]) if (p !== except) this.openedAs.delete(p)
     for (const [p, f] of this.files) {
       if (p === except) continue
       f.base = await sigOf(p)
@@ -66,7 +72,7 @@ export class FileWatch {
   /** `path` was opened as it was at `sig` - watch it from there, so a change
    *  that lands while it is being opened (a pull) still reports. */
   setBase(path: string, sig: Sig): void {
-    this.openedAs.set(path, sig)
+    this.openedAs.set(path, { sig, at: Date.now() })
     this.files.set(path, { base: sig, pending: undefined })
     if (!this.timer) this.timer = setInterval(() => void this.tick(), POLL_MS)
   }
