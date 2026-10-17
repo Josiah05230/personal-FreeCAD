@@ -64,35 +64,30 @@ def _words(path):
 
 def _title_block(words):
     """{label: value text} read off the title block: the words to the right
-    of each label on the same line, up to the next label."""
-    lines = {}
-    for w in words:
-        if w[0] != 0:
-            continue
-        key = round((w[2] + w[4]) / 2 / 3)          # 3pt line buckets
-        lines.setdefault(key, []).append(w)
+    of each label whose centre line is within 4 pt of the label's (a value
+    may be set in a smaller font), up to the next label."""
+    page = sorted((w for w in words if w[0] == 0), key=lambda w: w[1])
+    mid = lambda w: (w[2] + w[4]) / 2.0
     found = {}
-    for ws in lines.values():
-        ws.sort(key=lambda w: w[1])
-        texts = [w[5] for w in ws]
+    for i, w in enumerate(page):
         for lab in LABELS:
-            n = len(lab)
-            for i in range(len(texts) - n + 1):
-                if tuple(texts[i:i + n]) != lab:
-                    continue
-                end_x = ws[i + n - 1][3]
-                vals = []
-                for w in ws[i + n:]:
-                    if w[1] - end_x > 140:            # past the title block cell
-                        break
-                    if any(tuple(texts[j:j + len(l)]) == l for l in LABELS for j in [ws.index(w)]):
-                        break
-                    vals.append(w[5])
-                    end_x = w[3]
-                name = LABEL_NAMES[lab]
-                # the title block is bottom right: keep the right-most hit
-                if name not in found or ws[i][1] > found[name][1]:
-                    found[name] = (" ".join(vals).strip(), ws[i][1])
+            row = [x for x in page if abs(mid(x) - mid(w)) <= 4.0 and x[1] >= w[1] - 0.5]
+            row.sort(key=lambda x: x[1])
+            texts = [x[5] for x in row]
+            if tuple(texts[:len(lab)]) != lab or row[0] is not w:
+                continue
+            end_x = row[len(lab) - 1][3]
+            vals = []
+            for k in range(len(lab), len(row)):
+                x = row[k]
+                if x[1] - end_x > 140 or any(tuple(texts[k:k + len(l)]) == l for l in LABELS):
+                    break
+                vals.append(x[5])
+                end_x = x[3]
+            name = LABEL_NAMES[lab]
+            # the title block is bottom right: keep the right-most hit
+            if name not in found or w[1] > found[name][1]:
+                found[name] = (" ".join(vals).strip(), w[1])
     return {k: v[0] for k, v in found.items()}
 
 
