@@ -63,32 +63,50 @@ def _words(path):
 
 
 def _title_block(words):
-    """{label: value text} read off the title block: the words to the right
-    of each label whose centre line is within 4 pt of the label's (a value
-    may be set in a smaller font), up to the next label."""
-    page = sorted((w for w in words if w[0] == 0), key=lambda w: w[1])
+    """{label: (value text, smallest value-word height / label height)} read
+    off the title block. Each word right of the labels goes to the label row
+    whose centre line is nearest (a long value wraps onto two lines, one a
+    little above and one at the label's line), read line by line."""
+    page = [w for w in words if w[0] == 0]
     mid = lambda w: (w[2] + w[4]) / 2.0
-    found = {}
-    for i, w in enumerate(page):
+    height = lambda w: w[4] - w[2]
+    hits = []                                     # (name, first word, last label word)
+    for w in page:
+        same = sorted((x for x in page if abs(mid(x) - mid(w)) <= 1.5 and x[1] >= w[1] - 0.5), key=lambda x: x[1])
         for lab in LABELS:
-            row = [x for x in page if abs(mid(x) - mid(w)) <= 4.0 and x[1] >= w[1] - 0.5]
-            row.sort(key=lambda x: x[1])
-            texts = [x[5] for x in row]
-            if tuple(texts[:len(lab)]) != lab or row[0] is not w:
-                continue
-            end_x = row[len(lab) - 1][3]
-            vals = []
-            for k in range(len(lab), len(row)):
-                x = row[k]
-                if x[1] - end_x > 140 or any(tuple(texts[k:k + len(l)]) == l for l in LABELS):
-                    break
-                vals.append(x[5])
-                end_x = x[3]
-            name = LABEL_NAMES[lab]
-            # the title block is bottom right: keep the right-most hit
-            if name not in found or w[1] > found[name][1]:
-                found[name] = (" ".join(vals).strip(), w[1])
-    return {k: v[0] for k, v in found.items()}
+            if same and same[0] is w and tuple(x[5] for x in same[:len(lab)]) == lab:
+                hits.append((LABEL_NAMES[lab], w, same[len(lab) - 1]))
+    if not hits:
+        return {}
+    # the title block is bottom right: keep the right-most hit of each label
+    best = {}
+    for name, w, last in hits:
+        if name not in best or w[1] > best[name][0][1]:
+            best[name] = (w, last)
+    label_words = {id(x) for w, last in best.values() for x in page
+                   if abs(mid(x) - mid(w)) <= 1.5 and w[1] - 0.5 <= x[1] <= last[3] + 0.5}
+    col_x = max(last[3] for w, last in best.values())
+    left = min(w[1] for w, last in best.values())
+    rows = {name: [] for name in best}
+    for x in page:
+        if id(x) in label_words or x[1] < col_x + 2 or x[1] > left + 400:
+            continue
+        name = min(best, key=lambda n: abs(mid(best[n][0]) - mid(x)))
+        if abs(mid(best[name][0]) - mid(x)) <= 13.0:
+            rows[name].append(x)
+    out = {}
+    for name, ws in rows.items():
+        lines = []
+        for x in sorted(ws, key=mid):
+            if lines and abs(mid(lines[-1][0]) - mid(x)) <= 1.5:
+                lines[-1].append(x)
+            else:
+                lines.append([x])
+        text = " ".join(" ".join(y[5] for y in sorted(line, key=lambda y: y[1])) for line in lines).strip()
+        lw = best[name][0]
+        ratio = min((height(x) / height(lw) for x in ws), default=1.0) if height(lw) > 0 else 1.0
+        out[name] = (text, ratio)
+    return out
 
 
 def _edge_ink(path, page_count):
@@ -138,7 +156,11 @@ def check_pdf(path, pn, row=None, bom=None, max_pages=1):
     text = " ".join(w[5] for w in words)
 
     # title block
-    tb = _title_block(words)
+    tb_full = _title_block(words)
+    tb = {k: v[0] for k, v in tb_full.items()}
+    for label, (value, ratio) in tb_full.items():
+        if value and ratio < 0.92:
+            problems.append("%s: the title block's %s is too long for its cell and was printed smaller (%d%% size): re-export it (long values now wrap onto two lines) or shorten it in the registry." % (pn, label, round(ratio * 100)))
     for label in REQUIRED:
         value = tb.get(label)
         if value is None:

@@ -1087,8 +1087,10 @@ def _wrap_cell(value, font_size, cell_w, row_h):
     avail = cell_w - 3.0
     if "\n" in value or _measure_text(value, font_size) <= avail:
         return value, 1.2
-    pitch = 1.05
-    if row_h < font_size * (1.0 + pitch) + 1.2:          # two lines would not fit the row
+    pitch = 1.0
+    # drawn centred (see the caller): bottom pad 1.0 + pitch + the top line's
+    # tallest glyphs (~0.8 em, a quote mark or slash) + 0.5 clear of the border
+    if row_h < 1.0 + font_size * (pitch + 0.8) + 0.5:    # two lines would not fit the row
         return value, 1.2
     words = value.split(" ")
     for cut in range(len(words) - 1, 0, -1):
@@ -1618,6 +1620,8 @@ def export_page_svg(doc, page_id):
                 value, pitch = _wrap_cell(value, text_size, cell_w, row_h * (m["rs"] if m and m.get("rs") else 1))
                 lines = value.split("\n")
                 n_lines = len(lines)
+                if pitch < 1.2 and n_lines == 2:
+                    cell_y += 0.5          # a wrapped pair sits centred, clear of both borders
                 # shrinking is the last resort (drawqa flags shrunk text)
                 cell_size = _fit_cell_font_size(value, text_size, cell_w)
                 tspans = "".join(
