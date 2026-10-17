@@ -19,7 +19,7 @@ import {
   type SketchTool,
   type SketchRefGeom
 } from './SketchController'
-import { syncScene, setSceneRender, type SceneNode } from './sceneBuilder'
+import { syncScene, setSceneRender, frameOf, type SceneNode } from './sceneBuilder'
 import { perfProfile } from '../perfProfile'
 import type { RenderSettings } from '../rpc'
 import { effectiveRender, resolveBackground } from '../appearance'
@@ -651,7 +651,11 @@ export function Viewport({
             perspUp: [p.up.x, p.up.y, p.up.z],
             pivot: [s.controls.pivot.x, s.controls.pivot.y, s.controls.pivot.z],
             lastCenter: [s.lastCenter.x, s.lastCenter.y, s.lastCenter.z],
-            lastRadius: s.lastRadius
+            lastRadius: s.lastRadius,
+            // what frames: each framing node's box size
+            framing: [...nodesRef.current.values()]
+              .filter((n) => n.frame && !n.box.isEmpty())
+              .map((n) => [n.key, Math.round(n.box.getSize(new THREE.Vector3()).length())])
           }
         },
         testApplyOrbit: (yaw: number, pitch: number) => {
@@ -1468,6 +1472,10 @@ export function Viewport({
       const id = ud.bodyId ?? ud.sketchId ?? ud.datumId ?? ud.canvasId
       if (id != null) c.visible = !hidden.has(id)
     }
+    // fit / Home frame what is shown, not what the eye toggle hid
+    const f = frameOf(nodesRef.current, hidden)
+    st.lastCenter = f.center
+    st.lastRadius = f.radius
   }, [hiddenIds, meshes, sketches, datums, canvases])
 
   // reflect selection

@@ -502,6 +502,7 @@ export function syncScene(
   for (const d of desired) {
     const old = prev.get(d.key)
     if (old && old.sig === d.sig) {
+      old.frame = d.frame // shown / hidden changes whether it frames, not its objects
       nodes.set(d.key, old) // untouched - objects stay in the group
       continue
     }
@@ -514,10 +515,22 @@ export function syncScene(
     nodes.set(d.key, { key: d.key, sig: d.sig, objs, box: boxOf(objs), frame: d.frame })
   }
 
-  // framing box = union of every FRAMING node's box (real content only -
-  // datums are excluded, see the `frame` field's doc comment above)
+  return { nodes, ...frameOf(nodes) }
+}
+
+/** Centre + radius that frame every FRAMING node (real content only -
+ *  datums are excluded, see the `frame` field's doc comment above), minus
+ *  anything hidden from the view (`hidden`: ids from the tree's eye toggle). */
+export function frameOf(
+  nodes: Map<string, SceneNode>,
+  hidden?: Set<string>
+): { center: THREE.Vector3; radius: number } {
   const box = new THREE.Box3()
-  for (const n of nodes.values()) if (n.frame && !n.box.isEmpty()) box.union(n.box)
+  for (const n of nodes.values()) {
+    if (!n.frame || n.box.isEmpty()) continue
+    if (hidden && hidden.has(n.key.slice(n.key.indexOf(':') + 1))) continue
+    box.union(n.box)
+  }
 
   let center = box.isEmpty() ? new THREE.Vector3() : box.getCenter(new THREE.Vector3())
   let radius = box.isEmpty() ? 60 : Math.max(box.getSize(new THREE.Vector3()).length() / 2, 1)
@@ -525,7 +538,7 @@ export function syncScene(
     center = new THREE.Vector3()
   }
   if (!Number.isFinite(radius) || radius <= 0) radius = 60
-  return { nodes, center, radius }
+  return { center, radius }
 }
 
 /** Full build from scratch (kept for callers/tests that want a one-shot group). */
